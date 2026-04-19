@@ -361,3 +361,38 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# Build
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+*.dll
+*.pdb
+*.exe
+*.cache
+
+# VS
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.vsidx
+
+# Rider
+.idea/
+
+# NuGet
+packages/
+*.nupkg
+
+# 日志/临时
+*.log
+*.tmp
+
+# PS 生成物
+*.cgr
+*.CATPart
+*.CATProduct
