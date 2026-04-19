@@ -1,0 +1,6 @@
+# Copilot Instructions
+
+## 项目指南
+- User prefers Visual Studio 2026 and is working in C# projects; file being edited is ExportGunForm.cs. They want dynamic UI updates for gun info, specifically to display the dynamic gunName for ExportGunForm. Updates should occur when operations change and on selection changes.
+- Update ExportGunForm to display dynamic gun name in UI using lblGunName. Implement this by calling UpdateGunNameDisplay() after RefreshOpList and SyncOpsFromGrid. This method uses PsReader.GetGunFromOperation via _svc.InvokeOnPs to fetch tool names and updates lblGunName. 
+- Add lblGunName Label and implement the UpdateGunNameDisplay method, which calls _svc.InvokeOnPs and PsReader.GetToolNameFromOperation on the first checked operation (or first op). Call this method from RefreshOpList and SyncOpsFromGrid to update the UI dynamically. Additionally, add lblGunName control and RefreshGunName method using _svc.InvokeOnPs and PsReader.GetGunFromOperation / GetToolNameFromOperation to fetch tool names. Also, add lblGunName field and UpdateGunDisplay method; call it from RefreshOpList and SyncOpsFromGrid to show the current gun/tool name dynamically using PsReader.GetToolNameFromOperation with _svc.InvokeOnPs.
