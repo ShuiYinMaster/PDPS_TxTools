@@ -16,7 +16,6 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
-using System.Xml.Linq;
 using Tecnomatix.Engineering;
 
 namespace MyPlugin.ExportGun
@@ -47,7 +46,7 @@ namespace MyPlugin.ExportGun
         public double[] Matrix;       // AbsoluteLocation (4x4，行主序，长度 16)
         public string TypeName;       // 原始类型名（诊断用）
         public string ParentPartName; // 若能反查到父零件名
-        public ITxObject TxObject;     // 原始 TxObject 引用
+        public ITxObject RawObject;   // 底层 ITxObject 引用（用于 Display/Blank 控制）
     }
 
     public class GunInfo
@@ -79,6 +78,12 @@ namespace MyPlugin.ExportGun
         public string OpName;
         public double X, Y, Z;                  // 世界坐标 mm
         public TxTransformation WorldTx;        // 完整变换矩阵（备用）
+
+        // ── 板厚检测：绑定的不重复零件数（用于自动分类） ────────────────
+        // 由 GetPointsFromSelection 在收集焊点时统计 AllAppearances 的
+        // 唯一 ParentPartName（无 ParentPartName 则用 Appearance 名作 fallback）。
+        // 0 = 未检测到绑定；1 = 单层；2 = 两层；3+ = 多层
+        public int BoundPartsCount;
 
         // ── 截图投影数据（由 ProjectPointsToScreen 填充）───────────────────
         public float ScreenX;
@@ -632,6 +637,9 @@ namespace MyPlugin.ExportGun
             foreach (ITxObject child in kids) { TxRobot r = FindRobot(child); if (r != null) return r; }
             return null;
         }
+
+        /// <summary>公开包装，供 Form 构造"仅显示"白名单时查找绑定机器人。</summary>
+        public static TxRobot FindRobotForOperation(ITxObject op) => FindRobot(op);
 
         // ════════════════════════════════════════════════════════════
         //  4. 参考坐标系
@@ -1637,7 +1645,8 @@ namespace MyPlugin.ExportGun
                 Name = name,
                 Matrix = m,
                 TypeName = tn,
-                ParentPartName = parent
+                ParentPartName = parent,
+                RawObject = item as ITxObject
             });
         }
 
@@ -2063,7 +2072,10 @@ namespace MyPlugin.ExportGun
             {
                 TxTransformation tx = SafeGetTx(() => wp.AbsoluteLocation);
                 if (tx != null)
-                    list.Add(MakeAnnotPt(idx++, wp.Name, opName, tx));
+                {
+                    int boundParts = CountBoundParts(wp);
+                    list.Add(MakeAnnotPt(idx++, wp.Name, opName, tx, boundParts));
+                }
                 return;
             }
 
@@ -2095,7 +2107,7 @@ namespace MyPlugin.ExportGun
         }
 
         private static WeldAnnotationPoint MakeAnnotPt(
-            int idx, string name, string opName, TxTransformation tx)
+            int idx, string name, string opName, TxTransformation tx, int boundParts = 0)
         {
             return new WeldAnnotationPoint
             {
@@ -2105,14 +2117,43 @@ namespace MyPlugin.ExportGun
                 X = tx[0, 3],
                 Y = tx[1, 3],
                 Z = tx[2, 3],
-                WorldTx = tx
+                WorldTx = tx,
+                BoundPartsCount = boundParts
             };
+        }
+
+        /// <summary>
+        /// 数焊点绑定的不重复零件数。来源：GetAppearancesFromObject 返回的
+        /// AppearanceRef 列表。去重键优先用 ParentPartName（多个外观可能挂在同一
+        /// 零件下，应算 1 层），fallback 用 Appearance Name。
+        /// </summary>
+        private static int CountBoundParts(ITxObject wp)
+        {
+            if (wp == null) return 0;
+            try
+            {
+                List<AppearanceRef> apps = GetAppearancesFromObject(wp);
+                if (apps == null || apps.Count == 0) return 0;
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var ar in apps)
+                {
+                    if (ar == null) continue;
+                    string key = !string.IsNullOrEmpty(ar.ParentPartName)
+                        ? ar.ParentPartName
+                        : (ar.Name ?? "");
+                    if (!string.IsNullOrEmpty(key)) seen.Add(key);
+                }
+                return seen.Count;
+            }
+            catch { return 0; }
         }
 
         // ── 8.3  截取 PS 视口位图 ─────────────────────────────────────────────
         /// <summary>
         /// 调用 TxGraphicViewer.GetImage(Size, bool) 截图。
         /// size 若为 Empty 则自动从 ContainerWindow.Bounds 读取视口实际尺寸。
+        /// 截图前临时关闭 PS 视图右上角的导航辅助控件（导航方块、三轴指示器、罗盘），
+        /// 截图后通过 try/finally 恢复原状。
         /// </summary>
         public static System.Drawing.Bitmap CaptureActiveViewer(
             System.Drawing.Size size, bool transparent, Action<string> log)
@@ -2127,7 +2168,6 @@ namespace MyPlugin.ExportGun
 
                 if (size.IsEmpty || size.Width <= 0)
                 {
-                    // 自动读取视口实际尺寸
                     try
                     {
                         TxViewerWindow tvw = viewer.ContainerWindow;
@@ -2140,14 +2180,96 @@ namespace MyPlugin.ExportGun
                 }
 
                 log(string.Format("[Annotator] 截图尺寸：{0}×{1}", size.Width, size.Height));
-                System.Drawing.Bitmap bmp = viewer.GetImage(size, transparent);
-                if (bmp == null) throw new Exception("GetImage 返回 null");
+
+                // ── 关闭导航辅助控件 → 截图 → 恢复 ────────────────────────
+                var savedFlags = HideViewerAids(viewer, log);
+                System.Drawing.Bitmap bmp;
+                try
+                {
+                    // 强制刷新一次，让关闭操作生效
+                    try { TxApplication.RefreshDisplay(); } catch { }
+                    bmp = viewer.GetImage(size, transparent);
+                    if (bmp == null) throw new Exception("GetImage 返回 null");
+                }
+                finally
+                {
+                    RestoreViewerAids(viewer, savedFlags, log);
+                    try { TxApplication.RefreshDisplay(); } catch { }
+                }
                 return bmp;
             }
             catch (Exception ex)
             {
                 log("[Annotator] CaptureActiveViewer 异常：" + ex.Message);
                 return null;
+            }
+        }
+
+        // ── 视图辅助控件的关闭/恢复（导航方块 / 导航框架） ─────────────────
+        //
+        //  根据 PS SDK 文档，TxGraphicViewer 暴露两个 STATIC bool 属性：
+        //    ShowNavigationCube  — 导航方块（右上角立方体）
+        //    ShowNavigationFrame — 导航框架
+        //  这两个都是静态属性（影响所有 viewer 实例），直接读写即可。
+        //  截图前关闭、截图后按原值恢复。
+
+        private struct ViewerAidState
+        {
+            public bool SavedShowNavigationCube;
+            public bool SavedShowNavigationFrame;
+            public bool HadCube;
+            public bool HadFrame;
+        }
+
+        private static ViewerAidState HideViewerAids(
+            TxGraphicViewer viewer, Action<string> log)
+        {
+            var saved = new ViewerAidState();
+
+            // 静态属性 → 直接访问，无需反射
+            try
+            {
+                saved.SavedShowNavigationCube = TxGraphicViewer.ShowNavigationCube;
+                saved.HadCube = true;
+                if (saved.SavedShowNavigationCube)
+                {
+                    TxGraphicViewer.ShowNavigationCube = false;
+                    log("[Annotator] 已临时关闭：ShowNavigationCube");
+                }
+            }
+            catch (Exception ex) { log("[Annotator] ShowNavigationCube 不可用：" + ex.Message); }
+
+            try
+            {
+                saved.SavedShowNavigationFrame = TxGraphicViewer.ShowNavigationFrame;
+                saved.HadFrame = true;
+                if (saved.SavedShowNavigationFrame)
+                {
+                    TxGraphicViewer.ShowNavigationFrame = false;
+                    log("[Annotator] 已临时关闭：ShowNavigationFrame");
+                }
+            }
+            catch (Exception ex) { log("[Annotator] ShowNavigationFrame 不可用：" + ex.Message); }
+
+            // 注：DisplayOrientationFrameOfReference 已被 SDK 弃用，
+            // 其功能已合并到 ShowNavigationCube / ShowNavigationFrame 两个属性中，
+            // 上面两段代码已覆盖。
+
+            return saved;
+        }
+
+        private static void RestoreViewerAids(
+            TxGraphicViewer viewer, ViewerAidState saved, Action<string> log)
+        {
+            if (saved.HadCube && saved.SavedShowNavigationCube)
+            {
+                try { TxGraphicViewer.ShowNavigationCube = true; }
+                catch (Exception ex) { log("[Annotator] 恢复 ShowNavigationCube 失败：" + ex.Message); }
+            }
+            if (saved.HadFrame && saved.SavedShowNavigationFrame)
+            {
+                try { TxGraphicViewer.ShowNavigationFrame = true; }
+                catch (Exception ex) { log("[Annotator] 恢复 ShowNavigationFrame 失败：" + ex.Message); }
             }
         }
 
@@ -2219,31 +2341,38 @@ namespace MyPlugin.ExportGun
         //  9. 显示状态快照  —  WeldAnnotator 专用
         // ════════════════════════════════════════════════════════════════════
 
-        // ── 9.1  拍摄快照：记录场景所有对象的 Visible 状态 ───────────────────
-        /// <summary>
-        /// 遍历场景组件树（ComponentRoot / PhysicalRoot / ResourceRoot），
-        /// 记录所有具有 Visible 属性的对象的当前可见状态。
-        /// 返回 List&lt;Tuple&lt;ITxObject, bool&gt;&gt;（对象引用 + 原可见性）。
-        /// </summary>
+        // ── 9.1  拍摄快照：记录所有 ITxDisplayableObject 的当前 Visibility 状态 ──
+        //
+        //  实现基于官方 ITxDisplayableObject 接口：
+        //    Visibility 属性可读（ALL / PARTIAL / NONE）
+        //    Display() / Blank() 可写
+        //  本函数遍历场景所有可显示对象，用 Visibility 属性记录初始状态；
+        //  Restore 时按记录逐个 Display()/Blank()。
         public static List<Tuple<ITxObject, bool>> SnapshotDisplayStates(Action<string> log)
         {
             if (log == null) log = Nop;
+            _visErrorLogged = false;
             var result = new List<Tuple<ITxObject, bool>>();
             try
             {
                 List<ITxObject> all = EnumDisplayableObjects(log);
+                int visibleCount = 0, hiddenCount = 0, unsupported = 0;
                 foreach (ITxObject obj in all)
                 {
-                    bool vis = GetObjVisible(obj, log);
-                    result.Add(Tuple.Create(obj, vis));
+                    bool? vis = GetObjVisible(obj, log);
+                    if (!vis.HasValue) { unsupported++; continue; }
+                    if (vis.Value) visibleCount++; else hiddenCount++;
+                    result.Add(Tuple.Create(obj, vis.Value));
                 }
-                log(string.Format("[Snapshot] 已记录 {0} 个对象显示状态", result.Count));
+                log(string.Format(
+                    "[Snapshot] 已记录 {0} 个对象（显示 {1}，隐藏 {2}，不支持 {3}）",
+                    result.Count, visibleCount, hiddenCount, unsupported));
             }
             catch (Exception ex) { log("[Snapshot] SnapshotDisplayStates: " + ex.Message); }
             return result;
         }
 
-        // ── 9.2  恢复快照 ────────────────────────────────────────────────────
+        // ── 9.2  恢复快照：按记录逐个 Display/Blank ───────────────────────────
         public static void RestoreDisplayStates(
             List<Tuple<ITxObject, bool>> snapshot, Action<string> log)
         {
@@ -2253,79 +2382,144 @@ namespace MyPlugin.ExportGun
                 log("[Snapshot] 无快照可恢复");
                 return;
             }
-            int n = 0;
+            int changed = 0, alreadyOk = 0, failed = 0;
             foreach (Tuple<ITxObject, bool> t in snapshot)
             {
-                SetObjVisible(t.Item1, t.Item2, log);
-                n++;
+                // 先读当前状态；若已与记录一致则跳过，避免无谓调用
+                bool? curr = GetObjVisible(t.Item1, log);
+                if (curr.HasValue && curr.Value == t.Item2) { alreadyOk++; continue; }
+                if (SetObjVisible(t.Item1, t.Item2, log)) changed++;
+                else failed++;
             }
             try { TxApplication.RefreshDisplay(); } catch { }
-            log(string.Format("[Snapshot] 已恢复 {0} 个对象显示状态", n));
+            log(string.Format(
+                "[Snapshot] 已恢复 {0} 个对象（变更 {1}，无需变更 {2}，失败 {3}）",
+                snapshot.Count, changed, alreadyOk, failed));
         }
 
         // ── 9.3  仅显示操作绑定的外观 ────────────────────────────────────────
-        /// <summary>
-        /// 隐藏场景所有对象，仅显示 opObj 绑定的机器人、工具及模拟对象。
-        /// </summary>
-        public static void ShowOnlyOperationAppearance(ITxObject opObj, Action<string> log)
+        //  本次会话中被 Hide 的对象列表（用于 RestoreFromLastHide 恢复）。
+        //  保存的是 Blank() 时我们主动调用过的对象 —— 这样 Display() 它们即可。
+        private static readonly List<ITxObject> _lastHiddenObjects = new List<ITxObject>();
+
+        /// <summary>是否有未恢复的"仅显示操作外观"隐藏状态。</summary>
+        public static bool HasUnrestoredHide
         {
-            if (log == null) log = Nop;
-            try
-            {
-                // 1. 将操作对象包装为 OperationInfo
-                OperationInfo op = MakeOp(opObj, "焊接操作");
-
-                // 2. 填充焊点数据
-                FillPoints(op, PointType.WeldPoint, false, log);
-
-                // 3. 填充焊点的外观信息
-                FillAppearancesForOperation(op, log);
-
-                // 4. 收集所有焊点绑定的外观对象
-                HashSet<ITxObject> appearanceObjects = new HashSet<ITxObject>();
-                foreach (PointInfo point in op.Points)
-                {
-                    if (point.AllAppearances != null)
-                    {
-                        foreach (AppearanceRef appRef in point.AllAppearances)
-                        {
-                            if (appRef.TxObject != null)
-                            {
-                                appearanceObjects.Add(appRef.TxObject);
-                                log($"[Snapshot] 找到焊点 '{point.Name}' 的外观: {appRef.Name}");
-                            }
-                        }
-                    }
-                }
-
-                if (appearanceObjects.Count == 0)
-                {
-                    log("[Snapshot] 警告：未找到焊点绑定的外观对象");
-                    return;
-                }
-
-                // 5. 获取场景中所有可显示对象
-                List<ITxObject> all = EnumDisplayableObjects(log);
-
-                // 6. 隐藏所有对象
-                foreach (ITxObject obj in all)
-                    SetObjVisible(obj, false, log);
-
-                // 7. 仅显示焊点绑定的外观对象
-                foreach (ITxObject obj in appearanceObjects)
-                    SetObjVisible(obj, true, log);
-
-                // 8. 刷新显示
-                try { TxApplication.RefreshDisplay(); } catch { }
-
-                log($"[Snapshot] 仅显示焊点外观：{appearanceObjects.Count} 个外观对象可见");
-            }
-            catch (Exception ex)
-            {
-                log($"[Snapshot] ShowOnlyOperationAppearance 异常: {ex.Message}");
-            }
+            get { return _lastHiddenObjects.Count > 0; }
         }
 
+        /// <summary>
+        /// 隐藏场景所有对象，仅显示传入的 whitelist（通常 = 机器人 + 工具 + 焊点绑定外观）。
+        /// 本版本不再从焊点反查 —— 白名单由调用方（Form）提供，Form 在读焊点时
+        /// 已经通过 FillAppearancesForOperation 把绑定对象填到了 AppearanceRef.RawObject 里。
+        /// 若 whitelist 为 null 或空，抛 InvalidOperationException。
+        /// </summary>
+        public static void HideAllExcept(
+            IEnumerable<ITxObject> whitelist, Action<string> log)
+        {
+            if (log == null) log = Nop;
+            if (whitelist == null)
+                throw new InvalidOperationException("未提供白名单");
+
+            // 白名单去重
+            var keep = new System.Collections.Generic.HashSet<int>();
+            var keepList = new List<ITxObject>();
+            foreach (ITxObject o in whitelist)
+            {
+                if (o == null) continue;
+                int id = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(o);
+                if (keep.Add(id)) keepList.Add(o);
+            }
+            if (keepList.Count == 0)
+                throw new InvalidOperationException("白名单为空，已取消操作（否则场景会全部被隐藏）。");
+
+            // 枚举所有可显示对象
+            List<ITxObject> all = EnumDisplayableObjects(log);
+
+            // 重置"本次隐藏集合"。
+            // 关键：先读对象当前 Visibility —— 如果原本就已隐藏（NONE），
+            // 跳过不 Blank，也不加入 _lastHiddenObjects（否则 Restore 时
+            // 会把用户手动隐藏过的对象一起 Display 出来）。
+            _lastHiddenObjects.Clear();
+            int hidden = 0, shown = 0, skippedAlreadyHidden = 0, failed = 0;
+            foreach (ITxObject obj in all)
+            {
+                int id = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+                if (keep.Contains(id))
+                {
+                    // 白名单：确保显示
+                    SetObjVisible(obj, true, log);
+                    shown++;
+                }
+                else
+                {
+                    bool? curr = GetObjVisible(obj, log);
+                    if (curr.HasValue && !curr.Value)
+                    {
+                        // 已经隐藏 — 保持现状，不纳入本次记录
+                        skippedAlreadyHidden++;
+                        continue;
+                    }
+                    // 当前显示中，或读不到状态 → Blank 它
+                    if (SetObjVisible(obj, false, log))
+                    {
+                        _lastHiddenObjects.Add(obj);
+                        hidden++;
+                    }
+                    else
+                    {
+                        failed++;
+                    }
+                }
+            }
+            try { TxApplication.RefreshDisplay(); } catch { }
+            log(string.Format(
+                "[Snapshot] 仅显示白名单：实际隐藏 {0} 个，显示 {1} 个，" +
+                "原本就隐藏 {2} 个（已跳过），调用失败 {3} 个",
+                hidden, shown, skippedAlreadyHidden, failed));
+        }
+
+        /// <summary>
+        /// 恢复上一次 HideAllExcept 所隐藏的对象（Display 它们）。
+        /// </summary>
+        public static void RestoreFromLastHide(Action<string> log)
+        {
+            if (log == null) log = Nop;
+            if (_lastHiddenObjects.Count == 0)
+            {
+                log("[Snapshot] 无上一次隐藏记录，改为显示全部。");
+                ShowAllDevices(log);
+                return;
+            }
+            int n = 0;
+            foreach (ITxObject obj in _lastHiddenObjects)
+            {
+                SetObjVisible(obj, true, log);
+                n++;
+            }
+            try { TxApplication.RefreshDisplay(); } catch { }
+            log(string.Format("[Snapshot] 已恢复 {0} 个被隐藏的对象", n));
+            _lastHiddenObjects.Clear();
+        }
+
+        /// <summary>
+        /// 向后兼容旧签名：调用方（Form）应改为传入 AppearanceRef.RawObject 组成的列表。
+        /// 若调用本重载且 knownWeldPointNames 非空，会尝试按名 find，但通常不可靠。
+        /// </summary>
+        public static void ShowOnlyOperationAppearance(
+            ITxObject opObj, List<string> knownWeldPointNames, Action<string> log)
+        {
+            if (log == null) log = Nop;
+            log("[Snapshot] ⚠ 使用了旧签名 ShowOnlyOperationAppearance — 请改用 HideAllExcept(whitelist)。");
+            throw new InvalidOperationException(
+                "旧签名已废弃：请从 Form 端构造白名单列表（机器人+工具+焊点绑定 RawObject）后调用 HideAllExcept。");
+        }
+
+        /// <summary>最旧签名（只传 opObj） — 同样废弃。</summary>
+        public static void ShowOnlyOperationAppearance(ITxObject opObj, Action<string> log)
+        {
+            ShowOnlyOperationAppearance(opObj, null, log);
+        }
 
         // ── 9.4  恢复全部显示 ────────────────────────────────────────────────
         public static void ShowAllDevices(Action<string> log)
@@ -2344,14 +2538,15 @@ namespace MyPlugin.ExportGun
         // ── 9.x  私有辅助 ────────────────────────────────────────────────────
 
         /// <summary>
-        /// 枚举场景组件树中所有具有 Visible 属性的 ITxObject。
+        /// 枚举场景组件树中所有实现 ITxDisplayableObject 接口的对象。
         /// 策略：
         ///   1. 通过 dynamic 直接读取 doc 上的 PhysicalRoot / ComponentRoot /
-        ///      ResourceRoot / OperationRoot 四个根；
+        ///      ResourceRoot 三个根（OperationRoot 下是逻辑操作，不纳入）；
         ///   2. 对每个根先尝试 GetAllDescendants（分别用 TxTypeFilter(ITxObject)
         ///      和无参重载）拿完整后代列表；
         ///   3. 若 GetAllDescendants 失败或返回空，回退到递归 Children 遍历；
-        ///   4. 每个节点用反射缓存检查是否有 Visible（或 Displayed）属性。
+        ///   4. 只保留 obj is ITxDisplayableObject 的对象（官方接口契约保证可用
+        ///      Display/Blank/Visibility）。
         /// 每一步都打日志，便于诊断"0 个对象"的根因。
         /// </summary>
         private static List<ITxObject> EnumDisplayableObjects(Action<string> log)
@@ -2363,8 +2558,10 @@ namespace MyPlugin.ExportGun
                 TxDocument doc = TxApplication.ActiveDocument;
                 if (doc == null) { log("[Snapshot] ActiveDocument 为 null"); return result; }
 
-                // 通过 dynamic 直接取每个根；不依赖反射（更可靠也更直观）
-                string[] rootNames = { "PhysicalRoot", "ComponentRoot", "ResourceRoot", "OperationRoot" };
+                // 只枚举 3D 物理/组件/资源根 —— OperationRoot 下是逻辑操作节点
+                // （TxDeviceOperation、TxWeldOperation 等），不支持 Display/Blank，
+                // 试图 Blank 会抛异常且无意义；因此不纳入枚举。
+                string[] rootNames = { "PhysicalRoot", "ComponentRoot", "ResourceRoot" };
                 dynamic dDoc = doc;
                 foreach (string rn in rootNames)
                 {
@@ -2376,7 +2573,6 @@ namespace MyPlugin.ExportGun
                             case "PhysicalRoot": root = dDoc.PhysicalRoot; break;
                             case "ComponentRoot": root = dDoc.ComponentRoot; break;
                             case "ResourceRoot": root = dDoc.ResourceRoot; break;
-                            case "OperationRoot": root = dDoc.OperationRoot; break;
                         }
                     }
                     catch { /* 该版本没有此根 */ }
@@ -2407,16 +2603,20 @@ namespace MyPlugin.ExportGun
                         { log(string.Format("[Snapshot] {0}.GetAllDescendants() 异常: {1}", rn, ex.Message)); }
                     }
 
-                    // ── Step C: 把拿到的对象加入结果 ────────────────────────
+                    // ── Step C: 把拿到的对象加入结果（仅 ITxDisplayableObject）─
+                    //   只保留实现了 ITxDisplayableObject 接口的对象 —— 它们才有
+                    //   Visibility 属性和 Display/Blank 方法。非可显示对象（如操作、
+                    //   坐标系 owner 等）加进来也会导致 Blank 失败或读 Visibility 异常。
                     if (kids != null && kids.Count > 0)
                     {
                         foreach (ITxObject obj in kids)
                         {
                             if (obj == null) continue;
+                            if (!(obj is ITxDisplayableObject)) continue;
                             int id = System.Runtime.CompilerServices
                                          .RuntimeHelpers.GetHashCode(obj);
                             if (!seen.Add(id)) continue;
-                            if (HasVisibleProp(obj, log)) result.Add(obj);
+                            result.Add(obj);
                         }
                     }
                     else
@@ -2468,342 +2668,98 @@ namespace MyPlugin.ExportGun
                 if (child == null) continue;
                 int id = System.Runtime.CompilerServices
                              .RuntimeHelpers.GetHashCode(child);
-                if (!seen.Add(id))
-                {
-                    // 已见过，仍递归（某些 PS 版本叶节点仍可能暴露 Children）
-                }
-                else
-                {
-                    if (HasVisibleProp(child, log)) result.Add(child);
-                }
+                if (seen.Add(id) && child is ITxDisplayableObject)
+                    result.Add(child);
                 WalkChildren(child, result, seen, depth + 1, log);
             }
         }
 
         // ═══════════════════════════════════════════════════════════════════
-        //  显示/隐藏 API 的反射发现机制
+        //  显示控制 API（基于 ITxDisplayableObject 官方接口）
         //
-        //  Tecnomatix.Engineering 的各版本 SDK 在显示控制属性/方法命名上有差异。
-        //  常见候选（按优先级）：
-        //    方法： Blank() / Unblank() / Hide() / Show() / SetHidden(bool)
-        //           SetShown(bool) / SetVisible(bool) / SetDisplayed(bool)
-        //    属性： IsBlanked / IsHidden / Visible / Displayed / IsVisible / Shown
-        //  本模块在首次使用时通过反射扫描目标类型，找出实际存在的成员并缓存；
-        //  后续调用直接用缓存的 MethodInfo/PropertyInfo，无需再次反射。
-        //  如果全部候选都没命中，会在日志中列出该类型所有含 Hide/Show/Blank/
-        //  Visible/Display 关键字的成员，便于诊断正确的 API 名。
+        //  Tecnomatix.Engineering.ITxDisplayableObject 接口提供：
+        //    - Display()   : 显示
+        //    - Blank()     : 隐藏
+        //    - Visibility  : 读取当前可见状态（TxDisplayableObjectVisibility 枚举）
+        //                    ALL     = 对象及所有子对象可见
+        //                    NONE    = 对象及所有子对象都隐藏
+        //                    PARTIAL = 子对象部分可见（仅集合对象可能返回）
+        //    - DisplayMode : 显示模式（线框/着色等），不用于 visibility 判断
+        //
+        //  任何实现 ITxDisplayableObject 的对象（如 TxComponent、TxPart、TxFrame、
+        //  TxRobot、TxDevice 等）均可使用；操作类（TxOperation）不实现此接口。
         // ═══════════════════════════════════════════════════════════════════
 
-        // 缓存：Type → 该类型上发现的显示 API
-        private class VisibilityApi
+        private static bool _visErrorLogged = false;
+
+        /// <summary>
+        /// 如果 obj 实现 ITxDisplayableObject，则返回 cast 后的接口；否则 null。
+        /// </summary>
+        private static ITxDisplayableObject AsDisplayable(ITxObject obj)
         {
-            public System.Reflection.MethodInfo MethodHide;   // 无参：隐藏
-            public System.Reflection.MethodInfo MethodShow;   // 无参：显示
-            public System.Reflection.MethodInfo MethodSetBool;// 单 bool 参数：true=显示 false=隐藏（或相反）
-            public bool SetBoolMeaning; // true = 参数 true 代表"显示"；false = 参数 true 代表"隐藏"
-            public System.Reflection.PropertyInfo PropBool;    // bool 属性
-            public bool PropMeaning;  // true = 属性 true 代表"显示"；false = 属性 true 代表"隐藏"
-            public bool Known;        // 是否找到可用 API
-            public string Description;  // 日志用描述
-        }
-
-        private static readonly System.Collections.Generic.Dictionary<Type, VisibilityApi> _visApiCache
-            = new System.Collections.Generic.Dictionary<Type, VisibilityApi>();
-        private static readonly System.Collections.Generic.HashSet<Type> _visApiLoggedTypes
-            = new System.Collections.Generic.HashSet<Type>();
-        // 限制 dump 数量，避免几千个类型刷屏
-        private const int MAX_DUMPED_TYPES = 8;
-
-        private static VisibilityApi GetOrDiscoverVisApi(ITxObject obj, Action<string> log)
-        {
-            if (obj == null) return null;
-            Type t = obj.GetType();
-            VisibilityApi cached;
-            if (_visApiCache.TryGetValue(t, out cached)) return cached;
-
-            var api = new VisibilityApi { Known = false };
-            var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance;
-
-            // ── 候选方法名（无参） ─────────────────────────────────────────
-            // 返回"显示"相关方法
-            string[] showMethods = { "Show", "Unblank", "Unhide", "Display", "MakeVisible" };
-            string[] hideMethods = { "Hide", "Blank", "MakeHidden" };
-            foreach (string n in showMethods)
-            {
-                var m = t.GetMethod(n, flags, null, Type.EmptyTypes, null);
-                if (m != null) { api.MethodShow = m; break; }
-            }
-            foreach (string n in hideMethods)
-            {
-                var m = t.GetMethod(n, flags, null, Type.EmptyTypes, null);
-                if (m != null) { api.MethodHide = m; break; }
-            }
-
-            // ── 候选方法名（单 bool 参数） ────────────────────────────────
-            // 语义："true 代表显示"的方法
-            string[] setShowBool = { "SetVisible", "SetShown", "SetDisplayed", "SetDisplay" };
-            // 语义："true 代表隐藏"的方法
-            string[] setHideBool = { "SetHidden", "SetBlanked", "Blank", "Hide" };
-            foreach (string n in setShowBool)
-            {
-                var m = t.GetMethod(n, flags, null, new Type[] { typeof(bool) }, null);
-                if (m != null) { api.MethodSetBool = m; api.SetBoolMeaning = true; break; }
-            }
-            if (api.MethodSetBool == null)
-            {
-                foreach (string n in setHideBool)
-                {
-                    var m = t.GetMethod(n, flags, null, new Type[] { typeof(bool) }, null);
-                    if (m != null) { api.MethodSetBool = m; api.SetBoolMeaning = false; break; }
-                }
-            }
-
-            // ── 候选 bool 属性 ─────────────────────────────────────────────
-            // true 表示"显示"
-            string[] showProps = { "Visible", "Shown", "Displayed", "IsVisible", "IsShown", "IsDisplayed" };
-            // true 表示"隐藏"
-            string[] hideProps = { "IsBlanked", "IsHidden", "Blanked", "Hidden" };
-            foreach (string n in showProps)
-            {
-                var p = t.GetProperty(n, flags);
-                if (p != null && p.PropertyType == typeof(bool) && p.CanRead && p.CanWrite)
-                { api.PropBool = p; api.PropMeaning = true; break; }
-            }
-            if (api.PropBool == null)
-            {
-                foreach (string n in hideProps)
-                {
-                    var p = t.GetProperty(n, flags);
-                    if (p != null && p.PropertyType == typeof(bool) && p.CanRead && p.CanWrite)
-                    { api.PropBool = p; api.PropMeaning = false; break; }
-                }
-            }
-
-            api.Known = api.MethodShow != null || api.MethodHide != null
-                     || api.MethodSetBool != null || api.PropBool != null;
-
-            // ── 构建描述字符串 ─────────────────────────────────────────────
-            var descParts = new List<string>();
-            if (api.MethodShow != null) descParts.Add("Show=" + api.MethodShow.Name + "()");
-            if (api.MethodHide != null) descParts.Add("Hide=" + api.MethodHide.Name + "()");
-            if (api.MethodSetBool != null) descParts.Add(
-                (api.SetBoolMeaning ? "SetShow=" : "SetHide=") + api.MethodSetBool.Name + "(bool)");
-            if (api.PropBool != null) descParts.Add(
-                (api.PropMeaning ? "PropShow=" : "PropHide=") + api.PropBool.Name);
-            api.Description = descParts.Count > 0 ? string.Join(", ", descParts) : "(未找到)";
-
-            // ── 首次见到该类型：转储成员，便于诊断真实 API 结构 ────────────
-            //   （无论 api.Known 是否为 true 都 dump，因为候选可能匹配到错的成员）
-            //   限制 MAX_DUMPED_TYPES 防止几千类型刷屏
-            if (!_visApiLoggedTypes.Contains(t) && _visApiLoggedTypes.Count < MAX_DUMPED_TYPES)
-            {
-                _visApiLoggedTypes.Add(t);
-                log(string.Format("[Snapshot] === 显示/隐藏 API 诊断（类型：{0}）===", t.FullName));
-                log(string.Format("[Snapshot] 已匹配: {0}", api.Description));
-                log("[Snapshot] 该类型上所有 Hide/Show/Blank/Visible/Display 相关成员：");
-
-                int methodCount = 0, propCount = 0;
-                foreach (var m in t.GetMethods(flags))
-                {
-                    string nm = m.Name;
-                    if (nm.IndexOf("Hide", StringComparison.OrdinalIgnoreCase) >= 0
-                     || nm.IndexOf("Show", StringComparison.OrdinalIgnoreCase) >= 0
-                     || nm.IndexOf("Blank", StringComparison.OrdinalIgnoreCase) >= 0
-                     || nm.IndexOf("Visible", StringComparison.OrdinalIgnoreCase) >= 0
-                     || nm.IndexOf("Display", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        var prms = m.GetParameters();
-                        var pSig = string.Join(",", Array.ConvertAll(prms, p => p.ParameterType.Name));
-                        log(string.Format("[Snapshot]   方法: {0}({1}) → {2}",
-                            nm, pSig, m.ReturnType.Name));
-                        methodCount++;
-                    }
-                }
-                foreach (var p in t.GetProperties(flags))
-                {
-                    string nm = p.Name;
-                    if (nm.IndexOf("Hide", StringComparison.OrdinalIgnoreCase) >= 0
-                     || nm.IndexOf("Show", StringComparison.OrdinalIgnoreCase) >= 0
-                     || nm.IndexOf("Blank", StringComparison.OrdinalIgnoreCase) >= 0
-                     || nm.IndexOf("Visible", StringComparison.OrdinalIgnoreCase) >= 0
-                     || nm.IndexOf("Display", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        log(string.Format("[Snapshot]   属性: {0} {1} (read={2}, write={3})",
-                            p.PropertyType.Name, nm, p.CanRead, p.CanWrite));
-                        propCount++;
-                    }
-                }
-                log(string.Format("[Snapshot] === 转储完成：{0} 个方法 + {1} 个属性 ===",
-                    methodCount, propCount));
-            }
-
-            _visApiCache[t] = api;
-            return api;
+            return obj as ITxDisplayableObject;
         }
 
         /// <summary>
-        /// 判断对象是否具有可控制的显示属性（供枚举阶段筛选使用）。
+        /// 读取对象当前可见状态：true = 至少部分可见（ALL 或 PARTIAL），false = 完全隐藏（NONE）。
+        /// 对不支持 Visibility 的对象返回 null（调用方决定如何处理）。
         /// </summary>
-        private static bool HasVisibleProp(ITxObject obj)
+        private static bool? GetObjVisible(ITxObject obj, Action<string> log)
         {
-            return HasVisibleProp(obj, Nop);
-        }
-        private static bool HasVisibleProp(ITxObject obj, Action<string> log)
-        {
-            var api = GetOrDiscoverVisApi(obj, log ?? Nop);
-            return api != null && api.Known;
-        }
-
-        /// <summary>
-        /// 读取对象当前的显示状态（true=显示 false=隐藏）。
-        /// 未知 API 时保守返回 true（假设显示）。
-        /// </summary>
-        private static bool GetObjVisible(ITxObject obj)
-        {
-            return GetObjVisible(obj, Nop);
-        }
-        private static bool GetObjVisible(ITxObject obj, Action<string> log)
-        {
-            var api = GetOrDiscoverVisApi(obj, log ?? Nop);
-            if (api == null || !api.Known) return true;
+            var d = AsDisplayable(obj);
+            if (d == null) return null;
             try
             {
-                if (api.PropBool != null)
-                {
-                    bool raw = (bool)api.PropBool.GetValue(obj, null);
-                    return api.PropMeaning ? raw : !raw;
-                }
+                TxDisplayableObjectVisibility v = d.Visibility;
+                // ALL(0)/PARTIAL(1)/NONE(2) 枚举值的实际数值取决于 SDK 版本，
+                // 直接按枚举名比较最稳妥
+                return v != TxDisplayableObjectVisibility.None;
             }
-            catch { }
-            return true;
-        }
-
-        /// <summary>
-        /// 设置对象显示状态。优先级：
-        ///   ① 单 bool 参数方法（SetVisible/SetShown/SetHidden/SetBlanked）
-        ///   ② 无参方法（Show/Hide/Blank/Unblank）
-        ///   ③ bool 属性（Visible/IsBlanked/...）
-        /// </summary>
-        private static bool _visSetFailureLogged = false;
-
-        private static void SetObjVisible(ITxObject obj, bool visible)
-        {
-            SetObjVisible(obj, visible, Nop);
-        }
-        private static void SetObjVisible(ITxObject obj, bool visible, Action<string> log)
-        {
-            if (log == null) log = Nop;
-            var api = GetOrDiscoverVisApi(obj, log);
-            if (api == null || !api.Known) return;
-
-            Exception firstEx = null;
-            string lastTry = "";
-
-            if (api.MethodSetBool != null)
+            catch (Exception ex)
             {
-                try
+                if (!_visErrorLogged)
                 {
-                    bool arg = api.SetBoolMeaning ? visible : !visible;
-                    lastTry = string.Format("{0}({1})", api.MethodSetBool.Name, arg);
-                    api.MethodSetBool.Invoke(obj, new object[] { arg });
-                    return;
+                    _visErrorLogged = true;
+                    (log ?? Nop)(string.Format(
+                        "[Snapshot] ⚠ 读取 Visibility 失败 [{0}]: {1}（后续同类失败静默）",
+                        obj.GetType().Name, ex.Message));
                 }
-                catch (Exception ex) { firstEx = firstEx ?? ex; }
-            }
-            if (visible && api.MethodShow != null)
-            {
-                try
-                {
-                    lastTry = api.MethodShow.Name + "()";
-                    api.MethodShow.Invoke(obj, null);
-                    return;
-                }
-                catch (Exception ex) { firstEx = firstEx ?? ex; }
-            }
-            if (!visible && api.MethodHide != null)
-            {
-                try
-                {
-                    lastTry = api.MethodHide.Name + "()";
-                    api.MethodHide.Invoke(obj, null);
-                    return;
-                }
-                catch (Exception ex) { firstEx = firstEx ?? ex; }
-            }
-            if (api.PropBool != null)
-            {
-                try
-                {
-                    bool v = api.PropMeaning ? visible : !visible;
-                    lastTry = string.Format("{0}={1}", api.PropBool.Name, v);
-                    api.PropBool.SetValue(obj, v, null);
-                    return;
-                }
-                catch (Exception ex) { firstEx = firstEx ?? ex; }
-            }
-
-            // 所有调用都抛异常 - 记录一次，之后静默
-            if (!_visSetFailureLogged && firstEx != null)
-            {
-                _visSetFailureLogged = true;
-                Exception inner = firstEx;
-                while (inner is System.Reflection.TargetInvocationException && inner.InnerException != null)
-                    inner = inner.InnerException;
-                log(string.Format(
-                    "[Snapshot] ⚠ SetObjVisible 失败 [{0}]  visible={1}  最后尝试: {2}  异常: {3}",
-                    obj.GetType().Name, visible, lastTry, inner.Message));
+                return null;
             }
         }
 
         /// <summary>
-        /// 收集操作绑定的场景对象（机器人、工具、SimulatedObjects 等）。
+        /// 对 obj 调用 Display() 或 Blank()。返回 true 表示调用成功。
         /// </summary>
-        private static List<ITxObject> CollectOpAssociatedObjects(
-            ITxObject opObj, Action<string> log,List<AppearanceRef> list)
+        private static bool SetObjVisible(ITxObject obj, bool visible, Action<string> log)
         {
-            var result = new List<ITxObject>();
-            if (opObj == null) return result;
+            var d = AsDisplayable(obj);
+            if (d == null) return false;
             try
             {
-                // 机器人
-                TxRobot robot = FindRobot(opObj);  // FindRobot 已在 Section 4 定义
-                if (robot != null && !result.Contains(robot)) result.Add(robot);
-
-                // 机器人工具
-                if (robot != null)
-                {
-                    try
-                    {
-                        dynamic dr = robot;
-                        ITxObject tool = null;
-                        try { tool = dr.ActiveTool as ITxObject; } catch { }
-                        if (tool == null) try { tool = dr.CurrentTool as ITxObject; } catch { }
-                        if (tool != null && !result.Contains(tool)) result.Add(tool);
-                    }
-                    catch { }
-                }
-
-                // SimulatedObjects（部件、夹具等）
-                try
-                {
-                    dynamic dop = opObj;
-                    object simOs = null;
-                    try { simOs = dop.SimulatedObjects; } catch { }
-                    if (simOs is IEnumerable ie)
-                        foreach (object o in ie)
-                        {
-                            ITxObject txo = o as ITxObject;
-                            if (txo != null && !result.Contains(txo)) result.Add(txo);
-                        }
-                }
-                catch { }
-
-                log(string.Format("[Snapshot] 操作关联对象：{0} 个", result.Count));
+                if (visible) d.Display();
+                else d.Blank();
+                return true;
             }
-
-            catch (Exception ex) { log("[Snapshot] CollectOpAssociatedObjects: " + ex.Message); }
-            return result;
+            catch (Exception ex)
+            {
+                if (!_visErrorLogged)
+                {
+                    _visErrorLogged = true;
+                    (log ?? Nop)(string.Format(
+                        "[Snapshot] ⚠ Display/Blank 调用失败 [{0}]: {1}（后续同类失败静默）",
+                        obj.GetType().Name, ex.Message));
+                }
+                return false;
+            }
         }
+
+        /// <summary>向后兼容重载（不带 log）。</summary>
+        private static bool SetObjVisible(ITxObject obj, bool visible)
+        {
+            return SetObjVisible(obj, visible, Nop);
+        }
+
 
         // ── Section 9 end ─────────────────────────────────────────────────────
     }

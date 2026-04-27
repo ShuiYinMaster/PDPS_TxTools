@@ -99,17 +99,42 @@ namespace MyPlugin.ExportGun
         }
 
         // ── 异步导出插枪 ─────────────────────────────────────────────
-        public void ExportGunsAsync(GunExportParams        p,
-                                     Action<string>         onLog,
+        public void ExportGunsAsync(GunExportParams p,
+                                     Action<string> onLog,
                                      Action<ExportProgress> onProgress,
-                                     Action<bool, string>   onComplete)
+                                     Action<bool, string> onComplete)
         {
-            ThreadPool.QueueUserWorkItem(delegate(object s)
+            ThreadPool.QueueUserWorkItem(delegate (object s)
             {
                 try
                 {
+                    // ── Step 1: 重新填充点（应用 PointFilter / UseMfgName 筛选） ─
+                    //   注意：必须 Clear() 后 FillPoints，否则会沿用之前残留的全集，
+                    //   导致点类型筛选不生效（之前的 bug）。
+                    int totalPts = 0;
+                    SafeLog(onLog, "[PS] 读取点数据（筛选：" + p.PointFilter
+                        + "，UseMfgName=" + p.UseMfgName + "）...");
+                    OnPs(delegate ()
+                    {
+                        foreach (OperationInfo op in p.Operations)
+                        {
+                            op.Points.Clear();
+                            PsReader.FillPoints(op, p.PointFilter, p.UseMfgName, onLog);
+                            totalPts += op.Points.Count;
+                            SafeLog(onLog, "  [" + op.Name + "] " + op.Points.Count + " 个点");
+                        }
+                    });
+                    SafeLog(onLog, "[PS] 合计 " + totalPts + " 个点");
+                    if (totalPts == 0)
+                    {
+                        SafeComplete(onComplete, false,
+                            "未找到符合条件的点。请检查点类型筛选与所选操作。");
+                        return;
+                    }
+
+                    // ── Step 2: 读取焊钳信息 ─────────────────────────────
                     SafeLog(onLog, "[PS] 读取插枪信息...");
-                    OnPs(delegate()
+                    OnPs(delegate ()
                     {
                         foreach (OperationInfo op in p.Operations)
                         {
@@ -120,13 +145,14 @@ namespace MyPlugin.ExportGun
                         }
                     });
 
+                    // ── Step 3: 连接 CATIA 并导出 ─────────────────────────
                     if (!Connect(onLog))
                     { SafeComplete(onComplete, false, "无法连接 CATIA，请确认已启动"); return; }
 
                     SafeLog(onLog, "[Catia] 开始导出插枪...");
                     _bridge.ExportGuns(p,
-                        delegate(ExportProgress pg) { SafeProgress(onProgress, pg); },
-                        delegate(string msg)         { SafeLog(onLog, msg); });
+                        delegate (ExportProgress pg) { SafeProgress(onProgress, pg); },
+                        delegate (string msg) { SafeLog(onLog, msg); });
                     SafeComplete(onComplete, true, "插枪导出完成");
                 }
                 catch (Exception ex)
