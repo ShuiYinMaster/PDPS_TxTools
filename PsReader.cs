@@ -14,7 +14,9 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Drawing;
 using System.IO;
+using System.Xml.Linq;
 using Tecnomatix.Engineering;
 
 namespace MyPlugin.ExportGun
@@ -45,6 +47,7 @@ namespace MyPlugin.ExportGun
         public double[] Matrix;       // AbsoluteLocation (4x4，行主序，长度 16)
         public string TypeName;       // 原始类型名（诊断用）
         public string ParentPartName; // 若能反查到父零件名
+        public ITxObject TxObject;     // 原始 TxObject 引用
     }
 
     public class GunInfo
@@ -63,6 +66,24 @@ namespace MyPlugin.ExportGun
         public ITxObject PsObject;
         public List<PointInfo> Points = new List<PointInfo>();
         public GunInfo Gun;
+    }
+    /// <summary>
+    /// 焊点标注截图的点位数据。
+    /// PS 坐标由 PsReader 填写；屏幕坐标由 PsReader.ProjectPointsToScreen 填写。
+    /// </summary>
+    public class WeldAnnotationPoint
+    {
+        // ── PS 数据（由 GetPointsFromSelection 填充）────────────────────────
+        public int Index;
+        public string Name;
+        public string OpName;
+        public double X, Y, Z;                  // 世界坐标 mm
+        public TxTransformation WorldTx;        // 完整变换矩阵（备用）
+
+        // ── 截图投影数据（由 ProjectPointsToScreen 填充）───────────────────
+        public float ScreenX;
+        public float ScreenY;
+        public bool InViewport;
     }
 
     public static class PsReader
@@ -1954,5 +1975,836 @@ namespace MyPlugin.ExportGun
             }
             return prev[m];
         }
+
+        // =============================================================================
+        // PsReader.cs  ──  Section 8 新增内容（追加到 PsReader 类末尾，关闭 } 前）
+        //
+        // 供 WeldAnnotatorForm 使用的专用方法：
+        //   GetCompoundOpsFromRoot  — 获取根操作节点列表（填充 TxObjGridCtrl）
+        //   GetPointsFromSelection  — 从 ActiveSelection 提取焊点坐标
+        //   CaptureActiveViewer     — 截取 PS 视口位图
+        //   ProjectPointsToScreen   — 将世界坐标批量投影到截图像素坐标
+        // =============================================================================
+
+        // ─── 以下代码追加到 PsReader 类内部（紧接 Section 7 之后，类的 } 之前）───────
+
+        // ════════════════════════════════════════════════════════════════════
+        //  8. 焊点标注截图  —  WeldAnnotator 专用
+        // ════════════════════════════════════════════════════════════════════
+
+        // ── 8.0  数据模型 ─────────────────────────────────────────────────────
+        // （类声明独立放到 PsReader 类外部，与 OperationInfo / PointInfo 并列）
+
+        // ── 8.1  获取文档根下的所有复合操作节点 ──────────────────────────────
+        /// <summary>
+        /// 返回 OperationRoot 直接子级中所有 ITxCompoundOperation 对象列表，
+        /// 供 TxObjGridCtrl.AppendObject 逐个填充。
+        /// </summary>
+        public static TxObjectList GetCompoundOpsFromRoot(Action<string> log)
+        {
+            if (log == null) log = Nop;
+            TxObjectList result = new TxObjectList();
+            try
+            {
+                TxDocument doc = TxApplication.ActiveDocument;
+                if (doc == null) { log("[Annotator] 无活动文档"); return result; }
+                TxObjectList kids = GetKidsFromRoot(doc.OperationRoot);
+                if (kids == null) return result;
+                foreach (ITxObject o in kids)
+                {
+                    if (o is ITxCompoundOperation) result.Add(o);
+                }
+                log(string.Format("[Annotator] 根节点下找到 {0} 个复合操作", result.Count));
+            }
+            catch (Exception ex) { log("[Annotator] GetCompoundOpsFromRoot 异常：" + ex.Message); }
+            return result;
+        }
+
+        // ── 8.2  从 ActiveSelection 提取焊点 ─────────────────────────────────
+        /// <summary>
+        /// 读取 TxApplication.ActiveSelection，提取其中所有焊点/路径点的坐标。
+        /// 支持直接选中 TxWeldPoint、ITxRoboticLocationOperation、
+        /// TxWeldOperation、TxCompoundOperation（自动展开子点）。
+        /// </summary>
+        /// <param name="opNameHint">操作名提示（来自TxObjGridCtrl确认的OP节点名）</param>
+        public static List<WeldAnnotationPoint> GetPointsFromSelection(
+            string opNameHint, Action<string> log)
+        {
+            if (log == null) log = Nop;
+            var result = new List<WeldAnnotationPoint>();
+            try
+            {
+                TxObjectList sel = TxApplication.ActiveSelection.GetItems();
+                if (sel == null || sel.Count == 0)
+                {
+                    log("[Annotator] ActiveSelection 为空");
+                    return result;
+                }
+                int idx = 1;
+                foreach (ITxObject obj in sel)
+                    CollectAnnotationPoints(obj, opNameHint, ref idx, result, log);
+
+                log(string.Format("[Annotator] 从 {0} 个选中对象中提取到 {1} 个点位",
+                    sel.Count, result.Count));
+            }
+            catch (Exception ex) { log("[Annotator] GetPointsFromSelection 异常：" + ex.Message); }
+            return result;
+        }
+
+        private static void CollectAnnotationPoints(
+            ITxObject obj, string opName, ref int idx,
+            List<WeldAnnotationPoint> list, Action<string> log)
+        {
+            if (obj == null) return;
+            string tn = obj.GetType().Name;
+
+            // ── 单个 TxWeldPoint ──────────────────────────────────────────
+            if (obj is TxWeldPoint wp)
+            {
+                TxTransformation tx = SafeGetTx(() => wp.AbsoluteLocation);
+                if (tx != null)
+                    list.Add(MakeAnnotPt(idx++, wp.Name, opName, tx));
+                return;
+            }
+
+            // ── ITxRoboticLocationOperation ───────────────────────────────
+            if (obj is ITxRoboticLocationOperation loc)
+            {
+                TxTransformation tx = null;
+                try { dynamic d = loc; tx = d.AbsoluteLocation as TxTransformation; } catch { }
+                if (tx != null)
+                    list.Add(MakeAnnotPt(idx++, loc.Name, opName, tx));
+                return;
+            }
+
+            // ── TxWeldOperation / TxCompoundOperation → 展开子点 ─────────
+            if (tn == "TxWeldOperation" || tn.Contains("TxWeld") || obj is ITxCompoundOperation)
+            {
+                TxObjectList kids = GetKids(obj);
+                if (kids != null)
+                    foreach (ITxObject child in kids)
+                        CollectAnnotationPoints(child, opName, ref idx, list, log);
+                return;
+            }
+
+            // ── 其他：尝试递归子节点 ──────────────────────────────────────
+            TxObjectList misc = GetKids(obj);
+            if (misc != null && misc.Count > 0)
+                foreach (ITxObject child in misc)
+                    CollectAnnotationPoints(child, opName, ref idx, list, log);
+        }
+
+        private static WeldAnnotationPoint MakeAnnotPt(
+            int idx, string name, string opName, TxTransformation tx)
+        {
+            return new WeldAnnotationPoint
+            {
+                Index = idx,
+                Name = name,
+                OpName = opName,
+                X = tx[0, 3],
+                Y = tx[1, 3],
+                Z = tx[2, 3],
+                WorldTx = tx
+            };
+        }
+
+        // ── 8.3  截取 PS 视口位图 ─────────────────────────────────────────────
+        /// <summary>
+        /// 调用 TxGraphicViewer.GetImage(Size, bool) 截图。
+        /// size 若为 Empty 则自动从 ContainerWindow.Bounds 读取视口实际尺寸。
+        /// </summary>
+        public static System.Drawing.Bitmap CaptureActiveViewer(
+            System.Drawing.Size size, bool transparent, Action<string> log)
+        {
+            if (log == null) log = Nop;
+            try
+            {
+                TxViewersManager mgr = TxApplication.ViewersManager;
+                if (mgr == null) throw new InvalidOperationException("ViewersManager 不可用");
+                TxGraphicViewer viewer = mgr.GraphicViewer;
+                if (viewer == null) throw new InvalidOperationException("未找到活动 GraphicViewer");
+
+                if (size.IsEmpty || size.Width <= 0)
+                {
+                    // 自动读取视口实际尺寸
+                    try
+                    {
+                        TxViewerWindow tvw = viewer.ContainerWindow;
+                        if (tvw != null && tvw.Bounds.Width > 0)
+                            size = new System.Drawing.Size(tvw.Bounds.Width, tvw.Bounds.Height);
+                    }
+                    catch { }
+                    if (size.IsEmpty || size.Width <= 0)
+                        size = new System.Drawing.Size(1920, 1080);
+                }
+
+                log(string.Format("[Annotator] 截图尺寸：{0}×{1}", size.Width, size.Height));
+                System.Drawing.Bitmap bmp = viewer.GetImage(size, transparent);
+                if (bmp == null) throw new Exception("GetImage 返回 null");
+                return bmp;
+            }
+            catch (Exception ex)
+            {
+                log("[Annotator] CaptureActiveViewer 异常：" + ex.Message);
+                return null;
+            }
+        }
+
+        // ── 8.4  批量投影世界坐标 → 截图像素坐标 ──────────────────────────────
+        /// <summary>
+        /// 对 points 列表中每个点调用 PointScreenCoordinates，
+        /// 将结果写入 ScreenX / ScreenY / InViewport。
+        /// imgW / imgH 为截图像素尺寸，用于缩放比计算。
+        /// </summary>
+        public static void ProjectPointsToScreen(
+            List<WeldAnnotationPoint> points, int imgW, int imgH, Action<string> log)
+        {
+            if (log == null) log = Nop;
+            if (points == null || points.Count == 0) return;
+            try
+            {
+                TxViewersManager mgr = TxApplication.ViewersManager;
+                if (mgr == null) { log("[Annotator] ViewersManager 不可用"); return; }
+                TxGraphicViewer viewer = mgr.GraphicViewer;
+                if (viewer == null) { log("[Annotator] 未找到 GraphicViewer"); return; }
+
+                // 计算截图与视口的缩放比
+                float scaleX = 1f, scaleY = 1f;
+                try
+                {
+                    TxViewerWindow tvw = viewer.ContainerWindow;
+                    if (tvw != null && tvw.Bounds.Width > 0)
+                    {
+                        scaleX = (float)imgW / tvw.Bounds.Width;
+                        scaleY = (float)imgH / tvw.Bounds.Height;
+                    }
+                }
+                catch { }
+
+                int ok = 0, fail = 0;
+                foreach (WeldAnnotationPoint pt in points)
+                {
+                    pt.InViewport = false;
+                    try
+                    {
+                        TxVector world = new TxVector(pt.X, pt.Y, pt.Z);
+                        TxVector screen = viewer.PointScreenCoordinates(world);
+                        pt.ScreenX = (float)(screen.X * scaleX);
+                        pt.ScreenY = (float)(screen.Y * scaleY);
+                        pt.InViewport = pt.ScreenX >= 0 && pt.ScreenX <= imgW
+                                       && pt.ScreenY >= 0 && pt.ScreenY <= imgH;
+                        ok++;
+                    }
+                    catch { fail++; }
+                }
+                log(string.Format("[Annotator] 投影：{0} 成功，{1} 失败", ok, fail));
+            }
+            catch (Exception ex) { log("[Annotator] ProjectPointsToScreen 异常：" + ex.Message); }
+        }
+
+        // ─── Section 8 结束 ────────────────────────────────────────────────────────────
+        // =============================================================================
+        // PsReader.cs  ──  Section 9 追加内容（仅快照相关，无重复方法）
+        //
+        // 追加位置：PsReader 类内部，Section 8 之后，类的 } 之前。
+        //
+        // Section 8 已包含：GetCompoundOpsFromRoot / GetPointsFromSelection /
+        //                   MakeAnnotPt / CollectAnnotPts / CaptureActiveViewer /
+        //                   ProjectPointsToScreen
+        // Section 9 仅新增：显示状态快照/恢复/仅显示操作外观/恢复全部显示
+        // =============================================================================
+
+        // ════════════════════════════════════════════════════════════════════
+        //  9. 显示状态快照  —  WeldAnnotator 专用
+        // ════════════════════════════════════════════════════════════════════
+
+        // ── 9.1  拍摄快照：记录场景所有对象的 Visible 状态 ───────────────────
+        /// <summary>
+        /// 遍历场景组件树（ComponentRoot / PhysicalRoot / ResourceRoot），
+        /// 记录所有具有 Visible 属性的对象的当前可见状态。
+        /// 返回 List&lt;Tuple&lt;ITxObject, bool&gt;&gt;（对象引用 + 原可见性）。
+        /// </summary>
+        public static List<Tuple<ITxObject, bool>> SnapshotDisplayStates(Action<string> log)
+        {
+            if (log == null) log = Nop;
+            var result = new List<Tuple<ITxObject, bool>>();
+            try
+            {
+                List<ITxObject> all = EnumDisplayableObjects(log);
+                foreach (ITxObject obj in all)
+                {
+                    bool vis = GetObjVisible(obj, log);
+                    result.Add(Tuple.Create(obj, vis));
+                }
+                log(string.Format("[Snapshot] 已记录 {0} 个对象显示状态", result.Count));
+            }
+            catch (Exception ex) { log("[Snapshot] SnapshotDisplayStates: " + ex.Message); }
+            return result;
+        }
+
+        // ── 9.2  恢复快照 ────────────────────────────────────────────────────
+        public static void RestoreDisplayStates(
+            List<Tuple<ITxObject, bool>> snapshot, Action<string> log)
+        {
+            if (log == null) log = Nop;
+            if (snapshot == null || snapshot.Count == 0)
+            {
+                log("[Snapshot] 无快照可恢复");
+                return;
+            }
+            int n = 0;
+            foreach (Tuple<ITxObject, bool> t in snapshot)
+            {
+                SetObjVisible(t.Item1, t.Item2, log);
+                n++;
+            }
+            try { TxApplication.RefreshDisplay(); } catch { }
+            log(string.Format("[Snapshot] 已恢复 {0} 个对象显示状态", n));
+        }
+
+        // ── 9.3  仅显示操作绑定的外观 ────────────────────────────────────────
+        /// <summary>
+        /// 隐藏场景所有对象，仅显示 opObj 绑定的机器人、工具及模拟对象。
+        /// </summary>
+        public static void ShowOnlyOperationAppearance(ITxObject opObj, Action<string> log)
+        {
+            if (log == null) log = Nop;
+            try
+            {
+                // 1. 将操作对象包装为 OperationInfo
+                OperationInfo op = MakeOp(opObj, "焊接操作");
+
+                // 2. 填充焊点数据
+                FillPoints(op, PointType.WeldPoint, false, log);
+
+                // 3. 填充焊点的外观信息
+                FillAppearancesForOperation(op, log);
+
+                // 4. 收集所有焊点绑定的外观对象
+                HashSet<ITxObject> appearanceObjects = new HashSet<ITxObject>();
+                foreach (PointInfo point in op.Points)
+                {
+                    if (point.AllAppearances != null)
+                    {
+                        foreach (AppearanceRef appRef in point.AllAppearances)
+                        {
+                            if (appRef.TxObject != null)
+                            {
+                                appearanceObjects.Add(appRef.TxObject);
+                                log($"[Snapshot] 找到焊点 '{point.Name}' 的外观: {appRef.Name}");
+                            }
+                        }
+                    }
+                }
+
+                if (appearanceObjects.Count == 0)
+                {
+                    log("[Snapshot] 警告：未找到焊点绑定的外观对象");
+                    return;
+                }
+
+                // 5. 获取场景中所有可显示对象
+                List<ITxObject> all = EnumDisplayableObjects(log);
+
+                // 6. 隐藏所有对象
+                foreach (ITxObject obj in all)
+                    SetObjVisible(obj, false, log);
+
+                // 7. 仅显示焊点绑定的外观对象
+                foreach (ITxObject obj in appearanceObjects)
+                    SetObjVisible(obj, true, log);
+
+                // 8. 刷新显示
+                try { TxApplication.RefreshDisplay(); } catch { }
+
+                log($"[Snapshot] 仅显示焊点外观：{appearanceObjects.Count} 个外观对象可见");
+            }
+            catch (Exception ex)
+            {
+                log($"[Snapshot] ShowOnlyOperationAppearance 异常: {ex.Message}");
+            }
+        }
+
+
+        // ── 9.4  恢复全部显示 ────────────────────────────────────────────────
+        public static void ShowAllDevices(Action<string> log)
+        {
+            if (log == null) log = Nop;
+            try
+            {
+                List<ITxObject> all = EnumDisplayableObjects(log);
+                foreach (ITxObject obj in all) SetObjVisible(obj, true, log);
+                try { TxApplication.RefreshDisplay(); } catch { }
+                log(string.Format("[Snapshot] 已恢复全部 {0} 个对象显示", all.Count));
+            }
+            catch (Exception ex) { log("[Snapshot] ShowAllDevices: " + ex.Message); }
+        }
+
+        // ── 9.x  私有辅助 ────────────────────────────────────────────────────
+
+        /// <summary>
+        /// 枚举场景组件树中所有具有 Visible 属性的 ITxObject。
+        /// 策略：
+        ///   1. 通过 dynamic 直接读取 doc 上的 PhysicalRoot / ComponentRoot /
+        ///      ResourceRoot / OperationRoot 四个根；
+        ///   2. 对每个根先尝试 GetAllDescendants（分别用 TxTypeFilter(ITxObject)
+        ///      和无参重载）拿完整后代列表；
+        ///   3. 若 GetAllDescendants 失败或返回空，回退到递归 Children 遍历；
+        ///   4. 每个节点用反射缓存检查是否有 Visible（或 Displayed）属性。
+        /// 每一步都打日志，便于诊断"0 个对象"的根因。
+        /// </summary>
+        private static List<ITxObject> EnumDisplayableObjects(Action<string> log)
+        {
+            var result = new List<ITxObject>();
+            var seen = new System.Collections.Generic.HashSet<int>();
+            try
+            {
+                TxDocument doc = TxApplication.ActiveDocument;
+                if (doc == null) { log("[Snapshot] ActiveDocument 为 null"); return result; }
+
+                // 通过 dynamic 直接取每个根；不依赖反射（更可靠也更直观）
+                string[] rootNames = { "PhysicalRoot", "ComponentRoot", "ResourceRoot", "OperationRoot" };
+                dynamic dDoc = doc;
+                foreach (string rn in rootNames)
+                {
+                    object root = null;
+                    try
+                    {
+                        switch (rn)
+                        {
+                            case "PhysicalRoot": root = dDoc.PhysicalRoot; break;
+                            case "ComponentRoot": root = dDoc.ComponentRoot; break;
+                            case "ResourceRoot": root = dDoc.ResourceRoot; break;
+                            case "OperationRoot": root = dDoc.OperationRoot; break;
+                        }
+                    }
+                    catch { /* 该版本没有此根 */ }
+                    if (root == null) { log(string.Format("[Snapshot] {0} 不存在", rn)); continue; }
+
+                    int before = result.Count;
+
+                    // ── Step A: GetAllDescendants(TxTypeFilter) ───────────
+                    TxObjectList kids = null;
+                    try
+                    {
+                        dynamic dRoot = root;
+                        kids = dRoot.GetAllDescendants(
+                            new TxTypeFilter(typeof(ITxObject))) as TxObjectList;
+                    }
+                    catch (Exception ex)
+                    { log(string.Format("[Snapshot] {0}.GetAllDescendants(ITxObject) 异常: {1}", rn, ex.Message)); }
+
+                    // ── Step B: GetAllDescendants() 无参 ───────────────────
+                    if (kids == null || kids.Count == 0)
+                    {
+                        try
+                        {
+                            dynamic dRoot = root;
+                            kids = dRoot.GetAllDescendants() as TxObjectList;
+                        }
+                        catch (Exception ex)
+                        { log(string.Format("[Snapshot] {0}.GetAllDescendants() 异常: {1}", rn, ex.Message)); }
+                    }
+
+                    // ── Step C: 把拿到的对象加入结果 ────────────────────────
+                    if (kids != null && kids.Count > 0)
+                    {
+                        foreach (ITxObject obj in kids)
+                        {
+                            if (obj == null) continue;
+                            int id = System.Runtime.CompilerServices
+                                         .RuntimeHelpers.GetHashCode(obj);
+                            if (!seen.Add(id)) continue;
+                            if (HasVisibleProp(obj, log)) result.Add(obj);
+                        }
+                    }
+                    else
+                    {
+                        // ── Step D: 递归 Children 遍历（兜底） ──────────────
+                        log(string.Format(
+                            "[Snapshot] {0}.GetAllDescendants 返回空，改用递归遍历", rn));
+                        try
+                        {
+                            WalkChildren(root, result, seen, 0, log);
+                        }
+                        catch (Exception ex)
+                        { log(string.Format("[Snapshot] {0} 递归遍历异常: {1}", rn, ex.Message)); }
+                    }
+
+                    log(string.Format(
+                        "[Snapshot] {0}: 累计 +{1}（该根添加到结果）",
+                        rn, result.Count - before));
+                }
+                log(string.Format("[Snapshot] EnumDisplayableObjects 合计: {0} 个", result.Count));
+            }
+            catch (Exception ex) { log("[Snapshot] EnumDisplayableObjects 顶层异常: " + ex.Message); }
+            return result;
+        }
+
+        /// <summary>
+        /// 递归遍历 root 的 Children（或 GetAllChildren）填充 result。
+        /// 仅加入有 Visible 属性且未见过的对象。深度限制 25 层防环路。
+        /// </summary>
+        private static void WalkChildren(object root, List<ITxObject> result,
+            System.Collections.Generic.HashSet<int> seen, int depth, Action<string> log)
+        {
+            if (root == null || depth > 25) return;
+
+            TxObjectList kids = null;
+            try
+            {
+                dynamic d = root;
+                object raw = null;
+                try { raw = d.Children; } catch { }
+                if (raw == null) try { raw = d.GetAllChildren(); } catch { }
+                kids = raw as TxObjectList;
+            }
+            catch { }
+            if (kids == null || kids.Count == 0) return;
+
+            foreach (ITxObject child in kids)
+            {
+                if (child == null) continue;
+                int id = System.Runtime.CompilerServices
+                             .RuntimeHelpers.GetHashCode(child);
+                if (!seen.Add(id))
+                {
+                    // 已见过，仍递归（某些 PS 版本叶节点仍可能暴露 Children）
+                }
+                else
+                {
+                    if (HasVisibleProp(child, log)) result.Add(child);
+                }
+                WalkChildren(child, result, seen, depth + 1, log);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  显示/隐藏 API 的反射发现机制
+        //
+        //  Tecnomatix.Engineering 的各版本 SDK 在显示控制属性/方法命名上有差异。
+        //  常见候选（按优先级）：
+        //    方法： Blank() / Unblank() / Hide() / Show() / SetHidden(bool)
+        //           SetShown(bool) / SetVisible(bool) / SetDisplayed(bool)
+        //    属性： IsBlanked / IsHidden / Visible / Displayed / IsVisible / Shown
+        //  本模块在首次使用时通过反射扫描目标类型，找出实际存在的成员并缓存；
+        //  后续调用直接用缓存的 MethodInfo/PropertyInfo，无需再次反射。
+        //  如果全部候选都没命中，会在日志中列出该类型所有含 Hide/Show/Blank/
+        //  Visible/Display 关键字的成员，便于诊断正确的 API 名。
+        // ═══════════════════════════════════════════════════════════════════
+
+        // 缓存：Type → 该类型上发现的显示 API
+        private class VisibilityApi
+        {
+            public System.Reflection.MethodInfo MethodHide;   // 无参：隐藏
+            public System.Reflection.MethodInfo MethodShow;   // 无参：显示
+            public System.Reflection.MethodInfo MethodSetBool;// 单 bool 参数：true=显示 false=隐藏（或相反）
+            public bool SetBoolMeaning; // true = 参数 true 代表"显示"；false = 参数 true 代表"隐藏"
+            public System.Reflection.PropertyInfo PropBool;    // bool 属性
+            public bool PropMeaning;  // true = 属性 true 代表"显示"；false = 属性 true 代表"隐藏"
+            public bool Known;        // 是否找到可用 API
+            public string Description;  // 日志用描述
+        }
+
+        private static readonly System.Collections.Generic.Dictionary<Type, VisibilityApi> _visApiCache
+            = new System.Collections.Generic.Dictionary<Type, VisibilityApi>();
+        private static readonly System.Collections.Generic.HashSet<Type> _visApiLoggedTypes
+            = new System.Collections.Generic.HashSet<Type>();
+        // 限制 dump 数量，避免几千个类型刷屏
+        private const int MAX_DUMPED_TYPES = 8;
+
+        private static VisibilityApi GetOrDiscoverVisApi(ITxObject obj, Action<string> log)
+        {
+            if (obj == null) return null;
+            Type t = obj.GetType();
+            VisibilityApi cached;
+            if (_visApiCache.TryGetValue(t, out cached)) return cached;
+
+            var api = new VisibilityApi { Known = false };
+            var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance;
+
+            // ── 候选方法名（无参） ─────────────────────────────────────────
+            // 返回"显示"相关方法
+            string[] showMethods = { "Show", "Unblank", "Unhide", "Display", "MakeVisible" };
+            string[] hideMethods = { "Hide", "Blank", "MakeHidden" };
+            foreach (string n in showMethods)
+            {
+                var m = t.GetMethod(n, flags, null, Type.EmptyTypes, null);
+                if (m != null) { api.MethodShow = m; break; }
+            }
+            foreach (string n in hideMethods)
+            {
+                var m = t.GetMethod(n, flags, null, Type.EmptyTypes, null);
+                if (m != null) { api.MethodHide = m; break; }
+            }
+
+            // ── 候选方法名（单 bool 参数） ────────────────────────────────
+            // 语义："true 代表显示"的方法
+            string[] setShowBool = { "SetVisible", "SetShown", "SetDisplayed", "SetDisplay" };
+            // 语义："true 代表隐藏"的方法
+            string[] setHideBool = { "SetHidden", "SetBlanked", "Blank", "Hide" };
+            foreach (string n in setShowBool)
+            {
+                var m = t.GetMethod(n, flags, null, new Type[] { typeof(bool) }, null);
+                if (m != null) { api.MethodSetBool = m; api.SetBoolMeaning = true; break; }
+            }
+            if (api.MethodSetBool == null)
+            {
+                foreach (string n in setHideBool)
+                {
+                    var m = t.GetMethod(n, flags, null, new Type[] { typeof(bool) }, null);
+                    if (m != null) { api.MethodSetBool = m; api.SetBoolMeaning = false; break; }
+                }
+            }
+
+            // ── 候选 bool 属性 ─────────────────────────────────────────────
+            // true 表示"显示"
+            string[] showProps = { "Visible", "Shown", "Displayed", "IsVisible", "IsShown", "IsDisplayed" };
+            // true 表示"隐藏"
+            string[] hideProps = { "IsBlanked", "IsHidden", "Blanked", "Hidden" };
+            foreach (string n in showProps)
+            {
+                var p = t.GetProperty(n, flags);
+                if (p != null && p.PropertyType == typeof(bool) && p.CanRead && p.CanWrite)
+                { api.PropBool = p; api.PropMeaning = true; break; }
+            }
+            if (api.PropBool == null)
+            {
+                foreach (string n in hideProps)
+                {
+                    var p = t.GetProperty(n, flags);
+                    if (p != null && p.PropertyType == typeof(bool) && p.CanRead && p.CanWrite)
+                    { api.PropBool = p; api.PropMeaning = false; break; }
+                }
+            }
+
+            api.Known = api.MethodShow != null || api.MethodHide != null
+                     || api.MethodSetBool != null || api.PropBool != null;
+
+            // ── 构建描述字符串 ─────────────────────────────────────────────
+            var descParts = new List<string>();
+            if (api.MethodShow != null) descParts.Add("Show=" + api.MethodShow.Name + "()");
+            if (api.MethodHide != null) descParts.Add("Hide=" + api.MethodHide.Name + "()");
+            if (api.MethodSetBool != null) descParts.Add(
+                (api.SetBoolMeaning ? "SetShow=" : "SetHide=") + api.MethodSetBool.Name + "(bool)");
+            if (api.PropBool != null) descParts.Add(
+                (api.PropMeaning ? "PropShow=" : "PropHide=") + api.PropBool.Name);
+            api.Description = descParts.Count > 0 ? string.Join(", ", descParts) : "(未找到)";
+
+            // ── 首次见到该类型：转储成员，便于诊断真实 API 结构 ────────────
+            //   （无论 api.Known 是否为 true 都 dump，因为候选可能匹配到错的成员）
+            //   限制 MAX_DUMPED_TYPES 防止几千类型刷屏
+            if (!_visApiLoggedTypes.Contains(t) && _visApiLoggedTypes.Count < MAX_DUMPED_TYPES)
+            {
+                _visApiLoggedTypes.Add(t);
+                log(string.Format("[Snapshot] === 显示/隐藏 API 诊断（类型：{0}）===", t.FullName));
+                log(string.Format("[Snapshot] 已匹配: {0}", api.Description));
+                log("[Snapshot] 该类型上所有 Hide/Show/Blank/Visible/Display 相关成员：");
+
+                int methodCount = 0, propCount = 0;
+                foreach (var m in t.GetMethods(flags))
+                {
+                    string nm = m.Name;
+                    if (nm.IndexOf("Hide", StringComparison.OrdinalIgnoreCase) >= 0
+                     || nm.IndexOf("Show", StringComparison.OrdinalIgnoreCase) >= 0
+                     || nm.IndexOf("Blank", StringComparison.OrdinalIgnoreCase) >= 0
+                     || nm.IndexOf("Visible", StringComparison.OrdinalIgnoreCase) >= 0
+                     || nm.IndexOf("Display", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        var prms = m.GetParameters();
+                        var pSig = string.Join(",", Array.ConvertAll(prms, p => p.ParameterType.Name));
+                        log(string.Format("[Snapshot]   方法: {0}({1}) → {2}",
+                            nm, pSig, m.ReturnType.Name));
+                        methodCount++;
+                    }
+                }
+                foreach (var p in t.GetProperties(flags))
+                {
+                    string nm = p.Name;
+                    if (nm.IndexOf("Hide", StringComparison.OrdinalIgnoreCase) >= 0
+                     || nm.IndexOf("Show", StringComparison.OrdinalIgnoreCase) >= 0
+                     || nm.IndexOf("Blank", StringComparison.OrdinalIgnoreCase) >= 0
+                     || nm.IndexOf("Visible", StringComparison.OrdinalIgnoreCase) >= 0
+                     || nm.IndexOf("Display", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        log(string.Format("[Snapshot]   属性: {0} {1} (read={2}, write={3})",
+                            p.PropertyType.Name, nm, p.CanRead, p.CanWrite));
+                        propCount++;
+                    }
+                }
+                log(string.Format("[Snapshot] === 转储完成：{0} 个方法 + {1} 个属性 ===",
+                    methodCount, propCount));
+            }
+
+            _visApiCache[t] = api;
+            return api;
+        }
+
+        /// <summary>
+        /// 判断对象是否具有可控制的显示属性（供枚举阶段筛选使用）。
+        /// </summary>
+        private static bool HasVisibleProp(ITxObject obj)
+        {
+            return HasVisibleProp(obj, Nop);
+        }
+        private static bool HasVisibleProp(ITxObject obj, Action<string> log)
+        {
+            var api = GetOrDiscoverVisApi(obj, log ?? Nop);
+            return api != null && api.Known;
+        }
+
+        /// <summary>
+        /// 读取对象当前的显示状态（true=显示 false=隐藏）。
+        /// 未知 API 时保守返回 true（假设显示）。
+        /// </summary>
+        private static bool GetObjVisible(ITxObject obj)
+        {
+            return GetObjVisible(obj, Nop);
+        }
+        private static bool GetObjVisible(ITxObject obj, Action<string> log)
+        {
+            var api = GetOrDiscoverVisApi(obj, log ?? Nop);
+            if (api == null || !api.Known) return true;
+            try
+            {
+                if (api.PropBool != null)
+                {
+                    bool raw = (bool)api.PropBool.GetValue(obj, null);
+                    return api.PropMeaning ? raw : !raw;
+                }
+            }
+            catch { }
+            return true;
+        }
+
+        /// <summary>
+        /// 设置对象显示状态。优先级：
+        ///   ① 单 bool 参数方法（SetVisible/SetShown/SetHidden/SetBlanked）
+        ///   ② 无参方法（Show/Hide/Blank/Unblank）
+        ///   ③ bool 属性（Visible/IsBlanked/...）
+        /// </summary>
+        private static bool _visSetFailureLogged = false;
+
+        private static void SetObjVisible(ITxObject obj, bool visible)
+        {
+            SetObjVisible(obj, visible, Nop);
+        }
+        private static void SetObjVisible(ITxObject obj, bool visible, Action<string> log)
+        {
+            if (log == null) log = Nop;
+            var api = GetOrDiscoverVisApi(obj, log);
+            if (api == null || !api.Known) return;
+
+            Exception firstEx = null;
+            string lastTry = "";
+
+            if (api.MethodSetBool != null)
+            {
+                try
+                {
+                    bool arg = api.SetBoolMeaning ? visible : !visible;
+                    lastTry = string.Format("{0}({1})", api.MethodSetBool.Name, arg);
+                    api.MethodSetBool.Invoke(obj, new object[] { arg });
+                    return;
+                }
+                catch (Exception ex) { firstEx = firstEx ?? ex; }
+            }
+            if (visible && api.MethodShow != null)
+            {
+                try
+                {
+                    lastTry = api.MethodShow.Name + "()";
+                    api.MethodShow.Invoke(obj, null);
+                    return;
+                }
+                catch (Exception ex) { firstEx = firstEx ?? ex; }
+            }
+            if (!visible && api.MethodHide != null)
+            {
+                try
+                {
+                    lastTry = api.MethodHide.Name + "()";
+                    api.MethodHide.Invoke(obj, null);
+                    return;
+                }
+                catch (Exception ex) { firstEx = firstEx ?? ex; }
+            }
+            if (api.PropBool != null)
+            {
+                try
+                {
+                    bool v = api.PropMeaning ? visible : !visible;
+                    lastTry = string.Format("{0}={1}", api.PropBool.Name, v);
+                    api.PropBool.SetValue(obj, v, null);
+                    return;
+                }
+                catch (Exception ex) { firstEx = firstEx ?? ex; }
+            }
+
+            // 所有调用都抛异常 - 记录一次，之后静默
+            if (!_visSetFailureLogged && firstEx != null)
+            {
+                _visSetFailureLogged = true;
+                Exception inner = firstEx;
+                while (inner is System.Reflection.TargetInvocationException && inner.InnerException != null)
+                    inner = inner.InnerException;
+                log(string.Format(
+                    "[Snapshot] ⚠ SetObjVisible 失败 [{0}]  visible={1}  最后尝试: {2}  异常: {3}",
+                    obj.GetType().Name, visible, lastTry, inner.Message));
+            }
+        }
+
+        /// <summary>
+        /// 收集操作绑定的场景对象（机器人、工具、SimulatedObjects 等）。
+        /// </summary>
+        private static List<ITxObject> CollectOpAssociatedObjects(
+            ITxObject opObj, Action<string> log,List<AppearanceRef> list)
+        {
+            var result = new List<ITxObject>();
+            if (opObj == null) return result;
+            try
+            {
+                // 机器人
+                TxRobot robot = FindRobot(opObj);  // FindRobot 已在 Section 4 定义
+                if (robot != null && !result.Contains(robot)) result.Add(robot);
+
+                // 机器人工具
+                if (robot != null)
+                {
+                    try
+                    {
+                        dynamic dr = robot;
+                        ITxObject tool = null;
+                        try { tool = dr.ActiveTool as ITxObject; } catch { }
+                        if (tool == null) try { tool = dr.CurrentTool as ITxObject; } catch { }
+                        if (tool != null && !result.Contains(tool)) result.Add(tool);
+                    }
+                    catch { }
+                }
+
+                // SimulatedObjects（部件、夹具等）
+                try
+                {
+                    dynamic dop = opObj;
+                    object simOs = null;
+                    try { simOs = dop.SimulatedObjects; } catch { }
+                    if (simOs is IEnumerable ie)
+                        foreach (object o in ie)
+                        {
+                            ITxObject txo = o as ITxObject;
+                            if (txo != null && !result.Contains(txo)) result.Add(txo);
+                        }
+                }
+                catch { }
+
+                log(string.Format("[Snapshot] 操作关联对象：{0} 个", result.Count));
+            }
+
+            catch (Exception ex) { log("[Snapshot] CollectOpAssociatedObjects: " + ex.Message); }
+            return result;
+        }
+
+        // ── Section 9 end ─────────────────────────────────────────────────────
     }
 }

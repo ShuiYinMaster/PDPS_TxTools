@@ -20,159 +20,32 @@ namespace TxTools.DeviceZAligner
     // =====================================================================
     public class DeviceZAlignerCmd : TxButtonCommand
     {
-        public override string Category    { get { return "TxTools"; } }
-        public override string Name        { get { return "DeviceZAligner"; } }
+        public override void Execute(object cmdParams)
+        {
+            try { TxApplication.StatusBarMessage = "设备Z向对齐工具已启动"; } catch { }
+            // 创建并显示主窗体
+            DeviceZAlignerForm form = new DeviceZAlignerForm();
+            form.Show();
+        }
+        public override string Category { get { return "TxTools"; } }
+        public override string Name { get { return "DeviceZAligner"; } }
         public override string Description { get { return "设备Z向对齐工具 — 将设备最低点对齐到Z=0"; } }
+        public override string Tooltip { get { return "扫描设备并对齐最低点到Z=0，支持Ctrl+Z撤销"; } }
 
         // ── 小图标（16×16，菜单/工具栏） ────────────────────────────
         // PS SDK 中 Bitmap/LargeBitmap 是 string 类型 = 图标文件的路径
         public override string Bitmap
         {
-            get { return GetIconPath(16); }
+            get { return ""; }
         }
 
         // ── 大图标（32×32，Ribbon） ─────────────────────────────────
         public override string LargeBitmap
         {
-            get { return GetIconPath(32); }
-        }
-
-        // 缓存已生成的图标路径，避免每次访问都重新生成文件
-        private static string _iconPath16;
-        private static string _iconPath32;
-
-        /// <summary>
-        /// 获取图标文件路径（PS要求的是文件路径字符串）
-        /// 优先查找外部文件，找不到则动态生成到临时目录
-        /// </summary>
-        private string GetIconPath(int size)
-        {
-            // 检查缓存
-            string cached = size <= 16 ? _iconPath16 : _iconPath32;
-            if (!string.IsNullOrEmpty(cached) && System.IO.File.Exists(cached))
-                return cached;
-
-            string fileName = size <= 16 ? "icon_zalign_16.png" : "icon_zalign_32.png";
-
-            // 方案A：从DLL同目录查找现成图标文件
-            try
-            {
-                string dir = System.IO.Path.GetDirectoryName(
-                    Assembly.GetExecutingAssembly().Location);
-                string path = System.IO.Path.Combine(dir, fileName);
-                if (System.IO.File.Exists(path))
-                {
-                    if (size <= 16) _iconPath16 = path; else _iconPath32 = path;
-                    return path;
-                }
-            }
-            catch { }
-
-            // 方案B：从嵌入资源提取到临时文件
-            try
-            {
-                string resName = size <= 16
-                    ? "TxTools.DeviceZAligner.Resources.icon_zalign_16.png"
-                    : "TxTools.DeviceZAligner.Resources.icon_zalign_32.png";
-                var asm = Assembly.GetExecutingAssembly();
-                var stream = asm.GetManifestResourceStream(resName);
-                if (stream != null)
-                {
-                    string tmpPath = System.IO.Path.Combine(
-                        System.IO.Path.GetTempPath(), "TxDeviceZAligner_" + fileName);
-                    using (var fs = System.IO.File.Create(tmpPath))
-                        stream.CopyTo(fs);
-                    if (size <= 16) _iconPath16 = tmpPath; else _iconPath32 = tmpPath;
-                    return tmpPath;
-                }
-            }
-            catch { }
-
-            // 方案C：代码动态生成图标 → 保存到临时文件 → 返回路径
-            try
-            {
-                string tmpPath = System.IO.Path.Combine(
-                    System.IO.Path.GetTempPath(), "TxDeviceZAligner_" + fileName);
-                using (var bmp = GenerateIcon(size))
-                    bmp.Save(tmpPath, System.Drawing.Imaging.ImageFormat.Png);
-                if (size <= 16) _iconPath16 = tmpPath; else _iconPath32 = tmpPath;
-                return tmpPath;
-            }
-            catch { }
-
-            return "";  // 返回空字符串，PS会使用默认图标
-        }
-
-        /// <summary>
-        /// 动态绘制Z向对齐图标：Z轴箭头 + 地面基准线 + 设备方块
-        /// PS深蓝色(0,70,127) + 红色基准线，与PS风格一致
-        /// </summary>
-        internal static System.Drawing.Bitmap GenerateIcon(int size)
-        {
-            var bmp = new Bitmap(size, size);
-            using (var g = Graphics.FromImage(bmp))
-            {
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.Clear(Color.Transparent);
-
-                float s = size / 32f;  // 基准缩放因子（以32为基准）
-                float penW = Math.Max(1f, 1.5f * s);
-
-                // ── 红色基准线（Z=0 地面） ───────────────────────
-                using (var pen = new Pen(Color.FromArgb(220, 50, 50), penW * 1.2f))
-                {
-                    pen.DashStyle = DashStyle.Dash;
-                    float y0 = 26f * s;
-                    g.DrawLine(pen, 2f * s, y0, 30f * s, y0);
-                }
-
-                // ── 蓝色Z轴箭头（垂直向上） ─────────────────────
-                Color psBlue = Color.FromArgb(0, 70, 127);
-                using (var pen = new Pen(psBlue, penW * 1.3f))
-                {
-                    float cx = 16f * s;
-                    g.DrawLine(pen, cx, 6f * s, cx, 24f * s);   // 轴线
-                    // 箭头
-                    g.DrawLine(pen, cx - 4f * s, 10f * s, cx, 5f * s);
-                    g.DrawLine(pen, cx + 4f * s, 10f * s, cx, 5f * s);
-                }
-
-                // ── "Z" 字母标识 ─────────────────────────────────
-                using (var font = new Font("Tahoma", 7f * s, FontStyle.Bold))
-                using (var brush = new SolidBrush(psBlue))
-                {
-                    g.DrawString("Z", font, brush, 22f * s, 3f * s);
-                }
-
-                // ── 设备方块（被箭头移动的对象） ─────────────────
-                using (var brush = new SolidBrush(Color.FromArgb(180, 0, 70, 127)))
-                {
-                    float bx = 9f * s, by = 17f * s, bw = 14f * s, bh = 8f * s;
-                    g.FillRectangle(brush, bx, by, bw, bh);
-                }
-                using (var pen = new Pen(psBlue, penW * 0.8f))
-                {
-                    float bx = 9f * s, by = 17f * s, bw = 14f * s, bh = 8f * s;
-                    g.DrawRectangle(pen, bx, by, bw, bh);
-                }
-            }
-            return bmp;
-        }
-
-        public override void Execute(object cmdParams)
-        {
-            try
-            {
-                var form = new DeviceZAlignerForm();
-                form.Show();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"启动失败：{ex.Message}", "错误",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
+            get { return ""; }
         }
     }
+
 
     // =====================================================================
     // 数据模型
@@ -264,27 +137,6 @@ namespace TxTools.DeviceZAligner
             MinimumSize = new Size(800, 450);
             StartPosition = FormStartPosition.CenterScreen;
 
-            // ── 窗体图标（标题栏+任务栏） ────────────────────────
-            try
-            {
-                // 优先从嵌入资源加载 .ico
-                var asm = Assembly.GetExecutingAssembly();
-                var stream = asm.GetManifestResourceStream(
-                    "TxTools.DeviceZAligner.Resources.icon_zalign.ico");
-                if (stream != null)
-                    Icon = new Icon(stream);
-            }
-            catch
-            {
-                // 回退：用动态生成的Bitmap转Icon
-                try
-                {
-                    var bmp = DeviceZAlignerCmd.GenerateIcon(32);
-                    IntPtr hIcon = bmp.GetHicon();
-                    Icon = Icon.FromHandle(hIcon);
-                }
-                catch { }
-            }
 
             BuildToolStrip();
             BuildTopCards();

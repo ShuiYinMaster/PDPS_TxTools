@@ -18,7 +18,7 @@ namespace TxTools.RobotReachabilityChecker
     public class RobotReachabilityCheckerCmd : TxButtonCommand
     {
         public override string Category { get { return "TxTools"; } }
-        public override string Name { get { return "RobotReachabilityChecker"; } }
+        public override string Name { get { return "_可达性检查"; } }
         public override string Description { get { return "机器人路径可达性检查工具"; } }
 
         public override void Execute(object cmdParams)
@@ -35,7 +35,30 @@ namespace TxTools.RobotReachabilityChecker
     // =========================================================================
     // 数据模型
     // =========================================================================
-    public enum ReachabilityStatus { Reachable, Unreachable, NearLimit, NotChecked }
+    // 状态严重性顺序（从重到轻）：
+    // Unreachable > Singular > NearLimit > Critical > Reachable > NotChecked
+    public enum ReachabilityStatus
+    {
+        Reachable,    // 正常
+        Critical,     // 临界点（低风险信息）— 1/3/5 轴落入品牌特定的 config 翻转临界带
+        NearLimit,    // 接近软限位
+        Singular,     // 奇异点（J5 ∈ ±10°，腕部奇异）
+        Unreachable,  // 不可达 / 超限
+        NotChecked
+    }
+
+    // 轴级问题标志（与 ReachabilityStatus 相互独立，每个轴单独标记）
+    [Flags]
+    public enum AxisFlag
+    {
+        None = 0,
+        Critical = 1 << 0,    // 该轴落在临界带
+        NearLimit = 1 << 1,   // 该轴距软限位 ≤ 阈值
+        Singular = 1 << 2,    // 仅 J5 可能拥有此标志（奇异）
+        OverLimit = 1 << 3,   // 该轴超出软限位
+    }
+
+    public enum RobotBrand { Auto, KUKA, ABB, FANUC, Other }
 
     public class PathPointResult
     {
@@ -53,6 +76,9 @@ namespace TxTools.RobotReachabilityChecker
         public double J6 { get; set; }
         public double JointMargin { get; set; } = 999;
         public string ErrorMessage { get; set; } = "";
+
+        // 每个轴的问题标志（J1..J6 对应索引 0..5）
+        public AxisFlag[] AxisFlags { get; set; } = new AxisFlag[6];
     }
 
     public class RobotPathCheckTask
@@ -65,8 +91,14 @@ namespace TxTools.RobotReachabilityChecker
         public int ReachableCount => Results.Count(r => r.Status == ReachabilityStatus.Reachable);
         public int UnreachableCount => Results.Count(r => r.Status == ReachabilityStatus.Unreachable);
         public int NearLimitCount => Results.Count(r => r.Status == ReachabilityStatus.NearLimit);
+        public int SingularCount => Results.Count(r => r.Status == ReachabilityStatus.Singular);
+        public int CriticalCount => Results.Count(r => r.Status == ReachabilityStatus.Critical);
         public double ReachabilityRate =>
-            TotalPoints > 0 ? (double)(ReachableCount + NearLimitCount) / TotalPoints * 100 : 0;
+            TotalPoints > 0
+                ? (double)(ReachableCount + NearLimitCount + Critical_AsReachableCount) / TotalPoints * 100
+                : 0;
+        // 临界点视为可达（仅信息提示），用于可达率计算
+        private int Critical_AsReachableCount => CriticalCount;
     }
 
     // =========================================================================
@@ -94,6 +126,7 @@ namespace TxTools.RobotReachabilityChecker
         private TxObjEditBoxCtrl _txtOpNode;
         private CheckBox _chkHideNormal;
         private ComboBox _cbPointTypeFilter;
+        private ComboBox _cbBrand;          // 机器人品牌（影响临界点判定规则）
         // Card2: TCP余量
         private CheckBox _chkTcpXyz;
         private NumericUpDown _nudTcpMargin;
@@ -128,6 +161,12 @@ namespace TxTools.RobotReachabilityChecker
         private int _checkProgress;
         private ITxRoboticOperation _lastSelectedOp;
         private System.Windows.Forms.Timer _selTimer;
+
+        // 用户通过 OP 节点拾取器选中的具体对象实例（而非按名字查找的副本）
+        // 解决场景：场景中存在同名 Operation 时，按名字 FindOperationByName 可能返回错的实例，
+        //           导致 .Robot 关联到错的机器人副本，IK 整体失败。
+        // 用户每次拾取都更新此字段，BtnCheck_Click 优先用它而不是按名字重查。
+        private ITxObject _pickedOperation;
         // 缓存每行数据索引（TxFlexGrid 行 → PathPointResult），用于单击跳转
         private readonly Dictionary<int, PathPointResult> _rowToResult = new Dictionary<int, PathPointResult>();
 
@@ -151,6 +190,14 @@ namespace TxTools.RobotReachabilityChecker
         private static readonly TxColor TxClrRowOk = new TxColor(198, 239, 206);
         private static readonly TxColor TxClrRowFail = new TxColor(255, 199, 206);
         private static readonly TxColor TxClrRowWarn = new TxColor(255, 235, 156);
+        // 新增：奇异/临界 行底色
+        private static readonly TxColor TxClrRowSingular = new TxColor(248, 187, 208);  // 浅紫红
+        private static readonly TxColor TxClrRowCritical = new TxColor(207, 216, 220);  // 浅蓝灰
+        // 新增：单元格级（轴级）问题高亮色
+        private static readonly TxColor TxClrCellOver = new TxColor(198, 40, 40);       // 深红 — 轴超限（白字）
+        private static readonly TxColor TxClrCellNear = new TxColor(255, 179, 0);       // 橙黄 — 轴近极限
+        private static readonly TxColor TxClrCellSingular = new TxColor(233, 30, 99);   // 紫红 — J5奇异（白字）
+        private static readonly TxColor TxClrCellCritical = new TxColor(144, 164, 174); // 蓝灰 — 临界
         // 日志面板
         private static readonly TxColor TxClrLogBg = new TxColor(30, 30, 30);
         private static readonly TxColor TxClrLogText = new TxColor(204, 204, 204);
@@ -161,21 +208,21 @@ namespace TxTools.RobotReachabilityChecker
         private static readonly TxColor TxClrEditHeader = new TxColor(235, 241, 250);
 
         // WinForms 快捷引用（.Color 转换）
-        private static readonly Color ClrAccent = TxClrAccent.Color;
-        private static readonly Color ClrSuccess = TxClrSuccess.Color;
-        private static readonly Color ClrDanger = TxClrDanger.Color;
-        private static readonly Color ClrWarning = TxClrWarning.Color;
-        private static readonly Color ClrMuted = SystemColors.GrayText;
-        private static readonly Color ClrText = SystemColors.WindowText;
-        private static readonly Color ClrBg = SystemColors.Control;
+        private static readonly System.Drawing.Color ClrAccent = TxClrAccent.Color;
+        private static readonly System.Drawing.Color ClrSuccess = TxClrSuccess.Color;
+        private static readonly System.Drawing.Color ClrDanger = TxClrDanger.Color;
+        private static readonly System.Drawing.Color ClrWarning = TxClrWarning.Color;
+        private static readonly System.Drawing.Color ClrMuted = SystemColors.GrayText;
+        private static readonly System.Drawing.Color ClrText = SystemColors.WindowText;
+        private static readonly System.Drawing.Color ClrBg = SystemColors.Control;
 
         // ── 构造 ──────────────────────────────────────────────────────────────
         public ReachabilityCheckerForm()
         {
             Text = "机器人路径点位检查";
             StartPosition = FormStartPosition.CenterScreen;
-            Size = new Size(1280, 780);
-            MinimumSize = new Size(960, 580);
+            Size = new System.Drawing.Size(1280, 780);
+            MinimumSize = new System.Drawing.Size(960, 580);
             InitializeComponent();
             LoadRobotsAndOperations();
         }
@@ -183,7 +230,7 @@ namespace TxTools.RobotReachabilityChecker
         protected override void OnLoad(EventArgs e)
         {
             base.OnLoad(e);
-            _selTimer = new System.Windows.Forms.Timer { Interval = 600 };
+            _selTimer = new System.Windows.Forms.Timer { Interval = 1500 };
             _selTimer.Tick += OnSelectionTick;
             _selTimer.Start();
         }
@@ -228,7 +275,7 @@ namespace TxTools.RobotReachabilityChecker
             _tsLblRobot = new ToolStripLabel("/ 机器人：—")
             {
                 ForeColor = ClrMuted,
-                Font = new Font(SystemFonts.DefaultFont, FontStyle.Regular)
+                Font = new System.Drawing.Font(SystemFonts.DefaultFont, FontStyle.Regular)
             };
 
             _tsBtnRefresh = new ToolStripButton("刷新") { ToolTipText = "重新加载操作列表" };
@@ -274,7 +321,7 @@ namespace TxTools.RobotReachabilityChecker
                 Dock = DockStyle.Top,
                 ColumnCount = 5,
                 RowCount = 1,
-                BackColor = Color.Transparent,
+                BackColor = System.Drawing.Color.Transparent,
                 Padding = new Padding(0)
             };
             for (int i = 0; i < 5; i++)
@@ -300,7 +347,7 @@ namespace TxTools.RobotReachabilityChecker
                 Dock = DockStyle.Fill,
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold),
+                Font = new System.Drawing.Font(SystemFonts.DefaultFont, FontStyle.Bold),
                 ForeColor = ClrAccent,
                 Margin = new Padding(2, 2, 2, 2),
                 Padding = new Padding(8, 6, 8, 4)
@@ -320,7 +367,7 @@ namespace TxTools.RobotReachabilityChecker
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
-                BackColor = Color.Transparent,
+                BackColor = System.Drawing.Color.Transparent,
                 Font = SystemFonts.DefaultFont,
                 Padding = new Padding(0, 2, 0, 0)
             };
@@ -337,7 +384,7 @@ namespace TxTools.RobotReachabilityChecker
             {
                 AutoSize = true,
                 FlowDirection = FlowDirection.LeftToRight,
-                BackColor = Color.Transparent,
+                BackColor = System.Drawing.Color.Transparent,
                 Margin = new Padding(0, 2, 0, 2)
             };
             row1.Controls.Add(MkLabel("OP节点"));
@@ -359,7 +406,7 @@ namespace TxTools.RobotReachabilityChecker
             {
                 AutoSize = true,
                 FlowDirection = FlowDirection.LeftToRight,
-                BackColor = Color.Transparent,
+                BackColor = System.Drawing.Color.Transparent,
                 Margin = new Padding(0, 0, 0, 2)
             };
             row2.Controls.Add(MkLabel("点筛选"));
@@ -377,7 +424,28 @@ namespace TxTools.RobotReachabilityChecker
             flow.Controls.Add(row2);
             flow.Controls.Add(row2);
 
-            // 行3：隐藏正常结果项
+            // 行3：机器人品牌（影响临界点判定规则）
+            var row3 = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                FlowDirection = FlowDirection.LeftToRight,
+                BackColor = System.Drawing.Color.Transparent,
+                Margin = new Padding(0, 0, 0, 2)
+            };
+            row3.Controls.Add(MkLabel("品牌"));
+            _cbBrand = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Font = SystemFonts.DefaultFont,
+                Margin = new Padding(2, 3, 0, 0)
+            };
+            _cbBrand.Items.AddRange(new object[] { "自动", "KUKA", "ABB", "FANUC", "其他" });
+            _cbBrand.SelectedIndex = 0;
+            AutoFitComboBoxWidth(_cbBrand);
+            row3.Controls.Add(_cbBrand);
+            flow.Controls.Add(row3);
+
+            // 行4：隐藏正常结果项
             _chkHideNormal = new CheckBox
             {
                 Text = "隐藏正常结果项",
@@ -412,7 +480,7 @@ namespace TxTools.RobotReachabilityChecker
             {
                 AutoSize = true,
                 FlowDirection = FlowDirection.LeftToRight,
-                BackColor = Color.Transparent,
+                BackColor = System.Drawing.Color.Transparent,
                 Margin = new Padding(0)
             };
             row.Controls.Add(MkLabel("余量(mm):"));
@@ -453,7 +521,7 @@ namespace TxTools.RobotReachabilityChecker
             {
                 AutoSize = true,
                 FlowDirection = FlowDirection.LeftToRight,
-                BackColor = Color.Transparent,
+                BackColor = System.Drawing.Color.Transparent,
                 Margin = new Padding(0)
             };
             row.Controls.Add(MkLabel("余量(度):"));
@@ -515,7 +583,7 @@ namespace TxTools.RobotReachabilityChecker
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
-                BackColor = Color.Transparent,
+                BackColor = System.Drawing.Color.Transparent,
                 Margin = new Padding(0, 0, 0, 2)
             };
             var btnCheck = MkFuncButton("开始检查", TxClrBtnCheck.Color);
@@ -531,7 +599,7 @@ namespace TxTools.RobotReachabilityChecker
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
-                BackColor = Color.Transparent,
+                BackColor = System.Drawing.Color.Transparent,
                 Margin = new Padding(0, 0, 0, 0)
             };
             var btnExport = MkFuncButton("结果导出", TxClrBtnExport.Color);
@@ -571,7 +639,7 @@ namespace TxTools.RobotReachabilityChecker
         }
 
         /// <summary>功能区按钮：自适应文本宽度、单行、带背景色</summary>
-        private Button MkFuncButton(string text, Color bgColor)
+        private Button MkFuncButton(string text, System.Drawing.Color bgColor)
         {
             var btn = new Button
             {
@@ -640,7 +708,7 @@ namespace TxTools.RobotReachabilityChecker
                 Text = "运行日志",
                 Dock = DockStyle.Fill,
                 ForeColor = TxColor.TxColorWhite.Color,
-                Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold),
+                Font = new System.Drawing.Font(SystemFonts.DefaultFont, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleLeft,
                 Padding = new Padding(6, 0, 0, 0)
             };
@@ -664,7 +732,7 @@ namespace TxTools.RobotReachabilityChecker
                 ReadOnly = true,
                 BackColor = TxClrLogBg.Color,
                 ForeColor = TxClrLogText.Color,
-                Font = new Font("Consolas", 8f),
+                Font = new System.Drawing.Font("Consolas", 8f),
                 BorderStyle = BorderStyle.None,
                 ScrollBars = RichTextBoxScrollBars.Vertical,
                 WordWrap = false
@@ -729,14 +797,14 @@ namespace TxTools.RobotReachabilityChecker
             // 使用 Graphics 测量表头文本宽度，确保列宽足以显示完整表头
             using (var g = CreateGraphics())
             {
-                var hdrFont = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+                var hdrFont = new System.Drawing.Font(SystemFonts.DefaultFont, FontStyle.Bold);
                 for (int i = 0; i < 14; i++)
                 {
                     int textW = (int)g.MeasureString(captions[i], hdrFont).Width + 16; // 加上边距
-                    if (i == COL_OP)        _grid.Cols[i].Width = 140;   // 操作名固定
-                    else if (i == COL_PT)   _grid.Cols[i].Width = 140;   // 点名固定
+                    if (i == COL_OP) _grid.Cols[i].Width = 140;   // 操作名固定
+                    else if (i == COL_PT) _grid.Cols[i].Width = 140;   // 点名固定
                     else if (i == COL_NOTE) _grid.Cols[i].Width = 120;   // 备注列在 Resize 中填充剩余
-                    else                    _grid.Cols[i].Width = Math.Max(textW, 42); // 自适应：至少能放下表头
+                    else _grid.Cols[i].Width = Math.Max(textW, 42); // 自适应：至少能放下表头
                 }
             }
 
@@ -744,7 +812,7 @@ namespace TxTools.RobotReachabilityChecker
             var hdrStyle = _grid.Styles[C1.Win.C1FlexGrid.CellStyleEnum.Fixed];
             hdrStyle.BackColor = TxClrGridHeader.Color;
             hdrStyle.ForeColor = TxClrGridHeaderText.Color;
-            hdrStyle.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+            hdrStyle.Font = new System.Drawing.Font(SystemFonts.DefaultFont, FontStyle.Bold);
 
             // 行色
             _grid.Styles[C1.Win.C1FlexGrid.CellStyleEnum.Normal].BackColor = SystemColors.Window;
@@ -755,8 +823,10 @@ namespace TxTools.RobotReachabilityChecker
             // 单击行 → 跳转机器人到该点位姿态
             _grid.AfterSelChange += Grid_AfterSelChange;
 
-            // 双击行 → 提示打开 ManipulateLocation
-            _grid.DoubleClick += Grid_DblClick;
+            // 双击行 → 弹出 PS 内置 Robot Jog 对话框
+            // 用 MouseDoubleClick 而不是 DoubleClick：C1FlexGrid 在某些 SelectionMode
+            // 下 DoubleClick 不会冒泡，MouseDoubleClick 是 WinForms 标准事件，更可靠
+            _grid.MouseDoubleClick += Grid_DblClick_Mouse;
 
             // 窗口大小变化时重新分配列宽
             this.Resize += (s, e) => ResizeGridCols();
@@ -782,7 +852,7 @@ namespace TxTools.RobotReachabilityChecker
                         // 确保列宽至少能放下表头
                         using (var g = CreateGraphics())
                         {
-                            var hdrFont = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+                            var hdrFont = new System.Drawing.Font(SystemFonts.DefaultFont, FontStyle.Bold);
                             int hdrW = (int)g.MeasureString(_grid.Cols[ci].Caption, hdrFont).Width + 16;
                             if (_grid.Cols[ci].Width < hdrW) _grid.Cols[ci].Width = hdrW;
                         }
@@ -808,15 +878,23 @@ namespace TxTools.RobotReachabilityChecker
             if (_lblStatus != null) _lblStatus.Text = text;
         }
 
-        private void SetStatus(string text, Color _ignored) => SetStatus(text);
+        private void SetStatus(string text, System.Drawing.Color _ignored) => SetStatus(text);
+
+        // 详细日志开关：true 时打印每个点位的方式A/B/C成功细节、限位获取细节等
+        // 排查问题时设为 true，正常使用时保持 false 以减少日志噪音
+        private bool _logVerbose = false;
 
         private void Log(string message, string level = "INFO")
         {
             if (_logBox == null || _logBox.IsDisposed) return;
+
+            // DEBUG 级别在非 verbose 模式下静默丢弃（不写日志框）
+            if (level == "DEBUG" && !_logVerbose) return;
+
             if (_logBox.InvokeRequired) { _logBox.BeginInvoke(new Action(() => Log(message, level))); return; }
 
             string line = $"[{DateTime.Now:HH:mm:ss.fff}] [{level}] {message}";
-            Color col = level == "ERR" ? TxClrLogErr.Color
+            System.Drawing.Color col = level == "ERR" ? TxClrLogErr.Color
                       : level == "WARN" ? TxClrLogWarn.Color
                       : level == "OK" ? TxClrLogOk.Color
                       : TxClrLogText.Color;
@@ -839,7 +917,20 @@ namespace TxTools.RobotReachabilityChecker
         // 表格事件
         // =====================================================================
 
-        // 单击行：将机器人驱动到该点位的记录姿态，并在 PS 中选中该点位
+        // 单击行：将机器人各关节直接驱动到该点位记录的关节值
+        //
+        // 设计取舍（重要）：
+        //   旧实现把点位对象塞进 TxApplication.ActiveSelection，本意是"在 PS 场景里高亮"，
+        //   但 ITxRoboticLocationOperation 实际上也是 ITxRoboticOperation 的实现，
+        //   会被 OnSelectionTick 600ms 轮询误判为"用户切换了 OP 节点"，
+        //   触发 PreviewLocations(单点op) 把表格刷成只剩 1 行。
+        //
+        //   新实现完全不动 ActiveSelection，改为：
+        //     1) 找到该行对应的 TxRobot（用 RobotName 在文档中查）
+        //     2) 直接对 robot.Joints 中每个 TxJoint 的 CurrentValue 赋值
+        //
+        //   这与 CheckReachabilityViaPS 里 "robot.CurrentPose = pd; ReadDrivingJoints(...)"
+        //   的整体范式一致，只是单击场景下不需要 IK，直接用记录值即可。
         private void Grid_AfterSelChange(object sender, C1.Win.C1FlexGrid.RangeEventArgs e)
         {
             int row = _grid.RowSel;
@@ -848,74 +939,345 @@ namespace TxTools.RobotReachabilityChecker
 
             SetStatus($"[{res.PointName}]  {res.RobotName}  J1={res.J1:F1}° J2={res.J2:F1}° J3={res.J3:F1}°");
 
-            // 在 PS 场景中选中对应点位（跳转视角）
+            // 未检查/不可达 状态下没有有效关节值，跳过驱动
+            if (res.Status == ReachabilityStatus.Unreachable
+                || (res.J1 == 0 && res.J2 == 0 && res.J3 == 0
+                    && res.J4 == 0 && res.J5 == 0 && res.J6 == 0
+                    && res.JointMargin >= 999))
+            {
+                return; // 还没检查或不可达，不去驱动机器人
+            }
+
             try
             {
                 var doc = TxApplication.ActiveDocument;
                 if (doc == null) return;
-                var all = doc.OperationRoot.GetAllDescendants(new TxTypeFilter(typeof(ITxObject)));
-                foreach (ITxObject o in all)
+
+                // 按 RobotName 找到 TxRobot 实例
+                TxRobot robot = FindRobotByName(doc, res.RobotName);
+                if (robot == null) return;
+
+                // 取关节集合并按顺序赋值
+                // robot.Joints 返回 TxObjectList<TxJoint>（强类型），用 var 自动推断
+                var joints = robot.Joints;
+                if (joints == null || joints.Count == 0) return;
+
+                double[] target = { res.J1, res.J2, res.J3, res.J4, res.J5, res.J6 };
+                int n = Math.Min(joints.Count, target.Length);
+
+                // 单位策略（与 CheckReachabilityViaPS 中存储 J1..J6 的逻辑保持对称）：
+                //   存储时：用 maxAbs<=2π+ε 判定整体是否弧度，若是则乘 180/π 转度
+                //   读回时：对每个关节单独探测当前值范围，若 |当前值|<=2π+ε 则
+                //           认为该关节是旋转关节（PS 内部用弧度），写入时把度数转回弧度
+                //           否则按原值（mm 或度数）写入，避免误算平动关节
+                for (int i = 0; i < n; i++)
                 {
-                    if (!(o is ITxRoboticLocationOperation loc)) continue;
-                    if (o.Name != res.PointName) continue;
                     try
                     {
-                        dynamic sel = TxApplication.ActiveSelection;
-                        try { sel.Clear(); } catch { }
-                        sel.Add(o);
+                        // joints[i] 已经是强类型 TxJoint
+                        TxJoint joint = joints[i];
+                        if (joint == null) continue;
+
+                        double valDeg = target[i];
+
+                        // 探测当前值，判断该关节是否使用弧度
+                        double curVal = 0;
+                        bool sawCur = false;
+                        try { curVal = joint.CurrentValue; sawCur = true; } catch { }
+
+                        double valToWrite;
+                        if (sawCur && Math.Abs(curVal) <= 2 * Math.PI + 0.05)
+                        {
+                            // PS 内部用弧度 → 度数转弧度
+                            valToWrite = valDeg * Math.PI / 180.0;
+                        }
+                        else
+                        {
+                            // 平动关节或单位是度，按原值写
+                            valToWrite = valDeg;
+                        }
+
+                        joint.CurrentValue = valToWrite;
                     }
-                    catch { }
-                    return;
+                    catch { /* 单关节失败不影响其他 */ }
                 }
             }
             catch { }
         }
 
-        // 双击行：弹出包含 TxPlacementCollisionControl 的点位编辑窗口
-        private void Grid_DblClick(object sender, EventArgs e)
+        // 按名称在当前文档中查找 TxRobot 实例
+        private TxRobot FindRobotByName(TxDocument doc, string robotName)
         {
-            int row = _grid.RowSel;
-            if (row < _grid.Rows.Fixed) return;
-            if (!_rowToResult.TryGetValue(row, out var res)) return;
-
-            // 找到对应的 ITxRoboticLocationOperation 对象
-            ITxRoboticLocationOperation locOp = null;
+            if (doc == null || string.IsNullOrEmpty(robotName)) return null;
             try
             {
-                var doc = TxApplication.ActiveDocument;
-                if (doc != null)
+                var all = doc.PhysicalRoot.GetAllDescendants(new TxTypeFilter(typeof(TxRobot)));
+                foreach (ITxObject o in all)
                 {
-                    var all = doc.OperationRoot.GetAllDescendants(
-                        new TxTypeFilter(typeof(ITxRoboticLocationOperation)));
-                    foreach (ITxObject o in all)
-                    {
-                        if (!(o is ITxRoboticLocationOperation loc)) continue;
-                        if (o.Name != res.PointName) continue;
-                        locOp = loc;
-                        // 同步在 PS 中选中该点位
-                        dynamic sel = TxApplication.ActiveSelection;
-                        try { sel.Clear(); } catch { }
-                        try { sel.Add(o); } catch { }
-                        break;
-                    }
+                    if (o is TxRobot r && r.Name == robotName) return r;
                 }
             }
-            catch (Exception ex) { Log("双击查找点位异常: " + ex.Message, "ERR"); return; }
+            catch { }
+            return null;
+        }
 
-            if (locOp == null)
+        // =====================================================================
+        // 双击网格行：选中 PS 中对应点位 + 弹出 PS 内置 Robot Jog 对话框
+        //
+        // 流程：
+        //   1) 从 _rowToResult 拿到当前双击行的 PathPointResult
+        //   2) 用 OperationName + PointName 在 PS 中定位到 ITxRoboticLocationOperation
+        //   3) 把它设为 PS 的当前选中对象（ActiveSelection）
+        //   4) 通过 TxCommandsManager.ExecuteCommand 触发 Robot Jog 命令
+        //
+        // 关于命令标识符：
+        //   PS 的 Robot Jog 命令真实 ID 文档未公开，候选列表为运行时探测，
+        //   首次运行时看日志确认哪个 ID 没抛 TxCommandIdentifierDoesNotExistException
+        // =====================================================================
+
+        // MouseDoubleClick 入口：用 HitTest 找到双击的行，再委托给主处理
+        private void Grid_DblClick_Mouse(object sender, MouseEventArgs e)
+        {
+            try
             {
-                SetStatus("未找到点位: " + res.PointName);
+                Log($">>> 鼠标双击事件触发 (X={e.X}, Y={e.Y}, Button={e.Button})", "DEBUG");
+                if (e.Button != MouseButtons.Left) return;
+
+                // 用 HitTest 把鼠标坐标转成行号
+                var ht = _grid.HitTest(e.X, e.Y);
+                int row = ht.Row;
+                Log($"    HitTest 命中行: {row}, Type={ht.Type}", "DEBUG");
+
+                // 选中该行（保险起见，确保 RowSel 正确）
+                if (row >= _grid.Rows.Fixed)
+                {
+                    _grid.RowSel = row;
+                }
+
+                Grid_DblClick_Core(row);
+            }
+            catch (Exception ex)
+            {
+                Log($"MouseDoubleClick 包装层异常: {ex.Message}", "ERR");
+            }
+        }
+
+        private void Grid_DblClick(object sender, EventArgs e)
+        {
+            // 兼容老的 DoubleClick 事件路径（如果某些场景下 MouseDoubleClick 没触发）
+            Log(">>> DoubleClick 事件触发（非 Mouse 版）");
+            Grid_DblClick_Core(_grid.RowSel);
+        }
+
+        private void Grid_DblClick_Core(int row)
+        {
+            try
+            {
+                // ── 1) 取当前选中行（C1FlexGrid 用 RowSel）────────────
+                if (row < _grid.Rows.Fixed)
+                {
+                    Log($"双击在表头/无效行 (row={row})，忽略", "WARN");
+                    return;
+                }
+
+                if (!_rowToResult.TryGetValue(row, out var res))
+                {
+                    Log($"行 {row} 未在 _rowToResult 字典中找到对应数据 (字典大小={_rowToResult.Count})", "WARN");
+                    return;
+                }
+
+                string pointName = res.PointName;
+                string opName = res.OperationName;
+                if (string.IsNullOrEmpty(pointName))
+                {
+                    Log("当前行没有点位名，无法定位", "WARN");
+                    return;
+                }
+                Log($"双击点位: [{opName}] / [{pointName}]", "DEBUG");
+
+                // ── 2) 在 PS 文档中找到该点位对象 ─────────────────────
+                TxDocument doc = TxApplication.ActiveDocument;
+                if (doc == null)
+                {
+                    Log("ActiveDocument 为 null", "ERR");
+                    return;
+                }
+
+                ITxObject locObj = FindLocationInDoc(doc, opName, pointName);
+                if (locObj == null)
+                {
+                    Log($"未在 PS 文档中找到点位: {pointName}", "ERR");
+                    MessageBox.Show($"未在当前 Study 中找到点位 [{pointName}]，\n" +
+                                    "可能该点位已被删除或操作已变更。",
+                                    "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // ── 3) 设置 PS 的当前选中对象（Robot Jog 会读取它）────
+                // TxSelection 的真实 API：Clear() / AddItems(TxObjectList) / SetItems(...)
+                // 注意：是 AddItems（复数），不是 Add
+                try
+                {
+                    TxSelection sel = TxApplication.ActiveSelection;
+                    sel.Clear();
+
+                    TxObjectList list = new TxObjectList();
+                    list.Add(locObj);
+                    sel.AddItems(list);
+
+                    Log($"已设置 ActiveSelection: {locObj.Name}", "DEBUG");
+                }
+                catch (Exception exSel)
+                {
+                    Log($"设置 ActiveSelection 失败: {exSel.Message}", "ERR");
+                    return;
+                }
+
+                // ── 4) 触发 Robot Jog 对话框 ──────────────────────────
+                OpenRobotJogDialog();
+            }
+            catch (Exception ex)
+            {
+                Log($"双击处理异常: {ex.Message}", "ERR");
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // 在 PS 文档中按"操作名 + 点位名"定位到具体的 Location 对象
+        // 复用现有 EnumerateLocations 的能力，先定位操作再枚举其下点位
+        // ---------------------------------------------------------------------
+        private ITxObject FindLocationInDoc(TxDocument doc, string opName, string pointName)
+        {
+            if (doc == null || string.IsNullOrEmpty(pointName)) return null;
+
+            try
+            {
+                // 优先策略：先用操作名定位 Operation，再在它下面找 PointName
+                if (!string.IsNullOrEmpty(opName))
+                {
+                    var allOps = doc.OperationRoot.GetAllDescendants(
+                        new TxTypeFilter(typeof(ITxObject)));
+                    foreach (ITxObject obj in allOps)
+                    {
+                        if (obj.Name != opName) continue;
+                        var locs = EnumerateLocations(obj);
+                        foreach (var l in locs)
+                        {
+                            if ((l as ITxObject)?.Name == pointName)
+                                return l as ITxObject;
+                        }
+                    }
+                }
+
+                // 兜底策略：全文档遍历，找名字匹配的 ITxRoboticLocationOperation
+                var allDesc = doc.OperationRoot.GetAllDescendants(
+                    new TxTypeFilter(typeof(ITxObject)));
+                foreach (ITxObject obj in allDesc)
+                {
+                    if (!(obj is ITxRoboticLocationOperation)) continue;
+                    if (obj.Name == pointName) return obj;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"FindLocationInDoc 异常: {ex.Message}", "ERR");
+            }
+            return null;
+        }
+
+        // ---------------------------------------------------------------------
+        // 调用 PS 内置 Robot Jog 命令
+        //
+        // 命令 ID 来源：从 PS 安装目录的 RibbonConfiguration.xml 中查到
+        //   <!--Name: Robot Jog-->
+        //   <RibbonItem Id="DnProcessSimulateCommands.RobotJog.CApRJRobotJogCmd" />
+        //
+        // 同目录下其他相关命令的 ID（备查）：
+        //   Joint Jog            : DnProcessSimulateCommands.JointJog.CUiKinJointJogCmd
+        //   Manipulate Location  : {0A7F9938-20FD-11D4-A4BD-00104B17FDD6}  (GUID形式)
+        // ---------------------------------------------------------------------
+        private const string CMD_ROBOT_JOG = "DnProcessSimulateCommands.RobotJog.CApRJRobotJogCmd";
+
+        private void OpenRobotJogDialog()
+        {
+            TxCommandsManager mgr = null;
+            try { mgr = TxApplication.CommandsManager; }
+            catch (Exception exMgr)
+            {
+                Log($"获取 CommandsManager 异常: {exMgr.Message}", "ERR");
                 return;
             }
 
-            // 弹出编辑窗口（含 TxPlacementCollisionControl）
+            if (mgr == null)
+            {
+                Log("CommandsManager 为 null", "ERR");
+                return;
+            }
+
+            // ── 关键：暂停 OnSelectionTick 轮询 ────────────────────────────
+            // ExecuteCommand 是同步阻塞的（直到用户关闭 Robot Jog 才返回），
+            // 期间 PS 会改 ActiveSelection（Follow mode 会选中点位 / 切换激活操作），
+            // 如果不停掉 _selTimer，OnSelectionTick 会把表格刷成那个新选中操作的内容。
+            // 同时记录当前 OP 关联，命令返回后强制复位，避免重启 timer 后又被刷掉。
+            bool timerWasRunning = _selTimer != null && _selTimer.Enabled;
+            ITxRoboticOperation savedOp = _lastSelectedOp;
+            string savedOpComboText = _tsOp.SelectedItem?.ToString();
+
+            if (timerWasRunning)
+            {
+                _selTimer.Stop();
+                Log("  已暂停 OnSelectionTick 轮询（防止 Robot Jog 期间表格被刷新）", "DEBUG");
+            }
+
             try
             {
-                var dlg = new LocationEditForm(locOp, res.PointName);
-                dlg.ShowDialog(this);
-                Log("点位编辑窗口已关闭: " + res.PointName, "OK");
+                Log($"  执行命令: {CMD_ROBOT_JOG}", "DEBUG");
+                mgr.ExecuteCommand(CMD_ROBOT_JOG);
+                Log($"  ✓ Robot Jog 已触发", "DEBUG");
             }
-            catch (Exception ex) { Log("打开编辑窗口异常: " + ex.Message, "ERR"); }
+            catch (TxCommandIdentifierDoesNotExistException)
+            {
+                Log($"  命令ID不存在: {CMD_ROBOT_JOG}（PS 版本可能不同）", "ERR");
+                MessageBox.Show(
+                    $"Robot Jog 命令未注册到当前 PS 实例。\n\n" +
+                    $"已使用的命令ID:\n  {CMD_ROBOT_JOG}\n\n" +
+                    $"目标点位已选中，可手动点击工具栏的 Robot Jog 按钮。",
+                    "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            catch (TxCannotActivateCommandException exAct)
+            {
+                Log($"  ✓ Robot Jog 命令已激活: {exAct.Message}", "OK");
+            }
+            catch (Exception ex)
+            {
+                Log($"  执行命令异常: {ex.GetType().Name} - {ex.Message}", "ERR");
+            }
+            finally
+            {
+                // ── 命令返回后恢复 timer，但先把 _lastSelectedOp 锁回原值 ────
+                // 这样下次 OnSelectionTick 看到 PS 当前选中的 Operation（被 Robot Jog
+                // 改过的）跟 _lastSelectedOp 不同时，按现有逻辑会"切换"，但我们
+                // 希望保持原 OP 不变，所以反过来把 ActiveSelection 也尝试恢复
+                _lastSelectedOp = savedOp;
+
+                // 尝试把 ActiveSelection 中的内容清掉，让 timer 看到"无选中"状态
+                // 这样它就不会触发 op 切换；用户后续主动选别的才会触发
+                try
+                {
+                    TxApplication.ActiveSelection.Clear();
+                    Log("  已清空 ActiveSelection（防止 timer 误判）", "DEBUG");
+                }
+                catch (Exception exClr)
+                {
+                    Log($"  清空 ActiveSelection 异常（忽略）: {exClr.Message}", "WARN");
+                }
+
+                if (timerWasRunning)
+                {
+                    _selTimer.Start();
+                    Log("  已恢复 OnSelectionTick 轮询", "DEBUG");
+                }
+            }
         }
 
         // =====================================================================
@@ -965,8 +1327,12 @@ namespace TxTools.RobotReachabilityChecker
                 SetStatus($"请选择操作节点，当前对象类型: {pickedObj.GetType().Name}");
                 // 清除无效选择
                 try { _txtOpNode.Object = null; } catch { }
+                _pickedOperation = null;
                 return;
             }
+
+            // 保存用户拾取到的具体对象实例（关键：避免后续按名字查找时拿错副本）
+            _pickedOperation = pickedObj;
 
             try
             {
@@ -1128,47 +1494,66 @@ namespace TxTools.RobotReachabilityChecker
         // 关键：TxPoseData 在 PS API 中是 double-indexed 对象，
         //       可通过 poseData[i] 或 poseData.Values[i] 访问各轴角度（度）
         // =====================================================================
-        private List<PathPointResult> CheckReachabilityViaPS(string operationName)
+        private List<PathPointResult> CheckReachabilityViaPS(string operationName,
+            Action<int, int> progress = null,
+            ITxObject preferredOp = null)
         {
             var results = new List<PathPointResult>();
-            Log($"开始检查：操作=[{operationName}]");
+            Log($"开始检查：[{operationName}]");
             try
             {
                 TxDocument doc = TxApplication.ActiveDocument;
                 if (doc == null) throw new InvalidOperationException("ActiveDocument 为 null");
-                Log("ActiveDocument 获取成功");
 
-                // ── 1. 查找操作 ───────────────────────────────────────────
-                ITxObject operation = FindOperationByName(doc, operationName);
+                // ── 1. 优先使用用户拾取的具体对象实例（避免同名 Operation 冲突）──
+                ITxObject operation = null;
+                if (preferredOp != null && preferredOp.Name == operationName)
+                {
+                    operation = preferredOp;
+                    Log($"  使用拾取实例: {operation.Name} ({operation.GetType().Name}) HashCode={operation.GetHashCode()}");
+                }
+                else
+                {
+                    operation = FindOperationByName(doc, operationName);
+                    if (operation != null)
+                        Log($"  按名查找实例: {operation.Name} ({operation.GetType().Name}) HashCode={operation.GetHashCode()}", "DEBUG");
+                }
                 if (operation == null) throw new InvalidOperationException($"未找到操作: {operationName}");
-                Log($"操作找到: {operation.Name}  类型: {operation.GetType().Name}");
 
                 // ── 2. 从操作自动查找关联机器人 ───────────────────────────
-                // TxRoboticOperation 上有 Robot 属性直接返回关联机器人
                 TxRobot robot = FindAssociatedRobot(operation, doc);
                 if (robot == null) throw new InvalidOperationException(
                     $"无法从操作 [{operationName}] 找到关联机器人，请确认操作已分配到机器人");
-                Log($"关联机器人: {robot.Name}  类型: {robot.GetType().Name}", "OK");
+                Log($"机器人: {robot.Name}", "DEBUG");
 
                 // 探测 DrivingJoints 数量
                 int djCount = 0;
                 try { djCount = robot.DrivingJoints?.Count ?? 0; } catch { }
-                Log($"DrivingJoints 数量: {djCount}");
 
                 // ── 3. 枚举路径点位 ───────────────────────────────────────
                 var locs = EnumerateLocations(operation);
-                Log($"共找到 {locs.Count} 个路径点位");
                 if (locs.Count == 0)
                     throw new InvalidOperationException($"操作 [{operationName}] 下未找到路径点，请确认操作类型");
 
                 // ── 4. 读取关节限位 ───────────────────────────────────────
                 var jointLimits = GetJointLimits(robot);
-                Log($"关节限位获取: {jointLimits.Count} 轴");
 
                 // ── 5. 保存初始姿态 ───────────────────────────────────────
                 TxPoseData savedPose = null;
-                try { savedPose = robot.CurrentPose; Log("初始姿态已保存"); }
+                try { savedPose = robot.CurrentPose; }
                 catch (Exception ex) { Log($"保存初始姿态失败（非致命）: {ex.Message}", "WARN"); }
+
+                // 当前关节姿态（度），供 IK 多解优选参考
+                double[] currentJointsDeg = ReadDrivingJoints(robot);
+                if (currentJointsDeg != null && currentJointsDeg.Length > 0)
+                {
+                    double maxAbs = currentJointsDeg.Max(Math.Abs);
+                    if (maxAbs > 0 && maxAbs <= 2 * Math.PI + 0.05)
+                        currentJointsDeg = currentJointsDeg.Select(v => v * 180.0 / Math.PI).ToArray();
+                }
+
+                // 解析品牌（用于临界点判定）
+                RobotBrand brand = ResolveBrand(robot.Name);
 
                 int idx = 1;
                 int okA = 0, okB = 0, okC = 0, fail = 0;
@@ -1222,17 +1607,21 @@ namespace TxTools.RobotReachabilityChecker
                                 joints = extracted;
                                 gotJoints = true;
                                 okA++;
-                                Log($"  [{res.PointName}] 方式A(Values)成功: [{string.Join(", ", Array.ConvertAll(joints, v => v.ToString("F1")))}]", "OK");
+                                Log($"  [{res.PointName}] A成功", "DEBUG");
+                            }
+                            else
+                            {
+                                Log($"  [{res.PointName}] A: TryExtractPoseValues 返回空", "WARN");
                             }
                         }
                         else
                         {
-                            Log($"  [{res.PointName}] GetPoseAtLocation 返回 null", "WARN");
+                            Log($"  [{res.PointName}] A: GetPoseAtLocation 返回 null", "WARN");
                         }
                     }
                     catch (Exception exA)
                     {
-                        Log($"  [{res.PointName}] 方式A异常: {exA.Message}", "WARN");
+                        Log($"  [{res.PointName}] A异常: {exA.GetType().Name} - {exA.Message}", "WARN");
                         errMsg = $"方式A: {exA.Message}";
                     }
 
@@ -1254,14 +1643,18 @@ namespace TxTools.RobotReachabilityChecker
                                     joints = extracted;
                                     gotJoints = true;
                                     okB++;
-                                    Log($"  [{res.PointName}] 方式B(Drive+DrivingJoints)成功: [{string.Join(", ", Array.ConvertAll(joints, v => v.ToString("F1")))}]", "OK");
+                                    Log($"  [{res.PointName}] B成功", "DEBUG");
                                 }
-                                else { Log($"  [{res.PointName}] 方式B: DrivingJoints 读取为空", "WARN"); }
+                                else { Log($"  [{res.PointName}] B: DrivingJoints 读取为空", "WARN"); }
+                            }
+                            else
+                            {
+                                Log($"  [{res.PointName}] B: pd={(pd == null ? "null" : "OK")}, savedPose={(savedPose == null ? "null" : "OK")}", "WARN");
                             }
                         }
                         catch (Exception exB)
                         {
-                            Log($"  [{res.PointName}] 方式B异常: {exB.Message}", "WARN");
+                            Log($"  [{res.PointName}] B异常: {exB.GetType().Name} - {exB.Message}", "WARN");
                             if (string.IsNullOrEmpty(errMsg)) errMsg = $"方式B: {exB.Message}";
                         }
                         finally
@@ -1283,7 +1676,7 @@ namespace TxTools.RobotReachabilityChecker
                         }
                         else
                         {
-                            Log($"  [{res.PointName}] 尝试IK求解...");
+                            Log($"  [{res.PointName}] 尝试IK求解...", "DEBUG");
                             try
                             {
                                 var invData = new TxRobotInverseData(locTx);
@@ -1294,22 +1687,25 @@ namespace TxTools.RobotReachabilityChecker
 
                                 if (!hasInv)
                                 {
-                                    Log($"  [{res.PointName}] IK无解（超出工作包络或奇异）", "WARN");
+                                    Log($"  [{res.PointName}] IK无解 (DoesInverseExist=false)", "WARN");
                                     errMsg = "IK无解：超出工作包络或构型奇异";
                                     res.Status = ReachabilityStatus.Unreachable;
                                     res.ErrorMessage = errMsg;
                                     fail++;
                                     results.Add(res);
+                                    try { progress?.Invoke(results.Count, locs.Count); } catch { }
                                     continue;
                                 }
 
                                 System.Collections.ArrayList solutions = robot.CalcInverseSolutions(invData);
-                                Log($"  [{res.PointName}] IK解数量: {solutions?.Count ?? 0}");
+                                Log($"  [{res.PointName}] IK解数量: {solutions?.Count ?? 0}", "DEBUG");
 
                                 if (solutions != null && solutions.Count > 0)
                                 {
                                     // 先尝试直接读第一个解的 Values（方式C1）
-                                    TxPoseData firstSol = solutions[0] as TxPoseData;
+                                    // 多解优选：挑离当前姿态 L1 距离最近的解
+                                    // 这样可以避免选到 J6=+341° 这种与现场 -18° 等价但显得超限的解
+                                    TxPoseData firstSol = PickClosestSolution(solutions, currentJointsDeg, djCount);
                                     if (firstSol != null)
                                     {
                                         double[] extracted = TryExtractPoseValues(firstSol, djCount);
@@ -1318,7 +1714,7 @@ namespace TxTools.RobotReachabilityChecker
                                             joints = extracted;
                                             gotJoints = true;
                                             okC++;
-                                            Log($"  [{res.PointName}] 方式C1(IK+Values)成功: [{string.Join(", ", Array.ConvertAll(joints, v => v.ToString("F1")))}]", "OK");
+                                            Log($"  [{res.PointName}] C1成功", "DEBUG");
                                         }
                                         else
                                         {
@@ -1332,11 +1728,11 @@ namespace TxTools.RobotReachabilityChecker
                                                     joints = drv;
                                                     gotJoints = true;
                                                     okC++;
-                                                    Log($"  [{res.PointName}] 方式C2(IK+Drive)成功: [{string.Join(", ", Array.ConvertAll(joints, v => v.ToString("F1")))}]", "OK");
+                                                    Log($"  [{res.PointName}] C2成功", "DEBUG");
                                                 }
-                                                else { Log($"  [{res.PointName}] 方式C2: DrivingJoints仍为空", "WARN"); }
+                                                else { Log($"  [{res.PointName}] C2: DrivingJoints空", "DEBUG"); }
                                             }
-                                            catch (Exception exC2) { Log($"  [{res.PointName}] 方式C2异常: {exC2.Message}", "WARN"); }
+                                            catch (Exception exC2) { Log($"  [{res.PointName}] C2异常: {exC2.Message}", "WARN"); }
                                             finally { try { if (savedPose != null) robot.CurrentPose = savedPose; } catch { } }
                                         }
                                     }
@@ -1366,24 +1762,20 @@ namespace TxTools.RobotReachabilityChecker
                         res.J5 = joints.Length > 4 ? toDeg(joints[4]) : 0;
                         res.J6 = joints.Length > 5 ? toDeg(joints[5]) : 0;
 
-                        // 默认状态：可达
-                        res.Status = ReachabilityStatus.Reachable;
-                        res.ErrorMessage = errMsg;
-
-                        // ── 各轴软限位余量检查（仅在勾选时执行）─────────────
+                        // ── 综合判定：超限 / 奇异 / 近极限 / 临界 ──────────
                         bool jointCheckEnabled = _chkJointMargin != null && _chkJointMargin.Checked;
                         double marginThresh = _nudJointMarginDeg != null
                             ? (double)_nudJointMarginDeg.Value : 10.0;
-                        var (minMargin, minAxis, axisDetail) = CalcJointMargins(jointLimits, marginThresh,
+
+                        // 同时计算最小余量（用于备注/排序）
+                        var (minMargin, _, _) = CalcJointMargins(jointLimits, marginThresh,
                             res.J1, res.J2, res.J3, res.J4, res.J5, res.J6);
                         res.JointMargin = Math.Round(minMargin, 1);
 
-                        if (jointCheckEnabled && minMargin < marginThresh)
-                        {
-                            res.Status = ReachabilityStatus.NearLimit;
-                            res.ErrorMessage = axisDetail;
-                            Log($"  [{res.PointName}] {axisDetail}", "WARN");
-                        }
+                        string axisNote;
+                        res.Status = AnalyzePoint(res, jointLimits, marginThresh,
+                            jointCheckEnabled, brand, out axisNote);
+                        res.ErrorMessage = axisNote;  // 简短：如 "J5奇异" / "J6近极限(8°)" / "J3临界"
 
                         // ── 点位 XYZ 余量检查（仅在勾选时执行）──────────────
                         if (tcpGlobalEnabled)
@@ -1392,33 +1784,36 @@ namespace TxTools.RobotReachabilityChecker
                             string tcpWarn = CheckTcpXyzMargin(robot, loc, tcpMarginMm);
                             if (!string.IsNullOrEmpty(tcpWarn))
                             {
-                                // TCP 余量不足时升级状态（不可达 > 接近极限 > 可达）
-                                if (res.Status == ReachabilityStatus.Reachable)
+                                // TCP 余量不足升级到 NearLimit（除非已经更严重）
+                                if (res.Status == ReachabilityStatus.Reachable
+                                    || res.Status == ReachabilityStatus.Critical)
                                     res.Status = ReachabilityStatus.NearLimit;
                                 res.ErrorMessage = string.IsNullOrEmpty(res.ErrorMessage)
                                     ? tcpWarn
                                     : res.ErrorMessage + "; " + tcpWarn;
-                                Log($"  [{res.PointName}] TCP余量: {tcpWarn}", "WARN");
                             }
                         }
+
+                        if (res.Status == ReachabilityStatus.Unreachable) fail++;
                     }
                     else
                     {
                         res.Status = ReachabilityStatus.Unreachable;
-                        res.ErrorMessage = string.IsNullOrEmpty(errMsg)
-                            ? "所有方式均无法获取轴值，请检查日志"
-                            : errMsg;
+                        res.ErrorMessage = string.IsNullOrEmpty(errMsg) ? "无法获取轴值" : errMsg;
                         fail++;
                         Log($"  [{res.PointName}] 所有方式失败: {res.ErrorMessage}", "ERR");
                     }
 
                     results.Add(res);
+
+                    // 每完成一个点位上报真实进度（让进度条/状态栏即时反馈）
+                    try { progress?.Invoke(results.Count, locs.Count); } catch { }
                 }
 
                 // 恢复初始姿态
                 try { if (savedPose != null) robot.CurrentPose = savedPose; } catch { }
 
-                Log($"检查完成: 方式A={okA}  方式B={okB}  方式C={okC}  失败={fail}", "OK");
+                Log($"检查完成: A={okA} B={okB} C={okC} 失败={fail}", "OK");
             }
             catch (Exception ex)
             {
@@ -1514,7 +1909,7 @@ namespace TxTools.RobotReachabilityChecker
         private List<ITxRoboticLocationOperation> EnumerateLocations(ITxObject operation)
         {
             var list = new List<ITxRoboticLocationOperation>();
-            Log($"  枚举点位: 操作类型={operation?.GetType().Name ?? "null"}");
+            Log($"  枚举点位: 操作类型={operation?.GetType().Name ?? "null"}", "DEBUG");
 
             // 路径1：复合操作（TxRoboticOperation / TxCompoundOperation）
             if (operation is ITxCompoundOperation comp)
@@ -1523,7 +1918,7 @@ namespace TxTools.RobotReachabilityChecker
                 {
                     var objs = comp.GetAllDescendants(
                         new TxTypeFilter(typeof(ITxRoboticLocationOperation)));
-                    Log($"  ITxCompoundOperation.GetAllDescendants 返回 {objs?.Count ?? 0} 个对象");
+                    Log($"  ITxCompoundOperation.GetAllDescendants 返回 {objs?.Count ?? 0} 个对象", "DEBUG");
                     foreach (ITxObject o in objs)
                         if (o is ITxRoboticLocationOperation l) list.Add(l);
                 }
@@ -1531,7 +1926,7 @@ namespace TxTools.RobotReachabilityChecker
             }
             else
             {
-                Log("  操作不是 ITxCompoundOperation，尝试其他方式...", "WARN");
+                Log("  操作不是 ITxCompoundOperation，尝试其他方式...", "DEBUG");
             }
 
             // 路径2：尝试 dynamic GetDirectDescendants / GetAllDescendants
@@ -1542,21 +1937,21 @@ namespace TxTools.RobotReachabilityChecker
                     dynamic dop = operation;
                     TxObjectList objs = dop.GetAllDescendants(
                         new TxTypeFilter(typeof(ITxRoboticLocationOperation)));
-                    Log($"  dynamic.GetAllDescendants 返回 {objs?.Count ?? 0} 个对象");
+                    Log($"  dynamic.GetAllDescendants 返回 {objs?.Count ?? 0} 个对象", "DEBUG");
                     foreach (ITxObject o in objs)
                         if (o is ITxRoboticLocationOperation l) list.Add(l);
                 }
-                catch (Exception ex) { Log($"  dynamic.GetAllDescendants 异常: {ex.Message}", "WARN"); }
+                catch (Exception ex) { Log($"  dynamic.GetAllDescendants 异常: {ex.Message}", "DEBUG"); }
             }
 
             // 路径3：操作本身就是一个 LocationOperation
             if (list.Count == 0 && operation is ITxRoboticLocationOperation self)
             {
-                Log("  操作本身是 ITxRoboticLocationOperation，作为单点处理");
+                Log("  操作本身是 ITxRoboticLocationOperation，作为单点处理", "DEBUG");
                 list.Add(self);
             }
 
-            Log($"  枚举结果: {list.Count} 个点位");
+            Log($"  枚举结果: {list.Count} 个点位", "DEBUG");
             return list;
         }
 
@@ -1571,13 +1966,13 @@ namespace TxTools.RobotReachabilityChecker
             TxTransformation tx = null;
 
             // 策略1：AbsoluteLocation（绝对世界坐标，PS 中最标准的属性名）
-            try { dynamic d = loc; var v = d.AbsoluteLocation; if (v is TxTransformation t && t != null) { tx = t; Log($"    GetLocationTransform: AbsoluteLocation OK"); return tx; } } catch { }
+            try { dynamic d = loc; var v = d.AbsoluteLocation; if (v is TxTransformation t && t != null) { tx = t; Log($"    GetLocationTransform: AbsoluteLocation OK", "DEBUG"); return tx; } } catch { }
 
             // 策略2：AbsoluteFrame
-            try { dynamic d = loc; var v = d.AbsoluteFrame; if (v is TxTransformation t && t != null) { tx = t; Log($"    GetLocationTransform: AbsoluteFrame OK"); return tx; } } catch { }
+            try { dynamic d = loc; var v = d.AbsoluteFrame; if (v is TxTransformation t && t != null) { tx = t; Log($"    GetLocationTransform: AbsoluteFrame OK", "DEBUG"); return tx; } } catch { }
 
             // 策略3：LocationInWorld（部分版本）
-            try { dynamic d = loc; var v = d.LocationInWorld; if (v is TxTransformation t && t != null) { tx = t; Log($"    GetLocationTransform: LocationInWorld OK"); return tx; } } catch { }
+            try { dynamic d = loc; var v = d.LocationInWorld; if (v is TxTransformation t && t != null) { tx = t; Log($"    GetLocationTransform: LocationInWorld OK", "DEBUG"); return tx; } } catch { }
 
             // 策略4：通过 ITxLocatableObject 接口（PS 的通用定位接口）
             try
@@ -1585,7 +1980,7 @@ namespace TxTools.RobotReachabilityChecker
                 if (loc is ITxLocatableObject lobj)
                 {
                     tx = lobj.AbsoluteLocation;
-                    if (tx != null) { Log($"    GetLocationTransform: ITxLocatableObject.AbsoluteLocation OK"); return tx; }
+                    if (tx != null) { Log($"    GetLocationTransform: ITxLocatableObject.AbsoluteLocation OK", "DEBUG"); return tx; }
                 }
             }
             catch { }
@@ -1621,12 +2016,206 @@ namespace TxTools.RobotReachabilityChecker
         // 新策略：
         //   源1: robot.Joints（ITxKinematicsModellable，运动学关节，与 DrivingJoints 不同类型）
         //   源2: DrivingJoints + 反射枚举属性
+        // =====================================================================
+        // 奇异/临界/单轴问题判定 工具方法
+        // =====================================================================
+
+        // 解析"自动"品牌：如果用户在 UI 选了具体品牌，直接用；否则按机器人名前缀猜
+        private RobotBrand ResolveBrand(string robotName)
+        {
+            // UI 品牌选择优先
+            if (_cbBrand != null && _cbBrand.SelectedIndex > 0)
+            {
+                switch (_cbBrand.SelectedItem?.ToString())
+                {
+                    case "KUKA": return RobotBrand.KUKA;
+                    case "ABB": return RobotBrand.ABB;
+                    case "FANUC": return RobotBrand.FANUC;
+                    case "其他": return RobotBrand.Other;
+                }
+            }
+
+            // 自动模式：按名字前缀猜
+            string n = (robotName ?? "").ToUpper();
+            if (n.Contains("KR") || n.Contains("KUKA")) return RobotBrand.KUKA;
+            if (n.Contains("IRB") || n.Contains("ABB")) return RobotBrand.ABB;
+            if (n.Contains("FANUC") || n.Contains("R200")) return RobotBrand.FANUC;
+            return RobotBrand.Other;
+        }
+
+        // 临界带定义：每条 (lo, hi) 闭区间，落入即判为临界
+        // 数据来源：用户提供的临界点规则图（KUKA / ABB / FANUC）
+        // 用静态字段 + 静态构造函数初始化，避免依赖 C# 6 字典初始化器在
+        // 嵌套泛型场景下与 C# 7.3 解析器的兼容性问题
+        private static readonly Dictionary<RobotBrand, List<(double lo, double hi)>> CriticalBands
+            = BuildCriticalBands();
+
+        private static Dictionary<RobotBrand, List<(double lo, double hi)>> BuildCriticalBands()
+        {
+            var d = new Dictionary<RobotBrand, List<(double lo, double hi)>>();
+            d.Add(RobotBrand.KUKA, new List<(double lo, double hi)>
+            {
+                (-5.0, 5.0)   // 1/3/5 轴 ±5°
+            });
+            d.Add(RobotBrand.ABB, new List<(double lo, double hi)>
+            {
+                (-275, -265), (-185, -175), (-95, -85), (-5, 5),
+                (85, 95), (175, 185), (265, 275)
+            });
+            d.Add(RobotBrand.FANUC, new List<(double lo, double hi)>
+            {
+                (-185, -175), (175, 185)
+            });
+            d.Add(RobotBrand.Other, new List<(double lo, double hi)>
+            {
+                (-5, 5)
+            });
+            return d;
+        }
+
+        // 判断一个轴值是否落入"临界带"
+        // axisIdx: 0..5 对应 J1..J6（仅 1/3/5 轴需要判定，其他直接返回 false）
+        private bool IsInCriticalBand(double valDeg, int axisIdx, RobotBrand brand)
+        {
+            // 临界点只关注 1、3、5 轴（图示规则限定）
+            if (axisIdx != 0 && axisIdx != 2 && axisIdx != 4) return false;
+
+            List<(double lo, double hi)> bands;
+            if (!CriticalBands.TryGetValue(brand, out bands)) return false;
+            for (int i = 0; i < bands.Count; i++)
+            {
+                double lo = bands[i].lo;
+                double hi = bands[i].hi;
+                if (valDeg >= lo && valDeg <= hi) return true;
+            }
+            return false;
+        }
+
+        // 奇异点：J5 ∈ [-10°, +10°]（腕部奇异，所有品牌通用）
+        private bool IsJ5Singular(double j5Deg) => Math.Abs(j5Deg) <= 10.0;
+
+        // 综合分析单个点位：填充 AxisFlags 并返回最终 Status
+        //
+        // 严重性顺序：Unreachable > Singular > NearLimit > Critical > Reachable
+        // —— 每个轴单独打 flag，但点位整体状态取所有轴中最严重的那个
+        private ReachabilityStatus AnalyzePoint(PathPointResult res,
+            List<(double lo, double hi)> jointLimits, double nearThresh,
+            bool jointCheckEnabled, RobotBrand brand,
+            out string axisDetail)
+        {
+            axisDetail = "";
+            double[] vals = { res.J1, res.J2, res.J3, res.J4, res.J5, res.J6 };
+            res.AxisFlags = new AxisFlag[6];
+
+            // 整体最严重等级（数值越大越严重，最后映射回枚举）
+            int worstLevel = 0;  // 0=Reachable, 1=Critical, 2=NearLimit, 3=Singular, 4=Unreachable
+            string firstNote = "";
+
+            for (int i = 0; i < 6; i++)
+            {
+                AxisFlag f = AxisFlag.None;
+                double v = vals[i];
+
+                // (1) 轴超限 / 近极限（只在勾选时启用）
+                if (i < jointLimits.Count)
+                {
+                    var (lo, hi) = jointLimits[i];
+                    if (lo != hi)  // 限位有效
+                    {
+                        if (v < lo - 0.001 || v > hi + 0.001)
+                        {
+                            f |= AxisFlag.OverLimit;
+                            if (worstLevel < 4) { worstLevel = 4; firstNote = $"J{i + 1}超限"; }
+                        }
+                        else if (jointCheckEnabled)
+                        {
+                            double margin = Math.Min(v - lo, hi - v);
+                            if (margin < nearThresh)
+                            {
+                                f |= AxisFlag.NearLimit;
+                                if (worstLevel < 2)
+                                {
+                                    worstLevel = 2;
+                                    firstNote = $"J{i + 1}近极限({margin:F0}°)";
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // (2) J5 奇异（覆盖临界 — 优先级高）
+                if (i == 4 && IsJ5Singular(v))
+                {
+                    f |= AxisFlag.Singular;
+                    if (worstLevel < 3) { worstLevel = 3; firstNote = "J5奇异"; }
+                }
+                else if (IsInCriticalBand(v, i, brand))
+                {
+                    // (3) 临界带 — 仅在没有更严重问题时才标
+                    f |= AxisFlag.Critical;
+                    if (worstLevel < 1) { worstLevel = 1; firstNote = $"J{i + 1}临界"; }
+                }
+
+                res.AxisFlags[i] = f;
+            }
+
+            axisDetail = firstNote;
+
+            switch (worstLevel)
+            {
+                case 4: return ReachabilityStatus.Unreachable;
+                case 3: return ReachabilityStatus.Singular;
+                case 2: return ReachabilityStatus.NearLimit;
+                case 1: return ReachabilityStatus.Critical;
+                default: return ReachabilityStatus.Reachable;
+            }
+        }
+
+        // IK 多解优选：从所有解中挑离当前关节姿态 L1 距离最近的一个
+        // 这样能避免选到 J6 = +341° 这种与机器人当前 -18° 等价但显得超限的解
+        private TxPoseData PickClosestSolution(System.Collections.ArrayList solutions,
+            double[] currentDeg, int djCount)
+        {
+            if (solutions == null || solutions.Count == 0) return null;
+            if (solutions.Count == 1 || currentDeg == null) return solutions[0] as TxPoseData;
+
+            TxPoseData best = solutions[0] as TxPoseData;
+            double bestDist = double.MaxValue;
+
+            foreach (var item in solutions)
+            {
+                var pd = item as TxPoseData;
+                if (pd == null) continue;
+
+                double[] vals = TryExtractPoseValues(pd, djCount);
+                if (vals == null || vals.Length == 0) continue;
+
+                // 单位归一：从 PoseData 取出的可能是弧度，先转度
+                double maxAbs = vals.Max(Math.Abs);
+                bool isRad = maxAbs > 0 && maxAbs <= 2 * Math.PI + 0.05;
+                double[] valsDeg = isRad
+                    ? vals.Select(v => v * 180.0 / Math.PI).ToArray()
+                    : vals;
+
+                // L1 距离（不加权）
+                double dist = 0;
+                int n = Math.Min(valsDeg.Length, currentDeg.Length);
+                for (int i = 0; i < n; i++)
+                    dist += Math.Abs(valsDeg[i] - currentDeg[i]);
+
+                if (dist < bestDist) { bestDist = dist; best = pd; }
+            }
+            return best;
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // 读取机器人各轴的软限位
+        // 来源优先级：
+        //   源1: robot.Joints（运动学关节，最权威）
+        //   源2: robot.DrivingJoints（驱动轴反射）
         //   源3: robot.GetParameter / GetAllInstanceParameters
         //   源4: robot.Attributes (自定义属性)
-        //
-        // 参考 Robot Jog 截图（KR210_R2700-2）：
-        //   J1: -185 ~ 185,  J2: -140 ~ -5,  J3: -120 ~ 168
-        //   J4: -350 ~ 350,  J5: -125 ~ 125,  J6: -350 ~ 350
+        // ─────────────────────────────────────────────────────────────────────
         private List<(double lo, double hi)> GetJointLimits(TxRobot robot)
         {
             var limits = new List<(double lo, double hi)>();
@@ -1637,6 +2226,48 @@ namespace TxTools.RobotReachabilityChecker
             int djCount = 0;
             try { djCount = robot.DrivingJoints?.Count ?? 6; } catch { djCount = 6; }
             if (djCount <= 0) djCount = 6;
+
+            // 诊断：打印 robot.Joints 和 robot.DrivingJoints 的实际内容
+            try
+            {
+                Log($"  [诊断] DrivingJoints.Count = {djCount}");
+                var diagAll = robot.Joints;
+                if (diagAll != null)
+                {
+                    Log($"  [诊断] Joints.Count = {diagAll.Count}, 内容如下：");
+                    int di = 0;
+                    foreach (object j in diagAll)
+                    {
+                        string n = "?", t = "?", val = "?", lo = "?", hi = "?", jt = "?";
+                        try { dynamic dj = j; n = dj.Name?.ToString() ?? "(空)"; } catch { }
+                        try { t = j.GetType().Name; } catch { }
+                        try { dynamic dj = j; val = dj.CurrentValue.ToString("F2"); } catch { }
+                        try { dynamic dj = j; lo = dj.LowerLimit.ToString("F2"); } catch { }
+                        try { dynamic dj = j; hi = dj.UpperLimit.ToString("F2"); } catch { }
+                        try { dynamic dj = j; jt = dj.JointType?.ToString() ?? "?"; } catch { }
+                        Log($"    [{di}] Name={n}, Type={t}, JointType={jt}, Cur={val}, Lim=[{lo},{hi}]");
+                        di++;
+                    }
+                }
+                var diagDriving = robot.DrivingJoints;
+                if (diagDriving != null)
+                {
+                    Log($"  [诊断] DrivingJoints 内容：");
+                    int di = 0;
+                    foreach (object j in diagDriving)
+                    {
+                        string n = "?", t = "?";
+                        try { dynamic dj = j; n = dj.Name?.ToString() ?? "(空)"; } catch { }
+                        try { t = j.GetType().Name; } catch { }
+                        Log($"    [{di}] Name={n}, Type={t}");
+                        di++;
+                    }
+                }
+            }
+            catch (Exception exDiag)
+            {
+                Log($"  [诊断] 关节枚举异常: {exDiag.Message}", "WARN");
+            }
 
             try
             {
@@ -1652,7 +2283,7 @@ namespace TxTools.RobotReachabilityChecker
                         if (lim.HasValue)
                         {
                             limits.Add(lim.Value);
-                            Log($"  J{jIdx + 1} 限位(Joints): [{lim.Value.lo:F4}, {lim.Value.hi:F4}]", "OK");
+                            Log($"  J{jIdx + 1} 限位(Joints): [{lim.Value.lo:F4}, {lim.Value.hi:F4}]", "DEBUG");
                         }
                         jIdx++;
                     }
@@ -1677,7 +2308,7 @@ namespace TxTools.RobotReachabilityChecker
                 TxObjectList dj = robot.DrivingJoints;
                 if (dj != null && dj.Count > 0)
                 {
-                    Log($"  尝试 DrivingJoints 反射: {dj.Count} 个关节");
+                    Log($"  尝试 DrivingJoints 反射: {dj.Count} 个关节", "DEBUG");
                     // 先对第一个关节枚举所有属性，找出可能的限位属性名
                     object firstJoint = null;
                     foreach (object jj in dj) { firstJoint = jj; break; }
@@ -1712,7 +2343,7 @@ namespace TxTools.RobotReachabilityChecker
                         if (lim.HasValue)
                         {
                             limits.Add(lim.Value);
-                            Log($"  J{jIdx + 1} 限位(DrivingJoints): [{lim.Value.lo:F1}, {lim.Value.hi:F1}]");
+                            Log($"  J{jIdx + 1} 限位(DrivingJoints): [{lim.Value.lo:F1}, {lim.Value.hi:F1}]", "DEBUG");
                         }
                         jIdx++;
                     }
@@ -1730,7 +2361,7 @@ namespace TxTools.RobotReachabilityChecker
             // ── 源3：robot.GetParameter / GetAllInstanceParameters ──────
             try
             {
-                Log("  尝试 robot.GetParameter 方式获取限位...");
+                Log("  尝试 robot.GetParameter 方式获取限位...", "DEBUG");
                 for (int i = 1; i <= 6; i++)
                 {
                     double lo = -360, hi = 360;
@@ -1742,7 +2373,7 @@ namespace TxTools.RobotReachabilityChecker
                         try { dynamic v = robot.GetParameter(n); lo = Convert.ToDouble(v); got = true; break; } catch { }
                     foreach (string n in hiNames)
                         try { dynamic v = robot.GetParameter(n); hi = Convert.ToDouble(v); got = true; break; } catch { }
-                    if (got) Log($"  J{i} 限位(GetParameter): [{lo:F1}, {hi:F1}]");
+                    if (got) Log($"  J{i} 限位(GetParameter): [{lo:F1}, {hi:F1}]", "DEBUG");
                     limits.Add((lo, hi));
                 }
                 if (limits.Any(l => Math.Abs(l.hi - l.lo) < 719))
@@ -1778,14 +2409,14 @@ namespace TxTools.RobotReachabilityChecker
                         catch { }
                     }
                     if (count > 0) Log(paramSb.ToString());
-                    else Log("  InstanceParameters 中无限位相关参数");
+                    else Log("  InstanceParameters 中无限位相关参数", "DEBUG");
                 }
             }
             catch (Exception ex) { Log($"  GetAllInstanceParameters 异常: {ex.Message}", "WARN"); }
 
             // ── 全部失败：返回默认限位并警告 ───────────────────────────
             Log("  ⚠ 所有方式均无法获取关节限位，使用默认值 [-360, 360]", "WARN");
-            Log("  请在日志中查看 DrivingJoint 属性列表，将包含限位的属性名反馈给开发者", "WARN");
+            Log("  请在日志中查看 DrivingJoint 属性列表，将包含限位的属性名反馈给开发者", "DEBUG");
             limits.Clear();
             for (int i = 0; i < 6; i++) limits.Add((-360, 360));
             return limits;
@@ -1870,12 +2501,12 @@ namespace TxTools.RobotReachabilityChecker
                 l => Math.Abs(l.lo) <= 2 * Math.PI + 0.5 && Math.Abs(l.hi) <= 2 * Math.PI + 0.5);
             if (allSmall)
             {
-                Log("  关节限位判定为弧度制，转换为度");
+                Log("  关节限位判定为弧度制，转换为度", "DEBUG");
                 for (int i = 0; i < limits.Count; i++)
                     limits[i] = (limits[i].lo * 180.0 / Math.PI, limits[i].hi * 180.0 / Math.PI);
             }
             for (int i = 0; i < limits.Count; i++)
-                Log($"  J{i + 1} 最终限位(度): [{limits[i].lo:F1}, {limits[i].hi:F1}]");
+                Log($"  J{i + 1} 最终限位(度): [{limits[i].lo:F1}, {limits[i].hi:F1}]", "DEBUG");
         }
 
         /// <summary>
@@ -2087,14 +2718,92 @@ namespace TxTools.RobotReachabilityChecker
         {
             if (operation == null) return null;
 
+            // ── 诊断：场景中所有同名机器人是否有多台？──────────────────────
+            // 如果有，使用 .Robot 属性返回的可能跟用户期望的不是同一台
+            try
+            {
+                if (doc != null)
+                {
+                    var allRobots = doc.PhysicalRoot.GetAllDescendants(new TxTypeFilter(typeof(TxRobot)));
+                    Log($"  [诊断] 场景中机器人总数: {allRobots.Count}");
+
+                    // 按名字分组
+                    var byName = new Dictionary<string, List<TxRobot>>();
+                    foreach (ITxObject ro in allRobots)
+                    {
+                        if (ro is TxRobot r)
+                        {
+                            string n = r.Name ?? "";
+                            if (!byName.ContainsKey(n)) byName[n] = new List<TxRobot>();
+                            byName[n].Add(r);
+                        }
+                    }
+
+                    foreach (var kv in byName)
+                    {
+                        if (kv.Value.Count > 1)
+                        {
+                            Log($"  [诊断] ⚠ 发现 {kv.Value.Count} 台同名机器人 '{kv.Key}'，详情：", "WARN");
+                            for (int i = 0; i < kv.Value.Count; i++)
+                            {
+                                var r = kv.Value[i];
+                                string baseName = "?";
+                                string parentName = "?";
+                                string poseDesc = "?";
+                                int hash = 0;
+                                try { hash = r.GetHashCode(); } catch { }
+                                try { dynamic d = r; parentName = d.Parent?.Name?.ToString() ?? "(root)"; } catch { }
+                                try { dynamic d = r; baseName = d.Baseframe?.Name?.ToString() ?? "?"; } catch { }
+                                try
+                                {
+                                    var joints = r.Joints;
+                                    if (joints != null && joints.Count > 0)
+                                    {
+                                        var sb = new System.Text.StringBuilder();
+                                        int ji = 0;
+                                        foreach (object jx in joints)
+                                        {
+                                            if (ji >= 6) break;
+                                            try { dynamic dj = jx; sb.Append((dj.CurrentValue * 180.0 / Math.PI).ToString("F0")); }
+                                            catch { sb.Append("?"); }
+                                            sb.Append(",");
+                                            ji++;
+                                        }
+                                        poseDesc = "[" + sb.ToString().TrimEnd(',') + "]°";
+                                    }
+                                }
+                                catch { }
+                                Log($"    #{i}: HashCode={hash}, Parent={parentName}, Base={baseName}, J1-6={poseDesc}");
+                            }
+                        }
+                        else
+                        {
+                            Log($"  [诊断] 机器人: '{kv.Key}' x1");
+                        }
+                    }
+                }
+            }
+            catch (Exception exDiag) { Log($"  [诊断] 机器人枚举异常: {exDiag.Message}", "WARN"); }
+
             // 方式1：直接访问 Robot 属性（TxRoboticOperation / TxWeldOperation 均有此属性）
-            try { dynamic dop = operation; var r = dop.Robot as TxRobot; if (r != null) { Log($"  关联机器人(方式1 .Robot): {r.Name}"); return r; } } catch { }
+            try
+            {
+                dynamic dop = operation;
+                var r = dop.Robot as TxRobot;
+                if (r != null)
+                {
+                    // 用 hashcode 帮助区分同名机器人是否是同一个对象实例
+                    Log($"  关联机器人(.Robot): '{r.Name}' (HashCode={r.GetHashCode()})");
+                    return r;
+                }
+            }
+            catch { }
 
             // 方式2：Device 属性（部分 PS 版本）
-            try { dynamic dop = operation; var r = dop.Device as TxRobot; if (r != null) { Log($"  关联机器人(方式2 .Device): {r.Name}"); return r; } } catch { }
+            try { dynamic dop = operation; var r = dop.Device as TxRobot; if (r != null) { Log($"  关联机器人(.Device): {r.Name}", "DEBUG"); return r; } } catch { }
 
             // 方式3：RobotDevice 属性
-            try { dynamic dop = operation; var r = dop.RobotDevice as TxRobot; if (r != null) { Log($"  关联机器人(方式3 .RobotDevice): {r.Name}"); return r; } } catch { }
+            try { dynamic dop = operation; var r = dop.RobotDevice as TxRobot; if (r != null) { Log($"  关联机器人(.RobotDevice): {r.Name}", "DEBUG"); return r; } } catch { }
 
             // 方式4：向上遍历 Parent 链，找到 TxRobot 类型节点
             try
@@ -2105,7 +2814,7 @@ namespace TxTools.RobotReachabilityChecker
                     object parent = null;
                     try { parent = cur.Parent; } catch { break; }
                     if (parent == null) break;
-                    if (parent is TxRobot rp) { Log($"  关联机器人(方式4 Parent链 depth={depth}): {rp.Name}"); return rp; }
+                    if (parent is TxRobot rp) { Log($"  关联机器人(Parent链 depth={depth}): {rp.Name}", "DEBUG"); return rp; }
                     cur = parent;
                 }
             }
@@ -2250,26 +2959,37 @@ namespace TxTools.RobotReachabilityChecker
             try
             {
                 var locs = EnumerateLocations(op as ITxObject);
-                _grid.Rows.Count = _grid.Rows.Fixed + locs.Count;
-                _rowToResult.Clear();
 
-                // 获取关联机器人名
-                string robotName = "";
-                try { dynamic dop = op; robotName = (dop.Robot as TxRobot)?.Name ?? ""; } catch { }
-
-                for (int i = 0; i < locs.Count; i++)
+                bool savedRedraw = _grid.Redraw;
+                _grid.Redraw = false;
+                try
                 {
-                    int row = i + _grid.Rows.Fixed;
-                    var loc = locs[i];
-                    string ptType = loc.GetType().Name.Contains("Weld") ? "Weld" : "Via";
+                    _grid.Rows.Count = _grid.Rows.Fixed + locs.Count;
+                    _rowToResult.Clear();
 
-                    _grid[row, COL_IDX] = (i + 1).ToString();
-                    _grid[row, COL_BRAND] = "";
-                    _grid[row, COL_ROBOT] = robotName;
-                    _grid[row, COL_OP] = op.Name;
-                    _grid[row, COL_PT] = loc.Name ?? $"P{i + 1}";
-                    _grid[row, COL_TYPE] = ptType;
-                    _grid[row, COL_RESULT] = "未检查";
+                    // 获取关联机器人名
+                    string robotName = "";
+                    try { dynamic dop = op; robotName = (dop.Robot as TxRobot)?.Name ?? ""; } catch { }
+
+                    for (int i = 0; i < locs.Count; i++)
+                    {
+                        int row = i + _grid.Rows.Fixed;
+                        var loc = locs[i];
+                        string ptType = loc.GetType().Name.Contains("Weld") ? "Weld" : "Via";
+
+                        _grid[row, COL_IDX] = (i + 1).ToString();
+                        _grid[row, COL_BRAND] = "";
+                        _grid[row, COL_ROBOT] = robotName;
+                        _grid[row, COL_OP] = op.Name;
+                        _grid[row, COL_PT] = loc.Name ?? $"P{i + 1}";
+                        _grid[row, COL_TYPE] = ptType;
+                        _grid[row, COL_RESULT] = "未检查";
+                    }
+                }
+                finally
+                {
+                    _grid.Redraw = savedRedraw;
+                    _grid.Refresh();
                 }
                 SetStatus($"路径 [{op.Name}]，{locs.Count} 个点位");
             }
@@ -2305,66 +3025,72 @@ namespace TxTools.RobotReachabilityChecker
             _tsProgress.ProgressBar.Value = 0;
             SetStatus($"正在检查 [{opName}]...", ClrAccent);
             Log($"========================================");
-            Log($"开始检查任务: 路径={opName}");
+            Log($"开始检查任务: {opName}");
 
-            _checkProgress = 0;
-            int total = 15;
-            try
-            {
-                var doc = TxApplication.ActiveDocument;
-                if (doc != null)
-                {
-                    var op = FindOperationByName(doc, opName);
-                    if (op is ITxCompoundOperation c)
-                    {
-                        var locs = c.GetAllDescendants(
-                            new TxTypeFilter(typeof(ITxRoboticLocationOperation)));
-                        if (locs != null && locs.Count > 0) total = locs.Count;
-                    }
-                }
-            }
-            catch { }
+            // 保存当前拾取的对象实例引用（仅当名字匹配时使用）
+            // 在 BeginInvoke 闭包外捕获，避免后续 _pickedOperation 被改变后影响检查
+            ITxObject preferredOpForCheck =
+                (_pickedOperation != null && _pickedOperation.Name == opName) ? _pickedOperation : null;
 
-            _checkTimer = new System.Windows.Forms.Timer { Interval = 60 };
-            _checkTimer.Tick += (s, ev) =>
+            // 真实进度：在 CheckReachabilityViaPS 里通过 _progressCallback 回调上来
+            // 不再用假 timer 累加进度（旧实现 60ms × N 等待，再一次性同步检查）
+            //
+            // 注意：检查仍在 UI 线程同步执行（PS API 大多不是线程安全的），
+            // 但通过 BeginInvoke 让进度更新和重绘穿插在每个点位之间，
+            // UI 不会完全卡死，且最后一个点不会再有"延迟到结束才显示"的卡顿
+            this.BeginInvoke(new Action(() =>
             {
-                _checkProgress++;
-                _tsProgress.ProgressBar.Value = Math.Min((int)((double)_checkProgress / total * 100), 100);
-                SetStatus($"检查中... {_checkProgress}/{total}");
-                if (_checkProgress >= total)
+                List<PathPointResult> results = null;
+                try
                 {
-                    _checkTimer.Stop();
-                    var results = CheckReachabilityViaPS(opName);
-                    string robotName = results.Count > 0 ? results[0].RobotName : "未知";
-                    var task = new RobotPathCheckTask
+                    results = CheckReachabilityViaPS(opName, (done, total) =>
                     {
-                        RobotName = robotName,
-                        PathName = opName,
-                        CheckTime = DateTime.Now,
-                        Results = results
-                    };
-                    _tasks.Add(task);
-                    _currentTask = task;
-                    RefreshGrid(results);
-                    UpdateSummaryCards(task);
-                    if (remaining != null && remaining.Count > 0)
-                    {
-                        // 继续检查下一条路径
-                        StartCheck(remaining[0], remaining.Count > 1 ? remaining.Skip(1).ToList() : null);
-                    }
-                    else
-                    {
-                        _tsProgress.Visible = false;
-                        _tsBtnRefresh.Enabled = true;
-                        SetStatus(
-                            $"✓ 完成 | {task.TotalPoints} 点 | " +
-                            $"可达 {task.ReachableCount} | 不可达 {task.UnreachableCount} | " +
-                            $"近极限 {task.NearLimitCount} | 可达率 {task.ReachabilityRate:F1}%",
-                            ClrSuccess);
-                    }
+                        if (_tsProgress?.ProgressBar != null)
+                        {
+                            int pct = total > 0 ? Math.Min(done * 100 / total, 100) : 0;
+                            _tsProgress.ProgressBar.Value = pct;
+                        }
+                        SetStatus($"检查中 [{opName}] {done}/{total}");
+                        // 让进度条/状态栏立即刷新
+                        Application.DoEvents();
+                    }, preferredOpForCheck);
                 }
-            };
-            _checkTimer.Start();
+                catch (Exception ex)
+                {
+                    Log($"检查任务异常: {ex.Message}", "ERR");
+                    results = new List<PathPointResult>();
+                }
+
+                string robotName = (results != null && results.Count > 0) ? results[0].RobotName : "未知";
+                var task = new RobotPathCheckTask
+                {
+                    RobotName = robotName,
+                    PathName = opName,
+                    CheckTime = DateTime.Now,
+                    Results = results ?? new List<PathPointResult>()
+                };
+                _tasks.Add(task);
+                _currentTask = task;
+                RefreshGrid(task.Results);
+                UpdateSummaryCards(task);
+
+                if (remaining != null && remaining.Count > 0)
+                {
+                    // 继续检查下一条路径
+                    StartCheck(remaining[0], remaining.Count > 1 ? remaining.Skip(1).ToList() : null);
+                }
+                else
+                {
+                    _tsProgress.Visible = false;
+                    _tsBtnRefresh.Enabled = true;
+                    SetStatus(
+                        $"✓ 完成 | {task.TotalPoints} 点 | " +
+                        $"可达 {task.ReachableCount} | 不可达 {task.UnreachableCount} | " +
+                        $"近极限 {task.NearLimitCount} | 奇异 {task.SingularCount} | 临界 {task.CriticalCount} | " +
+                        $"可达率 {task.ReachabilityRate:F1}%",
+                        ClrSuccess);
+                }
+            }));
         }
 
         private void RefreshGrid(List<PathPointResult> results)
@@ -2372,59 +3098,104 @@ namespace TxTools.RobotReachabilityChecker
             if (_grid == null) return;
             var filtered = ApplyFilter(results);
 
-            _grid.Rows.Count = _grid.Rows.Fixed + filtered.Count;
-            _rowToResult.Clear();
-
-            // 识别机器人品牌（从机器人名称前缀推断）
-            static string GuessBrand(string robotName)
+            // 关键性能优化：用 Redraw=false 包围批量赋值，避免每个单元格触发重绘
+            // 52 行 × 14 列 = 728 次单元格写入，未关闭重绘时累计延迟可达数百毫秒
+            bool savedRedraw = _grid.Redraw;
+            _grid.Redraw = false;
+            try
             {
-                string n = robotName?.ToUpper() ?? "";
-                if (n.Contains("KR") || n.Contains("KUKA")) return "KUKA";
-                if (n.Contains("IRB") || n.Contains("ABB")) return "ABB";
-                if (n.Contains("FANUC") || n.Contains("R200")) return "FANUC";
-                if (n.Contains("YASKAWA") || n.Contains("MH")) return "YASKAWA";
-                if (n.Contains("BA") || n.Contains("OTC")) return "OTC";
-                return "—";
+                _grid.Rows.Count = _grid.Rows.Fixed + filtered.Count;
+                _rowToResult.Clear();
+
+                // 识别机器人品牌（从机器人名称前缀推断）
+                static string GuessBrand(string robotName)
+                {
+                    string n = robotName?.ToUpper() ?? "";
+                    if (n.Contains("KR") || n.Contains("KUKA")) return "KUKA";
+                    if (n.Contains("IRB") || n.Contains("ABB")) return "ABB";
+                    if (n.Contains("FANUC") || n.Contains("R200")) return "FANUC";
+                    if (n.Contains("YASKAWA") || n.Contains("MH")) return "YASKAWA";
+                    if (n.Contains("BA") || n.Contains("OTC")) return "OTC";
+                    return "—";
+                }
+
+                for (int i = 0; i < filtered.Count; i++)
+                {
+                    var r = filtered[i];
+                    int row = i + _grid.Rows.Fixed;
+                    _rowToResult[row] = r;
+
+                    string jStr(double v) => r.Status == ReachabilityStatus.NotChecked ? "" : v.ToString("F1");
+                    string statusText =
+                          r.Status == ReachabilityStatus.Reachable ? "正常"
+                        : r.Status == ReachabilityStatus.Unreachable ? "不可达"
+                        : r.Status == ReachabilityStatus.NearLimit ? "接近极限"
+                        : r.Status == ReachabilityStatus.Singular ? "奇异"
+                        : r.Status == ReachabilityStatus.Critical ? "临界"
+                        : "未检查";
+
+                    _grid[row, COL_IDX] = r.Index.ToString();
+                    _grid[row, COL_BRAND] = GuessBrand(r.RobotName);
+                    _grid[row, COL_ROBOT] = r.RobotName;
+                    _grid[row, COL_OP] = r.OperationName;
+                    _grid[row, COL_PT] = r.PointName;
+                    _grid[row, COL_TYPE] = r.PointType;
+                    _grid[row, COL_J1] = jStr(r.J1);
+                    _grid[row, COL_J2] = jStr(r.J2);
+                    _grid[row, COL_J3] = jStr(r.J3);
+                    _grid[row, COL_J4] = jStr(r.J4);
+                    _grid[row, COL_J5] = jStr(r.J5);
+                    _grid[row, COL_J6] = jStr(r.J6);
+                    _grid[row, COL_RESULT] = statusText;
+                    _grid[row, COL_NOTE] = r.ErrorMessage;
+
+                    // 行背景色：按整体状态着色
+                    var rowStyle = _grid.Rows[row].Style ?? _grid.Styles.Add($"rs{row}");
+                    System.Drawing.Color bg =
+                          r.Status == ReachabilityStatus.Reachable ? TxClrRowOk.Color
+                        : r.Status == ReachabilityStatus.Unreachable ? TxClrRowFail.Color
+                        : r.Status == ReachabilityStatus.NearLimit ? TxClrRowWarn.Color
+                        : r.Status == ReachabilityStatus.Singular ? TxClrRowSingular.Color
+                        : r.Status == ReachabilityStatus.Critical ? TxClrRowCritical.Color
+                        : (i % 2 == 0 ? SystemColors.Window : TxClrGridAlt.Color);
+                    rowStyle.BackColor = bg;
+                    _grid.Rows[row].Style = rowStyle;
+
+                    // ── 单元格级染色：J1..J6 哪个轴有问题，染该单元格 ──
+                    // 优先级：超限 > 奇异 > 近极限 > 临界
+                    if (r.AxisFlags != null)
+                    {
+                        int[] jCols = { COL_J1, COL_J2, COL_J3, COL_J4, COL_J5, COL_J6 };
+                        for (int ax = 0; ax < 6 && ax < r.AxisFlags.Length; ax++)
+                        {
+                            AxisFlag af = r.AxisFlags[ax];
+                            if (af == AxisFlag.None) continue;
+
+                            System.Drawing.Color cellBg;
+                            System.Drawing.Color cellFg = System.Drawing.Color.Black;
+                            if ((af & AxisFlag.OverLimit) != 0)
+                            { cellBg = TxClrCellOver.Color; cellFg = System.Drawing.Color.White; }
+                            else if ((af & AxisFlag.Singular) != 0)
+                            { cellBg = TxClrCellSingular.Color; cellFg = System.Drawing.Color.White; }
+                            else if ((af & AxisFlag.NearLimit) != 0)
+                            { cellBg = TxClrCellNear.Color; }
+                            else if ((af & AxisFlag.Critical) != 0)
+                            { cellBg = TxClrCellCritical.Color; }
+                            else continue;
+
+                            var cs = _grid.Styles.Add($"cs{row}_{ax}");
+                            cs.BackColor = cellBg;
+                            cs.ForeColor = cellFg;
+                            _grid.SetCellStyle(row, jCols[ax], cs);
+                        }
+                    }
+                }
             }
-
-            for (int i = 0; i < filtered.Count; i++)
+            finally
             {
-                var r = filtered[i];
-                int row = i + _grid.Rows.Fixed;
-                _rowToResult[row] = r;
-
-                string jStr(double v) => r.Status == ReachabilityStatus.NotChecked ? "" : v.ToString("F1");
-                string statusText = r.Status == ReachabilityStatus.Reachable ? "正常"
-                                  : r.Status == ReachabilityStatus.Unreachable ? "不可达"
-                                  : r.Status == ReachabilityStatus.NearLimit ? "接近极限"
-                                  : "未检查";
-
-                _grid[row, COL_IDX] = r.Index.ToString();
-                _grid[row, COL_BRAND] = GuessBrand(r.RobotName);
-                _grid[row, COL_ROBOT] = r.RobotName;
-                _grid[row, COL_OP] = r.OperationName;
-                _grid[row, COL_PT] = r.PointName;
-                _grid[row, COL_TYPE] = r.PointType;
-                _grid[row, COL_J1] = jStr(r.J1);
-                _grid[row, COL_J2] = jStr(r.J2);
-                _grid[row, COL_J3] = jStr(r.J3);
-                _grid[row, COL_J4] = jStr(r.J4);
-                _grid[row, COL_J5] = jStr(r.J5);
-                _grid[row, COL_J6] = jStr(r.J6);
-                _grid[row, COL_RESULT] = statusText;
-                _grid[row, COL_NOTE] = r.ErrorMessage;
-
-                // 行背景色：检查结果颜色方案（参考图片 Excel 条件格式）
-                var rowStyle = _grid.Rows[row].Style ?? _grid.Styles.Add($"rs{row}");
-                Color bg = r.Status == ReachabilityStatus.Reachable
-                               ? TxClrRowOk.Color
-                         : r.Status == ReachabilityStatus.Unreachable
-                               ? TxClrRowFail.Color
-                         : r.Status == ReachabilityStatus.NearLimit
-                               ? TxClrRowWarn.Color
-                         : (i % 2 == 0 ? SystemColors.Window : TxClrGridAlt.Color);
-                rowStyle.BackColor = bg;
-                _grid.Rows[row].Style = rowStyle;
+                // 恢复重绘并立即整体刷一次
+                _grid.Redraw = savedRedraw;
+                _grid.Refresh();
             }
 
             // 数据填充后重新自适应列宽
@@ -2460,6 +3231,7 @@ namespace TxTools.RobotReachabilityChecker
             // 结果汇总显示在 StatusStrip
             SetStatus($"共 {t.TotalPoints} 点  可达 {t.ReachableCount}  " +
                       $"不可达 {t.UnreachableCount}  接近极限 {t.NearLimitCount}  " +
+                      $"奇异 {t.SingularCount}  临界 {t.CriticalCount}  " +
                       $"可达率 {t.ReachabilityRate:F1}%");
         }
 
@@ -2497,15 +3269,19 @@ namespace TxTools.RobotReachabilityChecker
                 {
                     $"# 机器人路径可达性检查报告",
                     $"# 机器人: {_currentTask.RobotName}  路径: {_currentTask.PathName}  时间: {_currentTask.CheckTime:yyyy-MM-dd HH:mm:ss}",
-                    $"# 总计:{_currentTask.TotalPoints}  可达:{_currentTask.ReachableCount}  不可达:{_currentTask.UnreachableCount}  近极限:{_currentTask.NearLimitCount}  可达率:{_currentTask.ReachabilityRate:F1}%",
+                    $"# 总计:{_currentTask.TotalPoints}  可达:{_currentTask.ReachableCount}  不可达:{_currentTask.UnreachableCount}  近极限:{_currentTask.NearLimitCount}  奇异:{_currentTask.SingularCount}  临界:{_currentTask.CriticalCount}  可达率:{_currentTask.ReachabilityRate:F1}%",
                     "",
                     "序号,机器人名,操作名称,点名,点类型,状态,J1(°),J2(°),J3(°),J4(°),J5(°),J6(°),最小余量(°),备注"
                 };
                 foreach (var r in _currentTask.Results)
                 {
-                    string st = r.Status == ReachabilityStatus.Reachable ? "可达"
-                              : r.Status == ReachabilityStatus.Unreachable ? "不可达"
-                              : r.Status == ReachabilityStatus.NearLimit ? "接近极限" : "未检查";
+                    string st =
+                          r.Status == ReachabilityStatus.Reachable ? "可达"
+                        : r.Status == ReachabilityStatus.Unreachable ? "不可达"
+                        : r.Status == ReachabilityStatus.NearLimit ? "接近极限"
+                        : r.Status == ReachabilityStatus.Singular ? "奇异"
+                        : r.Status == ReachabilityStatus.Critical ? "临界"
+                        : "未检查";
                     lines.Add(string.Join(",",
                         r.Index, r.RobotName, r.OperationName, r.PointName,
                         r.PointType, st,
@@ -2585,8 +3361,8 @@ namespace TxTools.RobotReachabilityChecker
             _pointName = pointName;
             Text = "编辑点位 — " + pointName;
             StartPosition = FormStartPosition.CenterParent;
-            Size = new Size(480, 400);
-            MinimumSize = new Size(420, 340);
+            Size = new System.Drawing.Size(480, 400);
+            MinimumSize = new System.Drawing.Size(420, 340);
             FormBorderStyle = FormBorderStyle.SizableToolWindow;
             BackColor = SystemColors.Control;
             Build();
@@ -2601,7 +3377,7 @@ namespace TxTools.RobotReachabilityChecker
                 Dock = DockStyle.Top,
                 Height = 26,
                 Padding = new Padding(8, 5, 0, 0),
-                Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold),
+                Font = new System.Drawing.Font(SystemFonts.DefaultFont, FontStyle.Bold),
                 ForeColor = new TxColor(0, 70, 127).Color,
                 BackColor = new TxColor(235, 241, 250).Color
             };
@@ -2615,7 +3391,7 @@ namespace TxTools.RobotReachabilityChecker
                 AutoSize = false,
                 Width = 260,
                 Height = 22,
-                Location = new Point(6, 7),
+                Location = new System.Drawing.Point(6, 7),
                 ForeColor = SystemColors.GrayText,
                 Font = SystemFonts.DefaultFont
             };
@@ -2645,11 +3421,11 @@ namespace TxTools.RobotReachabilityChecker
             btmPanel.Controls.AddRange(new Control[] { _lblStatus, _btnReset, _btnClose });
             btmPanel.Resize += (s, e) =>
             {
-                _btnClose.Location = new Point(btmPanel.Width - 78, 5);
-                _btnReset.Location = new Point(btmPanel.Width - 156, 5);
+                _btnClose.Location = new System.Drawing.Point(btmPanel.Width - 78, 5);
+                _btnReset.Location = new System.Drawing.Point(btmPanel.Width - 156, 5);
             };
-            _btnClose.Location = new Point(392, 5);
-            _btnReset.Location = new Point(314, 5);
+            _btnClose.Location = new System.Drawing.Point(392, 5);
+            _btnReset.Location = new System.Drawing.Point(314, 5);
 
             // ElementHost: 承载 TxPlacementCollisionControl
             _host = new System.Windows.Forms.Integration.ElementHost
