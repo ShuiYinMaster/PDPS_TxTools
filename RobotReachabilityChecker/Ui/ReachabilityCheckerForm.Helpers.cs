@@ -7,6 +7,7 @@
 using System.Drawing;
 using System.Windows.Forms;
 using Tecnomatix.Engineering;
+using TxTools.Common;
 using static TxTools.RobotReachabilityChecker.Ui.Theme;
 
 namespace TxTools.RobotReachabilityChecker.Ui
@@ -27,12 +28,15 @@ namespace TxTools.RobotReachabilityChecker.Ui
 
         private Button MkButton(string text, int width)
         {
-            return new Button
+            return new FormUiKit.FlatColorButton
             {
                 Text = text,
                 Width = width,
-                Height = 24,
-                FlatStyle = FlatStyle.System,
+                Height = 26,
+                FlatStyle = FlatStyle.Flat,
+                BgColor = SystemColors.ControlLight,
+                ForeColor = SystemColors.ControlText,
+                BorderColor = SystemColors.ControlDark,
                 Font = SystemFonts.DefaultFont,
                 Margin = new Padding(0, 2, 4, 2)
             };
@@ -41,7 +45,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
         /// <summary>功能区按钮：自适应文本宽度、单行、带背景色</summary>
         private Button MkFuncButton(string text, Color bgColor)
         {
-            var btn = new Button
+            return new FormUiKit.FlatColorButton
             {
                 Text = text,
                 AutoSize = true,
@@ -49,16 +53,13 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 Height = 26,
                 FlatStyle = FlatStyle.Flat,
                 Font = SystemFonts.DefaultFont,
-                ForeColor = TxColor.TxColorWhite.Color,
-                BackColor = bgColor,
+                BgColor = bgColor,
+                ForeColor = Color.White,
+                BorderColor = bgColor,
                 Margin = new Padding(0, 2, 4, 2),
                 Padding = new Padding(8, 2, 8, 2),
                 Cursor = Cursors.Hand
             };
-            btn.FlatAppearance.BorderSize = 0;
-            btn.FlatAppearance.MouseOverBackColor = ControlPaint.Light(bgColor, 0.3f);
-            btn.FlatAppearance.MouseDownBackColor = ControlPaint.Dark(bgColor, 0.15f);
-            return btn;
         }
 
         // =====================================================================

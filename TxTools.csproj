@@ -13,6 +13,8 @@
     <LangVersion>8.0</LangVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
+    <NuGetPackageImportStamp>
+    </NuGetPackageImportStamp>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -50,9 +52,11 @@
     </Reference>
     <Reference Include="C1.Win.C1Command.4.5.2">
       <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1Command.4.5.2.dll</HintPath>
+      <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.C1DX.4.5.2">
       <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1DX.4.5.2.dll</HintPath>
+      <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.C1FlexGrid.2">
       <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1FlexGrid.2.dll</HintPath>
@@ -84,30 +88,57 @@
     </Reference>
     <Reference Include="C1.Win.C1Themes.4">
       <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1Themes.4.dll</HintPath>
+      <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.C1Themes.4.5.2">
       <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1Themes.4.5.2.dll</HintPath>
+      <Private>False</Private>
     </Reference>
     <Reference Include="C1.WPF.4.5.2">
       <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.WPF.4.5.2.dll</HintPath>
+      <Private>False</Private>
     </Reference>
     <Reference Include="C1.WPF.DateTimeEditors.4">
       <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.WPF.DateTimeEditors.4.dll</HintPath>
+      <Private>False</Private>
     </Reference>
     <Reference Include="C1.WPF.DateTimeEditors.4.5.2">
       <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.WPF.DateTimeEditors.4.5.2.dll</HintPath>
+      <Private>False</Private>
     </Reference>
     <Reference Include="C1.WPF.FlexChart.4.5.2">
       <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.WPF.FlexChart.4.5.2.dll</HintPath>
+      <Private>False</Private>
     </Reference>
     <Reference Include="C1.WPF.FlexGrid.4">
       <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.WPF.FlexGrid.4.dll</HintPath>
+      <Private>False</Private>
     </Reference>
     <Reference Include="C1.WPF.FlexGrid.4.5.2">
       <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.WPF.FlexGrid.4.5.2.dll</HintPath>
+      <Private>False</Private>
     </Reference>
     <Reference Include="C1.WPF.Input.4.5.2">
       <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.WPF.Input.4.5.2.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="DocumentFormat.OpenXml, Version=3.5.1.0, Culture=neutral, PublicKeyToken=8fb06cb64d019a17, processorArchitecture=MSIL">
+      <HintPath>packages\DocumentFormat.OpenXml.3.5.1\lib\net46\DocumentFormat.OpenXml.dll</HintPath>
+    </Reference>
+    <Reference Include="DocumentFormat.OpenXml.Framework, Version=3.5.1.0, Culture=neutral, PublicKeyToken=8fb06cb64d019a17, processorArchitecture=MSIL">
+      <HintPath>packages\DocumentFormat.OpenXml.Framework.3.5.1\lib\net46\DocumentFormat.OpenXml.Framework.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.Web.WebView2.Core, Version=1.0.4022.49, Culture=neutral, PublicKeyToken=2a8ab48044d2601e, processorArchitecture=MSIL">
+      <HintPath>packages\Microsoft.Web.WebView2.1.0.4022.49\lib\net462\Microsoft.Web.WebView2.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.Web.WebView2.WinForms, Version=1.0.4022.49, Culture=neutral, PublicKeyToken=2a8ab48044d2601e, processorArchitecture=MSIL">
+      <HintPath>packages\Microsoft.Web.WebView2.1.0.4022.49\lib\net462\Microsoft.Web.WebView2.WinForms.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.Web.WebView2.Wpf, Version=1.0.4022.49, Culture=neutral, PublicKeyToken=2a8ab48044d2601e, processorArchitecture=MSIL">
+      <HintPath>packages\Microsoft.Web.WebView2.1.0.4022.49\lib\net462\Microsoft.Web.WebView2.Wpf.dll</HintPath>
+    </Reference>
+    <Reference Include="Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
+      <HintPath>packages\Newtonsoft.Json.13.0.4\lib\net45\Newtonsoft.Json.dll</HintPath>
     </Reference>
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
@@ -118,6 +149,10 @@
     <Reference Include="System.Dynamic" />
     <Reference Include="System.IO.Compression" />
     <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="System.Security" />
+    <Reference Include="System.Security.Cryptography.ProtectedData, Version=10.0.0.9, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <HintPath>packages\System.Security.Cryptography.ProtectedData.10.0.9\lib\net462\System.Security.Cryptography.ProtectedData.dll</HintPath>
+    </Reference>
     <Reference Include="System.Windows" />
     <Reference Include="System.Windows.Controls.Ribbon" />
     <Reference Include="System.Windows.Forms" />
@@ -167,7 +202,142 @@
     <Reference Include="WindowsFormsIntegration" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Agent\Core\Capture\WindowsCapture.cs" />
+    <Compile Include="Agent\Core\Catia\CatiaBridge.cs" />
+    <Compile Include="Agent\Core\FactsStore.cs" />
+    <Compile Include="Agent\Core\FileParserService.cs" />
+    <Compile Include="Agent\Core\GotchasStore.cs" />
+    <Compile Include="Agent\Core\LessonExtractor.cs" />
+    <Compile Include="Agent\Core\LlmProviders.cs" />
+    <Compile Include="Agent\Core\MemoryTools.cs" />
+    <Compile Include="Agent\Core\OpenXmlWriter.cs" />
+    <Compile Include="Agent\Core\Pptx\BlankPptxData.cs" />
+    <Compile Include="Agent\Core\Pptx\PptxTemplateEngine.cs" />
+    <Compile Include="Agent\Core\PS\PsCompoundHelper.cs" />
+    <Compile Include="Agent\Core\PS\PsViewerHelper.cs" />
+    <Compile Include="Agent\Core\SnippetStore.cs" />
+    <Compile Include="Agent\Core\ToolInputHelpers.cs" />
+    <Compile Include="Agent\Core\UploadStore.cs" />
+    <Compile Include="Agent\Core\UploadTools.cs" />
+    <Compile Include="Agent\Core\UserPrefsStore.cs" />
+    <Compile Include="Agent\Core\XlsxReader.cs" />
+    <Compile Include="Agent\Tools\Catia\CatiaReadTreeTool.cs" />
+    <Compile Include="Agent\Tools\Docs\InspectPptxTemplateTool.cs" />
+    <Compile Include="Agent\Tools\Docs\RenderPptxTemplateTool.cs" />
+    <Compile Include="Agent\Tools\DocxExportTool.cs" />
+    <Compile Include="Agent\Tools\Docs\PptxExportTool.cs" />
+    <Compile Include="Agent\Tools\Ps\CaptureViewerImageTool.cs" />
+    <Compile Include="Agent\Tools\Ps\CreateCompoundPartTool.cs" />
+    <Compile Include="Agent\Tools\Ps\CreateCompoundResourceTool.cs" />
+    <Compile Include="Agent\Tools\Ps\ImportCatiaTreeToPartsTool.cs" />
+    <Compile Include="Agent\Tools\Ps\ScreenshotWindowTool.cs" />
+    <Compile Include="Agent\Tools\Ps\SetCameraViewTool.cs" />
+    <Compile Include="Agent\Tools\Ps\SetViewToObjectTool.cs" />
+    <Compile Include="Agent\Tools\SnippetTools.cs" />
+    <Compile Include="Agent\TxAgentCommand.cs" />
+    <Compile Include="Agent\Core\AgentLoop.cs" />
+    <Compile Include="Agent\Core\AuditLog.cs" />
+    <Compile Include="Agent\Core\ConversationStore.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Agent\Core\DeepSeekClient.cs" />
+    <Compile Include="Agent\Core\ITxAgentTool.cs" />
+    <Compile Include="Agent\Core\KeyStore.cs" />
+    <Compile Include="Agent\Core\LlmModels.cs" />
+    <Compile Include="Agent\Core\PsContext.cs" />
+    <Compile Include="Agent\Core\Recipe.cs" />
+    <Compile Include="Agent\Core\RecipeStore.cs" />
+    <Compile Include="Agent\Core\RecipeTool.cs" />
+    <Compile Include="Agent\Core\TaskPlan.cs" />
+    <Compile Include="Agent\Core\ToolRegistry.cs" />
+    <Compile Include="Agent\Core\XlsxWriter.cs" />
+    <Compile Include="Agent\Ps\ApiInspector.cs" />
+    <Compile Include="Agent\Ps\CSharpRunner.cs" />
+    <Compile Include="Agent\Ps\DeviceZAlignService.cs" />
+    <Compile Include="Agent\Ps\PsBridge.cs" />
+    <Compile Include="Agent\Tools\ActionTools.cs" />
+    <Compile Include="Agent\Tools\AlignDevicesZTool.cs" />
+    <Compile Include="Agent\Tools\ApiTools.cs" />
+    <Compile Include="Agent\Tools\CountPointsTool.cs" />
+    <Compile Include="Agent\Tools\DeleteRecipeTool.cs" />
+    <Compile Include="Agent\Tools\ExportTableTool.cs" />
+    <Compile Include="Agent\Tools\LocationTools.cs" />
+    <Compile Include="Agent\Tools\RobotTools.cs" />
+    <Compile Include="Agent\Tools\SimulationTools.cs" />
+    <Compile Include="Agent\Tools\BatchTools.cs" />
+    <Compile Include="Agent\Tools\CollisionTools.cs" />
+    <Compile Include="Agent\Tools\ListRecipesTool.cs" />
+    <Compile Include="Agent\Tools\OperationTools.cs" />
+    <Compile Include="Agent\Tools\RunCSharpTool.cs" />
+    <Compile Include="Agent\Tools\SaveRecipeTool.cs" />
+    <Compile Include="Agent\Tools\SceneQueryTool.cs" />
+    <Compile Include="Agent\Tools\SceneTreeTools.cs" />
+    <Compile Include="Agent\Tools\UpdatePlanTool.cs" />
+    <Compile Include="Agent\Tools\PlcTools.cs" />
+    <Compile Include="Agent\UI\ApiKeyDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Agent\UI\CodeApprovalDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Agent\UI\ConversationListDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Agent\UI\TxAgentForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="AutoFance\AppearanceHelper.cs" />
+    <Compile Include="AutoFance\FenceBaselineReader.cs" />
+    <Compile Include="AutoFance\FenceBuilderCommand.cs" />
+    <Compile Include="AutoFance\FenceBuilderForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="AutoFance\FenceGeometryBuilder.cs" />
+    <Compile Include="AutoFance\FenceLayoutPlanner.cs" />
+    <Compile Include="AutoFance\FenceParameters.cs" />
+    <Compile Include="AutoPath\AutoPathPlannerCommand.cs" />
+    <Compile Include="AutoPath\AutoPathPlannerForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="AutoPath\CollisionSetService.cs" />
+    <Compile Include="AutoPath\CollisionWorld.cs" />
+    <Compile Include="AutoPath\CycleCost.cs" />
+    <Compile Include="AutoPath\GunAxisService.cs" />
+    <Compile Include="AutoPath\GunFrameSearch.cs" />
+    <Compile Include="AutoPath\PlannerGeometry.cs" />
+    <Compile Include="AutoPath\PlanningProgress.cs" />
+    <Compile Include="AutoPath\RrtPlanner.cs" />
+    <Compile Include="AutoPath\WeldOrderOptimizer.cs" />
+    <Compile Include="AutoPath\WeldPathPlanner.cs" />
+    <Compile Include="AutoRecorder\AutoRecorderCmd.cs" />
+    <Compile Include="AutoRecorder\AutoRecorderForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="AutoRecorder\PsReader.cs" />
+    <Compile Include="AutoRecorder\RecordingService.cs" />
+    <Compile Include="LibPathSync\LibPathTargets.cs" />
+    <Compile Include="LibPathSync\SyncLibPathCommand.cs" />
+    <Compile Include="LibPathSync\SyncToSelectedComponentCommand.cs" />
+    <Compile Include="LineToSolid\GeometryBuilder.cs" />
+    <Compile Include="LineToSolid\LineToSolidCommand.cs" />
+    <Compile Include="LineToSolid\LineToSolidForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="LineToSolid\PolylineReader.cs" />
+    <Compile Include="MechArena\MechArenaCommand.cs" />
+    <Compile Include="MechArena\MechArenaEngine.cs" />
+    <Compile Include="MechArena\MechArenaForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="MechArena\MechArenaHelpers.cs" />
+    <Compile Include="RobotBaseChecker\RobotBaseCheckerCommand.cs" />
+    <Compile Include="RobotBaseChecker\RobotBaseCheckerForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="RobotBaseChecker\RobotBaseReader.cs" />
+    <Compile Include="RobotBaseChecker\RobotKinematics.cs" />
     <Compile Include="RobotReachabilityChecker\Diagnostics\ILogger.cs" />
+    <Compile Include="RobotReachabilityChecker\Diagnostics\InterferenceProbe.cs" />
     <Compile Include="RobotReachabilityChecker\Diagnostics\OlpDiagnostic.cs" />
     <Compile Include="RobotReachabilityChecker\Models\AxisFlag.cs" />
     <Compile Include="RobotReachabilityChecker\Models\PathPointResult.cs" />
@@ -178,6 +348,7 @@
     <Compile Include="RobotReachabilityChecker\Services\AxisAnalyzer.cs" />
     <Compile Include="RobotReachabilityChecker\Services\BrandResolver.cs" />
     <Compile Include="RobotReachabilityChecker\Services\IkSolver.cs" />
+    <Compile Include="RobotReachabilityChecker\Services\InterferenceService.cs" />
     <Compile Include="RobotReachabilityChecker\Services\JointLimitsService.cs" />
     <Compile Include="RobotReachabilityChecker\Services\LocationEnumerator.cs" />
     <Compile Include="RobotReachabilityChecker\Services\PoseValueExtractor.cs" />
@@ -204,17 +375,52 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="RobotReachabilityChecker\Ui\Theme.cs" />
-    <Compile Include="SRC\CatiaBridge.cs" />
-    <Compile Include="SRC\DeviceZAligner.cs" />
-    <Compile Include="SRC\DiagnoseApi.cs" />
-    <Compile Include="SRC\ExcelExporter.cs" />
-    <Compile Include="SRC\ExportGunCmd.cs" />
-    <Compile Include="SRC\ExportGunForm.cs">
+    <Compile Include="SelectButton\OpenResourceFolderCmd.cs" />
+    <Compile Include="SelectButton\SelectPointsCmds.cs" />
+    <Compile Include="SnakeGame\SnakeGameCommand.cs" />
+    <Compile Include="SnakeGame\SnakeGameEngine.cs" />
+    <Compile Include="SnakeGame\SnakeGameForm.cs">
       <SubType>Form</SubType>
     </Compile>
-    <Compile Include="SRC\ExportService.cs" />
+    <Compile Include="SnakeGame\SnakeWorld.cs" />
+    <Compile Include="SRC\CatiaBridge.cs" />
+    <Compile Include="SRC\DiagnoseApi.cs" />
+    <Compile Include="SRC\ExcelExporter.cs" />
+    <Compile Include="ExportGun\ExportGunCmd.cs" />
+    <Compile Include="ExportGun\ExportGunForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="ExportGun\ExportService.cs" />
+    <Compile Include="SRC\FormUiKit.cs" />
     <Compile Include="SRC\PsReader.cs" />
-    <Compile Include="SRC\WeldAnnotatorForm.cs" />
+    <Compile Include="WeldAnnotator\AnnotationStyle.cs" />
+    <Compile Include="WeldAnnotator\AnnotationStyleForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="WeldAnnotator\WeldAnnotatorForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="WeldAnnotator\WeldAnnotatorForm.UI.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="WeldAnnotator\WeldPointAnnotatorCmd.cs" />
+    <Compile Include="WeldGunDefiner\Core\PsSdkHelper.cs" />
+    <Compile Include="WeldGunDefiner\Core\Rprrbuilder.cs" />
+    <Compile Include="WeldGunDefiner\Core\WeldGunService.cs" />
+    <Compile Include="WeldGunDefiner\Math\GunMechanism.cs" />
+    <Compile Include="WeldGunDefiner\UI\WeldGunWizardForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="WeldGunDefiner\WeldGunDefinerCommand.cs" />
+    <Compile Include="WeldSpotAllocator\AllocatorCommand.cs" />
+    <Compile Include="WeldSpotAllocator\Core\SpotMatchEngine.cs" />
+    <Compile Include="WeldSpotAllocator\Core\SpotModels.cs" />
+    <Compile Include="WeldSpotAllocator\Core\SymmetryMath.cs" />
+    <Compile Include="WeldSpotAllocator\Ps\SpotReader.cs" />
+    <Compile Include="WeldSpotAllocator\Ps\SpotWriter.cs" />
+    <Compile Include="WeldSpotAllocator\Ui\AllocatorForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Properties\Resources.Designer.cs">
       <AutoGen>True</AutoGen>
@@ -226,6 +432,18 @@
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
       <DependentUpon>Settings.settings</DependentUpon>
     </Compile>
+    <Compile Include="Test\helloworldcom.cs" />
+    <Compile Include="Test\hellowouldui.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="WeldSpotAllocator\Ui\OpGridHost.cs" />
+    <Compile Include="WeldSpotGrouper\Core\GroupModels.cs" />
+    <Compile Include="WeldSpotGrouper\Ps\GroupWriter.cs" />
+    <Compile Include="WeldSpotGrouper\Ps\SpotGrouper.cs" />
+    <Compile Include="WeldSpotGrouper\Ui\GrouperForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="WeldSpotGrouper\WeldSpotGrouperCmd.cs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Properties\Resources.resx">
@@ -235,6 +453,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include=".github\copilot-instructions.md" />
+    <None Include="packages.config" />
     <None Include="Properties\Settings.settings">
       <Generator>SettingsSingleFileGenerator</Generator>
       <LastGenOutput>Settings.Designer.cs</LastGenOutput>
@@ -1044,16 +1263,66 @@
     </COMReference>
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="RobotReachabilityChecker.png" />
+    <EmbeddedResource Include="image\RobotReachabilityChecker.png" />
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="WeldAnnotator.png" />
+    <EmbeddedResource Include="image\WeldAnnotator.png" />
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="ExportGun.png" />
+    <EmbeddedResource Include="image\ExportGun.png" />
   </ItemGroup>
   <ItemGroup>
-    <Folder Include="Image\" />
+    <EmbeddedResource Include="WeldSpotAllocator.png" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="AutoFance\mesh_pattern.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="image\AutoRecorder.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="image\AutoFance.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="image\ai.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="image\linetosoild.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="image\file.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="image\via.bmp" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="image\weldpoint.bmp" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="image\seam.bmp" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="image\Xgun.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="image\base0.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="image\WeldSpotGrouper.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Agent\UI\chat.html" />
+  </ItemGroup>
+  <ItemGroup>
+    <WCFMetadata Include="Connected Services\" />
+  </ItemGroup>
+  <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Import Project="packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets" Condition="Exists('packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets')" />
+  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <ErrorText>这台计算机上缺少此项目引用的 NuGet 程序包。使用“NuGet 程序包还原”可下载这些程序包。有关更多信息，请参见 http://go.microsoft.com/fwlink/?LinkID=322105。缺少的文件是 {0}。</ErrorText>
+    </PropertyGroup>
+    <Error Condition="!Exists('packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets'))" />
+  </Target>
 </Project>
