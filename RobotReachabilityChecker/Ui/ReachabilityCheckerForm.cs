@@ -10,10 +10,12 @@
 // ============================================================================
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
 using Tecnomatix.Engineering.Ui.WPF;
+using TxTools.Common;
 using TxTools.RobotReachabilityChecker.Diagnostics;
 using TxTools.RobotReachabilityChecker.Models;
 using static TxTools.RobotReachabilityChecker.Ui.Theme;
@@ -93,23 +95,34 @@ namespace TxTools.RobotReachabilityChecker.Ui
         private DateTime _lastDoubleClickTime = DateTime.MinValue;
         private int _lastDoubleClickRow = -1;
         private const int _tripleClickWindowMs = 500;
+        private static readonly Size _designSize = new Size(1280, 780);
+        private bool _dpiApplied;
 
         // =====================================================================
         // 构造与生命周期
         // =====================================================================
         public ReachabilityCheckerForm()
         {
-            Text = "机器人路径点位检查";
-            StartPosition = FormStartPosition.CenterScreen;
-            Size = new System.Drawing.Size(1280, 780);
-            MinimumSize = new System.Drawing.Size(960, 580);
+            SemiModal = false;
+            // 统一窗体规范 + DPI（套件唯一一处缩放设置，详见 FormUiKit）
+            FormUiKit.InitStandardForm(this, "机器人路径点位检查",
+                _designSize, new Size(960, 580));
+
             InitializeComponent();
+            // 防御：InitStandardForm 已设唯一 Name 作为 TxForm 几何持久化键（消除串扰），
+            // 这里在 InitializeComponent 之后再钉一次，确保 Layout 分部里没有把它改回空。
+            this.Name = this.GetType().FullName;
+
+
+            // 注意：InitializeComponent 所在的 Layout 分部文件里不要再设
+            //       AutoScaleMode / AutoScaleDimensions / Font，统一交给 FormUiKit。
             // LoadRobotsAndOperations 移到 OnLoad，避免阻塞窗体首次显示
         }
 
         protected override void OnLoad(EventArgs e)
         {
             base.OnLoad(e);
+            FormUiKit.ApplyDpiScaling(this, ref _dpiApplied, _designSize);
 
             // 全局护栏：UI 线程未处理异常 → 写日志而不是闪退
             // 注：仅对本插件 UI 线程生效；PS 主线程的 SEH 仍可能击穿

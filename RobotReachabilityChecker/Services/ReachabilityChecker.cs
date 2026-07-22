@@ -30,11 +30,12 @@ namespace TxTools.RobotReachabilityChecker.Services
     /// <summary>检查参数（避免长参数列表）。</summary>
     public class CheckOptions
     {
-        public bool JointMarginCheckEnabled { get; set; } = true;
-        public double JointMarginThreshDeg { get; set; } = 10.0;
-        public bool TcpCheckEnabled { get; set; } = false;
-        public double TcpMarginMm { get; set; } = 200.0;
-        public RobotBrand UserSelectedBrand { get; set; } = RobotBrand.Auto;
+        public bool   JointMarginCheckEnabled { get; set; } = true;
+        public double JointMarginThreshDeg    { get; set; } = 10.0;
+        public bool   TcpCheckEnabled         { get; set; } = false;
+        public double TcpMarginMm             { get; set; } = 200.0;
+        public bool   InterferenceEnabled     { get; set; } = false;
+        public RobotBrand UserSelectedBrand   { get; set; } = RobotBrand.Auto;
     }
 
     public static class ReachabilityChecker
@@ -109,8 +110,18 @@ namespace TxTools.RobotReachabilityChecker.Services
 
                 RobotBrand brand = BrandResolver.Resolve(robot.Name, options.UserSelectedBrand);
 
+                // 干涉检查准备：用户启用 + 找到或自动建立干涉对 → 后续才查询
+                bool ifReady = false;
+                if (options.InterferenceEnabled)
+                {
+                    log.Log("准备干涉检查…");
+                    ifReady = InterferenceService.EnsureRobotHasCollisionPair(robot, doc, log);
+                    if (!ifReady) log.Log("  干涉检查准备失败，本次跳过干涉判定", "WARN");
+                }
+
                 int idx = 1;
                 int okA = 0, fail = 0;
+                int collisionCount = 0;
 
                 foreach (ITxRoboticLocationOperation loc in locs)
                 {
@@ -274,6 +285,33 @@ namespace TxTools.RobotReachabilityChecker.Services
                             }
                         }
 
+                        // 静态干涉检查 — 驱动机器人到该姿态再查询
+                        // 完整路径检查结束后由 RestoreRobotPose 统一恢复
+                        if (ifReady && res.PoseDataRef is TxPoseData pdForIf)
+                        {
+                            try
+                            {
+                                robot.CurrentPose = pdForIf;
+                                bool hit = InterferenceService.CheckCollisionAtCurrentPose(doc, log);
+                                res.HasCollision = hit;
+                                if (hit)
+                                {
+                                    collisionCount++;
+                                    if (res.Status == ReachabilityStatus.Reachable
+                                        || res.Status == ReachabilityStatus.Critical)
+                                        res.Status = ReachabilityStatus.NearLimit;
+                                    string note = "存在干涉";
+                                    res.ErrorMessage = string.IsNullOrEmpty(res.ErrorMessage)
+                                        ? note
+                                        : res.ErrorMessage + "; " + note;
+                                }
+                            }
+                            catch (Exception exIf)
+                            {
+                                log.Log($"  [{res.PointName}] 干涉查询异常: {exIf.Message}", "WARN");
+                            }
+                        }
+
                         if (res.Status == ReachabilityStatus.Unreachable) fail++;
                     }
                     else
@@ -292,7 +330,8 @@ namespace TxTools.RobotReachabilityChecker.Services
                 // 恢复初始姿态
                 RestoreRobotPose(robot, savedPose, savedJointValues);
 
-                log.Log($"检查完成: 成功={okA} 失败={fail}", "OK");
+                log.Log($"检查完成: 成功={okA} 失败={fail}"
+                       + (options.InterferenceEnabled ? $" 干涉={collisionCount}" : ""), "OK");
 
                 // 污染检测：所有点失败 → 弹窗指引手动恢复
                 if (locs.Count > 0 && fail == locs.Count)

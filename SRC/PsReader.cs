@@ -18,7 +18,7 @@ using System.Drawing;
 using System.IO;
 using Tecnomatix.Engineering;
 
-namespace MyPlugin.ExportGun
+namespace TxTools.ExportGun
 {
     public enum PointType { WeldPoint, PathPoint, ContinuousPoint, All }
 
@@ -475,6 +475,277 @@ namespace MyPlugin.ExportGun
             }
             catch (Exception ex)
             { log($"[PS] GetGun 异常：{ex.Message}"); return null; }
+        }
+
+        // ════════════════════════════════════════════════════════════
+        //  3b. 多 TCP（工具坐标）枚举与解析
+        //
+        //  来源（与可达性验证一致）：
+        //    · 默认：robot.TCPF.AbsoluteLocation（机器人当前 TCP）
+        //    · 各路径点 location.Parameters 里 Type=="RRS_TOOL_FRAME" 的
+        //      TxRoboticTxObjectParam.Value（TxFrame），按名字去重
+        //    · 工具对象（Gun/Tool）下挂的 TxFrame 子对象（兜底）
+        // ════════════════════════════════════════════════════════════
+        public const string DefaultTcpLabel = "默认 (机器人当前TCP)";
+        private const string TYPE_RRS_TOOL_FRAME = "RRS_TOOL_FRAME";
+
+        public class TcpOption
+        {
+            public string Name;          // 显示名（默认项为 DefaultTcpLabel）
+            public double[] WorldMatrix; // TCP 世界系 4x4
+            public bool IsDefault;       // 是否为机器人当前 TCP
+        }
+
+        /// <summary>枚举该操作可用的 TCP 选项（默认 + 各点工具坐标 + 工具子坐标系）。</summary>
+        public static List<TcpOption> EnumerateTcpOptions(OperationInfo op, Action<string> log)
+        {
+            if (log == null) log = Nop;
+            var result = new List<TcpOption>();
+            var seen = new HashSet<string>();
+            if (op?.PsObject == null) return result;
+
+            try
+            {
+                // (1) 默认 TCP —— robot.TCPF
+                TxRobot robot = FindRobot(op.PsObject);
+                if (robot != null)
+                {
+                    TxTransformation tcpf = null;
+                    try { tcpf = robot.TCPF.AbsoluteLocation; } catch { }
+                    if (tcpf != null)
+                    {
+                        result.Add(new TcpOption { Name = DefaultTcpLabel, WorldMatrix = TxToArr(tcpf), IsDefault = true });
+                        seen.Add(DefaultTcpLabel);
+                    }
+                }
+
+                // (2) 控制器定义的系统坐标系 —— robot.GetAllSystemFrames()
+                //     返回机器人树下 <robot>.<frame> 的全部坐标系（工具/用户/基),
+                //     是跨厂商(ABB/KUKA/FANUC/...)提取 TCP 的主力来源。
+                CollectSystemFrames(robot, result, seen, log);
+
+                // (3) 各路径点的 RRS_TOOL_FRAME（按名字去重）
+                foreach (object loc in EnumLocations(op.PsObject))
+                {
+                    TxFrame f = ReadLocationToolFrame(loc);
+                    if (f == null) continue;
+                    string nm = SafeNameObj(f);
+                    if (string.IsNullOrEmpty(nm) || !seen.Add(nm)) continue;
+                    TxTransformation abs = SafeGetTx(() => f.AbsoluteLocation);
+                    if (abs == null) continue;
+                    result.Add(new TcpOption { Name = nm, WorldMatrix = TxToArr(abs) });
+                }
+
+                // (4) 工具对象下挂的 TxFrame 子坐标系（兜底，按名字去重）
+                object toolObj = ResolveToolObject(op);
+                if (toolObj is ITxObject toolTx)
+                {
+                    CollectChildFrames(toolTx, result, seen, 0);
+                }
+
+                // 仅有默认项时，输出诊断帮助定位（实例参数 / OLP 定义）
+                if (result.Count <= 1) LogRobotParamDiagnostics(robot, log);
+            }
+            catch (Exception ex) { log($"[TCP] 枚举异常：{ex.Message}"); }
+
+            log($"[TCP] [{op.Name}] 可用 TCP {result.Count} 个");
+            return result;
+        }
+
+        /// <summary>读取 robot.GetAllSystemFrames() 的系统坐标系，加入候选（按名去重）。</summary>
+        private static void CollectSystemFrames(TxRobot robot, List<TcpOption> result,
+            HashSet<string> seen, Action<string> log)
+        {
+            if (robot == null) return;
+            IEnumerable frames = null;
+            try { dynamic dr = robot; frames = dr.GetAllSystemFrames() as IEnumerable; }
+            catch (Exception ex) { log($"[TCP] GetAllSystemFrames 异常：{ex.Message}"); return; }
+            if (frames == null) { log("[TCP] GetAllSystemFrames 返回空"); return; }
+
+            int n = 0;
+            foreach (object fobj in frames)
+            {
+                if (fobj == null) continue;
+                string nm = null;
+                try { dynamic df = fobj; nm = df.Name as string; } catch { }
+                if (string.IsNullOrEmpty(nm)) nm = SafeNameObj(fobj);
+                if (string.IsNullOrEmpty(nm) || seen.Contains(nm)) continue;
+                double[] m = GetFrameWorldMatrix(fobj);
+                if (m == null) continue;
+                seen.Add(nm);
+                result.Add(new TcpOption { Name = nm, WorldMatrix = m });
+                n++;
+            }
+            log($"[TCP] 系统坐标系 {n} 个（GetAllSystemFrames）");
+        }
+
+        /// <summary>从坐标系对象提取世界系 4x4（多属性兜底）。</summary>
+        private static double[] GetFrameWorldMatrix(object frame)
+        {
+            if (frame == null) return null;
+            if (frame is TxFrame fr)
+            {
+                var t = SafeGetTx(() => fr.AbsoluteLocation);
+                return t != null ? TxToArr(t) : null;
+            }
+            TxTransformation tx = null;
+            try { dynamic d = frame; tx = d.AbsoluteLocation as TxTransformation; } catch { }
+            if (tx == null) try { dynamic d = frame; tx = d.LocationRelativeToWorld as TxTransformation; } catch { }
+            if (tx == null) try { dynamic d = frame; tx = d.Location as TxTransformation; } catch { }
+            if (tx == null) try { dynamic d = frame; tx = d.Transformation as TxTransformation; } catch { }
+            if (tx == null) try { dynamic d = frame; var inner = d.Frame as TxFrame; if (inner != null) tx = SafeGetTx(() => inner.AbsoluteLocation); } catch { }
+            return tx != null ? TxToArr(tx) : null;
+        }
+
+        /// <summary>诊断：输出机器人实例参数 / OLP 数据定义可用性，便于定位 TCP 提取失败。</summary>
+        private static void LogRobotParamDiagnostics(TxRobot robot, Action<string> log)
+        {
+            if (robot == null) { log("[TCP][诊断] 未关联机器人"); return; }
+            try
+            {
+                // 全部实例参数名
+                try
+                {
+                    dynamic dr = robot;
+                    object allp = null;
+                    try { allp = dr.GetAllInstanceParameters(); } catch { }
+                    if (allp is IEnumerable ie)
+                    {
+                        var names = new List<string>();
+                        foreach (object pr in ie)
+                        {
+                            if (pr == null) continue;
+                            string pn = null;
+                            try { dynamic dp = pr; pn = (dp.Type as string) ?? (dp.Name as string); } catch { }
+                            if (string.IsNullOrEmpty(pn)) pn = SafeNameObj(pr);
+                            if (!string.IsNullOrEmpty(pn)) names.Add(pn);
+                        }
+                        log("[TCP][诊断] 实例参数：" + (names.Count > 0 ? string.Join(", ", names) : "(空)"));
+                    }
+                    else log("[TCP][诊断] GetAllInstanceParameters 不可用或为空");
+                }
+                catch (Exception ex) { log("[TCP][诊断] 枚举实例参数异常：" + ex.Message); }
+
+                // ABB：OLP_LOCAL_DATA_DEFINITIONS（含 tooldata/wobjdata 原生语法）
+                try
+                {
+                    dynamic dr = robot;
+                    object v = null;
+                    try { v = dr.GetInstanceParameter("OLP_LOCAL_DATA_DEFINITIONS"); } catch { }
+                    string sv = v as string;
+                    if (!string.IsNullOrEmpty(sv))
+                        log($"[TCP][诊断] OLP_LOCAL_DATA_DEFINITIONS 可用（{sv.Length} 字符，ABB 可解析 tooldata）");
+                }
+                catch { }
+            }
+            catch (Exception ex) { log("[TCP][诊断] 异常：" + ex.Message); }
+        }
+
+        /// <summary>按名称解析 TCP 世界矩阵；name 为默认标签时返回 robot.TCPF；找不到返回 null。</summary>
+        public static double[] ResolveTcpWorldByName(OperationInfo op, string name, Action<string> log)
+        {
+            if (log == null) log = Nop;
+            if (op?.PsObject == null || string.IsNullOrEmpty(name)) return null;
+            var opts = EnumerateTcpOptions(op, log);
+            foreach (var o in opts)
+                if (string.Equals(o.Name, name, StringComparison.Ordinal)) return o.WorldMatrix;
+            // 退化：按名字在工具子坐标系里再找一次
+            foreach (var o in opts)
+                if (o.Name != null && o.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) return o.WorldMatrix;
+            return null;
+        }
+
+        /// <summary>解析操作绑定的工具对象（Tool/Gun/ActiveTool）。</summary>
+        private static object ResolveToolObject(OperationInfo op)
+        {
+            object toolObj = null;
+            try
+            {
+                if (op.PsObject is TxWeldOperation weldOp)
+                {
+                    try { var t = weldOp.Tool; if (t != null) toolObj = t; } catch { }
+                    if (toolObj == null) try { var g = weldOp.Gun; if (g != null) toolObj = g; } catch { }
+                }
+                if (toolObj == null)
+                {
+                    dynamic dOp = op.PsObject;
+                    try { toolObj = dOp.Tool; } catch { }
+                    if (toolObj == null) try { toolObj = dOp.Gun; } catch { }
+                    if (toolObj == null) try { toolObj = dOp.ActiveTool; } catch { }
+                }
+                if (toolObj == null)
+                {
+                    TxRobot robot = FindRobot(op.PsObject);
+                    if (robot != null)
+                    {
+                        try { dynamic dr = robot; toolObj = dr.ActiveTool; } catch { }
+                        if (toolObj == null) try { dynamic dr = robot; toolObj = dr.CurrentTool; } catch { }
+                    }
+                    if (toolObj == null) toolObj = FindGunTool(op.PsObject);
+                }
+            }
+            catch { }
+            return toolObj;
+        }
+
+        /// <summary>枚举操作下的路径点（Locations / LocationList / RoboticLocations）。</summary>
+        private static IEnumerable EnumLocations(ITxObject opObj)
+        {
+            IEnumerable locs = null;
+            try
+            {
+                dynamic d = opObj;
+                TryGetEnum(d, "Locations", ref locs);
+                if (locs == null) TryGetEnum(d, "LocationList", ref locs);
+                if (locs == null) TryGetEnum(d, "RoboticLocations", ref locs);
+            }
+            catch { }
+            return locs ?? new object[0];
+        }
+
+        /// <summary>读取一个路径点绑定的工具坐标系（RRS_TOOL_FRAME）；无则 null。</summary>
+        private static TxFrame ReadLocationToolFrame(object loc)
+        {
+            if (loc == null) return null;
+            try
+            {
+                ArrayList paramList = null;
+                try { dynamic d = loc; paramList = d.Parameters as ArrayList; } catch { }
+                if (paramList == null) return null;
+                for (int i = 0; i < paramList.Count; i++)
+                {
+                    var prm = paramList[i] as TxRoboticParam;
+                    if (prm == null) continue;
+                    if (prm.Type != TYPE_RRS_TOOL_FRAME) continue;
+                    var objParam = prm as TxRoboticTxObjectParam;
+                    if (objParam == null) continue;
+                    return objParam.Value as TxFrame;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>递归收集工具对象下的 TxFrame 子坐标系（按名去重，深度限 6）。</summary>
+        private static void CollectChildFrames(ITxObject node, List<TcpOption> result,
+            HashSet<string> seen, int depth)
+        {
+            if (node == null || depth > 6) return;
+            TxObjectList kids = GetKids(node);
+            if (kids == null) return;
+            foreach (ITxObject child in kids)
+            {
+                if (child is TxFrame fr)
+                {
+                    string nm = SafeName(fr);
+                    if (!string.IsNullOrEmpty(nm) && seen.Add(nm))
+                    {
+                        TxTransformation abs = SafeGetTx(() => fr.AbsoluteLocation);
+                        if (abs != null) result.Add(new TcpOption { Name = nm, WorldMatrix = TxToArr(abs) });
+                    }
+                }
+                CollectChildFrames(child, result, seen, depth + 1);
+            }
         }
 
         // ── CGR 路径解析 ──────────────────────────────────────────────
@@ -1998,7 +2269,7 @@ namespace MyPlugin.ExportGun
         // ─── 以下代码追加到 PsReader 类内部（紧接 Section 7 之后，类的 } 之前）───────
 
         // ════════════════════════════════════════════════════════════════════
-        //  8. 焊点标注截图  —  WeldAnnotator 专用
+        //  8. 焊点标注截图  —  TxTools.WeldAnnotator 专用
         // ════════════════════════════════════════════════════════════════════
 
         // ── 8.0  数据模型 ─────────────────────────────────────────────────────
@@ -2338,7 +2609,7 @@ namespace MyPlugin.ExportGun
         // =============================================================================
 
         // ════════════════════════════════════════════════════════════════════
-        //  9. 显示状态快照  —  WeldAnnotator 专用
+        //  9. 显示状态快照  —  TxTools.WeldAnnotator 专用
         // ════════════════════════════════════════════════════════════════════
 
         // ── 9.1  拍摄快照：记录所有 ITxDisplayableObject 的当前 Visibility 状态 ──

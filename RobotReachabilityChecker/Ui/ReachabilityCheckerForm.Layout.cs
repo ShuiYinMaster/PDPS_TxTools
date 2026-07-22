@@ -16,6 +16,7 @@ using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
 using Tecnomatix.Engineering.Ui.WPF;
+using TxTools.Common;
 using static TxTools.RobotReachabilityChecker.Ui.Theme;
 
 namespace TxTools.RobotReachabilityChecker.Ui
@@ -99,14 +100,15 @@ namespace TxTools.RobotReachabilityChecker.Ui
             Controls.Add(_cardsPanel);
         }
 
-        // — 卡片容器
-        private GroupBox MkCard(string title) => new GroupBox
+        // — 卡片容器（ColoredGroupBox 自绘彩色标题）
+        private GroupBox MkCard(string title) => new FormUiKit.ColoredGroupBox
         {
             Text = title,
             Dock = DockStyle.Fill,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold),
+            HeaderColor = ClrAccent,
             ForeColor = ClrAccent,
             Margin = new Padding(2, 2, 2, 2),
             Padding = new Padding(8, 6, 8, 4)
@@ -268,7 +270,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             _chkStaticInterference = new CheckBox
             {
                 Text = "启用静态干涉检查",
-                AutoSize = true, Enabled = false,
+                AutoSize = true, Enabled = true,
                 Font = SystemFonts.DefaultFont,
                 Margin = new Padding(0, 2, 0, 4)
             };
@@ -358,15 +360,15 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 TextAlign = ContentAlignment.MiddleLeft,
                 Padding = new Padding(6, 0, 0, 0)
             };
-            var btnClear = new Button
+            var btnClear = new FormUiKit.FlatColorButton
             {
-                Text = "清空", Dock = DockStyle.Right, Width = 44,
+                Text = "清空", Dock = DockStyle.Right, Width = 44, Height = 26,
                 FlatStyle = FlatStyle.Flat,
-                BackColor = ClrAccent,
-                ForeColor = TxColor.TxColorWhite.Color,
+                BgColor = ClrAccent,
+                ForeColor = Color.White,
+                BorderColor = ClrAccent,
                 Font = SystemFonts.DefaultFont
             };
-            btnClear.FlatAppearance.BorderSize = 0;
             btnClear.Click += (s, e) => _logBox?.Clear();
             hdr.Controls.AddRange(new Control[] { btnClear, lblHdr });
 

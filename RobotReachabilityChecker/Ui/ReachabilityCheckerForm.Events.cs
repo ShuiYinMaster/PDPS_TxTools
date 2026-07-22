@@ -482,6 +482,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 TcpCheckEnabled = _chkTcpXyz != null && _chkTcpXyz.Checked,
                 TcpMarginMm = _nudTcpMargin != null
                     ? (double)_nudTcpMargin.Value : 200.0,
+                InterferenceEnabled = _chkStaticInterference != null && _chkStaticInterference.Checked,
                 UserSelectedBrand = RobotBrand.Auto
             };
 

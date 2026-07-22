@@ -16,7 +16,7 @@ namespace TxTools.RobotReachabilityChecker.Plugin
         public override string Name        => ".可达性检查";
         public override string Description => "机器人路径可达性检查工具";
         public override string Bitmap => base.Bitmap;
-        public override string LargeBitmap => "RobotReachabilityChecker.png";
+        public override string LargeBitmap => "image.RobotReachabilityChecker.png";
 
         public override void Execute(object cmdParams)
         {
