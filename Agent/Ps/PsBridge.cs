@@ -156,14 +156,18 @@ namespace TxTools.Agent.Ps
         /// 展开一个组件(按 name 查找，缺省用当前选中第一个)，按类型统计其子对象数量。
         /// 用它回答"CD_L 下有多少设备"这类层级问题。recursive=true 递归到底，false 仅直接子级。
         /// </summary>
-        public static string ListChildren(string name, bool recursive)
+        public static string ListChildren(string name, bool recursive, string objectId = null)
         {
             return PsContext.Current.Run<string>(delegate
             {
                 try
                 {
                     ITxObject target = null;
-                    if (!string.IsNullOrWhiteSpace(name)) target = FindByName(name);
+                    if (!string.IsNullOrWhiteSpace(name) || !string.IsNullOrWhiteSpace(objectId))
+                    {
+                        string rerr;
+                        if (!TryResolve(name, objectId, out target, out rerr)) return "Error: " + rerr;
+                    }
                     if (target == null) target = FirstSelected();
                     if (target == null)
                         return string.IsNullOrWhiteSpace(name)
@@ -457,14 +461,15 @@ namespace TxTools.Agent.Ps
             return list;
         }
 
-        /// <summary>按名称在场景里查找并设为当前选中(替换)。打通"查到 -> 选中 -> 操作"。</summary>
-        public static string SelectObjects(IList<string> names)
+        /// <summary>按名称/ID 在场景里查找并设为当前选中(替换)。打通"查到 -> 选中 -> 操作"。</summary>
+        public static string SelectObjects(IList<string> names, IList<string> objectIds = null)
         {
             return PsContext.Current.Run<string>(delegate
             {
                 try
                 {
-                    if (names == null || names.Count == 0) return "未提供要选中的名称。";
+                    var hasIds = objectIds != null && objectIds.Count > 0;
+                    if ((names == null || names.Count == 0) && !hasIds) return "未提供要选中的名称或 ID。";
 
                     var all = CollectScene(true);
                     var map = new Dictionary<string, ITxObject>(StringComparer.Ordinal);
@@ -473,24 +478,44 @@ namespace TxTools.Agent.Ps
                     var list = new TxObjectList();
                     var found = new List<string>();
                     var missing = new List<string>();
-                    foreach (var nm in names)
+                    var missingIds = new List<string>();
+
+                    if (hasIds)
                     {
-                        ITxObject o;
-                        if (map.TryGetValue(nm, out o)) { list.Add(o); found.Add(nm); }
-                        else
+                        // 走 ID 精确路径：同名对象只能用 ID 区分，绝不按名称模糊
+                        var doc0 = TxApplication.ActiveDocument;
+                        foreach (var id in objectIds)
                         {
-                            var c = all.FirstOrDefault(x =>
+                            if (string.IsNullOrWhiteSpace(id)) continue;
+                            ITxObject o = null;
+                            try { o = doc0.GetObjectById(id.Trim()); } catch { }
+                            if (o != null) { list.Add(o); found.Add(Ref(o)); }
+                            else missingIds.Add(id.Trim());
+                        }
+                    }
+                    else
+                    {
+                        foreach (var nm in names)
+                        {
+                            ITxObject o;
+                            if (map.TryGetValue(nm, out o)) { list.Add(o); found.Add(Ref(o)); }
+                            else
                             {
-                                var n = SafeName(x);
-                                return n != null && n.IndexOf(nm, StringComparison.OrdinalIgnoreCase) >= 0;
-                            });
-                            if (c != null) { list.Add(c); found.Add(SafeName(c)); }
-                            else missing.Add(nm);
+                                var c = all.FirstOrDefault(x =>
+                                {
+                                    var n = SafeName(x);
+                                    return n != null && n.IndexOf(nm, StringComparison.OrdinalIgnoreCase) >= 0;
+                                });
+                                if (c != null) { list.Add(c); found.Add(Ref(c)); }
+                                else missing.Add(nm);
+                            }
                         }
                     }
 
                     if (found.Count == 0)
-                        return "没有匹配到任何对象。未找到: " + string.Join(", ", missing);
+                        return missingIds.Count > 0
+                            ? "没有匹配到任何对象。未找到的 ID: " + string.Join(", ", missingIds)
+                            : "没有匹配到任何对象。未找到: " + string.Join(", ", missing);
 
                     try { var sel = TxApplication.ActiveSelection; sel.Clear(); sel.AddItems(list); }
                     catch
@@ -501,6 +526,7 @@ namespace TxTools.Agent.Ps
 
                     var msg = "已选中 " + found.Count + " 个对象: " + string.Join(", ", found.Take(20));
                     if (missing.Count > 0) msg += "；未找到: " + string.Join(", ", missing);
+                    if (missingIds.Count > 0) msg += "；未找到的 ID: " + string.Join(", ", missingIds);
                     return msg;
                 }
                 catch (Exception ex) { return "选中对象失败: " + ex.Message; }
@@ -599,13 +625,14 @@ namespace TxTools.Agent.Ps
         // ───────── API 探查 / 动态代码 ─────────
 
         /// <summary>探查一个活动对象(按 name 或当前选中第一个)的运行时类型与成员取值。</summary>
-        public static string InspectObject(string name)
+        public static string InspectObject(string name, string objectId = null)
         {
             return PsContext.Current.Run<string>(delegate
             {
                 try
                 {
-                    ITxObject target = !string.IsNullOrWhiteSpace(name) ? FindByName(name) : FirstSelected();
+                    ITxObject target; string rerr;
+                    if (!TryResolve(name, objectId, out target, out rerr)) return "Error: " + rerr;
                     if (target == null)
                         return string.IsNullOrWhiteSpace(name) ? "请先选中一个对象，或提供 name。" : ("未找到 " + name);
                     return ApiInspector.InspectObjectLive(target);
@@ -617,6 +644,30 @@ namespace TxTools.Agent.Ps
         /// <summary>编译(后台)+执行(主线程, 包 Undo)用户 C# 代码。调用方负责审批与审计。</summary>
         public static string RunCSharp(string code)
         {
+            bool ignored;
+            return RunCSharp(code, out ignored, null);
+        }
+
+        /// <summary>
+        /// 带成功标志的重载。
+        ///
+        /// 【为什么把 success 带出来，而不是让调用方解析返回文本】
+        /// "编译没过"和"执行抛异常"这两件事，在这个方法内部是确定已知的；
+        /// 一旦出了这个方法就只剩一段给人看的字符串，再判断就成了猜 ——
+        /// 而猜错的代价是把失败记成成功，静默地污染片段成功率。
+        ///
+        /// 注意 success=true 的含义仅限于"编译通过且没有抛出异常"。
+        /// 代码自己 return 出来的业务性失败（比如"未找到对象"）它看不出来，
+        /// 那需要调用方结合语义判断。
+        /// </summary>
+        /// <param name="undoLabel">
+        /// undo 块的名字，出现在用户的 Ctrl+Z 历史里。留空则用 "run_csharp"。
+        /// 【配方执行务必传】配方不走审批，undo 是唯一的兜底手段；
+        /// 全都叫 "run_csharp" 的话，连跑三个配方后用户根本认不出该撤到哪一步。
+        /// </param>
+        public static string RunCSharp(string code, out bool success, string undoLabel = null)
+        {
+            success = false;
             if (string.IsNullOrWhiteSpace(code)) return "未提供代码。";
 
             // 1) 编译：纯 CPU，不碰 PS —— 在调用线程(后台)进行，不冻结 UI。
@@ -624,18 +675,22 @@ namespace TxTools.Agent.Ps
             var assembly = CSharpRunner.Compile(code, out compileError);
             if (assembly == null) return compileError;
 
+            // out 参数不能被匿名方法捕获，用局部变量中转。
+            bool ok = false;
+
             // 2) 执行：碰 PS，必须主线程，包在 Undo 块里(可撤销)。
-            return PsContext.Current.Run<string>(delegate
+            var text = PsContext.Current.Run<string>(delegate
             {
                 var log = new StringBuilder();
                 Action<string> logfn = delegate (string s) { if (s != null) log.AppendLine(s); };
 
                 TxDocument doc = null;
                 try { doc = TxApplication.ActiveDocument; } catch { }
-                bool undo = doc != null && BeginUndo(doc, "run_csharp");
+                var label = string.IsNullOrWhiteSpace(undoLabel) ? "run_csharp" : undoLabel;
+                bool undo = doc != null && BeginUndo(doc, label);
 
                 string result;
-                try { result = CSharpRunner.Invoke(assembly, logfn); }
+                try { result = CSharpRunner.Invoke(assembly, logfn); ok = true; }
                 catch (Exception ex) { result = "执行异常: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message); }
                 finally { if (undo) EndUndo(doc); }
 
@@ -646,6 +701,10 @@ namespace TxTools.Agent.Ps
                 sb.Append("结果: ").Append(result);
                 return sb.ToString();
             });
+
+            // PsContext.Current.Run 是同步封送，回到这里时 ok 已经写好了。
+            success = ok;
+            return text;
         }
 
         // ───────── 新增：机器人基座校验 ─────────
@@ -694,20 +753,15 @@ namespace TxTools.Agent.Ps
         // ───────── 新增：对象位置查询 ─────────
 
         /// <summary>查询对象的世界坐标系位置和姿态。只读。</summary>
-        public static string GetObjectLocation(string name, string format)
+        public static string GetObjectLocation(string name, string format, string objectId = null)
         {
             return PsContext.Current.Run<string>(delegate
             {
-                ITxObject obj;
-                if (!string.IsNullOrWhiteSpace(name))
-                    obj = FindByName(name);
-                else
-                    obj = FirstSelected();
-
-                if (obj == null) return "找不到对象" + (string.IsNullOrWhiteSpace(name) ? "（当前没有选中）" : " '" + name + "'。");
+                ITxObject obj; string err;
+                if (!TryResolve(name, objectId, out obj, out err)) return "Error: " + err;
 
                 var sb = new StringBuilder();
-                sb.AppendLine("对象: " + SafeName(obj));
+                sb.AppendLine("对象: " + Ref(obj));
                 sb.AppendLine("类型: " + obj.GetType().Name);
 
                 try
@@ -766,33 +820,19 @@ namespace TxTools.Agent.Ps
         // ───────── 新增：机器人运动学信息 ─────────
 
         /// <summary>查询机器人关节数、名称、当前角度、TCP 数量。只读。</summary>
-        public static string InspectRobotKinematics(string name)
+        public static string InspectRobotKinematics(string name, string objectId = null)
         {
             return PsContext.Current.Run<string>(delegate
             {
-                TxRobot robot = null;
-                if (!string.IsNullOrWhiteSpace(name))
-                {
-                    // 精确优先 → 模糊
-                    foreach (var o in CollectScene(true))
-                        if (o is TxRobot && string.Equals(SafeName(o), name, StringComparison.Ordinal))
-                        { robot = (TxRobot)o; break; }
-                    if (robot == null)
-                        foreach (var o in CollectScene(true))
-                            if (o is TxRobot && SafeName(o).IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
-                            { robot = (TxRobot)o; break; }
-                }
-                else
-                {
-                    var sel = FirstSelected();
-                    if (sel is TxRobot) robot = (TxRobot)sel;
-                    else foreach (var o in CollectScene(true)) if (o is TxRobot) { robot = (TxRobot)o; break; }
-                }
-
-                if (robot == null) return "找不到机器人" + (string.IsNullOrWhiteSpace(name) ? "（场景中没有机器人）" : " '" + name + "'。");
+                ITxObject obj; string rerr;
+                if (!TryResolve(name, objectId, out obj, out rerr)) return "Error: " + rerr;
+                var robot = obj as TxRobot;
+                if (robot == null) return string.IsNullOrWhiteSpace(name)
+                    ? "当前选中对象不是机器人，无法查询运动学。"
+                    : "对象 '" + name + "' 不是机器人，无法查询运动学。";
 
                 var sb = new StringBuilder();
-                sb.AppendLine("机器人: " + SafeName(robot));
+                sb.AppendLine("机器人: " + Ref(robot));
 
                 try
                 {
@@ -1051,12 +1091,12 @@ namespace TxTools.Agent.Ps
         // ───────── 新增：设置对象位置（变更）─────────
 
         /// <summary>设置对象的世界坐标系位置（含可选姿态）。变更操作，包在 Undo 块里可撤销。</summary>
-        public static string SetObjectLocation(string name, double x, double y, double z, double? rx, double? ry, double? rz)
+        public static string SetObjectLocation(string name, double x, double y, double z, double? rx, double? ry, double? rz, string objectId = null)
         {
             return PsContext.Current.Run<string>(delegate
             {
-                ITxObject obj = FindByName(name);
-                if (obj == null) return "找不到对象 '" + name + "'。";
+                ITxObject obj; string err;
+                if (!TryResolve(name, objectId, out obj, out err)) return "Error: " + err;
 
                 var doc = TxApplication.ActiveDocument;
                 if (doc == null) return "没有打开的研究文档。";
@@ -1317,18 +1357,162 @@ namespace TxTools.Agent.Ps
             return hist;
         }
 
-        private static ITxObject FindByName(string name)
+        // ═════════════════════════════════════════════════════════════════
+        //  对象定位:名称 + 可选 ID
+        //
+        //  场景里允许同名 —— 实测同一 study 有 4 台都叫 kr210r2700extra 的机器人。
+        //  旧版 FindByName 精确命中就返回第一个、没精确命中就返回第一个模糊包含的,
+        //  于是"操作错对象"不报错不提示,只在用户发现结果不对时才暴露。
+        //
+        //  ITxObject.Id 是场景内唯一标识(形如 3,57,2,1):
+        //    首段=域号 · 中间段=家族号(继承自父设备) · 末段=容器内递增实例号
+        //  改名、UI 拖拽改层级都不改变 Id;但 SDK AddObject 是"复制"语义,会生成新 Id 的新实例。
+        //  Id 只在单个项目内有效,不要跨项目固化。
+        // ═════════════════════════════════════════════════════════════════
+
+        /// <summary>对象的标准短表示:名称 [Id]。凡是列出对象的地方都该用它。</summary>
+        internal static string Ref(ITxObject o)
         {
-            ITxObject contains = null;
+            if (o == null) return "(null)";
+            string id = "?";
+            try { id = o.Id; } catch { }
+            return SafeName(o) + " [" + id + "]";
+        }
+
+        /// <summary>候选行:名称[Id] + 类型 + 位置 + 父级,给模型足够信息挑出想要的那个。</summary>
+        internal static string Describe(ITxObject o)
+        {
+            var sb = new StringBuilder();
+            sb.Append(Ref(o));
+            try { sb.Append("  类型=").Append(o.GetType().Name); } catch { }
+            try
+            {
+                var loc = o as ITxLocatableObject;
+                if (loc != null)
+                {
+                    var t = loc.AbsoluteLocation.Translation;
+                    sb.Append("  位置=(").Append(((double)t.X).ToString("F1"))
+                      .Append(", ").Append(((double)t.Y).ToString("F1"))
+                      .Append(", ").Append(((double)t.Z).ToString("F1")).Append(")");
+                }
+            }
+            catch { }
+            var pn = ParentName(o);
+            if (!string.IsNullOrEmpty(pn)) sb.Append("  父级=").Append(pn);
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// 统一定位入口。成功返回 true;失败时 error 是可直接回灌给模型的说明,
+        /// 歧义时自带候选表,模型看到就会改用 object_id 重试。
+        ///
+        /// 优先级:objectId(精确) > name(精确匹配) > name(模糊包含) > 当前选中
+        /// </summary>
+        internal static bool TryResolve(string name, string objectId, out ITxObject obj, out string error)
+        {
+            obj = null;
+            error = null;
+
+            // ── 1) 有 ID 走精确路径 ──
+            if (!string.IsNullOrWhiteSpace(objectId))
+            {
+                try
+                {
+                    var doc0 = TxApplication.ActiveDocument;
+                    if (doc0 != null) obj = doc0.GetObjectById(objectId.Trim());
+                }
+                catch { }
+
+                if (obj != null) return true;
+
+                error = "按 ID \"" + objectId + "\" 找不到对象。Id 只在当前项目内有效，"
+                      + "且对象被 SDK 复制/重建后会换新 Id。请重新查询以获取当前 Id。";
+                return false;
+            }
+
+            // ── 2) 无名无 ID → 当前选中 ──
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                var selected = SelectedObjects();
+                if (selected.Count == 0)
+                {
+                    error = "未提供 name/object_id，且当前没有选中任何对象。";
+                    return false;
+                }
+                if (selected.Count > 1)
+                {
+                    error = "当前选中了 " + selected.Count + " 个对象，无法确定操作哪一个。\n"
+                          + Candidates(selected)
+                          + "请用 object_id 指定其中一个后重试。";
+                    return false;
+                }
+                obj = selected[0];
+                return true;
+            }
+
+            // ── 3) 按名字找:精确优先,精确无果再模糊 ──
+            var exact = new List<ITxObject>();
+            var fuzzy = new List<ITxObject>();
+
             foreach (var o in CollectScene(true))
             {
                 var n = SafeName(o);
-                if (string.Equals(n, name, StringComparison.Ordinal)) return o;
-                if (contains == null && n != null
-                    && n.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0) contains = o;
+                if (n == null) continue;
+                if (string.Equals(n, name, StringComparison.Ordinal)) exact.Add(o);
+                else if (n.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0) fuzzy.Add(o);
             }
-            return contains;
+
+            var hits = exact.Count > 0 ? exact : fuzzy;
+            bool wasFuzzy = exact.Count == 0;
+
+            if (hits.Count == 1) { obj = hits[0]; return true; }
+
+            if (hits.Count == 0)
+            {
+                error = "找不到名为 \"" + name + "\" 的对象。";
+                return false;
+            }
+
+            // 命中多个 —— 绝不静默取第一个
+            error = (wasFuzzy
+                        ? "没有名称完全等于 \"" + name + "\" 的对象，但有 " + hits.Count + " 个名称包含它"
+                        : "名称 \"" + name + "\" 在场景中命中 " + hits.Count + " 个对象")
+                  + "，无法确定操作哪一个。\n"
+                  + Candidates(hits)
+                  + "请改用 object_id 指定具体那一个后重试。";
+            return false;
         }
+
+        private static string Candidates(List<ITxObject> list)
+        {
+            var sb = new StringBuilder();
+            int max = Math.Min(list.Count, 20);
+            for (int i = 0; i < max; i++)
+                sb.Append("  ").Append(i + 1).Append(". ").AppendLine(Describe(list[i]));
+            if (list.Count > max)
+                sb.AppendLine("  …(还有 " + (list.Count - max) + " 个，用更精确的名称缩小范围)");
+            return sb.ToString();
+        }
+
+        private static List<ITxObject> SelectedObjects()
+        {
+            var result = new List<ITxObject>();
+            try
+            {
+                dynamic sel = TxApplication.ActiveSelection;
+                dynamic items = sel.GetItems();
+                var en = items as IEnumerable;
+                if (en != null)
+                    foreach (var o in en)
+                    {
+                        var t = o as ITxObject;
+                        if (t != null) result.Add(t);
+                    }
+            }
+            catch { }
+            return result;
+        }
+
 
         private static ITxObject FirstSelected()
         {
@@ -1492,7 +1676,7 @@ namespace TxTools.Agent.Ps
         /// 查询资源的完整 CEE 逻辑状态：HasPlcAspect、LogicBehavior、SclContainer、关联信号。
         /// 只读，不修改场景。
         /// </summary>
-        public static string GetResourceLogicStatus(string name)
+        public static string GetResourceLogicStatus(string name, string objectId = null)
         {
             return PsContext.Current.Run<string>(delegate
             {
@@ -1500,7 +1684,10 @@ namespace TxTools.Agent.Ps
                 {
                     ITxObject obj = null;
                     if (!string.IsNullOrWhiteSpace(name))
-                        obj = FindByName(name);
+                    {
+                        string rerr;
+                        if (!TryResolve(name, objectId, out obj, out rerr)) return "Error: " + rerr;
+                    }
                     else
                         obj = FirstSelected();
                     if (obj == null) return "未找到指定资源"
@@ -1768,13 +1955,14 @@ namespace TxTools.Agent.Ps
         /// 为资源添加 CEE 逻辑行为（创建 Smart Component）。
         /// 资源必须实现 ITxPlcLogicBehaviorCreation 接口。
         /// </summary>
-        public static string AddLogicToResource(string name)
+        public static string AddLogicToResource(string name, string objectId = null)
         {
             return PsContext.Current.Run<string>(delegate
             {
                 try
                 {
-                    ITxObject obj = string.IsNullOrWhiteSpace(name) ? FirstSelected() : FindByName(name);
+                    ITxObject obj; string rerr;
+                    if (!TryResolve(name, objectId, out obj, out rerr)) return "Error: " + rerr;
                     if (obj == null) return "未找到资源'" + (name ?? "(选中)") + "'。";
 
                     dynamic doc = TxApplication.ActiveDocument;
@@ -1786,7 +1974,7 @@ namespace TxTools.Agent.Ps
                         catch { return "该资源不支持逻辑行为（未实现 ITxPlcLogicBehaviorCreation）。"; }
 
                         d.CreateLogicBehavior();
-                        string result = "已为资源 '" + SafeName(obj) + "' 创建逻辑行为（智能组件）。";
+                        string result = "已为资源 '" + Ref(obj) + "' 创建逻辑行为（智能组件）。";
                         if (undo) result += "\n可在 Resource Logic Behavior Editor 中编辑 Entries/Exits/Actions。可 Ctrl+Z 撤销。";
                         return result;
                     }
@@ -1800,13 +1988,14 @@ namespace TxTools.Agent.Ps
         /// 为资源创建 SCL 容器，用于结构化文本编程。
         /// 资源必须实现 ITxPlcSclCreation 接口。
         /// </summary>
-        public static string CreateSclContainer(string name)
+        public static string CreateSclContainer(string name, string objectId = null)
         {
             return PsContext.Current.Run<string>(delegate
             {
                 try
                 {
-                    ITxObject obj = string.IsNullOrWhiteSpace(name) ? FirstSelected() : FindByName(name);
+                    ITxObject obj; string rerr;
+                    if (!TryResolve(name, objectId, out obj, out rerr)) return "Error: " + rerr;
                     if (obj == null) return "未找到资源'" + (name ?? "(选中)") + "'。";
 
                     dynamic doc = TxApplication.ActiveDocument;
@@ -1818,7 +2007,7 @@ namespace TxTools.Agent.Ps
                         catch { return "该资源不支持 SCL（未实现 ITxPlcSclCreation）。"; }
 
                         d.CreateSclContainer();
-                        string result = "已为资源 '" + SafeName(obj) +"' 创建 SCL 容器。";
+                        string result = "已为资源 '" + Ref(obj) +"' 创建 SCL 容器。";
                         if (undo) result += "\n可在 SCL Editor 中编写结构化文本逻辑。可 Ctrl+Z 撤销。";
                         return result;
                     }
@@ -1832,26 +2021,25 @@ namespace TxTools.Agent.Ps
         /// 将一个资源的逻辑复制到另一个同类资源。
         /// 源必须已有 LogicBehavior，目标必须为空且同类型。
         /// </summary>
-        public static string CopyLogic(string sourceName, string targetName)
+        public static string CopyLogic(string sourceName, string targetName, string sourceId = null, string targetId = null)
         {
             return PsContext.Current.Run<string>(delegate
             {
                 try
                 {
-                    ITxObject src = FindByName(sourceName);
-                    if (src == null) return "未找到源资源 '" + sourceName + "'。";
-                    ITxObject tgt = FindByName(targetName);
-                    if (tgt == null) return "未找到目标资源 '" + targetName + "'。";
+                    ITxObject src, tgt; string rerr;
+                    if (!TryResolve(sourceName, sourceId, out src, out rerr)) return "Error: 源资源 -> " + rerr;
+                    if (!TryResolve(targetName, targetId, out tgt, out rerr)) return "Error: 目标资源 -> " + rerr;
 
                     dynamic doc = TxApplication.ActiveDocument;
-                    bool undo = BeginUndo(doc, "copy_logic: " + sourceName + " → " + targetName);
+                    bool undo = BeginUndo(doc, "copy_logic: " + SafeName(src) + " → " + SafeName(tgt));
                     try
                     {
                         dynamic dSrc = src;
                         try { dSrc.CopySelfLogicToOtherLogicResource((dynamic)tgt); }
                         catch (Exception ex) { return "复制逻辑失败: " + ex.Message + "。目标资源可能已有逻辑或类型不兼容。"; }
 
-                        string result = "已将 '" + sourceName + "' 的逻辑行为复制到 '" + targetName + "'。";
+                        string result = "已将 '" + Ref(src) + "' 的逻辑行为复制到 '" + Ref(tgt) + "'。";
                         if (undo) result += "\n可 Ctrl+Z 撤销。";
                         return result;
                     }
@@ -1899,14 +2087,14 @@ namespace TxTools.Agent.Ps
         /// 在资源上创建光传感器。资源必须实现 ITxPlcSensorCreation。
         /// 光传感器可检测物体遮挡，发出信号到 LB Entry。
         /// </summary>
-        public static string CreatePlcSensor(string resourceName, string sensorType, string sensorName)
+        public static string CreatePlcSensor(string resourceName, string sensorType, string sensorName, string objectId = null)
         {
             return PsContext.Current.Run<string>(delegate
             {
                 try
                 {
-                    ITxObject obj = string.IsNullOrWhiteSpace(resourceName)
-                        ? FirstSelected() : FindByName(resourceName);
+                    ITxObject obj; string rerr;
+                    if (!TryResolve(resourceName, objectId, out obj, out rerr)) return "Error: " + rerr;
                     if (obj == null) return "未找到资源'" + (resourceName ?? "(选中)") + "'。";
                     if (string.IsNullOrWhiteSpace(sensorName))
                         sensorName = "Sensor_" + SafeName(obj);
@@ -1949,7 +2137,9 @@ namespace TxTools.Agent.Ps
                         try { sensorData.MaxRange = 500.0; } catch { }
 
                         dynamic sensor = d.CreatePlcLightSensor(sensorData);
-                        string result = "已创建光传感器: " + SafeName(sensor) + " (资源: " + SafeName(obj) + ")";
+                        string sensorRef;
+                        try { sensorRef = Ref((ITxObject)sensor); } catch { sensorRef = SafeName(sensor); }
+                        string result = "已创建光传感器: " + sensorRef + " (资源: " + Ref(obj) + ")";
                         if (undo) result += "\n可 Ctrl+Z 撤销。";
                         return result;
                     }
@@ -1964,14 +2154,14 @@ namespace TxTools.Agent.Ps
         /// Actions（动作）、Parameters（参数）、Constants（常量）。
         /// 只读。用于检查 LB 待连接的状态。
         /// </summary>
-        public static string ListLogicBehaviorElements(string resourceName)
+        public static string ListLogicBehaviorElements(string resourceName, string objectId = null)
         {
             return PsContext.Current.Run<string>(delegate
             {
                 try
                 {
-                    ITxObject obj = string.IsNullOrWhiteSpace(resourceName)
-                        ? FirstSelected() : FindByName(resourceName);
+                    ITxObject obj; string rerr;
+                    if (!TryResolve(resourceName, objectId, out obj, out rerr)) return "Error: " + rerr;
                     if (obj == null) return "未找到资源'" + (resourceName ?? "(选中)") + "'。";
 
                     dynamic d = obj;
@@ -1979,8 +2169,9 @@ namespace TxTools.Agent.Ps
                     try { lb = d.LogicBehavior; } catch { }
                     if (lb == null) return "该资源没有 LogicBehavior。请先调用 add_logic_to_resource 创建。";
 
+                    var refLabel = Ref(obj);
                     var sb = new StringBuilder();
-                    sb.AppendLine("=== LogicBehavior 元素: " + SafeName(obj) + " ===");
+                    sb.AppendLine("=== LogicBehavior 元素: " + refLabel + " ===");
                     int total = 0;
 
                     string[] categories = { "Entry", "Exit", "Action", "Parameter", "Constant" };
@@ -2017,7 +2208,7 @@ namespace TxTools.Agent.Ps
                     if (total == 0)
                         sb.AppendLine("LB 中没有元素。请在 Resource Logic Behavior Editor 中创建 Entries/Exits。");
                     else
-                        sb.Insert(23 + SafeName(obj).Length, "共 " + total + " 个元素\n");
+                        sb.Insert(23 + refLabel.Length, "共 " + total + " 个元素\n");
 
                     return sb.ToString().TrimEnd();
                 }
@@ -2030,14 +2221,14 @@ namespace TxTools.Agent.Ps
         /// 使用多策略 dynamic 调用兜底 SDK 版本差异。
         /// </summary>
         public static string ConnectSignalToLB(string resourceName, string signalName,
-            string pinType, string pinName)
+            string pinType, string pinName, string objectId = null)
         {
             return PsContext.Current.Run<string>(delegate
             {
                 try
                 {
-                    ITxObject obj = string.IsNullOrWhiteSpace(resourceName)
-                        ? FirstSelected() : FindByName(resourceName);
+                    ITxObject obj; string rerr;
+                    if (!TryResolve(resourceName, objectId, out obj, out rerr)) return "Error: " + rerr;
                     if (obj == null) return "未找到资源'" + (resourceName ?? "(选中)") + "'。";
 
                     // 获取 LB
@@ -2105,7 +2296,7 @@ namespace TxTools.Agent.Ps
                             + "请在 PS Resource Logic Behavior Editor 中手动连接。";
 
                     return "已将信号 '" + SafeName(sig) + "' 连接到 " + pinType + " '"
-                        + SafeName(targetEl) + "' (资源: " + SafeName(obj) + ")。";
+                        + SafeName(targetEl) + "' (资源: " + Ref(obj) + ")。";
                 }
                 catch (Exception ex) { return "连接信号到 LB 失败: " + ex.Message; }
             });

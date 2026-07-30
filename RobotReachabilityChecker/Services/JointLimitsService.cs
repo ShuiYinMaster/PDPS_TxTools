@@ -154,8 +154,13 @@ namespace TxTools.RobotReachabilityChecker.Services
                 {
                     try
                     {
-                        bool isRad = savedOk[i] && Math.Abs(savedVals[i]) <= 2 * Math.PI + 0.05;
-                        double valToWrite = isRad ? targetDeg[i] * Math.PI / 180.0 : targetDeg[i];
+                        // P0-2：优先用"软限位量级"判断旋转轴（限位都在 ±2π 弧度内 = 旋转轴），
+                        // 而非当前值 —— 避免机器人处于多圈姿态（如 J1=400°=6.98rad）时
+                        // 把弧度误判为"度"而写入 400（=63 圈）导致大幅越界。
+                        bool isRotary = IsRotaryJoint(joints[i]);
+                        if (!isRotary && savedOk[i])
+                            isRotary = Math.Abs(savedVals[i]) <= 2 * Math.PI + 0.05;
+                        double valToWrite = isRotary ? targetDeg[i] * Math.PI / 180.0 : targetDeg[i];
                         dynamic jt = joints[i];
                         jt.CurrentValue = valToWrite;
                     }
@@ -239,6 +244,26 @@ namespace TxTools.RobotReachabilityChecker.Services
         {
             if (fb != null && i < fb.Count) return fb[i];
             return (-360, 360);
+        }
+
+        // =====================================================================
+        // 依据软限位量级判断是否为旋转轴：上下限都在 ±(2π+0.5) 弧度内视为旋转轴。
+        // 线性轴（限位为 mm，量级通常远超 2π）返回 false。
+        // =====================================================================
+        private static bool IsRotaryJoint(object joint)
+        {
+            try
+            {
+                dynamic jt = joint;
+                double lo = 0, hi = 0;
+                bool gotLo = false, gotHi = false;
+                try { lo = (double)jt.LowerSoftLimit; gotLo = true; } catch { }
+                try { hi = (double)jt.UpperSoftLimit; gotHi = true; } catch { }
+                if (gotLo && gotHi)
+                    return Math.Abs(lo) <= 2 * Math.PI + 0.5 && Math.Abs(hi) <= 2 * Math.PI + 0.5;
+            }
+            catch { }
+            return false;
         }
 
         public static void EnsureDegrees(List<(double lo, double hi)> limits, ILogger log = null)

@@ -19,7 +19,8 @@ namespace TxTools.RobotReachabilityChecker.Services
     public static class TcpMarginChecker
     {
         public static string CheckTcpXyzMargin(
-            TxRobot robot, ITxRoboticLocationOperation loc, double marginMm, ILogger log = null)
+            TxRobot robot, ITxRoboticLocationOperation loc, double marginMm, ILogger log = null,
+            TxPoseData poseData = null)
         {
             log = log ?? NullLogger.Instance;
 
@@ -39,20 +40,71 @@ namespace TxTools.RobotReachabilityChecker.Services
             }
             catch { }
 
+            // P1-7：切 TCPF（若点位绑定 RRS_TOOL_FRAME），保证余量探测用对工具
+            Action tcpfRestore = null;
+            TxTransformation savedTCPF = null;
+            try { savedTCPF = robot.TCPF.AbsoluteLocation; } catch { }
+
             try
             {
+                var locTool = ToolFrameReader.ReadLocationToolFrame(loc);
+                if (locTool != null && savedTCPF != null)
+                {
+                    string switchErr = null;
+                    tcpfRestore = ToolFrameSwitcher.SwitchToFrame(robot, locTool, log, out switchErr);
+                    if (tcpfRestore == null)
+                    {
+                        log.Log($"    TCP余量检查跳过: TCPF切换失败 {switchErr}", "WARN");
+                        return "";
+                    }
+                }
+
                 TxTransformation baseTx = LocationGeometry.GetLocationTransform(loc, log);
                 if (baseTx == null) return "";
 
                 double[] basePos = LocationGeometry.ExtractTranslation(baseTx);
                 if (basePos == null) return "";
 
-                double[][] directions =
+                // 工具系六向：以 TCPF 坐标系为基准（而非世界系）
+                //   优先：poseData 姿态下的 TCPF（GetTCPFByPoseData，与该点位真实焊接姿态一致）
+                //   兜底：机器人当前 TCPF.AbsoluteLocation 的旋转部分
+                TxTransformation tcpFrame = null;
+                if (poseData != null)
                 {
-                    new double[] { 1, 0, 0 }, new double[] { -1, 0, 0 },
-                    new double[] { 0, 1, 0 }, new double[] {  0,-1, 0 },
-                    new double[] { 0, 0, 1 }, new double[] {  0, 0,-1 }
-                };
+                    try { tcpFrame = robot.GetTCPFByPoseData(poseData); } catch { }
+                }
+                if (tcpFrame == null)
+                {
+                    try { tcpFrame = robot.TCPF.AbsoluteLocation; } catch { }
+                }
+
+                double[][] directions;
+                if (tcpFrame != null)
+                {
+                    // TCPF 旋转矩阵的三列 = 工具系 X/Y/Z 轴在世界系的方向
+                    TxVector txAxis = tcpFrame.TransformNormal(new TxVector(1, 0, 0));
+                    TxVector tyAxis = tcpFrame.TransformNormal(new TxVector(0, 1, 0));
+                    TxVector tzAxis = tcpFrame.TransformNormal(new TxVector(0, 0, 1));
+                    directions = new double[][]
+                    {
+                        new double[] {  txAxis.X,  txAxis.Y,  txAxis.Z },   // +工具X
+                        new double[] { -txAxis.X, -txAxis.Y, -txAxis.Z },   // -工具X
+                        new double[] {  tyAxis.X,  tyAxis.Y,  tyAxis.Z },   // +工具Y
+                        new double[] { -tyAxis.X, -tyAxis.Y, -tyAxis.Z },   // -工具Y
+                        new double[] {  tzAxis.X,  tzAxis.Y,  tzAxis.Z },   // +工具Z
+                        new double[] { -tzAxis.X, -tzAxis.Y, -tzAxis.Z }    // -工具Z
+                    };
+                }
+                else
+                {
+                    // 完全拿不到 TCPF 时才退回世界系
+                    directions = new double[][]
+                    {
+                        new double[] { 1, 0, 0 }, new double[] { -1, 0, 0 },
+                        new double[] { 0, 1, 0 }, new double[] {  0,-1, 0 },
+                        new double[] { 0, 0, 1 }, new double[] {  0, 0,-1 }
+                    };
+                }
                 string[] dirNames = { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
 
                 double minMargin = double.MaxValue;
@@ -72,6 +124,8 @@ namespace TxTools.RobotReachabilityChecker.Services
             }
             finally
             {
+                if (tcpfRestore != null) { try { tcpfRestore(); } catch { } }
+                if (savedTCPF != null) { try { robot.TCPF.AbsoluteLocation = savedTCPF; } catch { } }
                 if (savedJointVals != null)
                 {
                     try

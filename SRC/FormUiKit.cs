@@ -1,10 +1,11 @@
-﻿// ============================================================================
+// ============================================================================
 // FormUiKit.cs   —   TxTools 套件统一 GUI 规范（以 ExportGun 界面为准）
 //
 // 目的：
-//   1) 五个插件窗体共用同一套"窗体初始化 + 卡片布局 + 配色控件"写法，
+//   1) 所有插件窗体共用同一套"窗体初始化 + 卡片布局 + 配色 + 控件工厂"写法，
 //      不再各写各的。
 //   2) 彻底解决"先开 A 窗体、A 的尺寸会影响后开的 B 窗体"问题。
+//   3) 所有主题颜色（Theme）集中在本文件，各窗体不再自带 Theme 类。
 //
 // 解耦原理（重点）：
 //   PS 宿主只是 system-DPI-aware（非 PerMonitorV2），WinForms 的缩放基准在
@@ -12,13 +13,18 @@
 //   或在 WinForms 自动缩放之外再手动乘系数，先后打开的窗体就会互相影响尺寸。
 //   统一做法：
 //     · 所有窗体都用 AutoScaleMode.None + OnLoad 手动 Scale（ExportGun 同款）
-//     · 字体统一用 SystemFonts.DefaultFont
+//     · 字体统一用 SystemFonts.MessageBoxFont（ExportGun 基准）
 //     · 代码里一律写 96-DPI 裸像素，OnLoad 时按 DPI 系数一次性放大
 //     · 严禁任何 ×_dpiScale / ApplyDpiFix / ScaleControlsRecursive 二次缩放
 // ============================================================================
 using System;
+using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
+using System.Linq;
+using System.Reflection;
 using System.Windows.Forms;
+using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
 
 namespace TxTools.Common
@@ -29,20 +35,601 @@ namespace TxTools.Common
     /// </summary>
     public static class FormUiKit
     {
-        // ── 统一字体（OS 已 DPI 缩放，不要再自己乘系数）─────────────────────
-        public static readonly Font BaseFont = SystemFonts.DefaultFont;
+        // ── 统一字体（ExportGun 基准：MessageBoxFont，OS 已 DPI 缩放）──────────
+        public static readonly Font BaseFont = SystemFonts.MessageBoxFont;
         public static readonly Font BoldFont =
-            new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+            new Font(SystemFonts.MessageBoxFont, FontStyle.Bold);
         public static readonly Font TitleFont =
-            new Font(SystemFonts.DefaultFont.FontFamily, 9f, FontStyle.Bold);
+            new Font(SystemFonts.MessageBoxFont.FontFamily, 9f, FontStyle.Bold);
 
-        // ── 统一配色（卡片标题用宿主主题蓝以外的稳定色，避免被 flat 皮肤吃掉）──
-        public static readonly Color CardBack = Color.FromArgb(250, 251, 253);
-        public static readonly Color CardBorder = Color.FromArgb(214, 219, 228);
-        public static readonly Color TitleBack = Color.FromArgb(60, 90, 150);
-        public static readonly Color TitleFore = Color.White;
-        public static readonly Color PrimaryBack = Color.FromArgb(60, 90, 150);
-        public static readonly Color PrimaryFore = Color.White;
+        /// <summary>日志等宽字体（Consolas 8.5，若系统缺失退回默认等宽）。</summary>
+        public static readonly Font MonoFont = CreateMonoFont();
+
+        private static Font CreateMonoFont()
+        {
+            try
+            {
+                using (var probe = new Font("Consolas", 8.5f))
+                    return new Font(probe, FontStyle.Regular);
+            }
+            catch { return SystemFonts.MessageBoxFont; }
+        }
+
+        // ── 卡片/标题基础色（MkCard 面板卡片用）─────────────────────────────
+        // 系统默认主题：纯白底 + 纯黑字 + 细灰边框（扁平无色风格）。
+        // 非 readonly：主题调整插件（ThemeTuner）可在运行时更换，并持久化到 theme.cfg。
+        public static Color WinBg = Color.White;                     // 窗体背景纯白
+        public static Color CardBack = Color.White;                  // 卡片底色纯白
+        public static Color CardBorder = Color.FromArgb(210, 210, 210); // 细边框
+        public static Color TitleBack = Color.FromArgb(240, 240, 240);  // 标题条浅灰
+        public static Color TitleFore = Color.Black;                 // 标题字纯黑
+        public static Color PrimaryBack = Color.White;               // 主按钮底纯白
+        public static Color PrimaryFore = Color.Black;               // 主按钮字纯黑
+
+        // ====================================================================
+        // Theme —— 套件唯一配色来源（ExportGun / AutoPath / ReachabilityChecker 合并）
+        // ====================================================================
+        public static class Theme
+        {
+            // ── 区块/卡片标题色（TxColor 形式，供 PS 原生 API；.Color 转 System.Drawing）──
+            public static TxColor TxAccent = new TxColor(45, 45, 45);
+            public static TxColor TxCol1 = new TxColor(45, 45, 45);
+            public static TxColor TxGun = new TxColor(60, 60, 60);
+            public static TxColor TxBall = new TxColor(60, 60, 60);
+            public static TxColor TxLog = new TxColor(60, 60, 60);
+            public static TxColor TxPoints = new TxColor(60, 60, 60);
+
+            // ── 卡片标题色（Color 形式 / AutoPath 命名兼容）─────────────────────
+            public static Color CardOps = Color.Black;
+            public static Color CardObs = Color.Black;
+            public static Color CardParams = Color.Black;
+            public static Color CardLog = Color.Black;
+
+            // ── 功能按钮色（默认主题：纯白底 + 细灰边框 + 悬停青色）──────────────
+            public static Color BtnPrimary = Color.White;
+            public static Color BtnSecondary = Color.White;
+            public static Color BtnMuted = Color.White;
+            public static Color BtnDanger = Color.White;
+            public static Color BtnExport = Color.White;
+            public static Color BtnGun = Color.White;
+            public static Color BtnFore = Color.Black;                     // 按钮文字纯黑
+            public static Color BtnBorder = Color.FromArgb(200, 200, 200); // 细边框浅灰
+            public static Color BtnHover = Color.FromArgb(0, 190, 215);    // 悬停背景青色
+            public static Color HeaderFore = Color.Black;                  // 分区块标题条文字
+
+            // ── 日志面板（默认主题：白底黑字）──────────────────────────────
+            public static Color LogBg = Color.White;
+            public static Color LogText = Color.Black;
+            public static Color LogOk = Color.Black;
+            public static Color LogErr = Color.Black;
+            public static Color LogWarn = Color.Black;
+            public static Color LogPs = Color.Black;
+            public static Color LogCoord = Color.Black;
+            public static Color LogExcel = Color.Black;
+            public static Color LogDebug = Color.Black;
+            public static Color LogInfo = Color.Black;
+
+            // ── 状态色（参考坐标状态条等）────────────────────────────────────
+            public static Color StatusOkFg = Color.FromArgb(96, 128, 44);
+            public static Color StatusOkBg = Color.FromArgb(236, 248, 218);
+            public static Color StatusRefFg = Color.FromArgb(120, 92, 40);
+            public static Color StatusRefBg = Color.FromArgb(250, 238, 210);
+
+            // ── GroupBox 卡片标题统一色（所有窗体 ColoredGroupBox 用这一个）──
+            public static Color CardTitle = Color.Black;
+
+            // ── 表格 ──────────────────────────────────────────────────────────
+            public static Color GridHeader = Color.FromArgb(240, 240, 240);
+            public static Color GridRowEven = Color.White;
+            public static Color GridAlt = Color.FromArgb(250, 250, 250);
+
+            // ── 网格行状态色（成功/警告/失败 浅色底，配深色字）────────────────
+            public static Color RowOk = Color.FromArgb(212, 238, 202);
+            public static Color RowWarn = Color.FromArgb(255, 238, 180);
+            public static Color RowFail = Color.FromArgb(255, 214, 200);
+            public static Color RowNeutral = Color.FromArgb(242, 240, 236);
+            public static Color RowOkText = Color.FromArgb(225, 245, 225);
+            public static Color RowFailText = Color.FromArgb(255, 230, 225);
+            public static Color RowWarnText = Color.FromArgb(255, 248, 225);
+
+            // ── 语义状态色（成功/警告/错误/中性）────────────────────────────
+            public static Color StatusOk = Color.FromArgb(110, 140, 40);
+            public static Color StatusWarn = Color.FromArgb(192, 142, 40);
+            public static Color StatusErr = Color.FromArgb(192, 70, 50);
+            public static Color StatusNeutral = Color.FromArgb(132, 122, 110);
+
+            // ── 说明文字（纯黑系：暗/次暗层次灰）──────────────────────────
+            public static Color TextDim = Color.FromArgb(70, 70, 70);
+            public static Color TextFaint = Color.FromArgb(120, 120, 120);
+
+            // ── 围栏（FenceBuilder）默认色系 ──────────────────────────────────
+            public static Color FenceMesh = Color.FromArgb(255, 200, 0);
+            public static Color FenceFrame = Color.FromArgb(230, 180, 0);
+            public static Color FencePost = Color.FromArgb(230, 180, 0);
+            public static Color FenceBaseplate = Color.FromArgb(200, 160, 0);
+
+            // ── 输入/只读控件底色 ─────────────────────────────────────────────
+            public static Color InputBg = Color.White;
+            public static Color ReadOnlyBg = Color.FromArgb(250, 250, 250);
+
+            // ── ReachabilityChecker 命名兼容（TxClr* / Clr*）──────────────────
+            public static TxColor TxClrAccent = new TxColor(45, 45, 45);
+            public static TxColor TxClrSuccess = new TxColor(45, 45, 45);
+            public static TxColor TxClrDanger = new TxColor(45, 45, 45);
+            public static TxColor TxClrWarning = new TxColor(45, 45, 45);
+            public static TxColor TxClrBtnCheck = new TxColor(255, 255, 255);
+            public static TxColor TxClrBtnAll = new TxColor(255, 255, 255);
+            public static TxColor TxClrBtnExport = new TxColor(255, 255, 255);
+            public static TxColor TxClrBtnReset = new TxColor(255, 255, 255);
+            public static TxColor TxClrBtnClose = new TxColor(255, 255, 255);
+            public static TxColor TxClrGridHeader = new TxColor(240, 240, 240);
+            public static TxColor TxClrGridHeaderText = new TxColor(0, 0, 0);
+            public static TxColor TxClrGridAlt = new TxColor(250, 250, 250);
+            public static TxColor TxClrGridHighlight = new TxColor(230, 230, 230);
+            public static TxColor TxClrRowOk = new TxColor(225, 245, 225);
+            public static TxColor TxClrRowFail = new TxColor(255, 225, 220);
+            public static TxColor TxClrRowWarn = new TxColor(255, 245, 200);
+            public static TxColor TxClrRowSingular = new TxColor(250, 220, 230);
+            public static TxColor TxClrRowCritical = new TxColor(230, 230, 230);
+            public static TxColor TxClrCellOver = new TxColor(255, 205, 205);
+            public static TxColor TxClrCellNear = new TxColor(255, 225, 170);
+            public static TxColor TxClrCellSingular = new TxColor(255, 205, 220);
+            public static TxColor TxClrCellCritical = new TxColor(215, 215, 215);
+            public static TxColor TxClrLogBg = new TxColor(255, 255, 255);
+            public static TxColor TxClrLogText = new TxColor(0, 0, 0);
+            public static TxColor TxClrLogErr = new TxColor(0, 0, 0);
+            public static TxColor TxClrLogWarn = new TxColor(0, 0, 0);
+            public static TxColor TxClrLogOk = new TxColor(0, 0, 0);
+            public static TxColor TxClrEditHeader = new TxColor(240, 240, 240);
+            public static Color ClrAccent = Color.Black;
+            public static Color ClrSuccess = Color.Black;
+            public static Color ClrDanger = Color.Black;
+            public static Color ClrWarning = Color.Black;
+            public static Color ClrMuted = Color.FromArgb(120, 120, 120);
+            public static Color ClrText = Color.Black;
+            public static Color ClrBg = Color.White;
+
+            // ==================================================================
+            // 主题管理：预设 / 持久化 / 运行时更换（供 ThemeTuner 插件使用）
+            // ==================================================================
+
+            /// <summary>所有 Color 静态字段（FormUiKit + Theme）。</summary>
+            private static readonly FieldInfo[] _colorFields = GetColorFields();
+
+            /// <summary>所有 TxColor 静态字段（供 PS 原生 API 上色）。</summary>
+            private static readonly FieldInfo[] _txFields = GetTxFields();
+
+            /// <summary>编译期默认（暖色）调色板快照，作为「恢复默认」基准。</summary>
+            private static readonly Dictionary<string, string> _defaultPalette = SnapshotToStrings();
+
+            private static FieldInfo[] GetColorFields()
+            {
+                var list = new List<FieldInfo>();
+                const BindingFlags f = BindingFlags.Public | BindingFlags.Static;
+                list.AddRange(typeof(FormUiKit).GetFields(f)
+                    .Where(pi => pi.FieldType == typeof(Color)));
+                list.AddRange(typeof(Theme).GetFields(f)
+                    .Where(pi => pi.FieldType == typeof(Color)));
+                return list.ToArray();
+            }
+
+            private static FieldInfo[] GetTxFields()
+            {
+                const BindingFlags f = BindingFlags.Public | BindingFlags.Static;
+                return typeof(Theme).GetFields(f)
+                    .Where(pi => pi.FieldType == typeof(TxColor)).ToArray();
+            }
+
+            /// <summary>把当前所有主题颜色读成「字段名 -> "r,g,b"」字典（可序列化）。</summary>
+            public static Dictionary<string, string> SnapshotToStrings()
+            {
+                var d = new Dictionary<string, string>();
+                foreach (var fi in _colorFields)
+                    d[fi.Name] = ((Color)fi.GetValue(null)).R + "," + ((Color)fi.GetValue(null)).G + "," + ((Color)fi.GetValue(null)).B;
+                foreach (var fi in _txFields)
+                {
+                    var t = (TxColor)fi.GetValue(null);
+                    d[fi.Name] = t.Red + "," + t.Green + "," + t.Blue;
+                }
+                return d;
+            }
+
+            /// <summary>按字典覆盖主题色字段（只覆盖字典里出现的字段）。</summary>
+            public static void SetFrom(Dictionary<string, string> palette)
+            {
+                if (palette == null) return;
+                foreach (var fi in _colorFields)
+                    if (palette.TryGetValue(fi.Name, out string v) && TryParseRgb(v, out Color c))
+                        fi.SetValue(null, c);
+                foreach (var fi in _txFields)
+                    if (palette.TryGetValue(fi.Name, out string v) && TryParseRgb(v, out Color c))
+                        fi.SetValue(null, new TxColor(c.R, c.G, c.B));
+            }
+
+            public static bool TryParseRgb(string s, out Color c)
+            {
+                c = Color.Empty;
+                if (string.IsNullOrEmpty(s)) return false;
+                var p = s.Split(',');
+                if (p.Length != 3) return false;
+                if (byte.TryParse(p[0], out byte r) && byte.TryParse(p[1], out byte g) && byte.TryParse(p[2], out byte b))
+                {
+                    c = Color.FromArgb(r, g, b);
+                    return true;
+                }
+                return false;
+            }
+
+            /// <summary>编译期默认（暖色）完整调色板。</summary>
+            public static Dictionary<string, string> DefaultPalette()
+            {
+                return new Dictionary<string, string>(_defaultPalette);
+            }
+
+            /// <summary>在默认调色板基础上叠加指定覆盖项。</summary>
+            private static Dictionary<string, string> PaletteWithOverrides(params string[] ov)
+            {
+                var d = DefaultPalette();
+                for (int i = 0; i + 1 < ov.Length; i += 2)
+                    d[ov[i]] = ov[i + 1];
+                return d;
+            }
+
+            /// <summary>冷色（经典蓝）。</summary>
+            public static Dictionary<string, string> CoolPalette()
+            {
+                return PaletteWithOverrides(
+                    "CardBack", "250,251,253", "CardBorder", "214,219,228",
+                    "TitleBack", "0,100,140", "PrimaryBack", "0,100,167",
+                    "TxCol1", "0,100,140", "CardTitle", "0,100,140",
+                    "CardOps", "0,100,140", "CardObs", "80,120,140",
+                    "CardParams", "155,120,0", "CardLog", "50,120,60",
+                    "BtnPrimary", "0,100,167", "BtnSecondary", "80,120,140",
+                    "BtnMuted", "120,124,135", "BtnDanger", "130,50,50",
+                    "BtnExport", "80,80,130",
+                    "BtnFore", "255,255,255", "BtnBorder", "0,100,167", "BtnHover", "51,131,185",
+                    "LogBg", "20,22,27", "LogText", "178,200,178",
+                    "LogOk", "90,210,110", "LogErr", "228,88,88",
+                    "LogWarn", "228,180,70", "LogPs", "110,180,228",
+                    "TextDim", "90,90,90", "TextFaint", "120,120,120",
+                    "InputBg", "250,250,250", "ReadOnlyBg", "248,248,248",
+                    "GridHeader", "235,240,245", "GridRowEven", "240,242,245", "GridAlt", "245,247,252",
+                    "StatusOk", "0,130,60", "StatusWarn", "180,130,0", "StatusErr", "180,40,40",
+                    "TxAccent", "0,70,127", "TxGun", "155,120,0", "TxBall", "150,70,90",
+                    "TxLog", "50,120,60", "TxPoints", "95,75,140");
+            }
+
+            /// <summary>浅色（柔和灰蓝，最素）。</summary>
+            public static Dictionary<string, string> LightPalette()
+            {
+                return PaletteWithOverrides(
+                    "CardBack", "250,250,252", "CardBorder", "216,220,228",
+                    "TitleBack", "90,100,115", "PrimaryBack", "96,108,128",
+                    "TxCol1", "90,100,115", "CardTitle", "90,100,115",
+                    "CardOps", "90,100,115", "CardObs", "130,138,150",
+                    "CardParams", "150,140,90", "CardLog", "110,130,100",
+                    "BtnPrimary", "96,108,128", "BtnSecondary", "130,138,150",
+                    "BtnMuted", "160,164,172", "BtnDanger", "150,90,80",
+                    "BtnExport", "120,110,150",
+                    "BtnFore", "255,255,255", "BtnBorder", "96,108,128", "BtnHover", "128,137,153",
+                    "LogBg", "40,44,52", "LogText", "196,200,204",
+                    "LogOk", "130,190,120", "LogErr", "224,110,96",
+                    "LogWarn", "214,178,90", "LogPs", "140,180,214",
+                    "TextDim", "96,100,108", "TextFaint", "130,134,142",
+                    "InputBg", "252,252,254", "ReadOnlyBg", "250,250,252",
+                    "GridHeader", "232,235,240", "GridRowEven", "243,244,247", "GridAlt", "248,249,252",
+                    "StatusOk", "80,140,90", "StatusWarn", "170,140,60", "StatusErr", "180,80,70",
+                    "TxAccent", "90,100,115", "TxGun", "150,140,90", "TxBall", "150,110,120",
+                    "TxLog", "110,130,100", "TxPoints", "120,110,150");
+            }
+
+            /// <summary>琥珀金（金棕色系）。</summary>
+            public static Dictionary<string, string> AmberPalette()
+            {
+                return PaletteWithOverrides(
+                    "CardBack", "255,251,242", "CardBorder", "226,206,168",
+                    "TitleBack", "176,122,32", "PrimaryBack", "196,138,40",
+                    "TxCol1", "176,122,32", "CardTitle", "176,122,32",
+                    "CardOps", "176,122,32", "CardObs", "160,138,96",
+                    "CardParams", "150,110,20", "CardLog", "120,130,70",
+                    "BtnPrimary", "196,138,40", "BtnSecondary", "160,138,96",
+                    "BtnMuted", "168,156,132", "BtnDanger", "182,84,50",
+                    "BtnExport", "150,110,150",
+                    "BtnFore", "255,255,255", "BtnBorder", "196,138,40", "BtnHover", "208,161,83",
+                    "LogBg", "38,30,20", "LogText", "214,196,168",
+                    "LogOk", "150,190,100", "LogErr", "230,104,80",
+                    "LogWarn", "228,178,70", "LogPs", "176,186,214",
+                    "TextDim", "120,102,72", "TextFaint", "150,136,108",
+                    "InputBg", "255,252,245", "ReadOnlyBg", "252,249,242",
+                    "GridHeader", "240,232,214", "GridRowEven", "247,243,234", "GridAlt", "252,248,240",
+                    "StatusOk", "110,140,50", "StatusWarn", "190,146,40", "StatusErr", "192,84,52",
+                    "TxAccent", "176,122,32", "TxGun", "200,150,30", "TxBall", "186,110,80",
+                    "TxLog", "120,130,70", "TxPoints", "150,110,150");
+            }
+
+            /// <summary>草木绿（橄榄绿系）。</summary>
+            public static Dictionary<string, string> GreenPalette()
+            {
+                return PaletteWithOverrides(
+                    "CardBack", "248,251,246", "CardBorder", "206,222,198",
+                    "TitleBack", "86,120,62", "PrimaryBack", "96,138,66",
+                    "TxCol1", "86,120,62", "CardTitle", "86,120,62",
+                    "CardOps", "86,120,62", "CardObs", "126,150,112",
+                    "CardParams", "160,132,60", "CardLog", "104,128,96",
+                    "BtnPrimary", "96,138,66", "BtnSecondary", "126,150,112",
+                    "BtnMuted", "152,160,142", "BtnDanger", "168,80,60",
+                    "BtnExport", "120,120,150",
+                    "BtnFore", "255,255,255", "BtnBorder", "96,138,66", "BtnHover", "128,161,104",
+                    "LogBg", "24,30,22", "LogText", "190,202,178",
+                    "LogOk", "136,196,108", "LogErr", "222,104,82",
+                    "LogWarn", "214,176,84", "LogPs", "150,182,204",
+                    "TextDim", "92,104,84", "TextFaint", "126,138,118",
+                    "InputBg", "250,253,248", "ReadOnlyBg", "248,251,246",
+                    "GridHeader", "232,240,228", "GridRowEven", "243,247,240", "GridAlt", "248,251,246",
+                    "StatusOk", "86,140,70", "StatusWarn", "170,142,54", "StatusErr", "176,80,64",
+                    "TxAccent", "86,120,62", "TxGun", "168,140,50", "TxBall", "150,116,96",
+                    "TxLog", "104,128,96", "TxPoints", "120,120,150");
+            }
+
+            /// <summary>马卡龙（柔和粉彩）：奶油底 + 玫瑰粉/薄荷绿/薰衣草紫/婴儿蓝点缀，深李子紫文字。</summary>
+            public static Dictionary<string, string> MacaronPalette()
+            {
+                return PaletteWithOverrides(
+                    "CardBack", "255,251,247", "CardBorder", "232,214,222",
+                    "TitleBack", "244,216,226", "TitleFore", "122,90,108",
+                    "PrimaryBack", "242,176,199", "PrimaryFore", "94,62,80",
+                    "TxCol1", "200,140,170", "CardTitle", "200,140,170",
+                    "CardOps", "200,140,170", "CardObs", "150,180,205",
+                    "CardParams", "190,160,120", "CardLog", "120,175,150",
+                    "BtnPrimary", "242,176,199", "BtnSecondary", "168,196,224",
+                    "BtnMuted", "206,186,200", "BtnDanger", "228,140,150",
+                    "BtnExport", "186,170,215", "BtnGun", "140,190,170",
+                    "BtnFore", "94,62,80", "BtnBorder", "226,180,200", "BtnHover", "248,196,215",
+                    "HeaderFore", "94,62,80",
+                    "LogBg", "255,252,248", "LogText", "92,70,82",
+                    "LogOk", "90,150,110", "LogErr", "205,90,100",
+                    "LogWarn", "200,140,60", "LogPs", "90,140,190",
+                    "LogCoord", "110,100,170", "LogExcel", "60,140,90",
+                    "LogDebug", "150,130,60", "LogInfo", "92,70,82",
+                    "StatusOkFg", "80,140,95", "StatusOkBg", "228,245,232",
+                    "StatusRefFg", "150,110,60", "StatusRefBg", "250,240,220",
+                    "StatusOk", "90,150,110", "StatusWarn", "200,140,60",
+                    "StatusErr", "205,90,100", "StatusNeutral", "140,120,140",
+                    "GridHeader", "244,234,240", "GridRowEven", "255,253,250", "GridAlt", "250,244,248",
+                    "RowOk", "222,242,226", "RowWarn", "252,238,214", "RowFail", "250,224,228", "RowNeutral", "240,236,240",
+                    "RowOkText", "222,242,226", "RowFailText", "250,224,228", "RowWarnText", "252,238,214",
+                    "TextDim", "110,90,100", "TextFaint", "150,135,145",
+                    "InputBg", "255,252,250", "ReadOnlyBg", "250,246,249",
+                    "FenceMesh", "230,150,170", "FenceFrame", "210,120,150",
+                    "FencePost", "210,120,150", "FenceBaseplate", "190,110,140",
+                    "TxAccent", "150,90,120", "TxGun", "140,190,170",
+                    "TxBall", "186,170,215", "TxLog", "70,120,95", "TxPoints", "150,180,205",
+                    "ClrAccent", "150,90,120", "ClrSuccess", "90,150,110",
+                    "ClrDanger", "205,90,100", "ClrWarning", "200,140,60",
+                    "ClrMuted", "150,135,145", "ClrText", "94,62,80", "ClrBg", "255,251,247",
+                    "TxClrAccent", "150,90,120", "TxClrSuccess", "90,150,110",
+                    "TxClrDanger", "205,90,100", "TxClrWarning", "200,140,60",
+                    "TxClrBtnCheck", "140,190,170", "TxClrBtnAll", "242,176,199",
+                    "TxClrBtnExport", "186,170,215", "TxClrBtnReset", "206,186,200", "TxClrBtnClose", "228,140,150",
+                    "TxClrGridHeader", "244,234,240", "TxClrGridHeaderText", "94,62,80",
+                    "TxClrGridAlt", "250,244,248", "TxClrGridHighlight", "240,228,236",
+                    "TxClrRowOk", "222,242,226", "TxClrRowFail", "250,224,228", "TxClrRowWarn", "252,238,214",
+                    "TxClrRowSingular", "244,220,236", "TxClrRowCritical", "240,228,238",
+                    "TxClrCellOver", "250,215,220", "TxClrCellNear", "252,232,200",
+                    "TxClrCellSingular", "246,215,235", "TxClrCellCritical", "232,225,240",
+                    "TxClrLogBg", "255,252,248", "TxClrLogText", "92,70,82",
+                    "TxClrLogErr", "205,90,100", "TxClrLogWarn", "200,140,60", "TxClrLogOk", "90,150,110",
+                    "TxClrEditHeader", "244,216,226");
+            }
+
+            /// <summary>扁平无色：全部回归 Windows 系统默认色（去彩、无强调色，按钮/标题条用黑字）。</summary>
+            public static Dictionary<string, string> FlatPalette()
+            {
+                string S(Color c) => c.R + "," + c.G + "," + c.B;
+                string ctrl = S(SystemColors.Control);
+                string ctrlLight = S(SystemColors.ControlLight);
+                string ctrlDark = S(SystemColors.ControlDark);
+                string window = S(SystemColors.Window);
+                string text = S(SystemColors.ControlText);
+                string gray = S(SystemColors.GrayText);
+                string txNeutral = "96,96,96";
+                string txLight = "230,230,230";
+                return PaletteWithOverrides(
+                    "CardBack", ctrl, "CardBorder", ctrlDark,
+                    "TitleBack", ctrlLight, "PrimaryBack", ctrlLight,
+                    "TxCol1", text, "CardTitle", text,
+                    "CardOps", text, "CardObs", text, "CardParams", text, "CardLog", text,
+                    "BtnPrimary", ctrlLight, "BtnSecondary", ctrlLight, "BtnMuted", ctrlLight,
+                    "BtnDanger", ctrlLight, "BtnExport", ctrlLight, "BtnGun", ctrlLight,
+                    "BtnFore", text, "BtnBorder", "210,210,210", "BtnHover", "224,224,224",
+                    "HeaderFore", text,
+                    "LogBg", window, "LogText", text, "LogOk", text, "LogErr", text,
+                    "LogWarn", text, "LogPs", text, "LogCoord", text, "LogExcel", text,
+                    "LogDebug", text, "LogInfo", text,
+                    "StatusOkFg", text, "StatusOkBg", ctrl, "StatusRefFg", text, "StatusRefBg", ctrl,
+                    "GridHeader", ctrl, "GridRowEven", window, "GridAlt", ctrlLight,
+                    "RowOk", window, "RowWarn", window, "RowFail", window, "RowNeutral", window,
+                    "RowOkText", text, "RowFailText", text, "RowWarnText", text,
+                    "StatusOk", text, "StatusWarn", text, "StatusErr", text, "StatusNeutral", text,
+                    "TextDim", gray, "TextFaint", gray,
+                    "InputBg", window, "ReadOnlyBg", window,
+                    "ClrAccent", text, "ClrSuccess", text, "ClrDanger", text, "ClrWarning", text,
+                    "ClrMuted", gray, "ClrText", text, "ClrBg", ctrl,
+                    "FenceMesh", gray, "FenceFrame", gray, "FencePost", gray, "FenceBaseplate", gray,
+                    "TxAccent", txNeutral, "TxCol1", txNeutral, "TxGun", txNeutral, "TxBall", txNeutral,
+                    "TxLog", txNeutral, "TxPoints", txNeutral,
+                    "TxClrAccent", txNeutral, "TxClrSuccess", txNeutral, "TxClrDanger", txNeutral, "TxClrWarning", txNeutral,
+                    "TxClrBtnCheck", txNeutral, "TxClrBtnAll", txNeutral, "TxClrBtnExport", txNeutral,
+                    "TxClrBtnReset", txNeutral, "TxClrBtnClose", txNeutral,
+                    "TxClrGridHeader", txLight, "TxClrGridHeaderText", text, "TxClrGridAlt", txLight, "TxClrGridHighlight", txLight,
+                    "TxClrRowOk", txLight, "TxClrRowFail", txLight, "TxClrRowWarn", txLight,
+                    "TxClrRowSingular", txLight, "TxClrRowCritical", txLight,
+                    "TxClrCellOver", txNeutral, "TxClrCellNear", txNeutral, "TxClrCellSingular", txNeutral, "TxClrCellCritical", txNeutral,
+                    "TxClrLogBg", window, "TxClrLogText", text, "TxClrLogErr", text, "TxClrLogWarn", text, "TxClrLogOk", text,
+                    "TxClrEditHeader", txLight);
+            }
+
+            /// <summary>运行前加载持久化主题（进程内只执行一次）。</summary>
+            public static void EnsureConfigLoaded()
+            {
+                if (_cfgLoaded) return;
+                _cfgLoaded = true;
+                try
+                {
+                    var cfg = LoadConfig();
+                    if (cfg != null && cfg.Count > 0) SetFrom(cfg);
+                }
+                catch { }
+            }
+
+            private static bool _cfgLoaded;
+
+            /// <summary>配置文件路径：优先 DLL 旁 theme.cfg，写失败退回用户 AppData。</summary>
+            private static string _configPathFallback;
+
+            private static string GetConfigPath()
+            {
+                try
+                {
+                    var asm = typeof(FormUiKit).Assembly;
+                    var dir = Path.GetDirectoryName(asm.Location);
+                    if (!string.IsNullOrEmpty(dir))
+                    {
+                        try
+                        {
+                            File.WriteAllText(Path.Combine(dir, ".wtest"), "");
+                            File.Delete(Path.Combine(dir, ".wtest"));
+                            return Path.Combine(dir, "theme.cfg");
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+                if (string.IsNullOrEmpty(_configPathFallback))
+                {
+                    var app = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                    _configPathFallback = Path.Combine(app, "TxTools", "theme.cfg");
+                }
+                return _configPathFallback;
+            }
+
+            /// <summary>保存主题到配置。返回保存路径（失败返回 null）。</summary>
+            public static string SaveConfig(Dictionary<string, string> palette)
+            {
+                try
+                {
+                    var path = GetConfigPath();
+                    Directory.CreateDirectory(Path.GetDirectoryName(path));
+                    var sb = new System.Text.StringBuilder();
+                    foreach (var kv in palette)
+                        sb.AppendLine(kv.Key + "=" + kv.Value);
+                    File.WriteAllText(path, sb.ToString());
+                    return path;
+                }
+                catch { return null; }
+            }
+
+            /// <summary>读取配置（找不到返回 null）。</summary>
+            public static Dictionary<string, string> LoadConfig()
+            {
+                var path = GetConfigPath();
+                if (!File.Exists(path)) return null;
+                try
+                {
+                    var d = new Dictionary<string, string>();
+                    foreach (var line in File.ReadAllLines(path))
+                    {
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+                        int eq = line.IndexOf('=');
+                        if (eq <= 0) continue;
+                        d[line.Substring(0, eq)] = line.Substring(eq + 1);
+                    }
+                    return d.Count > 0 ? d : null;
+                }
+                catch { return null; }
+            }
+        }
+
+        // ==================================================================
+        // 主题重绘：把已打开的窗体按旧→新调色板重新上色
+        // ==================================================================
+
+        /// <summary>
+        /// 遍历所有已打开的窗体，把控件的颜色按 oldPalette→newPalette 重新映射。
+        /// 先 SnapshotToStrings() 保存旧色，再 SetFrom(新)，最后调用本方法。
+        /// </summary>
+        public static void RecolorOpenForms(Dictionary<string, string> oldPalette,
+                                            Dictionary<string, string> newPalette)
+        {
+            if (oldPalette == null || newPalette == null) return;
+            try
+            {
+                foreach (Form f in Application.OpenForms)
+                    RecolorControl(f, oldPalette, newPalette);
+            }
+            catch { }
+        }
+
+        private static void RecolorControl(Control c, Dictionary<string, string> oldPalette,
+                                           Dictionary<string, string> newPalette)
+        {
+            if (c == null) return;
+            try { RecolorOne(c, oldPalette, newPalette); } catch { }
+
+            // 自绘控件：BorderColor 也映射
+            if (c is FlatColorButton fb)
+            {
+                var nb = MapColor(fb.BorderColor, oldPalette, newPalette);
+                if (nb.HasValue) { try { fb.BorderColor = nb.Value; } catch { } }
+            }
+            else if (c is ColoredGroupBox gb)
+            {
+                var nt = MapColor(gb.TitleColor, oldPalette, newPalette);
+                if (nt.HasValue) { try { gb.TitleColor = nt.Value; } catch { } }
+                var nb2 = MapColor(gb.BorderColor, oldPalette, newPalette);
+                if (nb2.HasValue) { try { gb.BorderColor = nb2.Value; } catch { } }
+            }
+
+            for (int i = 0; i < c.Controls.Count; i++)
+                RecolorControl(c.Controls[i], oldPalette, newPalette);
+        }
+
+        private static void RecolorOne(Control c, Dictionary<string, string> oldPalette,
+                                       Dictionary<string, string> newPalette)
+        {
+            Color back = c.BackColor;
+            if (back != Color.Transparent && back != SystemColors.Control)
+            {
+                var nb = MapColor(back, oldPalette, newPalette);
+                if (nb.HasValue) { c.BackColor = nb.Value; }
+            }
+            Color fore = c.ForeColor;
+            if (fore != SystemColors.ControlText && fore != Color.White)
+            {
+                var nf = MapColor(fore, oldPalette, newPalette);
+                if (nf.HasValue) c.ForeColor = nf.Value;
+            }
+            // 文本类控件背景需要手动 Invalidate 才重绘
+            if (c is Button || c is TextBoxBase || c is RichTextBox)
+                c.Invalidate();
+        }
+
+        /// <summary>按旧调色板找到 src 对应的字段名，再取新值。</summary>
+        private static Color? MapColor(Color src, Dictionary<string, string> oldPalette,
+                                       Dictionary<string, string> newPalette)
+        {
+            if (src == Color.Empty) return null;
+            foreach (var kv in oldPalette)
+            {
+                if (Theme.TryParseRgb(kv.Value, out Color c) && c == src)
+                {
+                    if (newPalette.TryGetValue(kv.Key, out string nv)
+                        && Theme.TryParseRgb(nv, out Color nc))
+                        return nc;
+                }
+            }
+            return null;
+        }
 
         /// <summary>
         /// 窗体基础设置。必须在 BuildUI / 添加控件之前调用。
@@ -60,6 +647,9 @@ namespace TxTools.Common
                                             Size size, Size minSize,
                                             bool sizable = false)
         {
+            // 加载持久化主题（进程内一次），让打开的窗体用上用户保存的配色。
+            Theme.EnsureConfigLoaded();
+
             form.SuspendLayout();
 
             // —— 唯一持久化键：消除 TxForm 跨插件几何串扰（核心）——
@@ -76,7 +666,7 @@ namespace TxTools.Common
             form.Font = BaseFont;
 
             form.Text = title;
-            form.BackColor = SystemColors.Control;
+            form.BackColor = WinBg;
             form.StartPosition = FormStartPosition.CenterScreen;
             // 默认固定大小（ExportGun 同款 FixedDialog）
             form.FormBorderStyle = sizable ? FormBorderStyle.Sizable
@@ -154,7 +744,7 @@ namespace TxTools.Common
                 RowCount = 3,
                 Margin = Padding.Empty,
                 Padding = new Padding(6, 4, 6, 4),
-                BackColor = SystemColors.Control
+                BackColor = CardBack
             };
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));   // 标题栏
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));   // 主体
@@ -168,19 +758,39 @@ namespace TxTools.Common
         // ====================================================================
         // 卡片：左侧控制栏装多张卡片用 FlowLayoutPanel TopDown，绝不用 Dock=Top
         // ====================================================================
-        /// <summary>纵向卡片容器（带滚动），固定宽度。</summary>
+        /// <summary>
+        /// 纵向卡片容器（带滚动），固定宽度。
+        /// 列只保留垂直 Padding，横向不占位；子卡片宽度由 fit 钩子实时贴合
+        /// 「列可用宽度 − 卡片横向 Margin」，杜绝「卡片宽 = 列参数宽」而列内容区
+        /// 因 Padding/Margin 实际更窄 → 整列出现横向滚动条（如 ThemeTuner 状态卡、
+        /// CatiaPartTree 日志卡所在列）。
+        /// </summary>
         public static FlowLayoutPanel BuildCardColumn(int width)
         {
-            return new FlowLayoutPanel
+            var col = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
                 AutoScroll = true,
                 Width = width,
-                Padding = new Padding(4),
-                BackColor = SystemColors.Control
+                Padding = new Padding(0, 4, 0, 4),
+                BackColor = CardBack
             };
+            // 布局变化/新增卡片时，把每张卡片宽度拉到列可用宽度内
+            EventHandler fit = delegate (object s, EventArgs e)
+            {
+                int avail = col.ClientSize.Width - col.Padding.Horizontal;
+                if (avail <= 0) return;
+                foreach (Control c in col.Controls)
+                {
+                    int w = avail - c.Margin.Horizontal;
+                    if (w > 0 && c.Width != w) c.Width = w;
+                }
+            };
+            col.ClientSizeChanged += fit;
+            col.ControlAdded += (s, e) => fit(s, e);
+            return col;
         }
 
         /// <summary>单张卡片：标题条 + 内容区。内容控件用 FlowDirection.TopDown 排。</summary>
@@ -229,6 +839,308 @@ namespace TxTools.Common
         }
 
         // ====================================================================
+        // ExportGun 同款控件工厂（把 ExportGun 里的私有工厂统一收编到套件）
+        // ====================================================================
+
+        /// <summary>顶部分区标题条（FlatColorLabel 自绘，填满所在格子）。</summary>
+        public static Label MkHeaderLabel(string text, Color bg)
+        {
+            return new FlatColorLabel
+            {
+                Text = text,
+                Dock = DockStyle.Fill,
+                BackColor = bg,
+                // 文字色按背景亮度自动取黑/白：深色标题条用白字，浅色用黑字，
+                // 杜绝「深底黑字」不可读（如默认主题下 TxGun 深灰底 + HeaderFore 黑字）。
+                ForeColor = bg.GetBrightness() > 0.62f ? Theme.HeaderFore : Color.White,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = BoldFont,
+                Margin = new Padding(1, 0, 1, 0)
+            };
+        }
+
+        /// <summary>GroupBox 卡片（自绘标题色）。</summary>
+        public static GroupBox MkCardGroup(string title, Color titleColor)
+        {
+            return new ColoredGroupBox
+            {
+                Text = title,
+                Dock = DockStyle.Fill,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Font = BoldFont,
+                TitleColor = titleColor,
+                Margin = new Padding(2, 2, 2, 4),
+                Padding = new Padding(8, 6, 8, 4)
+            };
+        }
+
+        /// <summary>卡片内容流（ExportGun 同款：TopDown + 透明底）。</summary>
+        public static FlowLayoutPanel MkCardContent()
+        {
+            return new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                BackColor = Color.Transparent,
+                Font = BaseFont,
+                Padding = new Padding(0, 2, 0, 0)
+            };
+        }
+
+        /// <summary>字段说明标签（灰色，ExportGun 同款）。</summary>
+        public static Label MkFieldLabel(string text)
+        {
+            return new Label
+            {
+                Text = text,
+                AutoSize = true,
+                Font = BaseFont,
+                ForeColor = SystemColors.GrayText,
+                Margin = new Padding(0, 7, 4, 0)
+            };
+        }
+
+        /// <summary>单行参数行容器（LeftToRight，透明底）。</summary>
+        public static FlowLayoutPanel MkRowFlow()
+        {
+            return new FlowLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0, 0, 0, 2)
+            };
+        }
+
+        /// <summary>功能按钮：自适应文本宽度、单行、带背景色（ExportGun 同款 26 高）。</summary>
+        public static Button MkFuncButton(string text, Color bgColor)
+        {
+            return new FlatColorButton
+            {
+                Text = text,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Height = 26,
+                Font = BaseFont,
+                BgColor = bgColor,
+                // 文字色按背景亮度自动取黑/白：深色按钮（如 TxAccent/TxBall）用白字，
+                // 浅色按钮用 BtnFore，避免「深底黑字」不可读。
+                ForeColor = bgColor.GetBrightness() > 0.62f ? Theme.BtnFore : Color.White,
+                BorderColor = Theme.BtnBorder,
+                HoverColor = Theme.BtnHover,
+                Margin = new Padding(0, 2, 4, 2),
+                Padding = new Padding(8, 2, 8, 2)
+            };
+        }
+
+        /// <summary>固定尺寸功能按钮（绝对定位/表格用），带背景色。</summary>
+        public static Button MkBtn(string text, Color bgColor, int width, int height)
+        {
+            return new FlatColorButton
+            {
+                Text = text,
+                AutoSize = false,
+                Width = width,
+                Height = height,
+                Font = BaseFont,
+                BgColor = bgColor,
+                ForeColor = bgColor.GetBrightness() > 0.62f ? Theme.BtnFore : Color.White,
+                BorderColor = Theme.BtnBorder,
+                HoverColor = Theme.BtnHover,
+                Margin = new Padding(0, 2, 4, 2)
+            };
+        }
+
+        /// <summary>用 TextRenderer 测量，避免 CreateGraphics 在窗体未显示时不准。</summary>
+        public static void AutoFitComboBoxWidth(ComboBox cb)
+        {
+            if (cb == null || cb.Items.Count == 0) return;
+            int maxW = 0;
+            foreach (var item in cb.Items)
+            {
+                int w = TextRenderer.MeasureText(item.ToString(), cb.Font).Width;
+                if (w > maxW) maxW = w;
+            }
+            cb.Width = maxW + 28;
+        }
+
+        /// <summary>用 TextRenderer 测量 NumericUpDown 宽度。</summary>
+        public static void AutoFitNumericWidth(NumericUpDown nud)
+        {
+            if (nud == null) return;
+            string maxText = nud.Maximum.ToString("F" + nud.DecimalPlaces);
+            int w = TextRenderer.MeasureText(maxText, nud.Font).Width;
+            nud.Width = w + 26;
+        }
+
+        // FlowLayoutPanel(TopDown) 不会拉伸子控件宽度，也不会让 AutoSize 标签按容器宽换行。
+        // 以下两个助手在容器尺寸变化时实时校正，兼容任意 DPI/缩放。
+
+        /// <summary>让子控件宽度始终填满 flow 内容区。</summary>
+        public static void FillWidthInFlow(FlowLayoutPanel flow, Control child)
+        {
+            if (flow == null || child == null) return;
+            EventHandler h = delegate (object s, EventArgs ev)
+            {
+                int w = flow.ClientSize.Width - flow.Padding.Horizontal - child.Margin.Horizontal;
+                if (w > 0 && child.Width != w) child.Width = w;
+            };
+            flow.ClientSizeChanged += h;
+            flow.SizeChanged += h;
+            h(flow, EventArgs.Empty);
+        }
+
+        /// <summary>让 AutoSize 标签按 flow 内容区宽度换行（高度自适应，不被裁剪）。</summary>
+        public static void WrapLabelInFlow(FlowLayoutPanel flow, Label lbl)
+        {
+            if (flow == null || lbl == null) return;
+            lbl.AutoSize = true;
+            EventHandler h = delegate (object s, EventArgs ev)
+            {
+                int w = flow.ClientSize.Width - flow.Padding.Horizontal - lbl.Margin.Horizontal;
+                if (w > 20) lbl.MaximumSize = new Size(w, 0);
+            };
+            flow.ClientSizeChanged += h;
+            flow.SizeChanged += h;
+            h(flow, EventArgs.Empty);
+        }
+
+        // ====================================================================
+        // 通用控件工厂（补充：单选/复选/文本框/下拉/数值/滚动卡/堆叠列/参数行）
+        // ====================================================================
+
+        /// <summary>单选按钮（套件字体，透明底融入卡片）。</summary>
+        public static RadioButton MkRadio(string text, bool isChecked = false)
+        {
+            return new RadioButton
+            {
+                Text = text,
+                AutoSize = true,
+                Checked = isChecked,
+                Font = BaseFont,
+                Margin = new Padding(0, 6, 12, 2),
+                BackColor = Color.Transparent
+            };
+        }
+
+        /// <summary>复选框（套件字体，透明底融入卡片）。</summary>
+        public static CheckBox MkCheckBox(string text, bool isChecked = false)
+        {
+            return new CheckBox
+            {
+                Text = text,
+                AutoSize = true,
+                Checked = isChecked,
+                Font = BaseFont,
+                Margin = new Padding(0, 6, 12, 2),
+                BackColor = Color.Transparent
+            };
+        }
+
+        /// <summary>单行文本框（套件字体）。</summary>
+        public static TextBox MkTextBox(string text, int width)
+        {
+            return new TextBox
+            {
+                Text = text,
+                Width = width,
+                Font = BaseFont,
+                Margin = new Padding(0, 2, 6, 2)
+            };
+        }
+
+        /// <summary>下拉框（套件字体）。editable=true 为可输入模式。</summary>
+        public static ComboBox MkComboBox(int width, bool editable = false)
+        {
+            return new ComboBox
+            {
+                Width = width,
+                DropDownStyle = editable ? ComboBoxStyle.DropDown : ComboBoxStyle.DropDownList,
+                Font = BaseFont,
+                Margin = new Padding(0, 2, 6, 2)
+            };
+        }
+
+        /// <summary>数值框（套件字体）。</summary>
+        public static NumericUpDown MkNumeric(decimal min, decimal max, decimal value,
+                                              decimal step = 1, int decimals = 0)
+        {
+            return new NumericUpDown
+            {
+                Minimum = min,
+                Maximum = max,
+                Value = value,
+                Increment = step,
+                DecimalPlaces = decimals,
+                Font = BaseFont,
+                Width = 76,
+                Margin = new Padding(0, 2, 6, 2)
+            };
+        }
+
+        /// <summary>
+        /// 固定尺寸自绘卡片（ColoredGroupBox，可滚内容）。
+        /// 用于流式/堆叠布局中需要明确宽高的卡片。
+        /// </summary>
+        public static GroupBox MkFixedCard(string title, Color titleColor, Size size,
+                                           out FlowLayoutPanel content)
+        {
+            var card = new ColoredGroupBox
+            {
+                Text = title,
+                TitleColor = titleColor,
+                BorderColor = CardBorder,
+                Size = size,
+                Font = BoldFont,
+                Margin = new Padding(2, 2, 2, 6),
+                Padding = new Padding(8, 6, 8, 4),
+                BackColor = CardBack
+            };
+            content = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                AutoScroll = true,
+                BackColor = CardBack,
+                Padding = new Padding(2, 4, 2, 2),
+                Font = BaseFont
+            };
+            card.Controls.Add(content);
+            return card;
+        }
+
+        /// <summary>纵向堆叠面板（无滚动，透明底，供卡片内容区使用）。</summary>
+        public static FlowLayoutPanel MkStack(int width)
+        {
+            return new FlowLayoutPanel
+            {
+                Width = width,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                AutoScroll = false,
+                BackColor = Color.Transparent,
+                Font = BaseFont,
+                Margin = new Padding(0, 0, 0, 4)
+            };
+        }
+
+        /// <summary>参数行：字段说明 + 控件（左→右单行）。</summary>
+        public static FlowLayoutPanel MkParamRow(string label, Control value)
+        {
+            var row = MkRowFlow();
+            row.Controls.Add(MkFieldLabel(label));
+            row.Controls.Add(value);
+            return row;
+        }
+
+        // ====================================================================
         // 配色控件 —— PS 宿主会覆盖普通 Button/Label 的 BackColor，必须自绘
         // ====================================================================
         public static Button MkButton(string text, bool primary, int width = 0, int height = 30)
@@ -241,11 +1153,12 @@ namespace TxTools.Common
                 Height = height,
                 Margin = new Padding(3),
                 FlatStyle = FlatStyle.Flat,
-                BackColor = primary ? PrimaryBack : SystemColors.ControlLight,
-                ForeColor = primary ? PrimaryFore : SystemColors.ControlText
+                BgColor = primary ? PrimaryBack : SystemColors.ControlLight,
+                ForeColor = primary ? PrimaryFore : SystemColors.ControlText,
+                BorderColor = Theme.BtnBorder,
+                HoverColor = Theme.BtnHover
             };
             if (width > 0) b.Width = width;
-            b.FlatAppearance.BorderColor = CardBorder;
             return b;
         }
 
@@ -263,12 +1176,39 @@ namespace TxTools.Common
         }
 
         // —— 自绘控件：用 UserPaint 绕过 PS flat 皮肤的重绘 ——
+
+        /// <summary>
+        /// 自绘按钮，绕过 WinForms 主题覆盖 BackColor。
+        /// 支持 Hover/Pressed/Disabled 三态，AutoSize 沿用 Button 基类行为。
+        /// BgColor 为填充色；BorderColor 为空时无边框，非空时画 1px 边框。
+        /// </summary>
         public sealed class FlatColorButton : Button
         {
-            /// <summary>快捷属性：等同 BackColor，语义更清晰。</summary>
-            public Color BgColor { get => BackColor; set => BackColor = value; }
-            /// <summary>快捷属性：等同 FlatAppearance.BorderColor。</summary>
-            public Color BorderColor { get => FlatAppearance.BorderColor; set => FlatAppearance.BorderColor = value; }
+            private Color _bg = Color.FromArgb(0, 100, 167);
+            private Color _border = Color.Empty;
+
+            /// <summary>填充色（默认套件主蓝 0,100,167）。</summary>
+            public Color BgColor
+            {
+                get { return _bg; }
+                set { _bg = value; Invalidate(); }
+            }
+
+            /// <summary>边框色；Color.Empty = 无边框。</summary>
+            public Color BorderColor
+            {
+                get { return _border; }
+                set { _border = value; Invalidate(); }
+            }
+
+            private Color _hoverColor = Color.Empty;
+
+            /// <summary>悬停填充色；Color.Empty = 用 ControlPaint.Light 自动提亮。</summary>
+            public Color HoverColor
+            {
+                get { return _hoverColor; }
+                set { _hoverColor = value; Invalidate(); }
+            }
 
             private bool _hover;
             private bool _pressed;
@@ -278,25 +1218,38 @@ namespace TxTools.Common
                 SetStyle(ControlStyles.UserPaint
                        | ControlStyles.AllPaintingInWmPaint
                        | ControlStyles.OptimizedDoubleBuffer
-                       | ControlStyles.ResizeRedraw, true);
-                FlatAppearance.BorderColor = SystemColors.ControlDark;
+                       | ControlStyles.ResizeRedraw
+                       | ControlStyles.SupportsTransparentBackColor, true);
+                FlatStyle = FlatStyle.Flat;
+                FlatAppearance.BorderSize = 0;
+                ForeColor = Color.White;
+                Cursor = Cursors.Hand;
             }
 
             protected override void OnPaint(PaintEventArgs e)
             {
                 var rect = ClientRectangle;
-                Color fill = BackColor;
-                if (!Enabled) { /* 保持原色 */ }
+                Color fill = BgColor;
+                if (!Enabled)
+                    fill = ControlPaint.Light(BgColor, 0.45f);
                 else if (_pressed)
-                    fill = ControlPaint.Dark(BackColor, 0.15f);
+                    fill = ControlPaint.Dark(BgColor, 0.15f);
                 else if (_hover)
-                    fill = ControlPaint.Light(BackColor, 0.20f);
+                    fill = (_hoverColor != Color.Empty)
+                        ? _hoverColor
+                        : ControlPaint.Light(BgColor, 0.20f);
 
                 using (var bg = new SolidBrush(fill))
                     e.Graphics.FillRectangle(bg, rect);
-                using (var pen = new Pen(FlatAppearance.BorderColor))
-                    e.Graphics.DrawRectangle(pen, 0, 0, rect.Width - 1, rect.Height - 1);
-                TextRenderer.DrawText(e.Graphics, Text, Font, rect, ForeColor,
+                if (BorderColor != Color.Empty)
+                    using (var pen = new Pen(BorderColor))
+                        e.Graphics.DrawRectangle(pen, 0, 0, rect.Width - 1, rect.Height - 1);
+                // 禁用态文字按变浅后的底色取灰阶，避免浅底浅字（白底白字）不可读，
+                // 如 AutoPath「停止」按钮禁用时白底 + 230灰字几乎看不见。
+                var textColor = Enabled ? ForeColor
+                    : fill.GetBrightness() > 0.55f ? Color.FromArgb(110, 110, 110)
+                                                   : Color.FromArgb(240, 240, 240);
+                TextRenderer.DrawText(e.Graphics, Text, Font, rect, textColor,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
                   | TextFormatFlags.EndEllipsis);
             }
@@ -305,45 +1258,192 @@ namespace TxTools.Common
             protected override void OnMouseLeave(EventArgs e) { _hover = false; _pressed = false; Invalidate(); base.OnMouseLeave(e); }
             protected override void OnMouseDown(MouseEventArgs e) { _pressed = true; Invalidate(); base.OnMouseDown(e); }
             protected override void OnMouseUp(MouseEventArgs e) { _pressed = false; Invalidate(); base.OnMouseUp(e); }
+            protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
         }
 
+        /// <summary>
+        /// 自绘标签，绕过 WinForms 主题覆盖 BackColor/ForeColor。
+        /// BackColor 为 Transparent 时只画文字；文字对齐随 TextAlign。
+        /// </summary>
         public sealed class FlatColorLabel : Label
         {
             public FlatColorLabel()
             {
-                SetStyle(ControlStyles.UserPaint | ControlStyles.SupportsTransparentBackColor, true);
+                SetStyle(ControlStyles.UserPaint
+                       | ControlStyles.AllPaintingInWmPaint
+                       | ControlStyles.OptimizedDoubleBuffer
+                       | ControlStyles.SupportsTransparentBackColor, true);
             }
+
             protected override void OnPaint(PaintEventArgs e)
             {
                 if (BackColor != Color.Transparent)
                     using (var bg = new SolidBrush(BackColor))
                         e.Graphics.FillRectangle(bg, ClientRectangle);
-                TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ForeColor,
-                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter
-                  | TextFormatFlags.WordBreak);
+
+                var fmt = TextFormatFlags.Left | TextFormatFlags.VerticalCenter
+                        | TextFormatFlags.WordBreak;
+                if (TextAlign == ContentAlignment.MiddleCenter
+                    || TextAlign == ContentAlignment.TopCenter
+                    || TextAlign == ContentAlignment.BottomCenter)
+                    fmt |= TextFormatFlags.HorizontalCenter;
+                else if (TextAlign == ContentAlignment.MiddleRight
+                    || TextAlign == ContentAlignment.TopRight
+                    || TextAlign == ContentAlignment.BottomRight)
+                    fmt |= TextFormatFlags.Right;
+
+                TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ForeColor, fmt);
             }
         }
 
+        /// <summary>
+        /// 自绘 GroupBox：标题用 TitleColor/HeaderColor 上色、边框用 BorderColor，
+        /// 绕过 WinForms 视觉主题对 GroupBox.ForeColor 的忽略。
+        /// </summary>
         public sealed class ColoredGroupBox : GroupBox
         {
-            public Color HeaderColor { get; set; } = TitleBack;
+            private Color _title = Color.FromArgb(0, 100, 140);
+            private Color _border = Color.FromArgb(214, 219, 228);
+
+            /// <summary>标题文字颜色（新命名）。</summary>
+            public Color TitleColor
+            {
+                get { return _title; }
+                set { _title = value; Invalidate(); }
+            }
+
+            /// <summary>标题文字颜色（旧命名兼容）。</summary>
+            public Color HeaderColor
+            {
+                get { return _title; }
+                set { _title = value; Invalidate(); }
+            }
+
+            /// <summary>边框颜色（默认 CardBorder）。</summary>
+            public Color BorderColor
+            {
+                get { return _border; }
+                set { _border = value; Invalidate(); }
+            }
+
             public ColoredGroupBox()
             {
-                SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
-                       | ControlStyles.OptimizedDoubleBuffer, true);
+                SetStyle(ControlStyles.UserPaint
+                       | ControlStyles.AllPaintingInWmPaint
+                       | ControlStyles.OptimizedDoubleBuffer
+                       | ControlStyles.ResizeRedraw, true);
             }
+
             protected override void OnPaint(PaintEventArgs e)
             {
                 var g = e.Graphics;
-                using (var bg = new SolidBrush(BackColor))
-                    g.FillRectangle(bg, ClientRectangle);
-                int top = Font.Height / 2;
-                using (var pen = new Pen(CardBorder))
-                    g.DrawRectangle(pen, 0, top, Width - 1, Height - top - 1);
-                var sz = TextRenderer.MeasureText(Text, Font);
-                using (var bg = new SolidBrush(BackColor))
-                    g.FillRectangle(bg, 8, 0, sz.Width + 4, Font.Height);
-                TextRenderer.DrawText(g, Text, Font, new Point(10, 0), HeaderColor);
+                string title = Text ?? "";
+                Size textSize = TextRenderer.MeasureText(g, title, Font, Size.Empty,
+                    TextFormatFlags.NoPadding);
+                int halfH = textSize.Height / 2;
+
+                using (var bgBrush = new SolidBrush(BackColor))
+                    g.FillRectangle(bgBrush, ClientRectangle);
+
+                var borderRect = new Rectangle(0, halfH, Width - 1, Height - halfH - 1);
+                using (var borderPen = new Pen(BorderColor))
+                    g.DrawRectangle(borderPen, borderRect);
+
+                if (!string.IsNullOrEmpty(title))
+                {
+                    var titleRect = new Rectangle(8, 0, textSize.Width + 6, textSize.Height);
+                    using (var bgBrush = new SolidBrush(BackColor))
+                        g.FillRectangle(bgBrush, titleRect);
+                    TextRenderer.DrawText(g, title, Font,
+                        new Point(titleRect.X + 3, titleRect.Y), TitleColor,
+                        TextFormatFlags.NoPadding);
+                }
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        //  TxObjGridCtrl 拾取焦点统一管理
+        //  （参考 ExportGun 首次抢焦点方案，全插件统一）
+        //    1) 启动后 BeginInvoke 抢焦点（Focus + 定位首格）——首次拾取可用
+        //    2) 进入/点击网格 → 重新抢焦点 + 重设 ListenToPick 触发 PS 重新注册
+        //    3) ESC → 取消焦点（关闭拾取监听，焦点让给宿主窗体或指定控件）
+        // ════════════════════════════════════════════════════════════════
+        public static class GridPickFocus
+        {
+            /// <summary>
+            /// 给网格统一挂接拾取焦点逻辑。应在网格创建后（或窗体 OnLoad）调用。
+            /// </summary>
+            /// <param name="grid">目标网格（非 null 才处理）</param>
+            /// <param name="focusTarget">
+            /// ESC 取消焦点后的落点；为 null 时取宿主窗体。
+            /// 传窗体上的非拾取控件可让 ESC 把焦点让给该控件（如输入框/面板）。
+            /// </param>
+            public static void Wire(TxObjGridCtrl grid, Control focusTarget = null)
+            {
+                if (grid == null) return;
+                try { grid.ListenToPick = true; } catch { }
+
+                grid.Enter += (s, e) => Activate(grid);
+                grid.MouseDown += (s, e) => Activate(grid);
+                grid.Click += (s, e) => Activate(grid);
+                grid.KeyDown += (s, e) =>
+                {
+                    if (e.KeyCode == Keys.Escape)
+                    {
+                        e.Handled = true;
+                        Cancel(grid, focusTarget);
+                    }
+                };
+
+                // 启动后抢焦点（ExportGun 同款）
+                // 兼容两种调用时机：窗体 OnLoad（句柄已建）或构造期建网格后（句柄未建 → 等 HandleCreated）
+                var host = grid.FindForm();
+                if (host != null)
+                {
+                    Action focus = () =>
+                    {
+                        try
+                        {
+                            if (grid.Visible && grid.CanFocus)
+                            {
+                                grid.Focus();
+                                try { grid.SetCurrentCell(0, 0); } catch { }
+                            }
+                        }
+                        catch { }
+                    };
+                    try
+                    {
+                        if (host.IsHandleCreated) host.BeginInvoke(focus);
+                        else host.HandleCreated += (s, e) => { try { host.BeginInvoke(focus); } catch { } };
+                    }
+                    catch { }
+                }
+            }
+
+            public static void Activate(TxObjGridCtrl grid)
+            {
+                try
+                {
+                    grid.Focus();
+                    // 切换一次触发 PS 重新注册拾取提供者（首次显示时未注册的问题）
+                    grid.ListenToPick = false;
+                    grid.ListenToPick = true;
+                }
+                catch { }
+            }
+
+            private static void Cancel(TxObjGridCtrl grid, Control focusTarget)
+            {
+                try
+                {
+                    // 关闭拾取监听 = 退出拾取模式，避免后续点击被网格抢占
+                    grid.ListenToPick = false;
+                    Control target = focusTarget ?? grid.FindForm();
+                    if (target != null && target.CanFocus)
+                        target.Focus();
+                }
+                catch { }
             }
         }
     }

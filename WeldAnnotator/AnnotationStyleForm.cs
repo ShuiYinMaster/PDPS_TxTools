@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 using TxTools.Common;
+using Theme = TxTools.Common.FormUiKit.Theme;
 
 namespace TxTools.WeldAnnotator
 {
@@ -55,7 +56,7 @@ namespace TxTools.WeldAnnotator
             MaximizeBox        = false;
             MinimizeBox        = false;
             StartPosition      = FormStartPosition.CenterParent;
-            Font               = new Font("Microsoft YaHei UI", 9f);
+            Font               = FormUiKit.BaseFont;
             AutoSize           = true;
             AutoSizeMode       = AutoSizeMode.GrowAndShrink;
             MinimumSize        = new Size(420, 0);
@@ -90,8 +91,8 @@ namespace TxTools.WeldAnnotator
                 var header = new Label
                 {
                     Text = title, AutoSize = true,
-                    Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold),
-                    ForeColor = Color.FromArgb(0, 70, 127), Margin = new Padding(0, 10, 0, 4)
+                    Font = FormUiKit.BoldFont,
+                    ForeColor = Theme.CardTitle, Margin = new Padding(0, 10, 0, 4)
                 };
                 int rowIdx = t.RowCount;
                 t.SetColumnSpan(header, 2);
@@ -128,9 +129,9 @@ namespace TxTools.WeldAnnotator
                 {
                     Text = $"{init.Name}, {init.SizeInPoints}pt",
                     AutoSize = true, Height = 22,
-                    Font = new Font("Microsoft YaHei UI", 8f), FlatStyle = FlatStyle.Flat
+                    Font = FormUiKit.BaseFont, FlatStyle = FlatStyle.Flat
                 };
-                b.FlatAppearance.BorderColor = Color.FromArgb(200, 200, 200);
+                b.FlatAppearance.BorderColor = FormUiKit.CardBorder;
                 b.Click += (s, e) =>
                 {
                     using (var fd = new FontDialog { Font = init })
@@ -186,15 +187,15 @@ namespace TxTools.WeldAnnotator
             {
                 Text = "确定", Width = 80, Height = 26, DialogResult = DialogResult.OK,
                 Anchor = AnchorStyles.Right,
-                BgColor = Color.FromArgb(0, 100, 167), ForeColor = Color.White,
-                BorderColor = Color.FromArgb(0, 100, 167), FlatStyle = FlatStyle.Flat
+                BgColor = Theme.BtnPrimary, ForeColor = Theme.BtnFore,
+                BorderColor = FormUiKit.Theme.BtnBorder, HoverColor = FormUiKit.Theme.BtnHover, FlatStyle = FlatStyle.Flat
             };
             var can = new FormUiKit.FlatColorButton
             {
                 Text = "取消", Width = 80, Height = 26, DialogResult = DialogResult.Cancel,
                 Anchor = AnchorStyles.Right,
-                BgColor = Color.FromArgb(120, 124, 135), ForeColor = Color.White,
-                BorderColor = Color.FromArgb(120, 124, 135), FlatStyle = FlatStyle.Flat
+                BgColor = Theme.BtnMuted, ForeColor = Theme.BtnFore,
+                BorderColor = FormUiKit.Theme.BtnBorder, HoverColor = FormUiKit.Theme.BtnHover, FlatStyle = FlatStyle.Flat
             };
             bp.Resize += (s, e) =>
             {

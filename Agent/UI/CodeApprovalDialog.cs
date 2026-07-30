@@ -57,7 +57,7 @@ namespace TxTools.Agent.UI
                 Dock = DockStyle.Fill,
                 AutoSize = true,
                 Margin = new Padding(0, 0, 0, 6),
-                ForeColor = Color.FromArgb(150, 60, 0),
+                ForeColor = TxTools.Common.FormUiKit.Theme.StatusWarn,
                 Text = "助手请求执行一个会改动场景的操作。\n工具: " + toolName + " — 请审阅下方代码后决定是否允许。\n注意：代码在 PS 主线程同步执行，期间 PS 会短暂无响应；执行后可 Ctrl+Z 撤销。"
             };
             root.Controls.Add(header, 0, 0);
@@ -69,7 +69,7 @@ namespace TxTools.Agent.UI
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Both,
                 WordWrap = false,                       // 长行用横向滚动，不折行
-                BackColor = Color.FromArgb(248, 248, 248),
+                BackColor = TxTools.Common.FormUiKit.Theme.ReadOnlyBg,
                 Font = MonoFont(),
                 Text = code
             };

@@ -25,7 +25,11 @@ namespace TxTools.WeldSpotGrouper
                     MessageBox.Show("请先打开一个研究。", "焊点自动分组", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
-                if (_form == null || _form.IsDisposed) _form = new GrouperForm();
+                if (_form == null || _form.IsDisposed || _form.Closed)
+                {
+                    _form = new GrouperForm();
+                    _form.FormClosed += (s, e) => { if (ReferenceEquals(_form, s)) _form = null; };
+                }
                 _form.Show();
                 try { _form.BringToFront(); _form.Activate(); } catch { }
             }

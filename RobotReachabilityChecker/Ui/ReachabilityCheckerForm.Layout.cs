@@ -72,7 +72,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 Dock = DockStyle.Top,
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                BackColor = SystemColors.Control,
+                BackColor = FormUiKit.CardBack,
                 Padding = new Padding(3, 3, 3, 3)
             };
 
@@ -107,7 +107,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             Dock = DockStyle.Fill,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold),
+            Font = FormUiKit.BoldFont,
             HeaderColor = ClrAccent,
             ForeColor = ClrAccent,
             Margin = new Padding(2, 2, 2, 2),
@@ -123,7 +123,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             FlowDirection = FlowDirection.TopDown,
             WrapContents = false,
             BackColor = Color.Transparent,
-            Font = SystemFonts.DefaultFont,
+            Font = FormUiKit.BaseFont,
             Padding = new Padding(0, 2, 0, 0)
         };
 
@@ -140,7 +140,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             row1.Controls.Add(MkLabel("OP节点"));
             _txtOpNode = new TxObjEditBoxCtrl
             {
-                Width = 120, Height = 22, Font = SystemFonts.DefaultFont,
+                Width = 120, Height = 22, Font = FormUiKit.BaseFont,
                 Margin = new Padding(2, 1, 0, 0),
                 PickOnly = true, ListenToPick = true
             };
@@ -154,7 +154,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             _cbPointTypeFilter = new ComboBox
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Font = SystemFonts.DefaultFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(2, 3, 0, 0)
             };
             _cbPointTypeFilter.Items.AddRange(new object[] { "所有类型", "仅焊点", "仅Via" });
@@ -170,7 +170,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             _cbBrand = new ComboBox
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Font = SystemFonts.DefaultFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(2, 3, 0, 0)
             };
             _cbBrand.Items.AddRange(new object[] { "自动", "KUKA", "ABB", "FANUC", "其他" });
@@ -183,7 +183,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             _chkHideNormal = new CheckBox
             {
                 Text = "隐藏正常结果项",
-                AutoSize = true, Font = SystemFonts.DefaultFont,
+                AutoSize = true, Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 0, 0)
             };
             _chkHideNormal.CheckedChanged += (s, e) => ApplyFilterNow();
@@ -205,7 +205,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             {
                 Text = "点位XYZ余量检查",
                 Checked = true, AutoSize = true,
-                Font = SystemFonts.DefaultFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 2, 0, 4)
             };
             flow.Controls.Add(_chkTcpXyz);
@@ -215,7 +215,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             _nudTcpMargin = new NumericUpDown
             {
                 Minimum = 0, Maximum = 9999, Value = 200, DecimalPlaces = 0,
-                Font = SystemFonts.DefaultFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(2, 3, 0, 0)
             };
             AutoFitNumericWidth(_nudTcpMargin);
@@ -238,7 +238,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             {
                 Text = "各轴软限位余量检查",
                 Checked = true, AutoSize = true,
-                Font = SystemFonts.DefaultFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 2, 0, 4)
             };
             flow.Controls.Add(_chkJointMargin);
@@ -248,7 +248,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             _nudJointMarginDeg = new NumericUpDown
             {
                 Minimum = 0, Maximum = 180, Value = 10, DecimalPlaces = 0,
-                Font = SystemFonts.DefaultFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(2, 3, 0, 0)
             };
             AutoFitNumericWidth(_nudJointMarginDeg);
@@ -271,14 +271,14 @@ namespace TxTools.RobotReachabilityChecker.Ui
             {
                 Text = "启用静态干涉检查",
                 AutoSize = true, Enabled = true,
-                Font = SystemFonts.DefaultFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 2, 0, 4)
             };
             _chkDynamicInterference = new CheckBox
             {
                 Text = "启用动态干涉检查",
                 AutoSize = true, Enabled = false,
-                Font = SystemFonts.DefaultFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 0, 0)
             };
             flow.Controls.AddRange(new Control[] { _chkStaticInterference, _chkDynamicInterference });
@@ -295,23 +295,22 @@ namespace TxTools.RobotReachabilityChecker.Ui
             var card = MkCard("5. 功能区");
             var outerFlow = MkCardContent();
 
-            // 第一行：开始检查 + 检查所有路径
-            var row1 = MkButtonRow();
-            var btnCheck = MkFuncButton("开始检查", TxClrBtnCheck.Color);
+            // 四个按钮等宽：上面两个 + 下面两个
+            const int btnW = 86;
+            var btnCheck = MkFuncButton("开始检查", TxClrBtnCheck.Color, btnW);
             btnCheck.Click += BtnCheck_Click;
-            var btnAll = MkFuncButton("检查所有路径", TxClrBtnAll.Color);
-            btnAll.Click += BtnCheckAll_Click;
-            row1.Controls.AddRange(new Control[] { btnCheck, btnAll });
-
-            // 第二行：导出 + 重置 + OLP诊断 + 关闭
-            var row2 = MkButtonRow();
-            var btnExport = MkFuncButton("结果导出", TxClrBtnExport.Color);
+            var btnExport = MkFuncButton("结果导出", TxClrBtnExport.Color, btnW);
             btnExport.Click += BtnExport_Click;
-            var btnReset = MkFuncButton("重置窗口", TxClrBtnReset.Color);
+            var btnReset = MkFuncButton("重置窗口", TxClrBtnReset.Color, btnW);
             btnReset.Click += BtnReset_Click;
-            var btnClose = MkFuncButton("关闭", TxClrBtnClose.Color);
+            var btnClose = MkFuncButton("关闭", TxClrBtnClose.Color, btnW);
             btnClose.Click += (s, e) => Close();
-            row2.Controls.AddRange(new Control[] { btnExport, btnReset, btnClose });
+
+            var row1 = MkButtonRow();
+            row1.Controls.AddRange(new Control[] { btnCheck, btnExport });
+
+            var row2 = MkButtonRow();
+            row2.Controls.AddRange(new Control[] { btnReset, btnClose });
 
             outerFlow.Controls.Add(row1);
             outerFlow.Controls.Add(row2);
@@ -346,7 +345,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             {
                 Dock = DockStyle.Bottom,
                 Height = 140,
-                BackColor = SystemColors.Control,
+                BackColor = FormUiKit.CardBack,
                 BorderStyle = BorderStyle.FixedSingle,
                 Visible = false
             };
@@ -356,7 +355,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 Text = "运行日志",
                 Dock = DockStyle.Fill,
                 ForeColor = TxColor.TxColorWhite.Color,
-                Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold),
+                Font = FormUiKit.BoldFont,
                 TextAlign = ContentAlignment.MiddleLeft,
                 Padding = new Padding(6, 0, 0, 0)
             };
@@ -365,9 +364,9 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 Text = "清空", Dock = DockStyle.Right, Width = 44, Height = 26,
                 FlatStyle = FlatStyle.Flat,
                 BgColor = ClrAccent,
-                ForeColor = Color.White,
+                ForeColor = FormUiKit.Theme.BtnFore,
                 BorderColor = ClrAccent,
-                Font = SystemFonts.DefaultFont
+                Font = FormUiKit.BaseFont
             };
             btnClear.Click += (s, e) => _logBox?.Clear();
             hdr.Controls.AddRange(new Control[] { btnClear, lblHdr });

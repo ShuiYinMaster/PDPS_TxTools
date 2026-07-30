@@ -1,0 +1,328 @@
+/* TxAgent / web / recipe-sidebar.css
+ *
+ * 配方侧边栏。常驻在聊天区右侧，可收起成一条竖边。
+ *
+ * 变量优先取 chat.html 已有的主题变量，取不到时回退到这里的默认值 ——
+ * 这样它跟着主色走，你改 chat.html 的配色不用回来动这个文件。
+ */
+
+.rcp-root {
+    --rcp-w: 300px;
+    --rcp-bg:      var(--panel-bg,     #ffffff);
+    --rcp-bg-2:    var(--panel-bg-2,   #f9fafb);
+    --rcp-line:    var(--panel-border, #e5e7eb);
+    --rcp-fg:      var(--text-color,   #374151);
+    --rcp-dim:     var(--text-dim,     #6b7280);
+    --rcp-accent:  var(--accent-color, #3b82f6);
+    --rcp-ok:      var(--ok-color,     #10b981);
+    --rcp-bad:     var(--err-color,    #ef4444);
+
+    position: relative;
+    flex: 0 0 auto;
+    width: var(--rcp-w);
+    display: flex;
+    flex-direction: column;
+    background: var(--rcp-bg);
+    border-left: 1px solid var(--rcp-line);
+    color: var(--rcp-fg);
+    font-size: 13px;
+    /* 收起是宽度动画。用 width 而不是 transform，
+       因为聊天区是 flex 兄弟，要它跟着一起让位。 */
+    transition: width .18s ease;
+    overflow: hidden;
+}
+
+/* 收起:不再留一条 30px 的竖边,整个面板宽度归零让位给聊天区。
+   展开/收起共用一个开关把手(见下方 .rcp-toggle),固定在聊天区右侧垂直居中,
+   所以收起态根自身不再承担任何可见内容,overflow 保持 hidden 即可。 */
+.rcp-root.rcp-collapsed {
+    width: 0;
+    border-left: none;
+    background: transparent;
+}
+.rcp-root.rcp-collapsed .rcp-body,
+.rcp-root.rcp-collapsed .rcp-title,
+.rcp-root.rcp-collapsed .rcp-reload { display: none; }
+
+/* ═════════════════════════════════════════════════════════════════
+   开关把手
+   ── 展开/收起按钮始终贴在「聊天区右侧 / 侧边栏交界线」上,垂直居中 ──
+   收起时是"展开"、展开时是"收起",位置不跳,才符合直觉。
+   它是 #shell 的子元素(在 .rcp-root 之后),absolute 定位,
+   用 right: var(--rcp-w) 贴着聊天区右侧;收起态(宽度 0)right 归零。
+   ═════════════════════════════════════════════════════════════════ */
+#shell { position: relative; --rcp-w: 300px; }
+
+.rcp-toggle {
+    position: absolute;
+    top: 50%;
+    right: var(--rcp-w);            /* 展开:贴聊天区右侧(交界线) */
+    transform: translateY(-50%);
+    width: 18px;
+    height: 46px;
+    padding: 0;
+    border: 1px solid var(--rcp-line);
+    border-right: none;
+    border-radius: 8px 0 0 8px;
+    background: var(--rcp-bg-2);
+    color: var(--rcp-dim);
+    box-shadow: -2px 0 5px rgba(0, 0, 0, 0.06);
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    transition: right .18s ease, background .12s, color .12s;
+}
+.rcp-toggle:hover { background: var(--rcp-line); color: var(--rcp-fg); }
+.rcp-root.rcp-collapsed + .rcp-toggle { right: 0; }   /* 收起:贴屏幕右缘 */
+
+/* ── 头部 ── */
+
+.rcp-head {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 34px;
+    padding: 0 4px 0 8px;
+    border-bottom: 1px solid var(--rcp-line);
+    background: var(--rcp-bg-2);
+}
+
+.rcp-title {
+    flex: 1 1 auto;
+    font-weight: 600;
+    letter-spacing: .3px;
+    white-space: nowrap;
+}
+
+.rcp-iconbtn {
+    flex: 0 0 auto;
+    width: 22px; height: 22px;
+    line-height: 22px;
+    text-align: center;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--rcp-dim);
+    cursor: pointer;
+    font-size: 14px;
+}
+.rcp-iconbtn:hover { background: rgba(0,0,0,0.05); color: var(--rcp-fg); }
+
+/* ── 主体 ── */
+
+.rcp-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 6px;
+}
+
+.rcp-empty {
+    padding: 18px 10px;
+    color: var(--rcp-dim);
+    line-height: 1.6;
+    text-align: center;
+}
+
+/* ── 配方卡片 ── */
+
+.rcp-card {
+    border: 1px solid var(--rcp-line);
+    border-radius: 6px;
+    margin-bottom: 6px;
+    background: var(--rcp-bg-2);
+    overflow: hidden;
+}
+
+.rcp-card-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 8px;
+    cursor: pointer;
+    user-select: none;
+}
+.rcp-card-head:hover { background: rgba(0,0,0,0.03); }
+
+.rcp-name {
+    flex: 1 1 auto;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rcp-lang {
+    flex: 0 0 auto;
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(0,0,0,0.05);
+    color: var(--rcp-dim);
+}
+
+.rcp-caret { flex: 0 0 auto; color: var(--rcp-dim); font-size: 10px; }
+
+.rcp-card-body { display: none; padding: 0 8px 8px; }
+.rcp-card.rcp-open .rcp-card-body { display: block; }
+
+.rcp-desc {
+    color: var(--rcp-dim);
+    line-height: 1.5;
+    margin: 0 0 8px;
+}
+
+/* ── 参数行 ── */
+
+.rcp-param { margin-bottom: 7px; }
+
+.rcp-param-label {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--rcp-dim);
+    font-size: 12px;
+}
+.rcp-param-label .rcp-req { color: var(--rcp-bad); margin-left: 2px; }
+.rcp-param-label .rcp-hint { opacity: .7; margin-left: 4px; }
+
+.rcp-pick {
+    display: flex;
+    align-items: stretch;
+    gap: 4px;
+}
+
+.rcp-slot {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 5px 7px;
+    border: 1px solid var(--rcp-line);
+    border-radius: 4px;
+    background: var(--rcp-bg);
+    color: var(--rcp-fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+}
+.rcp-slot.rcp-unset { color: var(--rcp-dim); font-style: italic; }
+/* 绑定失效（换了 study / 对象被删）要一眼看出来，不能悄悄留着旧值 */
+.rcp-slot.rcp-stale { border-color: var(--rcp-bad); color: var(--rcp-bad); }
+/* 取选择中 / 取选择失败 —— 直接在参数框里给反馈，而不是塞进折叠的卡片底部 */
+.rcp-slot.rcp-picking { color: var(--rcp-dim); font-style: italic; }
+.rcp-slot.rcp-pick-err { border-color: var(--rcp-bad); color: var(--rcp-bad); font-style: normal; }
+
+.rcp-btn {
+    flex: 0 0 auto;
+    padding: 5px 9px;
+    border: 1px solid var(--rcp-line);
+    border-radius: 4px;
+    background: var(--rcp-bg);
+    color: var(--rcp-fg);
+    cursor: pointer;
+    font-size: 12px;
+    white-space: nowrap;
+}
+.rcp-btn:hover { border-color: var(--rcp-accent); color: var(--rcp-accent); }
+.rcp-btn:disabled { opacity: .45; cursor: default; border-color: var(--rcp-line); color: var(--rcp-dim); }
+
+.rcp-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 5px 7px;
+    border: 1px solid var(--rcp-line);
+    border-radius: 4px;
+    background: var(--rcp-bg);
+    color: var(--rcp-fg);
+    font-size: 12px;
+}
+
+/* ── 卡片底部 ── */
+
+.rcp-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--rcp-line);
+}
+
+.rcp-run {
+    flex: 1 1 auto;
+    padding: 6px;
+    border: none;
+    border-radius: 4px;
+    background: var(--rcp-accent);
+    color: #fff;
+    font-weight: 600;
+    cursor: pointer;
+}
+.rcp-run:hover { filter: brightness(1.1); }
+.rcp-run:disabled { background: var(--rcp-line); color: var(--rcp-dim); cursor: default; filter: none; }
+
+/* 执行中:按钮里转个圈 —— 由 CSS transform 动画驱动,
+   即便 PS 主线程执行期间 WebView 无法重绘 JS 侧内容,这个转圈也尽量保持可见 */
+.rcp-run.rcp-running {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: var(--rcp-accent);
+    opacity: .85;
+    cursor: default;
+}
+.rcp-run.rcp-running::before {
+    content: "";
+    width: 10px; height: 10px;
+    border: 2px solid rgba(255,255,255,.45);
+    border-top-color: #fff;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    animation: rcp-spin .7s linear infinite;
+}
+@keyframes rcp-spin { to { transform: rotate(360deg); } }
+
+.rcp-stat { font-size: 11px; color: var(--rcp-dim); }
+.rcp-stat .rcp-ok  { color: var(--rcp-ok); }
+.rcp-stat .rcp-bad { color: var(--rcp-bad); }
+
+.rcp-msg {
+    margin-top: 7px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 160px;
+    overflow-y: auto;
+    background: var(--rcp-bg-2);
+}
+.rcp-msg.rcp-msg-ok  { border-left: 2px solid var(--rcp-ok); }
+.rcp-msg.rcp-msg-bad { border-left: 2px solid var(--rcp-bad); }
+
+/* ── 候选区（可固化为配方的片段）── */
+
+.rcp-section-title {
+    margin: 12px 4px 6px;
+    font-size: 11px;
+    letter-spacing: .5px;
+    color: var(--rcp-dim);
+    text-transform: uppercase;
+}
+
+.rcp-cand {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    margin-bottom: 4px;
+    border: 1px dashed var(--rcp-line);
+    border-radius: 6px;
+}
+.rcp-cand .rcp-name { font-weight: 500; }

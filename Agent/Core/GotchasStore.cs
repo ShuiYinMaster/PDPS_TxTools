@@ -9,7 +9,7 @@
 //   AI 学到正解 → add_gotcha_correction 工具 → GotchasStore.AddCorrection
 //   对话末萃取 → LessonExtractor 补充 Correction
 //
-// 路径策略与 KeyStore/RecipeStore 一致(优先插件目录，回退 LocalAppData)。
+// 存储:memory/gotchas/*.md,一条一文件,文件名即签名(见 MdStore)。首次访问自动从 gotchas.json 迁移。
 
 using System;
 using System.Collections.Generic;
@@ -44,21 +44,138 @@ namespace TxTools.Agent.Core
 
     public static class GotchasStore
     {
-        private const string FileName = "gotchas.json";
+        private const string Folder = "gotchas";
 
         public static List<Gotcha> All()
         {
-            foreach (var path in CandidatePaths())
+            EnsureMigrated();
+
+            var list = new List<Gotcha>();
+            foreach (var doc in MdStore.LoadAll(Folder))
             {
-                try
-                {
-                    if (!File.Exists(path)) continue;
-                    var list = JsonConvert.DeserializeObject<List<Gotcha>>(File.ReadAllText(path, Encoding.UTF8));
-                    if (list != null) return list;
-                }
-                catch { }
+                var g = FromDoc(doc);
+                if (g != null) list.Add(g);
             }
-            return new List<Gotcha>();
+            return list;
+        }
+
+        // ── MD 映射 ──
+        //  文件名取自签名(如 CS1061_TxDocument_FullPath.md),扫一眼目录就知道踩过哪些坑。
+        //  正解带代码时是围栏块,可直接复制。
+
+        private static MarkdownDoc ToDoc(Gotcha g)
+        {
+            var doc = new MarkdownDoc();
+            doc.Set("key", g.Signature ?? "");
+            doc.Set("id", g.Id ?? "");
+            doc.Set("signature", g.Signature ?? "");
+            doc.Set("error_type", g.ErrorType ?? "");
+            doc.Set("hit_count", g.HitCount);
+            doc.Set("conv_id", g.ConvId ?? "");
+            doc.Set("created", g.CreatedUtc);
+            doc.Set("last_hit", g.LastHitUtc);
+
+            var sb = new StringBuilder();
+            sb.AppendLine("## 错误");
+            sb.AppendLine();
+            sb.AppendLine((g.ErrorMessage ?? "").Trim());
+            sb.AppendLine();
+            if (!string.IsNullOrWhiteSpace(g.CodeSnippet))
+            {
+                sb.AppendLine("## 触发代码");
+                sb.AppendLine();
+                sb.AppendLine("```csharp");
+                sb.AppendLine(g.CodeSnippet.TrimEnd());
+                sb.AppendLine("```");
+                sb.AppendLine();
+            }
+            sb.AppendLine("## 正解");
+            sb.AppendLine();
+            sb.AppendLine(string.IsNullOrWhiteSpace(g.Correction)
+                ? "(暂无。确认正确写法后用 add_gotcha_correction 补充)"
+                : g.Correction.Trim());
+            doc.Body = sb.ToString();
+
+            return doc;
+        }
+
+        private static Gotcha FromDoc(MarkdownDoc doc)
+        {
+            if (doc == null) return null;
+            var sig = doc.Get("signature", doc.Get("key", ""));
+            if (string.IsNullOrWhiteSpace(sig)) return null;
+
+            return new Gotcha
+            {
+                Id = doc.Get("id", ""),
+                Signature = sig,
+                ErrorType = doc.Get("error_type", ""),
+                ErrorMessage = Section(doc.Body, "错误"),
+                CodeSnippet = StripFence(Section(doc.Body, "触发代码")),
+                Correction = NormalizeCorrection(Section(doc.Body, "正解")),
+                HitCount = doc.GetInt("hit_count", 0),
+                ConvId = doc.Get("conv_id", ""),
+                CreatedUtc = doc.GetDate("created"),
+                LastHitUtc = doc.GetDate("last_hit")
+            };
+        }
+
+        /// <summary>取 "## 标题" 到下一个 "## " 之间的内容。</summary>
+        private static string Section(string body, string title)
+        {
+            if (string.IsNullOrEmpty(body)) return "";
+            var marker = "## " + title;
+            int i = body.IndexOf(marker, StringComparison.Ordinal);
+            if (i < 0) return "";
+            i += marker.Length;
+
+            int next = body.IndexOf("\n## ", i, StringComparison.Ordinal);
+            var seg = next < 0 ? body.Substring(i) : body.Substring(i, next - i);
+            return seg.Trim();
+        }
+
+        private static string StripFence(string seg)
+        {
+            if (string.IsNullOrEmpty(seg)) return "";
+            int open = seg.IndexOf("```", StringComparison.Ordinal);
+            if (open < 0) return seg.Trim();
+            int lineEnd = seg.IndexOf('\n', open);
+            if (lineEnd < 0) return "";
+            int close = seg.IndexOf("```", lineEnd, StringComparison.Ordinal);
+            if (close < 0) close = seg.Length;
+            return seg.Substring(lineEnd + 1, close - lineEnd - 1).TrimEnd();
+        }
+
+        /// <summary>"(暂无...)" 这类占位文本读回来要还原成空,否则会被当成已有正解。</summary>
+        private static string NormalizeCorrection(string seg)
+        {
+            if (string.IsNullOrWhiteSpace(seg)) return "";
+            if (seg.TrimStart().StartsWith("(暂无", StringComparison.Ordinal)) return "";
+            return seg.Trim();
+        }
+
+        private static void EnsureMigrated()
+        {
+            MdStore.MigrateOnce(Folder, "gotchas.json", json =>
+            {
+                var list = JsonConvert.DeserializeObject<List<Gotcha>>(json);
+                if (list == null) return;
+                foreach (var g in list)
+                {
+                    if (g == null || string.IsNullOrWhiteSpace(g.Signature)) continue;
+                    WriteOne(g);
+                }
+            });
+        }
+
+        private static void WriteOne(Gotcha g)
+        {
+            MdStore.Write(Folder, SlugOf(g.Signature), ToDoc(g));
+        }
+
+        private static string SlugOf(string signature)
+        {
+            return MdStore.UniqueSlug(Folder, MarkdownDoc.Slug(signature), signature);
         }
 
         /// <summary>
@@ -77,7 +194,7 @@ namespace TxTools.Agent.Core
             {
                 existing.HitCount++;
                 existing.LastHitUtc = DateTime.UtcNow;
-                SaveAll(all);
+                WriteOne(existing);
                 return existing;
             }
 
@@ -94,8 +211,7 @@ namespace TxTools.Agent.Core
                 HitCount = 1,
                 ConvId = convId
             };
-            all.Add(g);
-            SaveAll(all);
+            WriteOne(g);
             return g;
         }
 
@@ -108,18 +224,16 @@ namespace TxTools.Agent.Core
                 string.Equals(x.Signature, signature, StringComparison.OrdinalIgnoreCase));
             if (g == null) return false;
             g.Correction = correction ?? "";
-            SaveAll(all);
+            WriteOne(g);
             return true;
         }
 
         public static bool Remove(string id)
         {
             if (string.IsNullOrWhiteSpace(id)) return false;
-            var all = All();
-            int n = all.RemoveAll(g => string.Equals(g.Id, id, StringComparison.OrdinalIgnoreCase));
-            if (n == 0) return false;
-            SaveAll(all);
-            return true;
+            var g = All().FirstOrDefault(x => string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase));
+            if (g == null) return false;
+            return MdStore.Delete(Folder, SlugOf(g.Signature));
         }
 
         /// <summary>
@@ -343,41 +457,5 @@ namespace TxTools.Agent.Core
             }
         }
 
-        // ── 持久化 ──
-
-        private static void SaveAll(List<Gotcha> all)
-        {
-            var json = JsonConvert.SerializeObject(all ?? new List<Gotcha>(), Formatting.Indented);
-            foreach (var path in CandidatePaths())
-            {
-                try
-                {
-                    var dir = Path.GetDirectoryName(path);
-                    if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                    File.WriteAllText(path, json, Encoding.UTF8);
-                    return;
-                }
-                catch { }
-            }
-        }
-
-        private static string[] CandidatePaths()
-        {
-            string pluginDir = null;
-            try { pluginDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location); }
-            catch { }
-
-            var localDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TxTools.Agent");
-
-            if (string.IsNullOrEmpty(pluginDir))
-                return new[] { Path.Combine(localDir, FileName) };
-
-            return new[]
-            {
-                Path.Combine(pluginDir, FileName),
-                Path.Combine(localDir, FileName)
-            };
-        }
     }
 }

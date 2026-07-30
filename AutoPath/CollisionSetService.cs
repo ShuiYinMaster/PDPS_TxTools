@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -20,6 +20,15 @@ namespace TxTools.AutoPathPlanner
     ///       // ...把机器人摆到某个姿态...
     ///       bool hit = cs.QueryColliding();
     ///   }
+    ///
+    /// ══════════════════════════════════════════════════════════════
+    /// v6.6 修正 (用户反馈: 自动添加干涉集不应包含机器人的各轴关节):
+    ///   - CollectBoundResources 移除 ⑥ robot.Links (TxKinematicLink 运动学连杆) 收集
+    ///     · 安全性: TxKinematicLink 不是 ITxComponent → AddDescendantComponents /
+    ///       CollectWorldObstacles 的 ITxComponent 过滤器均收集不到它 → 删除后
+    ///       FirstList / SecondList 两侧都不含连杆, 不会引发自干涉;
+    ///       机器人本体 (TxRobot) 仍参与碰撞检测
+    /// ══════════════════════════════════════════════════════════════
     ///
     /// ══════════════════════════════════════════════════════════════
     /// v5.1 绑定资源完整收集 (TxAgent 实测 API):
@@ -148,9 +157,9 @@ namespace TxTools.AutoPathPlanner
         /// <summary>
         /// 焊接场景常用入口: (机器人 + 全部绑定资源) vs 场景障碍。
         ///
-        /// FirstList (检测方) = CollectBoundResources(robot) — v5.1 强类型收集:
+        /// FirstList (检测方) = CollectBoundResources(robot) — v5.1 强类型收集 (v6.6 起不含 Links):
         ///   robot 本体 / MountedTools(焊钳) / PrimaryLocator(**底座 fupa**) /
-        ///   Toolbox 工具 / AttachmentParent(滑轨/外轴) / Links / 以上各项的 ITxComponent 后代
+        ///   Toolbox 工具 / AttachmentParent(滑轨/外轴) / 以上各项的 ITxComponent 后代
         ///
         /// SecondList (障碍方) = CollectWorldObstacles(check) — 硬保证不含任何绑定资源:
         ///   PhysicalRoot 全部 ITxComponent, 剔除 [绑定资源集(HashSet引用级) +
@@ -317,12 +326,17 @@ namespace TxTools.AutoPathPlanner
         ///      之前一直漏收 → fupa 落入障碍方 → 机器人与自己的底座报永久干涉
         ///   ④ robot.Toolbox.GetAllTools() : TxRobotWorkTool[]  (Toolbox 可能为 null!)
         ///   ⑤ robot.AttachmentParent : ITxLocatableObject  ← 机器人挂载的父体 (滑轨/外部轴)
-        ///   ⑥ robot.Links           : TxObjectList  ← 运动学连杆 (可能持有几何)
-        ///   ⑦ 以上各项的 ITxComponent 后代 (递归)
+        ///   ⑥ 以上各项的 ITxComponent 后代 (递归)
+        ///
+        ///   v6.6: 移除 robot.Links (TxKinematicLink 运动学连杆 / 各轴关节) 的收集 —
+        ///   用户反馈: 自动添加干涉集时不应包含机器人的各轴关节。安全性: TxKinematicLink
+        ///   不是 ITxComponent, AddDescendantComponents / CollectWorldObstacles 的
+        ///   ITxComponent 过滤器都收集不到它 → 删除后 FirstList / SecondList 均无连杆,
+        ///   不会引发 "机器人 vs 自己连杆" 自干涉; 机器人本体仍参与碰撞检测。
         ///
         /// 不收集 (无几何, 不参与碰撞):
         ///   Controller / SimulatingOperations / RoboticPrograms / Signals /
-        ///   PoseList / DrivingJoints / TCPF-Toolframe-Baseframe-Referenceframe
+        ///   PoseList / DrivingJoints / Links(各轴连杆) / TCPF-Toolframe-Baseframe-Referenceframe
         ///
         /// 已废弃: DressPacks / ExternalAxes / MountedDressPacks —— TxRobot 上
         /// **不存在这些属性** (inspect_type 确认), 之前的反射查找永远返回 null。
@@ -333,11 +347,10 @@ namespace TxTools.AutoPathPlanner
             var result = new List<ITxObject>();
             if (robot == null) return result;
 
-            // ① 机器人本体 + 其 ITxComponent 后代 (连杆几何等)
+            // ① 机器人本体 — PS 碰撞检测按机器人姿态几何计算(含全部连杆), 无需展开子级
             result.Add(robot);
-            AddDescendantComponents(robot, result);
 
-            // ② MountedTools — 焊钳 (TxServoGun)
+            // ② MountedTools — 焊钳 (TxServoGun); 仅保留父级, 不展开子级
             try
             {
                 TxObjectList tools = robot.MountedTools;
@@ -345,32 +358,18 @@ namespace TxTools.AutoPathPlanner
                 {
                     foreach (ITxObject tool in tools)
                     {
-                        if (!AddUnique(result, tool)) continue;
-                        AddDescendantComponents(tool, result);
-                        // 工具上的二级挂载 (传感器等)
-                        AddNestedMountedTools(tool, result, 0);
+                        AddUnique(result, tool);
                     }
                 }
             }
             catch { }
 
-            // ③ PrimaryLocator — 机器人底座 / fupa (关键!之前一直漏收)
-            try
-            {
-                ITxObjectCollection ploc = robot.PrimaryLocator;
-                if (ploc != null)
-                {
-                    var plocObj = ploc as ITxObject;
-                    if (plocObj != null)
-                    {
-                        AddUnique(result, plocObj);
-                        AddDescendantComponents(plocObj, result);
-                    }
-                }
-            }
-            catch { }
+            // ③ (v6.8 移除) PrimaryLocator — 机器人底座/fupa 不作为被检测方
+            //   用户反馈: 底座是机器人固定安装部分, 不应作为干涉集"被检测方"单独列出。
+            //   底座从 FirstList 移除, 同时在 CollectWorldObstacles 中从障碍方排除
+            //   (两边都不参与, 避免 "机器人 vs 自己底座" 误报)。
 
-            // ④ Toolbox 里注册的工具 (Toolbox 常为 null, 必须保护)
+            // ④ Toolbox 里注册的工具 (Toolbox 常为 null, 必须保护); 仅保留父级
             try
             {
                 TxRobotToolbox tb = robot.Toolbox;
@@ -382,41 +381,43 @@ namespace TxTools.AutoPathPlanner
                         foreach (var wt in allTools)
                         {
                             var o = wt as ITxObject;
-                            if (o != null && AddUnique(result, o))
-                                AddDescendantComponents(o, result);
+                            if (o != null) AddUnique(result, o);
                         }
                     }
                 }
             }
             catch { }
 
-            // ⑤ AttachmentParent — 机器人挂在什么上 (滑轨/外部轴/变位机)
+            // ⑤ AttachmentParent — 机器人挂在什么上 (滑轨/外部轴/变位机); 仅保留父级
+            //    若 AttachmentParent 就是底座 (与 PrimaryLocator 同一对象) → 跳过
             try
             {
                 ITxLocatableObject ap = robot.AttachmentParent;
                 if (ap != null)
                 {
                     var apObj = ap as ITxObject;
-                    if (apObj != null && AddUnique(result, apObj))
-                        AddDescendantComponents(apObj, result);
-                }
-            }
-            catch { }
-
-            // ⑥ Links — 运动学连杆 (部分连杆直接持有几何)
-            try
-            {
-                TxObjectList links = robot.Links;
-                if (links != null)
-                {
-                    foreach (ITxObject lk in links)
+                    if (apObj != null)
                     {
-                        if (AddUnique(result, lk))
-                            AddDescendantComponents(lk, result);
+                        bool isBase = false;
+                        try
+                        {
+                            ITxObjectCollection ploc = robot.PrimaryLocator;
+                            var po = ploc as ITxObject;
+                            if (po != null && ReferenceEquals(po, apObj)) isBase = true;
+                        }
+                        catch { }
+                        if (!isBase) AddUnique(result, apObj);
                     }
                 }
             }
             catch { }
+
+            // ⑥ (v6.6 移除) robot.Links — 运动学连杆 / 各轴关节, 不再加入干涉集
+            //   用户反馈: 自动添加干涉集时不应把机器人的各轴关节 (TxKinematicLink) 包含进去。
+            //   安全性: TxKinematicLink 不是 ITxComponent → ①AddDescendantComponents 与
+            //   CollectWorldObstacles 的 ITxComponent 过滤器都收集不到它 → 删除后 FirstList /
+            //   SecondList 两侧均无连杆, 不会引发 "机器人 vs 自己连杆" 自干涉;
+            //   机器人本体 (TxRobot, ITxComponent) 仍参与碰撞检测, 检测能力不丢失。
 
             return result;
         }
@@ -448,6 +449,7 @@ namespace TxTools.AutoPathPlanner
             {
                 var container = obj as ITxObjectCollection;
                 if (container == null) return;
+
                 var filter = new TxTypeFilter(typeof(ITxComponent));
                 TxObjectList descendants = container.GetAllDescendants(filter);
                 if (descendants == null) return;
@@ -520,6 +522,40 @@ namespace TxTools.AutoPathPlanner
 
             try
             {
+            // v6.8: 所有机器人底座 (PrimaryLocator) — 不作为被检测方, 也不作为障碍方
+            //   (底座是机器人固定安装部分, 从 FirstList 移除后必须同时从障碍方剔除,
+            //    否则机器人与自己的底座会误报干涉)
+            var baseObjs = new List<ITxObject>();
+            try
+            {
+                var rFilter = new TxTypeFilter(typeof(TxRobot));
+                TxObjectList robots = TxApplication.ActiveDocument.PhysicalRoot.GetAllDescendants(rFilter);
+                if (robots != null)
+                {
+                    foreach (ITxObject r in robots)
+                    {
+                        try
+                        {
+                            var ro = r as TxRobot;
+                            if (ro == null) continue;
+                            ITxObjectCollection ploc = ro.PrimaryLocator;
+                            var po = ploc as ITxObject;
+                            if (po != null)
+                            {
+                                bool dup = false;
+                                for (int bi = 0; bi < baseObjs.Count; bi++)
+                                {
+                                    if (ReferenceEquals(baseObjs[bi], po)) { dup = true; break; }
+                                }
+                                if (!dup) baseObjs.Add(po);
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+
                 var filter = new TxTypeFilter(typeof(ITxComponent)); // null filter 会 NRE
                 TxObjectList allComps = TxApplication.ActiveDocument
                     .PhysicalRoot.GetAllDescendants(filter);
@@ -534,6 +570,20 @@ namespace TxTools.AutoPathPlanner
 
                     // ③④ 场景所有 TxRobot / 焊枪 子树
                     if (IsRobotOrGunSubtree(comp)) continue;
+
+                    // ③⑤ v6.8: 机器人底座 (PrimaryLocator) 及其子树 — 不作为障碍方
+                    bool isBase = false;
+                    for (int bi = 0; bi < baseObjs.Count; bi++)
+                    {
+                        ITxObject b = baseObjs[bi];
+                        if (ReferenceEquals(comp, b) || IsDescendantOf(comp, b) || IsDescendantOf(b, comp))
+                        {
+                            isBase = true;
+                            break;
+                        }
+                    }
+                    if (isBase) continue;
+
 
                     // ① 补充: 绑定资源的父容器 / 子树 (拓扑关联)
                     bool excluded = false;
@@ -1029,7 +1079,20 @@ namespace TxTools.AutoPathPlanner
                     {
                         var sigs = QueryOurCollisionSignatures();
                         if (sigs == null) return false;
-                        bool colliding = sigs.Count > 0;
+                        bool colliding;
+                        if (BaselineExemption && _baseline != null && _baseline.Count > 0)
+                        {
+                            // v6.7: 豁免基线常驻接触 —— 只算基线外的新增碰撞
+                            colliding = false;
+                            foreach (var s in sigs)
+                            {
+                                if (!_baseline.Contains(s)) { colliding = true; break; }
+                            }
+                        }
+                        else
+                        {
+                            colliding = sigs.Count > 0;
+                        }
                         if (_sampleLogBudget > 0)
                         {
                             _sampleLogBudget--;
@@ -1073,6 +1136,13 @@ namespace TxTools.AutoPathPlanner
         private int _sampleLogBudget = 6;
         private bool _stateDumped;
         private HashSet<string> _baseline = new HashSet<string>();
+
+        /// <summary>v6.7: 被排除的障碍对象 (如被焊工件) — 检测方与它们的接触不算碰撞</summary>
+        private readonly HashSet<ITxObject> _excludedObstacles =
+            new HashSet<ITxObject>(ReferenceComparer.Instance);
+
+        /// <summary>v6.7: 常驻接触豁免 — true 时基线内的对象对不再判碰撞 (默认 false)</summary>
+        public bool BaselineExemption { get; set; }
 
         private void DetermineQueryMode()
         {
@@ -1198,6 +1268,7 @@ namespace TxTools.AutoPathPlanner
                     var objs = ExtractStateObjects(state);
                     if (objs.Count == 0) continue;
                     if (!InvolvesCheckSet(objs)) continue;
+                    if (InvolvesOnlyExcludedObstacles(objs)) continue; // v6.7 焊枪贴工件允许
                     sigs.Add(Signature(objs));
                 }
                 return sigs;
@@ -1295,6 +1366,48 @@ namespace TxTools.AutoPathPlanner
                 }
             }
             return false;
+        }
+
+        /// <summary>
+        /// v6.7: 碰撞对是否只涉及 [检测方 + 被排除对象] (且至少含一个被排除对象)。
+        /// true = 焊枪贴工件这类工艺允许接触 → 不判碰撞。
+        /// 若碰撞对出现夹具等第三方 → false (真碰撞, 保留)。
+        /// </summary>
+        private bool InvolvesOnlyExcludedObstacles(List<ITxObject> objs)
+        {
+            if (_excludedObstacles.Count == 0) return false;
+            bool hasExcluded = false;
+            foreach (var o in objs)
+            {
+                bool isCheck = false;
+                foreach (var c in _checkObjects)
+                {
+                    if (ReferenceEquals(o, c) || IsDescendantOf(o, c))
+                    {
+                        isCheck = true;
+                        break;
+                    }
+                }
+                bool isExcl = _excludedObstacles.Contains(o);
+                if (isExcl) hasExcluded = true;
+                if (!isCheck && !isExcl) return false; // 第三方(夹具等) → 真碰撞
+            }
+            return hasExcluded;
+        }
+
+        /// <summary>
+        /// v6.7: 把指定对象从障碍判定中排除 — 检测方(机器人/焊枪/底座)与它们的
+        /// 接触/碰撞不再算碰撞。用于被焊工件: 焊枪电极必须接触工件才能焊接,
+        /// 工件不能作为焊枪的障碍。
+        /// </summary>
+        public void ExcludeObstacles(IEnumerable<ITxObject> objs)
+        {
+            if (objs == null) return;
+            foreach (var o in objs)
+            {
+                if (o == null || _excludedObstacles.Contains(o)) continue;
+                _excludedObstacles.Add(o);
+            }
         }
 
         private static string Signature(List<ITxObject> objs)

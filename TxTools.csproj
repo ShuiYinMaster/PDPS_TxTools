@@ -128,6 +128,26 @@
     <Reference Include="DocumentFormat.OpenXml.Framework, Version=3.5.1.0, Culture=neutral, PublicKeyToken=8fb06cb64d019a17, processorArchitecture=MSIL">
       <HintPath>packages\DocumentFormat.OpenXml.Framework.3.5.1\lib\net46\DocumentFormat.OpenXml.Framework.dll</HintPath>
     </Reference>
+    <Reference Include="Microsoft.ML.OnnxRuntime">
+      <HintPath>packages\Microsoft.ML.OnnxRuntime.Managed.1.17.1\lib\netstandard2.0\Microsoft.ML.OnnxRuntime.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Buffers, Version=4.0.3.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
+      <HintPath>packages\System.Buffers.4.5.1\lib\net461\System.Buffers.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Memory, Version=4.0.1.2, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
+      <HintPath>packages\System.Memory.4.5.5\lib\net461\System.Memory.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Numerics.Vectors, Version=4.1.4.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <HintPath>packages\System.Numerics.Vectors.4.5.0\lib\net46\System.Numerics.Vectors.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+    <Reference Include="System.Runtime.CompilerServices.Unsafe, Version=4.0.4.1, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <HintPath>packages\System.Runtime.CompilerServices.Unsafe.4.5.3\lib\net461\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
     <Reference Include="Microsoft.Web.WebView2.Core, Version=1.0.4022.49, Culture=neutral, PublicKeyToken=2a8ab48044d2601e, processorArchitecture=MSIL">
       <HintPath>packages\Microsoft.Web.WebView2.1.0.4022.49\lib\net462\Microsoft.Web.WebView2.Core.dll</HintPath>
     </Reference>
@@ -139,6 +159,7 @@
     </Reference>
     <Reference Include="Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
       <HintPath>packages\Newtonsoft.Json.13.0.4\lib\net45\Newtonsoft.Json.dll</HintPath>
+      <Private>True</Private>
     </Reference>
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
@@ -202,26 +223,69 @@
     <Reference Include="WindowsFormsIntegration" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Agent\Core\Api\ApiIndex.cs" />
+    <Compile Include="Agent\Core\AgentContext.cs" />
+    <Compile Include="Agent\Core\AskUserBridge.cs" />
     <Compile Include="Agent\Core\Capture\WindowsCapture.cs" />
     <Compile Include="Agent\Core\Catia\CatiaBridge.cs" />
+    <Compile Include="Agent\Core\Code\CodeWorkspace.cs" />
+    <Compile Include="Agent\Core\ConversationIndex.cs" />
+    <Compile Include="Agent\Core\Embedding\IEmbedder.cs" />
+    <Compile Include="Agent\Core\Embedding\DashScopeEmbedder.cs" />
+    <Compile Include="Agent\Core\Embedding\WordPieceTokenizer.cs" />
+    <Compile Include="Agent\Core\Embedding\OnnxEmbedder.cs" />
+    <Compile Include="Agent\Core\Embedding\KnowledgeIndex.cs" />
     <Compile Include="Agent\Core\FactsStore.cs" />
     <Compile Include="Agent\Core\FileParserService.cs" />
     <Compile Include="Agent\Core\GotchasStore.cs" />
+    <Compile Include="Agent\Core\Harness\ITxOffUiThreadTool.cs" />
+    <Compile Include="Agent\Core\KnowledgeStore.cs" />
     <Compile Include="Agent\Core\LessonExtractor.cs" />
     <Compile Include="Agent\Core\LlmProviders.cs" />
+    <Compile Include="Agent\Core\MarkdownDoc.cs" />
+    <Compile Include="Agent\Core\MdStore.cs" />
     <Compile Include="Agent\Core\MemoryTools.cs" />
+    <Compile Include="Agent\Core\ModelFilter.cs" />
+    <Compile Include="Agent\Core\ModelRouter.cs" />
+    <Compile Include="Agent\Core\Multi\PsInstanceRegistry.cs" />
+    <Compile Include="Agent\Core\Multi\PsRpcClient.cs" />
+    <Compile Include="Agent\Core\Multi\PsRpcServer.cs" />
+    <Compile Include="Agent\Core\Multi\TxAgentService.cs" />
+    <Compile Include="Agent\Core\ProcessSync.cs" />
+    <Compile Include="Agent\Core\SnippetUsageLedger.cs" />
+    <Compile Include="Agent\Core\Tools\ApiLookupTool.cs" />
+    <Compile Include="Agent\Scripting\PythonHost.cs" />
     <Compile Include="Agent\Core\OpenXmlWriter.cs" />
+    <Compile Include="Agent\Core\PendingSnippetStore.cs" />
     <Compile Include="Agent\Core\Pptx\BlankPptxData.cs" />
     <Compile Include="Agent\Core\Pptx\PptxTemplateEngine.cs" />
     <Compile Include="Agent\Core\PS\PsCompoundHelper.cs" />
     <Compile Include="Agent\Core\PS\PsViewerHelper.cs" />
+    <Compile Include="Agent\Core\RepetitionGuard.cs" />
     <Compile Include="Agent\Core\SnippetStore.cs" />
+    <Compile Include="Agent\Core\SnippetUsageLedger.cs" />
+    <Compile Include="Agent\Core\ToolGate.cs" />
     <Compile Include="Agent\Core\ToolInputHelpers.cs" />
     <Compile Include="Agent\Core\UploadStore.cs" />
     <Compile Include="Agent\Core\UploadTools.cs" />
     <Compile Include="Agent\Core\UserPrefsStore.cs" />
     <Compile Include="Agent\Core\XlsxReader.cs" />
+    <Compile Include="Agent\Tools\AskUserTool.cs" />
+    <Compile Include="Agent\Tools\Code\CodeBuildTool.cs" />
+    <Compile Include="Agent\Tools\Code\CodeEditTools.cs" />
+    <Compile Include="Agent\Tools\Code\CodeReadTools.cs" />
+    <Compile Include="Agent\Tools\ImportComponentTool.cs" />
+    <Compile Include="Agent\Tools\ToolGroupTools.cs" />
+    <Compile Include="Agent\Tools\Catia\CatiaExportGunTool.cs" />
     <Compile Include="Agent\Tools\Catia\CatiaReadTreeTool.cs" />
+    <Compile Include="Agent\Tools\Catia\FullGunExportTool.cs" />
+    <Compile Include="Agent\Tools\Memory\KnowledgeAdminTools.cs" />
+    <Compile Include="Agent\Tools\Memory\KnowledgeTools.cs" />
+    <Compile Include="Agent\Tools\Memory\SnippetPatchTools.cs" />
+    <Compile Include="Agent\Tools\Ps\GetReferenceFrameTool.cs" />
+    <Compile Include="Agent\Tools\Catia\GunToolHelpers.cs" />
+    <Compile Include="Agent\Tools\Ps\ResolveTcpTool.cs" />
+    <Compile Include="Agent\Tools\Ps\TransformPointsToReferenceTool.cs" />
     <Compile Include="Agent\Tools\Docs\InspectPptxTemplateTool.cs" />
     <Compile Include="Agent\Tools\Docs\RenderPptxTemplateTool.cs" />
     <Compile Include="Agent\Tools\DocxExportTool.cs" />
@@ -233,7 +297,10 @@
     <Compile Include="Agent\Tools\Ps\ScreenshotWindowTool.cs" />
     <Compile Include="Agent\Tools\Ps\SetCameraViewTool.cs" />
     <Compile Include="Agent\Tools\Ps\SetViewToObjectTool.cs" />
+    <Compile Include="Agent\Scripting\PythonHostProvider.cs" />
+    <Compile Include="Agent\Tools\RunPythonTool.cs" />
     <Compile Include="Agent\Tools\SnippetTools.cs" />
+    <Compile Include="Agent\Tools\Vision\VisionTools.cs" />
     <Compile Include="Agent\TxAgentCommand.cs" />
     <Compile Include="Agent\Core\AgentLoop.cs" />
     <Compile Include="Agent\Core\AuditLog.cs" />
@@ -245,11 +312,25 @@
     <Compile Include="Agent\Core\KeyStore.cs" />
     <Compile Include="Agent\Core\LlmModels.cs" />
     <Compile Include="Agent\Core\PsContext.cs" />
-    <Compile Include="Agent\Core\Recipe.cs" />
+    <Compile Include="Agent\Core\RecipeRunner.cs" />
     <Compile Include="Agent\Core\RecipeStore.cs" />
     <Compile Include="Agent\Core\RecipeTool.cs" />
     <Compile Include="Agent\Core\TaskPlan.cs" />
     <Compile Include="Agent\Core\ToolRegistry.cs" />
+    <!-- TxAgent.Core harness 骨架(来自 files(83).zip,按 README_接入说明.md 接入) -->
+    <Compile Include="Agent\Core\Harness\Messages.cs" />
+    <Compile Include="Agent\Core\Harness\ITool.cs" />
+    <Compile Include="Agent\Core\Harness\IAgentHost.cs" />
+    <Compile Include="Agent\Core\Harness\ILlmClient.cs" />
+    <Compile Include="Agent\Core\Harness\ToolRegistry.cs" />
+    <Compile Include="Agent\Core\Harness\AgentSession.cs" />
+    <Compile Include="Agent\Core\Harness\AgentLoop.cs" />
+    <!-- 适配层:把现有 26 个工具 / DeepSeekClient / 主线程封送接到新 harness -->
+    <Compile Include="Agent\Core\Harness\IAgentLoop.cs" />
+    <Compile Include="Agent\Core\Harness\PsAgentHost.cs" />
+    <Compile Include="Agent\Core\Harness\DeepSeekLlmClient.cs" />
+    <Compile Include="Agent\Core\Harness\TxAgentToolAdapter.cs" />
+    <Compile Include="Agent\Core\Harness\HarnessAgentLoop.cs" />
     <Compile Include="Agent\Core\XlsxWriter.cs" />
     <Compile Include="Agent\Ps\ApiInspector.cs" />
     <Compile Include="Agent\Ps\CSharpRunner.cs" />
@@ -277,6 +358,7 @@
     <Compile Include="Agent\UI\ApiKeyDialog.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="Agent\UI\AskUserDialog.cs" />
     <Compile Include="Agent\UI\CodeApprovalDialog.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -337,8 +419,6 @@
     <Compile Include="RobotBaseChecker\RobotBaseReader.cs" />
     <Compile Include="RobotBaseChecker\RobotKinematics.cs" />
     <Compile Include="RobotReachabilityChecker\Diagnostics\ILogger.cs" />
-    <Compile Include="RobotReachabilityChecker\Diagnostics\InterferenceProbe.cs" />
-    <Compile Include="RobotReachabilityChecker\Diagnostics\OlpDiagnostic.cs" />
     <Compile Include="RobotReachabilityChecker\Models\AxisFlag.cs" />
     <Compile Include="RobotReachabilityChecker\Models\PathPointResult.cs" />
     <Compile Include="RobotReachabilityChecker\Models\ReachabilityStatus.cs" />
@@ -355,6 +435,7 @@
     <Compile Include="RobotReachabilityChecker\Services\ReachabilityChecker.cs" />
     <Compile Include="RobotReachabilityChecker\Services\RobotFinder.cs" />
     <Compile Include="RobotReachabilityChecker\Services\TcpMarginChecker.cs" />
+    <Compile Include="RobotReachabilityChecker\Services\ToolFrameSwitcher.cs" />
     <Compile Include="RobotReachabilityChecker\Services\ToolFrameReader.cs" />
     <Compile Include="RobotReachabilityChecker\Ui\LocationEditForm.cs">
       <SubType>Form</SubType>
@@ -391,6 +472,11 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="ExportGun\ExportService.cs" />
+    <Compile Include="ExportByColor\ExportByColorCmd.cs" />
+    <Compile Include="ExportByColor\ExportByColorForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="ExportByColor\ExportByColorService.cs" />
     <Compile Include="SRC\FormUiKit.cs" />
     <Compile Include="SRC\PsReader.cs" />
     <Compile Include="WeldAnnotator\AnnotationStyle.cs" />
@@ -444,6 +530,16 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="WeldSpotGrouper\WeldSpotGrouperCmd.cs" />
+    <Compile Include="CatiaPartTree\Core\TreeEditNode.cs" />
+    <Compile Include="CatiaPartTree\Ps\CatiaPartTreeService.cs" />
+    <Compile Include="CatiaPartTree\CatiaPartTreeCmd.cs" />
+    <Compile Include="CatiaPartTree\CatiaPartTreeForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="ThemeTuner\ThemeTunerCmd.cs" />
+    <Compile Include="ThemeTuner\ThemeTunerForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Properties\Resources.resx">
@@ -457,6 +553,17 @@
     <None Include="Properties\Settings.settings">
       <Generator>SettingsSingleFileGenerator</Generator>
       <LastGenOutput>Settings.Designer.cs</LastGenOutput>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- ONNX Runtime 原生 DLL (本地嵌入路线)。OnnxEmbedder 运行前必须有 onnxruntime.dll 在输出目录。 -->
+    <None Include="packages\Microsoft.ML.OnnxRuntime.1.17.1\runtimes\win-x64\native\onnxruntime.dll">
+      <Link>onnxruntime.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="packages\Microsoft.ML.OnnxRuntime.1.17.1\runtimes\win-x64\native\onnxruntime_providers_shared.dll">
+      <Link>onnxruntime_providers_shared.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
   <ItemGroup>
@@ -1311,12 +1418,13 @@
     <EmbeddedResource Include="image\WeldSpotGrouper.png" />
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="Agent\UI\chat.html" />
-  </ItemGroup>
-  <ItemGroup>
     <WCFMetadata Include="Connected Services\" />
   </ItemGroup>
-  <ItemGroup />
+  <ItemGroup>
+    <EmbeddedResource Include="Agent\UI\chat.html" />
+    <EmbeddedResource Include="Agent\UI\recipe-sidebar.css" />
+    <EmbeddedResource Include="Agent\UI\recipe-sidebar.js" />
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Import Project="packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets" Condition="Exists('packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets')" />
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">

@@ -30,4 +30,17 @@ namespace TxTools.RobotReachabilityChecker.Models
         /// <summary>未检查（默认状态，仅在预览阶段使用）</summary>
         NotChecked
     }
+
+    /// <summary>干涉检查结果三态（P2-11）：Clean=无碰撞 / Collision=有碰撞 / Error=查询异常或未就绪。</summary>
+    public enum CollisionCheckState
+    {
+        /// <summary>未启用干涉检查（默认）</summary>
+        NotChecked,
+        /// <summary>已检查，无碰撞</summary>
+        Clean,
+        /// <summary>已检查，存在碰撞</summary>
+        Collision,
+        /// <summary>查询异常或未就绪，状态未知</summary>
+        Error
+    }
 }

@@ -20,6 +20,12 @@
 //    同时把 ExportGuns 里 TCP 公共零件的同类逻辑一起修了。
 // 8. ExportToCurrentDoc=true 且活动文档已是 Part 时，若用户填了自定义零件名，
 //    现在会应用到当前 Part 上（仅 set_Name，不动 PartNumber），与其它分支一致。
+// 9. 插枪导出统一为「共享几何」单一模式：所有实例复用同一份 CGR Reference，
+//    实例名改为焊点名。原「独立命名」模式（每焊点复制一份 CGR）已移除。
+//    实例改名根因：实例名存储在**父级 Reference** 中，必须经
+//      container.ReferenceProduct.Products.Item(i) 写入；
+//    写在 instance 路径 container.Products.Item(i) 上会被解析层静默丢弃
+//    （不抛异常、读回不变）。与线程模型（MTA/STA）和调用时机均无关。
 
 using HybridShapeTypeLib;
 using INFITF;
@@ -39,19 +45,6 @@ namespace TxTools.ExportGun
 {
     public enum ExportFormat { Xml3d, CATProduct }
     public enum BallExportOption { TrajectoryAndBall, TrajectoryOnly, BallOnly }
-
-    /// <summary>
-    /// 焊枪导出模式（体积 vs 命名的权衡）。
-    /// SharedGeometry：Copy+Paste 共享 CGR 几何，3DXML 只写一份几何；
-    ///                 CATIA COM 层不允许改 CGR 实例名，所有实例名保持 CGR 原名（如 FFM130-....1/.2/.3）
-    /// IndependentNaming：每个焊点复制一份独立的 CGR 副本，通过文件名让 CATIA 生成不同的 Reference；
-    ///                 实例名 = 焊点名，代价是 3DXML 体积 ≈ 焊点数 × CGR
-    /// </summary>
-    public enum GunExportMode
-    {
-        SharedGeometry,
-        IndependentNaming
-    }
 
     public class GunExportParams
     {
@@ -77,7 +70,6 @@ namespace TxTools.ExportGun
         public double[] TcpCustomMatrix;
 
         // —— 焊枪导出模式（默认共享几何，体积最小） ——
-        public GunExportMode ExportMode;
     }
 
     public class BallExportParams
@@ -445,27 +437,16 @@ namespace TxTools.ExportGun
         }
 
         // ════════════════════════════════════════════════════════════
-        //  导出插枪（分派器）
+        //  导出插枪：共享几何（Copy+Paste 复用同一份 CGR Reference）
+        //  实例名通过父级 ReferenceProduct 路径改为焊点名
         // ════════════════════════════════════════════════════════════
         public void ExportGuns(GunExportParams p, Action<ExportProgress> onProgress, Action<string> onLog)
         {
             if (_catia == null) throw new InvalidOperationException("CATIA 未连接");
-
-            if (p.ExportMode == GunExportMode.IndependentNaming)
-            {
-                onLog?.Invoke("[Catia] 导出模式：独立命名（每焊点独立几何，实例名=焊点名，体积随焊点数线性增长）");
-                ExportGunsIndependent(p, onProgress, onLog);
-            }
-            else
-            {
-                onLog?.Invoke("[Catia] 导出模式：共享几何（Copy+Paste 实例复用，体积最小；实例名保持 CGR 原名）");
-                ExportGunsShared(p, onProgress, onLog);
-            }
+            onLog?.Invoke("[Catia] 共享几何导出（实例复用同一份 CGR，实例名=焊点名）");
+            ExportGunsShared(p, onProgress, onLog);
         }
 
-        // ════════════════════════════════════════════════════════════
-        //  模式 A：共享几何（体积最小，实例名保持 CGR 原名）
-        // ════════════════════════════════════════════════════════════
         private void ExportGunsShared(GunExportParams p, Action<ExportProgress> onProgress, Action<string> onLog)
         {
             // 保存并关闭弹窗 / 刷新
@@ -511,7 +492,10 @@ namespace TxTools.ExportGun
                 // 3. Reference 复用缓存（跨 Operation）
                 var sourceCache = new Dictionary<string, Product>(StringComparer.OrdinalIgnoreCase);
 
-                // 4. 主循环
+                // 待改名任务：两阶段处理（插入循环只收集，全部插入完成后统一改名）
+                var pendingRenames = new List<PendingCatiaRename>();
+
+                // 4. 阶段 A：主循环（只做插入+定位，收集改名任务）
                 foreach (var op in p.Operations)
                 {
                     var gun = op.Gun;
@@ -533,10 +517,22 @@ namespace TxTools.ExportGun
                     ApplyTcpOverride(p, op, gun, onLog);
 
                     // 容器：同名冲突自动加后缀
-                    string containerName = GetUniqueChildName(rootProducts, op.Name);
+                    // 关键修正：op.Name 含 ':' 等 CATIA 非法字符，必须 Sanitize
+                    string containerName = GetUniqueChildName(rootProducts, Sanitize(op.Name));
                     Product container = rootProducts.AddNewComponent("Product", containerName);
-                    try { container.set_Name(containerName); } catch { }
+                    int containerIndex = rootProducts.Count;   // 按索引锁定，不依赖名字
                     try { container.set_PartNumber(containerName); } catch { }
+                    // 容器改名同样并入批处理（ContainerIndex=0 表示根层级）——
+                    // 它是根层级普通 Product，作为"CGR 实例不可改名"假设的对照组
+                    pendingRenames.Add(new PendingCatiaRename
+                    {
+                        ProductsColl = rootProducts,
+                        ContainerIndex = 0,
+                        InstanceIndex = containerIndex,
+                        CurrentName = GetInstanceNameByReflection(rootProducts, containerIndex),
+                        TargetName = containerName,
+                        Kind = "容器"
+                    });
                     Products targetProducts = container.Products;
 
                     // 准备源实例
@@ -556,9 +552,10 @@ namespace TxTools.ExportGun
                         }
 
                         sourceInst = targetProducts.Item(targetProducts.Count);
+                        int sourceIdx = targetProducts.Count;   // 记录源实例在 targetProducts 里的索引
                         sourceCache[modelPath] = sourceInst;
 
-                        // 首焊点：源实例定位（不改名）
+                        // 首焊点：源实例定位 + 反射改名
                         var pt0 = opPts[0];
                         current++;
                         onProgress?.Invoke(new ExportProgress { Total = total, Current = current, CurrentItem = pt0.Name });
@@ -567,6 +564,25 @@ namespace TxTools.ExportGun
                         {
                             double[] placed0 = ComputePlaced(p, gun, pt0);
                             sourceInst.Position.SetComponents(ToSetComp(placed0));
+
+                            // 记录改名任务：读当前 Name（CATIA 分配的，如 FFM130-X-0759.1）作为锚点
+                            string curName = GetInstanceNameByReflection(targetProducts, sourceIdx);
+                            if (!string.IsNullOrEmpty(curName))
+                            {
+                                pendingRenames.Add(new PendingCatiaRename
+                                {
+                                    ProductsColl = targetProducts,
+                                    ContainerIndex = containerIndex,
+                                    InstanceIndex = sourceIdx,
+                                    CurrentName = curName,
+                                    TargetName = Sanitize(pt0.Name),
+                                    Kind = "实例"
+                                });
+                            }
+                            else
+                            {
+                                onLog?.Invoke($"    ! 首实例读 Name 失败 [{pt0.Name}]，改名将跳过");
+                            }
                         }
                         catch (Exception ex)
                         {
@@ -594,7 +610,7 @@ namespace TxTools.ExportGun
                         continue;
                     }
 
-                    // Paste 剩余焊点：每次 Paste 后立即定位
+                    // Paste 剩余焊点：每次 Paste 后立即定位 + 反射改名
                     for (int i = startIdx; i < opPts.Count; i++)
                     {
                         var pt = opPts[i];
@@ -604,18 +620,55 @@ namespace TxTools.ExportGun
                         try
                         {
                             int beforeCount = targetProducts.Count;
+                            int afterCount = beforeCount;
 
-                            sel.Clear();
-                            sel.Add(container);
-                            sel.Paste();
+                            // Paste 偶发 E_FAIL（跨线程调用抖动），重试一次
+                            for (int attempt = 1; attempt <= 2 && afterCount <= beforeCount; attempt++)
+                            {
+                                try
+                                {
+                                    sel.Clear();
+                                    sel.Add(container);
+                                    sel.Paste();
+                                }
+                                catch (Exception pex)
+                                {
+                                    if (attempt == 2) throw;
+                                    onLog?.Invoke($"    … [{pt.Name}] Paste 第1次失败({pex.Message.Trim()})，重试");
+                                    System.Threading.Thread.Sleep(80);
+                                    // 重试前重新 Copy 源，防止剪贴板被清
+                                    try { sel.Clear(); sel.Add(sourceInst); sel.Copy(); } catch { }
+                                    continue;
+                                }
+                                afterCount = targetProducts.Count;
+                                if (afterCount <= beforeCount && attempt == 1)
+                                {
+                                    System.Threading.Thread.Sleep(80);
+                                    try { sel.Clear(); sel.Add(sourceInst); sel.Copy(); } catch { }
+                                }
+                            }
 
-                            int afterCount = targetProducts.Count;
                             if (afterCount <= beforeCount)
                                 throw new Exception("Paste 后实例数未增加");
 
                             Product inst = targetProducts.Item(afterCount);
                             double[] placed = ComputePlaced(p, gun, pt);
                             inst.Position.SetComponents(ToSetComp(placed));
+
+                            // 记录改名任务（阶段 A 只收集，阶段 B 批量改名）
+                            string curName2 = GetInstanceNameByReflection(targetProducts, afterCount);
+                            if (!string.IsNullOrEmpty(curName2))
+                            {
+                                pendingRenames.Add(new PendingCatiaRename
+                                {
+                                    ProductsColl = targetProducts,
+                                    ContainerIndex = containerIndex,
+                                    InstanceIndex = afterCount,
+                                    CurrentName = curName2,
+                                    TargetName = Sanitize(pt.Name),
+                                    Kind = "实例"
+                                });
+                            }
                         }
                         catch (Exception ex)
                         {
@@ -626,123 +679,25 @@ namespace TxTools.ExportGun
                     onLog?.Invoke($"  [{op.Name}] 已插入 {opPts.Count} 个焊点实例（共享 Reference）");
                 }
 
-                try { rootProduct.Update(); } catch { }
+                // 阶段 A 结束：所有实例已插入并定位
+
+                // 阶段 B：批量改名
+                // 关键：改名必须在"与手动验证脚本相同的环境"下进行——
+                //   1) 清空 Selection，释放 Copy/Paste 命令残留状态
+                //   2) 恢复 RefreshDisplay / DisplayFileAlerts（脚本验证时这两个标志是正常的）
+                //   3) 激活目标 Product 文档，保证 ActiveDocument 解析链指向它
                 onLog?.Invoke($"[Catia] 插枪完成（共享几何：{sourceCache.Count} 份几何，{current}/{total} 个实例）");
+                try { sel.Clear(); } catch { }
+                try { ((dynamic)_catia).RefreshDisplay = savedRefreshDisplay; } catch { }
+                try { ((dynamic)_catia).DisplayFileAlerts = savedDisplayAlerts; } catch { }
+                try { productDoc.Activate(); } catch { }
+                onLog?.Invoke($"      开始批量改名（共 {pendingRenames.Count} 个实例）...");
+                BatchRename(pendingRenames, rootProduct, onLog);
             }
             finally
             {
                 try { ((dynamic)_catia).RefreshDisplay = savedRefreshDisplay; } catch { }
                 try { ((dynamic)_catia).DisplayFileAlerts = savedDisplayAlerts; } catch { }
-                if (initialWindow != null) try { initialWindow.Activate(); } catch { }
-            }
-        }
-
-        // ════════════════════════════════════════════════════════════
-        //  模式 B：独立命名（每焊点独立 CGR 副本，实例名=焊点名）
-        // ════════════════════════════════════════════════════════════
-        private void ExportGunsIndependent(GunExportParams p, Action<ExportProgress> onProgress, Action<string> onLog)
-        {
-            INFITF.Window initialWindow = null;
-            try { initialWindow = _catia.ActiveWindow; } catch { }
-
-            // 1. Product 文档：优先复用活动 Product，否则新建
-            ProductDocument productDoc;
-            if (_catia.ActiveDocument is ProductDocument existingPd)
-            {
-                productDoc = existingPd;
-                onLog?.Invoke("[Catia] 使用当前 Product 文档");
-            }
-            else
-            {
-                productDoc = (ProductDocument)_catia.Documents.Add("Product");
-                if (!string.IsNullOrWhiteSpace(p.CustomProductName))
-                    try { productDoc.Product.set_PartNumber(p.CustomProductName.Trim()); } catch { }
-                onLog?.Invoke("[Catia] 新建 Product 文档");
-            }
-
-            Product rootProduct = productDoc.Product;
-            Products rootProducts = rootProduct.Products;
-
-            // 2. 统计总数
-            int total = 0;
-            foreach (var op in p.Operations)
-            {
-                if (op.Gun == null || op.Points == null) continue;
-                foreach (var pt in op.Points)
-                    if (IsPointSelected(p.SelectedKeys, op.Name, pt.Name)) total++;
-            }
-            int current = 0;
-
-            // 3. 临时目录：为每个焊点生成独立命名的 CGR 副本
-            string tempDir = SysPath.Combine(SysPath.GetTempPath(), "CatiaGunExport_" + Guid.NewGuid().ToString("N"));
-            SysDir.CreateDirectory(tempDir);
-
-            try
-            {
-                foreach (var op in p.Operations)
-                {
-                    var gun = op.Gun;
-                    if (gun == null || op.Points == null) continue;
-
-                    string modelPath = ResolveModelPath(p, op, gun);
-                    if (modelPath == null)
-                    {
-                        onLog?.Invoke($"  ! [{op.Name}] 未找到模型文件");
-                        continue;
-                    }
-
-                    var opPts = new List<PointInfo>();
-                    foreach (var pt in op.Points)
-                        if (IsPointSelected(p.SelectedKeys, op.Name, pt.Name)) opPts.Add(pt);
-                    if (opPts.Count == 0) continue;
-
-                    // TCP 覆盖
-                    ApplyTcpOverride(p, op, gun, onLog);
-
-                    // 容器
-                    string containerName = GetUniqueChildName(rootProducts, op.Name);
-                    Product container = rootProducts.AddNewComponent("Product", containerName);
-                    try { container.set_Name(containerName); } catch { }
-                    try { container.set_PartNumber(containerName); } catch { }
-                    Products targetProducts = container.Products;
-
-                    string modelExt = SysPath.GetExtension(modelPath);
-                    onLog?.Invoke($"  [{op.Name}] {opPts.Count} 个焊点，模型：{SysPath.GetFileName(modelPath)}");
-
-                    foreach (var pt in opPts)
-                    {
-                        current++;
-                        onProgress?.Invoke(new ExportProgress { Total = total, Current = current, CurrentItem = pt.Name });
-
-                        try
-                        {
-                            // 关键：为每个焊点复制一份 CGR，用焊点名命名
-                            // CATIA 加载后 Reference 名 = 文件名 = 焊点名，实例名同步为焊点名
-                            string safeName = Sanitize(pt.Name);
-                            string ptFile = SysPath.Combine(tempDir, safeName + modelExt);
-                            SysFile.Copy(modelPath, ptFile, true);
-
-                            targetProducts.AddComponentsFromFiles(new object[] { ptFile }, "All");
-                            Product inst = targetProducts.Item(targetProducts.Count);
-                            try { inst.set_Name(safeName); } catch { }
-
-                            double[] placed = ComputePlaced(p, gun, pt);
-                            inst.Position.SetComponents(ToSetComp(placed));
-                        }
-                        catch (Exception ex)
-                        {
-                            onLog?.Invoke($"    x 插入失败 [{pt.Name}]: {ex.Message}");
-                        }
-                    }
-                }
-
-                try { rootProduct.Update(); } catch { }
-                onLog?.Invoke($"[Catia] 插枪完成（独立命名：{current}/{total} 个实例，几何数=实例数）");
-            }
-            finally
-            {
-                try { if (SysDir.Exists(tempDir)) SysDir.Delete(tempDir, true); }
-                catch { onLog?.Invoke($"    ! 临时目录清理失败：{tempDir}"); }
                 if (initialWindow != null) try { initialWindow.Activate(); } catch { }
             }
         }
@@ -808,6 +763,240 @@ namespace TxTools.ExportGun
                 if (!existing.Contains(tryName)) return tryName;
             }
             return baseName + "_" + Guid.NewGuid().ToString("N").Substring(0, 6);
+        }
+
+        // ---------- 辅助：待改名任务 ----------
+        // 阶段 A（插入循环）记录 (ProductsColl, CurrentName, TargetName)
+        // 阶段 B（Update 之后）用 CurrentName 反射 Item("...") 定位到 __ComObject 版实例改名
+        private class PendingCatiaRename
+        {
+            public object ProductsColl;   // 插入时缓存的 Products RCW（当前线程对照用）
+            public int ContainerIndex;    // 容器在根 Products 中的索引；0 = 目标本身位于根层级
+            public int InstanceIndex;     // 目标在其父 Products 中的索引
+            public string CurrentName;    // 插入时读到的名字（仅用于日志核对）
+            public string TargetName;     // 目标名
+            public string Kind;           // "容器" / "实例"，用于分类统计
+        }
+
+        // ---------- 晚绑定反射小助手 ----------
+        private static object ComGet(object o, string prop)
+        {
+            return o.GetType().InvokeMember(prop,
+                System.Reflection.BindingFlags.GetProperty, null, o, null);
+        }
+
+        private static object ComCall(object o, string method, params object[] args)
+        {
+            return o.GetType().InvokeMember(method,
+                System.Reflection.BindingFlags.InvokeMethod, null, o, args);
+        }
+
+        private static void ComSet(object o, string prop, object value)
+        {
+            o.GetType().InvokeMember(prop,
+                System.Reflection.BindingFlags.SetProperty, null, o, new object[] { value });
+        }
+
+        // ---------- 辅助：按索引解析目标实例（两种父级策略） ----------
+        // CATIA 的实例名存储在**父级 Reference** 中，而不是父级 instance 中。
+        //   根层级：doc.Product 本身就是 reference → 写入生效（已被"容器改名成功"证实）
+        //   容器内：container 是 instance；container.Products 返回沿实例路径解析的对象，
+        //           对其 PROPERTYPUT "Name" 会被解析层丢弃（无异常、读回不变）
+        //   → 正确路径是 container.ReferenceProduct.Products.Item(i)
+        // useReference=true 走 ReferenceProduct（主策略），false 走旧的 instance 路径（兜底对照）。
+        private static object ResolveInstanceByIndex(object catiaRoot, string docName,
+            int containerIndex, int instanceIndex, bool useReference)
+        {
+            object docs = ComGet(catiaRoot, "Documents");
+            object doc = ComCall(docs, "Item", docName);
+            object rootProd = ComGet(doc, "Product");
+            object coll = ComGet(rootProd, "Products");
+
+            if (containerIndex > 0)
+            {
+                object container = ComCall(coll, "Item", containerIndex);
+                object father = useReference ? ComGet(container, "ReferenceProduct") : container;
+                coll = ComGet(father, "Products");
+            }
+            return ComCall(coll, "Item", instanceIndex);
+        }
+
+        // ---------- 辅助：在专用 STA 线程上执行 CATIA 操作 ----------
+        // CATIA V5 是 STA 单线程服务端。导出流程若跑在后台工作线程上，
+        // 读属性 / 调方法（Position.SetComponents、AddComponentsFromFiles、Copy/Paste）大多能通过，
+        // 但部分 PROPERTYPUT（如 Product.Name）会被**静默丢弃且不抛异常**——与实测现象完全一致。
+        // 因此改名统一在新建的 STA 线程里、用该线程自己 GetActiveObject 拿到的 CATIA 上执行，
+        // 使其与已验证成功的 PS 脚本控制台（PS 主 STA 线程）在线程模型上完全一致。
+        private static void RunOnSta(Action<object> work, Action<string> onLog)
+        {
+            Exception err = null;
+            var t = new System.Threading.Thread(() =>
+            {
+                object catiaSta = null;
+                try
+                {
+                    catiaSta = Marshal.GetActiveObject("CATIA.Application");
+                    work(catiaSta);
+                }
+                catch (Exception ex) { err = ex; }
+                finally
+                {
+                    if (catiaSta != null) try { Marshal.ReleaseComObject(catiaSta); } catch { }
+                }
+            });
+            t.SetApartmentState(System.Threading.ApartmentState.STA);
+            t.IsBackground = true;
+            t.Start();
+            t.Join();
+            if (err != null) onLog?.Invoke("      ! STA 线程异常: " + err.Message);
+        }
+
+        // ---------- 辅助：通过反射读取实例当前 Name ----------
+        private static string GetInstanceNameByReflection(object productsColl, int index)
+        {
+            if (productsColl == null || index < 1) return null;
+            try
+            {
+                object childObj = productsColl.GetType().InvokeMember(
+                    "Item",
+                    System.Reflection.BindingFlags.InvokeMethod,
+                    null, productsColl, new object[] { index });
+                if (childObj == null) return null;
+                object nameObj = childObj.GetType().InvokeMember(
+                    "Name",
+                    System.Reflection.BindingFlags.GetProperty,
+                    null, childObj, null);
+                return nameObj as string;
+            }
+            catch { return null; }
+        }
+
+        // ---------- 辅助：改名核心（对齐已验证成功配方） ----------
+        //   inst.GetType().InvokeMember("Name", SetProperty, ..., new object[]{ newName });
+        //   写入后必须读回验证——CATIA 在非 STA 线程上会静默丢弃写入而不抛异常。
+        private static bool TrySetName(object inst, string targetName, out string debug)
+        {
+            debug = "";
+            if (inst == null) { debug = "inst=null"; return false; }
+            if (string.IsNullOrEmpty(targetName)) { debug = "targetName 空"; return false; }
+
+            string before = "?";
+            try { before = ComGet(inst, "Name") as string ?? "?"; } catch { }
+            if (before == targetName) return true;
+
+            try { ComSet(inst, "Name", targetName); }
+            catch (System.Reflection.TargetInvocationException tie)
+            {
+                var ce = tie.InnerException as COMException;
+                string hr = ce != null ? "HRESULT=0x" + ce.ErrorCode.ToString("X8") + " " : "";
+                debug = $"SetProperty COM 异常: {hr}{tie.InnerException?.Message ?? tie.Message}";
+                return false;
+            }
+            catch (Exception ex) { debug = "SetProperty 反射异常: " + ex.Message; return false; }
+
+            string after = "?";
+            try { after = ComGet(inst, "Name") as string ?? "null"; }
+            catch (Exception ex) { debug = "读回 Name 失败: " + ex.Message; return false; }
+
+            if (after == targetName) return true;
+            debug = $"静默拒绝: before='{before}' target='{targetName}' after='{after}'";
+            return false;
+        }
+
+        // ---------- 辅助：批量改名 ----------
+        // 主路径：container.ReferenceProduct.Products.Item(i) —— 实例名存储在父级 Reference 中，
+        //         写在 instance 路径（container.Products）上会被解析层静默丢弃（无异常、读回不变）。
+        // 兜底：instance 路径 → 专用 STA 线程重试，用于容错，正常情况下不会触发。
+        private void BatchRename(List<PendingCatiaRename> tasks, Product rootProduct, Action<string> onLog)
+        {
+            if (tasks == null || tasks.Count == 0) return;
+
+            try { rootProduct.Update(); }
+            catch (Exception ex) { onLog?.Invoke("      ! 改名前 Update 异常: " + ex.Message); }
+
+            string docName = null;
+            try { docName = ComGet(ComGet(_catia, "ActiveDocument"), "Name") as string; } catch { }
+            if (string.IsNullOrEmpty(docName))
+            {
+                onLog?.Invoke("      ! 无法解析文档名，改名中止");
+                return;
+            }
+
+            var remaining = new List<PendingCatiaRename>();
+            int okRef = 0, okInst = 0;
+            string sampleRefDbg = null, sampleInstDbg = null;
+
+            // ── 第 1 遍：当前线程，先走 ReferenceProduct 路径，再退回 instance 路径 ──
+            object catiaCur = _catia;
+            foreach (var pr in tasks)
+            {
+                bool done = false;
+
+                foreach (bool useRef in new[] { true, false })
+                {
+                    object inst = null;
+                    string dbg = "";
+                    try { inst = ResolveInstanceByIndex(catiaCur, docName, pr.ContainerIndex, pr.InstanceIndex, useRef); }
+                    catch (Exception ex) { dbg = $"解析失败({(useRef ? "Ref" : "Inst")}): {ex.Message}"; }
+
+                    if (inst != null && TrySetName(inst, pr.TargetName, out dbg))
+                    {
+                        if (useRef) okRef++; else okInst++;
+                        done = true;
+                        break;
+                    }
+                    if (useRef) sampleRefDbg = sampleRefDbg ?? dbg;
+                    else sampleInstDbg = sampleInstDbg ?? dbg;
+                }
+
+                if (!done) remaining.Add(pr);
+            }
+
+            onLog?.Invoke($"      [改名] Reference路径 {okRef}，Instance路径 {okInst}，剩余 {remaining.Count}/{tasks.Count}");
+            if (sampleRefDbg != null) onLog?.Invoke("        Reference路径样本：" + sampleRefDbg);
+            if (sampleInstDbg != null) onLog?.Invoke("        Instance路径样本：" + sampleInstDbg);
+
+            // ── 第 2 遍：仅当仍有失败时，用专用 STA 线程重试 Reference 路径 ──
+            int okSta = 0, okStaContainer = 0, okStaInstance = 0;
+            var failSamples = new List<string>();
+
+            if (remaining.Count > 0)
+            {
+                RunOnSta(catiaSta =>
+                {
+                    foreach (var pr in remaining)
+                    {
+                        object inst = null;
+                        string dbg = "";
+                        try { inst = ResolveInstanceByIndex(catiaSta, docName, pr.ContainerIndex, pr.InstanceIndex, true); }
+                        catch (Exception ex) { dbg = $"解析失败: {ex.Message}"; }
+
+                        if (inst != null && TrySetName(inst, pr.TargetName, out dbg))
+                        {
+                            okSta++;
+                            if (pr.Kind == "容器") okStaContainer++; else okStaInstance++;
+                        }
+                        else if (failSamples.Count < 5)
+                        {
+                            failSamples.Add($"[{pr.Kind} 容器{pr.ContainerIndex}/项{pr.InstanceIndex} " +
+                                            $"'{pr.CurrentName}' → '{pr.TargetName}'] {dbg}");
+                        }
+                    }
+                }, onLog);
+
+                if (okSta > 0)
+                    onLog?.Invoke($"      [STA线程] 追加成功 {okSta}（容器 {okStaContainer}，实例 {okStaInstance}）");
+            }
+
+            int ok = okRef + okInst + okSta;
+            onLog?.Invoke($"      批量改名合计: {ok}/{tasks.Count}");
+            if (failSamples.Count > 0)
+            {
+                onLog?.Invoke("      改名失败样本：");
+                foreach (var s in failSamples) onLog?.Invoke("        " + s);
+            }
+
+            try { rootProduct.Update(); } catch { }
         }
 
 

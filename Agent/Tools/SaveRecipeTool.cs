@@ -1,11 +1,13 @@
 // TxTools.Agent / Tools / SaveRecipeTool.cs
-// 让 agent 把一段验证过、可复用的多步操作保存成新工具(配方)。
-// 保存动作本身不改场景，故 IsReadOnly=true(免审批)；但配方一旦含变更步骤，
-// 它"执行时"仍会按变更处理、需用户确认。
+// 让 agent 把一段验证过、可复用的代码保存成配方(代码 + 参数声明)。
+// 保存动作本身不改场景，故 IsReadOnly=true(免审批)；但配方"执行时"会走审批(run_csharp 同级)。
+//
+// 【和侧边栏同源】侧边栏"promote"功能把片段固化成配方走的是同一条 Upsert 路径；
+// 本工具是模型侧的入口，params 字段与 RecipeParam 一一对应。
 
 using System;
 using System.Collections.Generic;
-using Newtonsoft.Json;
+using System.Linq;
 using Newtonsoft.Json.Linq;
 using TxTools.Agent.Core;
 
@@ -23,9 +25,10 @@ namespace TxTools.Agent.Tools
         {
             get
             {
-                return "把一段验证过、可复用的多步操作保存为新工具(配方)，供之后直接调用。" +
-                       "steps 里的 tool 必须是已存在的工具名；input 模板里可用 {{参数名}} 引用 parameters。" +
-                       "仅在你已用现有工具跑通、且确实值得复用时才保存。";
+                return "把一段验证过、可复用的代码保存成配方(代码 + 参数声明)，供之后直接调用。" +
+                       "code 是完整可执行的 C# 方法体或 Python 代码；lang 填 csharp 或 python。" +
+                       "params 声明代码里哪些地方是可变的：对象类参数(object/objects)传 ITxObject.Id，number/text/bool 传字面量。" +
+                       "仅在你已跑通、且确实值得复用时才保存。";
             }
         }
 
@@ -35,88 +38,107 @@ namespace TxTools.Agent.Tools
         {
             get
             {
-                return JObject.Parse(@"{
-                    ""type"": ""object"",
-                    ""properties"": {
-                        ""name"": { ""type"": ""string"", ""description"": ""配方名(英文/下划线/连字符, 唯一)"" },
-                        ""description"": { ""type"": ""string"", ""description"": ""配方用途说明"" },
-                        ""parameters"": {
-                            ""type"": ""array"",
-                            ""description"": ""配方参数表"",
-                            ""items"": {
-                                ""type"": ""object"",
-                                ""properties"": {
-                                    ""name"": { ""type"": ""string"" },
-                                    ""description"": { ""type"": ""string"" },
-                                    ""type"": { ""type"": ""string"", ""enum"": [""string"",""number"",""boolean""] },
-                                    ""required"": { ""type"": ""boolean"" }
+                return new JObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JObject
+                    {
+                        ["name"] = new JObject { ["type"] = "string", ["description"] = "配方名(英文/下划线/连字符, 唯一)" },
+                        ["description"] = new JObject { ["type"] = "string", ["description"] = "配方用途说明" },
+                        ["lang"] = new JObject { ["type"] = "string", ["enum"] = new JArray("csharp", "python"), ["description"] = "代码语言, 默认 csharp" },
+                        ["code"] = new JObject { ["type"] = "string", ["description"] = "完整可执行代码(C# 方法体或 Python 顶层语句)" },
+                        ["params"] = new JObject
+                        {
+                            ["type"] = "array",
+                            ["description"] = "参数声明: 每个参数会生成一段前置变量声明, 对象类参数在界面上绑对象",
+                            ["items"] = new JObject
+                            {
+                                ["type"] = "object",
+                                ["properties"] = new JObject
+                                {
+                                    ["name"] = new JObject { ["type"] = "string", ["description"] = "代码里用的变量名(合法标识符)" },
+                                    ["label"] = new JObject { ["type"] = "string", ["description"] = "界面上显示的名字" },
+                                    ["kind"] = new JObject { ["type"] = "string", ["enum"] = new JArray("object", "objects", "number", "text", "bool") },
+                                    ["typeHint"] = new JObject { ["type"] = "string", ["description"] = "期望的 PS 类型如 TxRobot, 仅 object 类参数用" },
+                                    ["required"] = new JObject { ["type"] = "boolean" },
+                                    ["default"] = new JObject { ["type"] = "string", ["description"] = "默认值(文本)" },
+                                    ["help"] = new JObject { ["type"] = "string" }
                                 },
-                                ""required"": [""name""]
-                            }
-                        },
-                        ""steps"": {
-                            ""type"": ""array"",
-                            ""description"": ""按序执行的步骤"",
-                            ""items"": {
-                                ""type"": ""object"",
-                                ""properties"": {
-                                    ""tool"": { ""type"": ""string"", ""description"": ""已存在的工具名"" },
-                                    ""input"": { ""type"": ""object"", ""description"": ""该工具入参, 可含 {{参数名}}"" }
-                                },
-                                ""required"": [""tool""]
+                                ["required"] = new JArray("name")
                             }
                         }
                     },
-                    ""required"": [""name"", ""description"", ""steps""]
-                }");
+                    ["required"] = new JArray("name", "code")
+                };
             }
         }
 
         public string Execute(JObject input)
         {
-            Recipe recipe;
-            try { recipe = input.ToObject<Recipe>(); }
-            catch (Exception ex) { return "解析配方失败: " + ex.Message; }
+            var name = input != null ? (string)input["name"] : null;
+            var code = input != null ? (string)input["code"] : null;
+            if (string.IsNullOrWhiteSpace(name)) return "配方缺少 name。";
+            if (string.IsNullOrWhiteSpace(code)) return "配方缺少 code。";
 
-            if (recipe == null || string.IsNullOrWhiteSpace(recipe.Name))
-                return "配方缺少 name。";
-            if (!IsValidName(recipe.Name))
-                return "配方名只能含字母、数字、下划线、连字符。";
-            if (recipe.Steps == null || recipe.Steps.Count == 0)
-                return "配方至少要有一个步骤。";
+            // 自动净化 Name: LLM 可能会给中文名(不满足 API function.name ^[a-zA-Z0-9_-]+$)
+            var originalName = name;
+            var safeName = Recipe.ToApiSafeName(name);
+            if (!string.Equals(safeName, originalName, StringComparison.Ordinal))
+                name = safeName;   // 持久化用安全名，避免下次启动再次净化
+
+            var recipe = new Recipe
+            {
+                Name = name,
+                Description = input["description"] != null ? (string)input["description"] : "",
+                Lang = SnippetStore.NormalizeLang(input["lang"] != null ? (string)input["lang"] : "csharp"),
+                Code = code,
+                Params = ParseParams(input["params"])
+            };
+
+            // 校验参数合法性(参数名会被写进生成的代码)
+            var bad = RecipeStore.ValidateParams(recipe.Params);
+            if (bad != null) return "Error: " + bad;
 
             // 不允许覆盖非配方的内置工具(防止遮蔽原语)；同名配方可更新。
             ITxAgentTool existing;
             if (_registry.TryGet(recipe.Name, out existing) && !(existing is RecipeTool))
                 return "名称 " + recipe.Name + " 已被内置工具占用，请换名。";
 
-            // 校验每个步骤引用的工具都存在。
-            var missing = new List<string>();
-            foreach (var step in recipe.Steps)
-            {
-                ITxAgentTool t;
-                if (string.IsNullOrEmpty(step.Tool) || !_registry.TryGet(step.Tool, out t))
-                    missing.Add(step.Tool ?? "<空>");
-            }
-            if (missing.Count > 0)
-                return "以下步骤工具不存在: " + string.Join(", ", missing.ToArray()) + "。请只引用已有工具。";
-
-            // 持久化 + 即时注册(下一轮模型就能调用)。
-            string path;
-            try { path = RecipeStore.Upsert(recipe); }
-            catch (Exception ex) { return "保存失败: " + ex.Message; }
+            var msg = RecipeStore.Upsert(recipe);
+            if (!msg.StartsWith("已保存", StringComparison.Ordinal)) return "Error: " + msg;
 
             _registry.Register(new RecipeTool(recipe, _registry));
 
-            return "已保存配方 \"" + recipe.Name + "\"(" + recipe.Steps.Count + " 步)到 " + path +
-                   "，现在可直接调用。";
+            var nameNote = string.Equals(safeName, originalName, StringComparison.Ordinal)
+                ? "" : " (原始名 \"" + originalName + "\" 已净化)";
+            return msg + nameNote
+                   + "，参数 " + recipe.Params.Count + " 个，现在可直接调用。";
         }
 
-        private static bool IsValidName(string s)
+        /// <summary>把 params 数组解析成 RecipeParam 列表。宽容处理缺失字段。</summary>
+        private static List<RecipeParam> ParseParams(JToken jparams)
         {
-            foreach (var c in s)
-                if (!(char.IsLetterOrDigit(c) || c == '_' || c == '-')) return false;
-            return s.Length > 0 && s.Length <= 64;
+            var list = new List<RecipeParam>();
+            if (jparams == null || jparams.Type != JTokenType.Array) return list;
+
+            foreach (var jp in (JArray)jparams)
+            {
+                if (jp.Type != JTokenType.Object) continue;
+                var jo = (JObject)jp;
+                var p = new RecipeParam
+                {
+                    Name = (string)jo["name"],
+                    Label = (string)jo["label"],
+                    Kind = jo["kind"] != null ? (string)jo["kind"] : "object",
+                    TypeHint = (string)jo["typeHint"],
+                    Required = jo["required"] != null && (bool)jo["required"],
+                    Default = (string)jo["default"],
+                    Help = (string)jo["help"]
+                };
+                if (string.IsNullOrWhiteSpace(p.Name)) continue;
+                list.Add(p);
+            }
+            return list;
         }
     }
 }

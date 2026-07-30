@@ -83,6 +83,22 @@ namespace TxTools.RobotReachabilityChecker.Services
                 if (locs.Count == 0)
                     throw new InvalidOperationException($"操作 [{operationName}] 下未找到路径点");
 
+                // P2-12：混合工具路径提示（部分点带 RRS_TOOL_FRAME、部分无 → 不同工具配置）
+                try
+                {
+                    int withTool = 0, withoutTool = 0;
+                    foreach (ITxRoboticLocationOperation l in locs)
+                    {
+                        if (ToolFrameReader.ReadLocationToolFrame(l) != null) withTool++;
+                        else withoutTool++;
+                    }
+                    if (withTool > 0 && withoutTool > 0)
+                        log.Log($"  警告：路径 {withTool} 个点带 RRS_TOOL_FRAME、{withoutTool} 个点未带——两类点将按不同工具配置检查，请确认点位工具绑定无误", "WARN");
+                    else if (withTool > 0)
+                        log.Log($"  路径 {withTool} 个点均带 RRS_TOOL_FRAME", "DEBUG");
+                }
+                catch { }
+
                 // ── 3. 基线关节限位 ───────────────────────────────────────
                 var jointLimits = JointLimitsService.GetJointLimits(robot, log);
 
@@ -104,19 +120,41 @@ namespace TxTools.RobotReachabilityChecker.Services
                 }
                 catch { }
 
+                // ── 4.5 检查前统一回到 HOME 位 ─────────────────────────────
+                //    保证轴值稳定：起始姿态不同 → 锚点不同 → 同一无 config 点位解出的
+                //    轴值差 360° 整数倍（实测 J6: -254.8° ↔ +105.2°）。回到 HOME 后
+                //    锚点统一，两次检查结果可复现。检查结束由 RestoreRobotPose 恢复。
+                try
+                {
+                    TxPose homePose = robot.GetPoseByName("HOME");
+                    if (homePose != null && homePose.PoseData != null)
+                    {
+                        robot.CurrentPose = homePose.PoseData;
+                        log.Log("已回到 HOME 位（统一轴值锚点，保证结果可复现）", "OK");
+                    }
+                    else
+                    {
+                        log.Log("  ⚠ 未找到 HOME 姿态，本次以当前姿态为锚（轴值可能随起始姿态变化）", "WARN");
+                    }
+                }
+                catch (Exception exHome)
+                {
+                    log.Log($"  回到 HOME 失败（非致命，以当前姿态为锚）: {exHome.Message}", "WARN");
+                }
+
                 // 路径连续性锚点：首点 null（IkSolver 内部用 robot.Joints 兜底），
                 // 每点检查成功后更新为该点解，供下一点选解使用
                 double[] anchorDeg = null;
 
                 RobotBrand brand = BrandResolver.Resolve(robot.Name, options.UserSelectedBrand);
 
-                // 干涉检查准备：用户启用 + 找到或自动建立干涉对 → 后续才查询
-                bool ifReady = false;
+                // 干涉检查准备：用户启用 + 构造无副作用的两列表查询上下文
+                InterferenceContext ifCtx = null;
                 if (options.InterferenceEnabled)
                 {
                     log.Log("准备干涉检查…");
-                    ifReady = InterferenceService.EnsureRobotHasCollisionPair(robot, doc, log);
-                    if (!ifReady) log.Log("  干涉检查准备失败，本次跳过干涉判定", "WARN");
+                    ifCtx = InterferenceService.Prepare(robot, doc, log);
+                    if (ifCtx == null || !ifCtx.Ready) log.Log("  干涉检查准备失败，本次跳过干涉判定", "WARN");
                 }
 
                 int idx = 1;
@@ -146,7 +184,9 @@ namespace TxTools.RobotReachabilityChecker.Services
                         PointName = string.IsNullOrEmpty(loc.Name) ? $"P{idx - 1}" : loc.Name,
                         OperationName = operationName,
                         RobotName = robot.Name,
-                        PointType = ptType
+                        PointType = ptType,
+                        // 缓存点位实例作为唯一标识（定位/选中时直接用实例，不做按名反查）
+                        LocationRef = loc
                     };
 
                     bool gotJoints = false;
@@ -159,61 +199,74 @@ namespace TxTools.RobotReachabilityChecker.Services
                     //   注意：多 Utool 场景下需要先把 TCPF 切到 location 的工具坐标，
                     //         GetPoseAtLocation 才能拿到正确结果。
                     Tecnomatix.Engineering.TxTransformation savedTCPF = null;
-                    bool tcpfChanged = false;
+                    Action tcpfRestore = null;
+                    bool skipMainPose = false;
                     try
                     {
                         try { savedTCPF = robot.TCPF.AbsoluteLocation; } catch { }
 
                         // 切 TCPF（若 location 绑定了 RRS_TOOL_FRAME）
+                        // P0-3：切换失败 → 中断主路径（不静默继续），交由 IK 兜底
                         try
                         {
                             var locTool = ToolFrameReader.ReadLocationToolFrame(loc);
                             if (locTool != null && savedTCPF != null)
                             {
-                                var locToolAbs = locTool.AbsoluteLocation;
-                                if (locToolAbs != null)
+                                string ownershipWarn = ToolFrameSwitcher.ValidateFrameOwnership(robot, locTool);
+                                if (ownershipWarn != null)
+                                    log.Log($"  [{res.PointName}] {ownershipWarn}", "WARN");
+
+                                string switchErr = null;
+                                tcpfRestore = ToolFrameSwitcher.SwitchToFrame(robot, locTool, log, out switchErr);
+                                if (tcpfRestore == null)
                                 {
-                                    robot.TCPF.AbsoluteLocation = locToolAbs;
-                                    tcpfChanged = true;
+                                    skipMainPose = true;
+                                    errMsg = string.IsNullOrEmpty(switchErr)
+                                        ? "TCPF切换失败"
+                                        : $"TCPF切换失败: {switchErr}";
+                                    log.Log($"  [{res.PointName}] {errMsg}", "WARN");
                                 }
                             }
                         }
                         catch (Exception exTcp)
                         {
-                            log.Log($"  [{res.PointName}] TCPF切换异常（忽略）: {exTcp.Message}", "DEBUG");
+                            skipMainPose = true;
+                            errMsg = $"TCPF切换异常: {exTcp.Message}";
+                            log.Log($"  [{res.PointName}] {errMsg}", "WARN");
                         }
 
-                        // 取 PS 算好的姿态
-                        try
+                        // 取 PS 算好的姿态（TCPF 切换失败时跳过，走 IK 兜底）
+                        if (!skipMainPose)
                         {
-                            TxPoseData pd = robot.GetPoseAtLocation(loc);
-                            if (pd != null)
+                            try
                             {
-                                double[] extracted = PoseValueExtractor.TryExtractPoseValues(pd, djCount);
-                                if (extracted != null && extracted.Length > 0)
+                                TxPoseData pd = robot.GetPoseAtLocation(loc);
+                                if (pd != null)
                                 {
-                                    joints2 = IkSolver.NormalizeToDegrees(extracted);
-                                    gotJoints = true;
-                                    okA++;
-                                    // 缓存原始 TxPoseData：双击驱动姿态时 robot.CurrentPose = pd
-                                    // 一次性写入比逐 joint 写 CurrentValue 快 6 倍以上
-                                    res.PoseDataRef = pd;
+                                    double[] extracted = PoseValueExtractor.TryExtractPoseValues(pd, djCount);
+                                    if (extracted != null && extracted.Length > 0)
+                                    {
+                                        joints2 = IkSolver.RadToDeg(extracted);
+                                        gotJoints = true;
+                                        okA++;
+                                        // 缓存原始 TxPoseData：双击驱动姿态时 robot.CurrentPose = pd
+                                        // 一次性写入比逐 joint 写 CurrentValue 快 6 倍以上
+                                        res.PoseDataRef = pd;
+                                    }
                                 }
                             }
-                        }
-                        catch (Exception exA)
-                        {
-                            log.Log($"  [{res.PointName}] GetPoseAtLocation 异常: {exA.Message}", "DEBUG");
-                            errMsg = exA.Message;
+                            catch (Exception exA)
+                            {
+                                log.Log($"  [{res.PointName}] GetPoseAtLocation 异常: {exA.Message}", "DEBUG");
+                                errMsg = exA.Message;
+                            }
                         }
                     }
                     finally
                     {
-                        // 恢复 TCPF
-                        if (tcpfChanged && savedTCPF != null)
-                        {
-                            try { robot.TCPF.AbsoluteLocation = savedTCPF; } catch { }
-                        }
+                        // 恢复 TCPF（引用级 + 绝对位置双保险）
+                        if (tcpfRestore != null) { try { tcpfRestore(); } catch { } }
+                        if (savedTCPF != null) { try { robot.TCPF.AbsoluteLocation = savedTCPF; } catch { } }
                     }
 
                     // ── 兜底：IK 选解（仅当 GetPoseAtLocation 失败时）
@@ -270,10 +323,11 @@ namespace TxTools.RobotReachabilityChecker.Services
                             options.JointMarginCheckEnabled, brand, out string axisNote);
                         res.ErrorMessage = axisNote;
 
-                        // TCP 余量
+                        // TCP 余量（方向基准 = 该点位姿态下的 TCPF 工具系）
                         if (options.TcpCheckEnabled)
                         {
-                            string tcpWarn = TcpMarginChecker.CheckTcpXyzMargin(robot, loc, options.TcpMarginMm, log);
+                            TxPoseData poseForTcp = res.PoseDataRef as TxPoseData;
+                            string tcpWarn = TcpMarginChecker.CheckTcpXyzMargin(robot, loc, options.TcpMarginMm, log, poseForTcp);
                             if (!string.IsNullOrEmpty(tcpWarn))
                             {
                                 if (res.Status == ReachabilityStatus.Reachable
@@ -285,17 +339,18 @@ namespace TxTools.RobotReachabilityChecker.Services
                             }
                         }
 
-                        // 静态干涉检查 — 驱动机器人到该姿态再查询
+                        // 静态干涉检查 — 驱动机器人到该姿态再查询（无副作用两列表查询）
                         // 完整路径检查结束后由 RestoreRobotPose 统一恢复
-                        if (ifReady && res.PoseDataRef is TxPoseData pdForIf)
+                        if (ifCtx != null && ifCtx.Ready && res.PoseDataRef is TxPoseData pdForIf)
                         {
                             try
                             {
                                 robot.CurrentPose = pdForIf;
-                                bool hit = InterferenceService.CheckCollisionAtCurrentPose(doc, log);
-                                res.HasCollision = hit;
-                                if (hit)
+                                bool? hit = InterferenceService.CheckCollisionAtCurrentPose(ifCtx, log);
+                                if (hit == true)
                                 {
+                                    res.HasCollision = true;
+                                    res.CollisionState = CollisionCheckState.Collision;
                                     collisionCount++;
                                     if (res.Status == ReachabilityStatus.Reachable
                                         || res.Status == ReachabilityStatus.Critical)
@@ -305,9 +360,22 @@ namespace TxTools.RobotReachabilityChecker.Services
                                         ? note
                                         : res.ErrorMessage + "; " + note;
                                 }
+                                else if (hit == false)
+                                {
+                                    res.HasCollision = false;
+                                    res.CollisionState = CollisionCheckState.Clean;
+                                }
+                                else
+                                {
+                                    // 三态：查询异常/未就绪 → 不误判碰撞，标记未知
+                                    res.HasCollision = false;
+                                    res.CollisionState = CollisionCheckState.Error;
+                                    log.Log($"  [{res.PointName}] 干涉查询未返回结果，本点干涉状态未知", "WARN");
+                                }
                             }
                             catch (Exception exIf)
                             {
+                                res.CollisionState = CollisionCheckState.Error;
                                 log.Log($"  [{res.PointName}] 干涉查询异常: {exIf.Message}", "WARN");
                             }
                         }

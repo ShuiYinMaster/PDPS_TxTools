@@ -1,9 +1,8 @@
 // ============================================================================
-// LocationGeometry.cs
+// LocationEnumerator.cs
 //
-// 点位枚举 / 反查 / 变换矩阵 / 平移分量提取 / 矩阵克隆。
-// 来自原文件 EnumerateLocations / FindLocationInDoc / GetLocationTransform /
-//          ExtractTranslation 的整体迁移。
+// 点位枚举 / 变换矩阵 / 平移分量提取 / 矩阵克隆。
+// 点位对象一律以实例引用（GetHashCode 可作日志标识）唯一标识，不做按名反查。
 // ============================================================================
 using System;
 using System.Collections.Generic;
@@ -54,41 +53,6 @@ namespace TxTools.RobotReachabilityChecker.Services
                 list.Add(self);
 
             return list;
-        }
-
-        /// <summary>按 (操作名, 点位名) 反查点位对象。</summary>
-        public static ITxObject FindLocationInDoc(
-            TxDocument doc, string opName, string pointName, ILogger log = null)
-        {
-            log = log ?? NullLogger.Instance;
-            if (doc == null || string.IsNullOrEmpty(pointName)) return null;
-
-            try
-            {
-                // 优先：按操作名定位 → 在其下找点位名
-                if (!string.IsNullOrEmpty(opName))
-                {
-                    var allOps = doc.OperationRoot.GetAllDescendants(
-                        new TxTypeFilter(typeof(ITxObject)));
-                    foreach (ITxObject obj in allOps)
-                    {
-                        if (obj.Name != opName) continue;
-                        var locs = EnumerateLocations(obj, log);
-                        foreach (var l in locs)
-                            if ((l as ITxObject)?.Name == pointName) return l as ITxObject;
-                    }
-                }
-                // 兜底：全文档找同名 ITxRoboticLocationOperation
-                var allDesc = doc.OperationRoot.GetAllDescendants(
-                    new TxTypeFilter(typeof(ITxObject)));
-                foreach (ITxObject obj in allDesc)
-                {
-                    if (!(obj is ITxRoboticLocationOperation)) continue;
-                    if (obj.Name == pointName) return obj;
-                }
-            }
-            catch (Exception ex) { log.Log($"FindLocationInDoc 异常: {ex.Message}", "ERR"); }
-            return null;
         }
     }
 

@@ -1,4 +1,4 @@
-// ExportGunCmd.cs  —  C# 7.3
+// ExportGunCmd.cs —— C# 7.3
 //
 // [重构适配] ExportGunForm 现在继承 TxForm，构造函数只需 SynchronizationContext。
 // TxForm 由 PS 框架托管，自动处理窗口层级，无需 P/Invoke 或独立 STA 线程。
@@ -18,7 +18,7 @@ namespace TxTools.ExportGun
     public class ExportGunCmd : TxButtonCommand
     {
         public override string Name { get { return ".导插枪"; } }
-        public override string Category { get { return "My Plugins"; } }
+        public override string Category { get { return "TxTools"; } }
         public override string Tooltip { get { return "导出插枪和点云到 Catia"; } }
         public override string Description { get { return "将插枪及焊点云数据导出到 Catia"; } }
         public override string Bitmap { get { return "TxTools.Resources.ExportGunIcon.png"; } }

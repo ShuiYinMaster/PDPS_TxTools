@@ -36,6 +36,11 @@ namespace TxTools.Agent.Tools
                             ""type"": ""array"",
                             ""items"": { ""type"": ""string"" },
                             ""description"": ""要选中的对象名列表(精确优先，找不到再模糊匹配)""
+                        },
+                        ""object_ids"": {
+                            ""type"": ""array"",
+                            ""items"": { ""type"": ""string"" },
+                            ""description"": ""对象场景唯一 ID 数组。与 names 二选一；同名对象只能用它精确选中。""
                         }
                     },
                     ""required"": [""names""]
@@ -50,7 +55,14 @@ namespace TxTools.Agent.Tools
             if (arr != null)
                 foreach (var t in arr)
                     if (t != null && t.Type == JTokenType.String) names.Add((string)t);
-            return PsBridge.SelectObjects(names);
+
+            var objectIds = new List<string>();
+            var arrIds = input != null ? input["object_ids"] as JArray : null;
+            if (arrIds != null)
+                foreach (var t in arrIds)
+                    if (t != null && t.Type == JTokenType.String) objectIds.Add((string)t);
+
+            return PsBridge.SelectObjects(names, objectIds);
         }
     }
 

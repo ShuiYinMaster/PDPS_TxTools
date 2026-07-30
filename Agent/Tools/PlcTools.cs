@@ -54,6 +54,10 @@ namespace TxTools.Agent.Tools
                         ""name"": {
                             ""type"": ""string"",
                             ""description"": ""资源名称，留空则使用当前选中对象""
+                        },
+                        ""object_id"": {
+                            ""type"": ""string"",
+                            ""description"": ""对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 object_id 就会忽略 name。""
                         }
                     }
                 }");
@@ -62,7 +66,7 @@ namespace TxTools.Agent.Tools
 
         public override string Execute(JObject input)
         {
-            return PsBridge.GetResourceLogicStatus(GetString(input, "name", null));
+            return PsBridge.GetResourceLogicStatus(GetString(input, "name", null), GetString(input, "object_id", null));
         }
     }
 
@@ -246,6 +250,10 @@ namespace TxTools.Agent.Tools
                         ""name"": {
                             ""type"": ""string"",
                             ""description"": ""目标资源名称，留空则使用当前选中对象""
+                        },
+                        ""object_id"": {
+                            ""type"": ""string"",
+                            ""description"": ""对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 object_id 就会忽略 name。""
                         }
                     }
                 }");
@@ -254,7 +262,7 @@ namespace TxTools.Agent.Tools
 
         public override string Execute(JObject input)
         {
-            return PsBridge.AddLogicToResource(GetString(input, "name", null));
+            return PsBridge.AddLogicToResource(GetString(input, "name", null), GetString(input, "object_id", null));
         }
     }
 
@@ -294,6 +302,10 @@ namespace TxTools.Agent.Tools
                         ""name"": {
                             ""type"": ""string"",
                             ""description"": ""资源名称，留空则使用当前选中对象""
+                        },
+                        ""object_id"": {
+                            ""type"": ""string"",
+                            ""description"": ""对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 object_id 就会忽略 name。""
                         }
                     }
                 }");
@@ -302,7 +314,7 @@ namespace TxTools.Agent.Tools
 
         public override string Execute(JObject input)
         {
-            return PsBridge.CreateSclContainer(GetString(input, "name", null));
+            return PsBridge.CreateSclContainer(GetString(input, "name", null), GetString(input, "object_id", null));
         }
     }
 
@@ -345,6 +357,14 @@ namespace TxTools.Agent.Tools
                         ""target_name"": {
                             ""type"": ""string"",
                             ""description"": ""要复制到的目标资源名称(必填)""
+                        },
+                        ""source_id"": {
+                            ""type"": ""string"",
+                            ""description"": ""源对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 source_id 就会忽略 source_name。""
+                        },
+                        ""target_id"": {
+                            ""type"": ""string"",
+                            ""description"": ""目标对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 target_id 就会忽略 target_name。""
                         }
                     },
                     ""required"": [""source_name"", ""target_name""]
@@ -356,7 +376,9 @@ namespace TxTools.Agent.Tools
         {
             return PsBridge.CopyLogic(
                 GetString(input, "source_name", null),
-                GetString(input, "target_name", null));
+                GetString(input, "target_name", null),
+                GetString(input, "source_id", null),
+                GetString(input, "target_id", null));
         }
     }
 
@@ -449,6 +471,10 @@ namespace TxTools.Agent.Tools
                         ""sensor_name"": {
                             ""type"": ""string"",
                             ""description"": ""传感器名称(必填，如 ClampOpenSensor)""
+                        },
+                        ""object_id"": {
+                            ""type"": ""string"",
+                            ""description"": ""对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 object_id 就会忽略 resource_name。""
                         }
                     },
                     ""required"": [""sensor_name""]
@@ -461,7 +487,8 @@ namespace TxTools.Agent.Tools
             return PsBridge.CreatePlcSensor(
                 GetString(input, "resource_name", null),
                 "light_sensor",
-                GetString(input, "sensor_name", null));
+                GetString(input, "sensor_name", null),
+                GetString(input, "object_id", null));
         }
     }
 
@@ -502,6 +529,10 @@ namespace TxTools.Agent.Tools
                         ""resource_name"": {
                             ""type"": ""string"",
                             ""description"": ""资源名称，留空则使用当前选中对象""
+                        },
+                        ""object_id"": {
+                            ""type"": ""string"",
+                            ""description"": ""对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 object_id 就会忽略 resource_name。""
                         }
                     }
                 }");
@@ -510,7 +541,7 @@ namespace TxTools.Agent.Tools
 
         public override string Execute(JObject input)
         {
-            return PsBridge.ListLogicBehaviorElements(GetString(input, "resource_name", null));
+            return PsBridge.ListLogicBehaviorElements(GetString(input, "resource_name", null), GetString(input, "object_id", null));
         }
     }
 
@@ -564,6 +595,10 @@ namespace TxTools.Agent.Tools
                         ""pin_name"": {
                             ""type"": ""string"",
                             ""description"": ""引脚名称(模糊匹配)，留空匹配第一个同名类型引脚""
+                        },
+                        ""object_id"": {
+                            ""type"": ""string"",
+                            ""description"": ""对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 object_id 就会忽略 resource_name。""
                         }
                     },
                     ""required"": [""signal_name"", ""pin_type""]
@@ -577,7 +612,8 @@ namespace TxTools.Agent.Tools
                 GetString(input, "resource_name", null),
                 GetString(input, "signal_name", null),
                 GetString(input, "pin_type", "entry"),
-                GetString(input, "pin_name", null));
+                GetString(input, "pin_name", null),
+                GetString(input, "object_id", null));
         }
     }
 }

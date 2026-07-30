@@ -12,6 +12,7 @@ using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
 using Tecnomatix.Engineering;
 using TxTools.Agent.Core;
+using TxTools.Agent.Ps;
 
 namespace TxTools.Agent.Tools
 {
@@ -124,12 +125,12 @@ namespace TxTools.Agent.Tools
                     int cap = Math.Min(matches.Count, maxResults);
                     var sb = new StringBuilder();
                     sb.AppendLine("匹配对象 " + matches.Count + " 个(显示 " + cap + " 个)：");
-                    sb.AppendLine("Name | Type | Parent");
-                    sb.AppendLine("-----|------|-------");
+                    sb.AppendLine("Name [Id] | Type | Parent");
+                    sb.AppendLine("----------|------|-------");
                     for (int i = 0; i < cap; i++)
                     {
                         var o = matches[i];
-                        sb.AppendLine(SafeName(o) + " | " + o.GetType().Name + " | " + ParentName(o));
+                        sb.AppendLine(PsBridge.Ref(o) + " | " + o.GetType().Name + " | " + ParentName(o));
                     }
                     if (matches.Count > cap)
                         sb.AppendLine("...(其余 " + (matches.Count - cap) + " 个省略，可用 max_results 增大返回量)");

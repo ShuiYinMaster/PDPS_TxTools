@@ -182,6 +182,49 @@ button { font-family: inherit; }
     line-height: 1.7;
 }
 .msg-content.empty { display: none; }         /* 无文本时不显空气泡,只留下方工具卡片 */
+
+/* ═════════════════════════════════════════════════════════════════
+   思考过程 (推理模型的 reasoning_content)
+   刻意做得比正文"轻" —— 虚线框、灰字、小一号,它是过程不是结论
+   ═════════════════════════════════════════════════════════════════ */
+.think-block {
+    margin: 6px 0 8px;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    background: #fafafa;
+    overflow: hidden;
+}
+.think-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-muted);
+    user-select: none;
+}
+.think-head:hover { background: var(--border-light); }
+.think-head .th-title { flex: 1 1 auto; }
+.think-head .th-hint { font-size: 10px; opacity: 0.55; }
+.think-body {
+    display: none;
+    padding: 8px 12px 10px;
+    border-top: 1px dashed var(--border);
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 320px;
+    overflow-y: auto;
+}
+.think-block.expanded .think-body { display: block; }
+.think-block.live .th-icon { animation: think-pulse 1.3s ease-in-out infinite; }
+@keyframes think-pulse {
+    0%, 100% { opacity: 0.35; }
+    50%      { opacity: 1; }
+}
 .msg.user .msg-content {
     background: var(--user-bubble);
     border-bottom-right-radius: 6px;
@@ -373,8 +416,21 @@ button { font-family: inherit; }
 #composer {
     flex: 0 0 auto;
     border-top: 1px solid var(--border);
-    padding: 8px 12px;
+    padding: 10px 12px 12px;
     background: var(--footer-bg);
+}
+/* 输入区做成一张卡片:附件、文本框、权限、上传、token、发送全部收在同一个边框里 */
+#composer-card {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: #fff;
+    padding: 8px 10px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+#composer-card.focused {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
 }
 #attachments {
     display: flex;
@@ -446,6 +502,17 @@ button { font-family: inherit; }
     line-height: 1.5;
 }
 .att-card.expanded .att-summary { display: block; }
+
+/* 用户气泡里的附件卡片(restore 时由消息正文解析出来) */
+.msg.user .att-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.msg.user .att-card {
+    background: rgba(255, 255, 255, 0.72);
+    border-color: rgba(0, 0, 0, 0.08);
+    min-width: 0;
+    flex: 0 0 auto;
+}
+.msg.user .att-summary { max-height: 220px; }
+.msg.user .att-body { white-space: pre-wrap; word-break: break-word; }
 .att-toggle-hint {
     font-size: 10px;
     color: var(--text-faint);
@@ -453,76 +520,175 @@ button { font-family: inherit; }
     flex: 0 0 auto;
 }
 
-#input-row {
-    display: flex;
-    align-items: flex-end;
-    gap: 6px;
-}
 #input-box {
-    flex: 1 1 auto;
-    padding: 8px 10px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    font-size: 13px;
-    resize: none;
-    overflow-y: auto;
-    min-height: 38px;
-    max-height: 180px;
-    font-family: inherit;
-    line-height: 1.5;
-    color: var(--text);
+    width: 100%;
+    box-sizing: border-box;
+    border: none;
     outline: none;
-    background: #fff;
+    resize: none;
+    background: transparent;
+    padding: 4px 2px 2px;
+    font-size: 13px;
+    font-family: inherit;
+    line-height: 1.55;
+    color: var(--text);
+    min-height: 26px;
+    max-height: 180px;
+    overflow-y: auto;
 }
-#input-box:focus {
-    border-color: var(--primary);
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
-}
-#input-box:disabled { background: #f9fafb; cursor: not-allowed; }
+#input-box::placeholder { color: var(--text-faint); }
+#input-box:disabled { background: transparent; cursor: not-allowed; }
 
-.icon-btn {
-    border: 1px solid var(--border);
-    background: #fff;
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
+/* 卡片底部工具条 */
+#composer-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+}
+.cbar-spacer { flex: 1 1 auto; }
+
+.cbar-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 28px;
+    padding: 0 9px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    flex: 0 0 auto;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.cbar-btn:hover { background: var(--border-light); color: var(--text); }
+.cbar-btn .caret { font-size: 9px; opacity: 0.5; }
+.cbar-btn.icon-only {
+    width: 28px;
+    padding: 0;
+    justify-content: center;
+    font-size: 17px;
+    line-height: 1;
+}
+
+/* 权限档位配色 —— 一眼看出当前风险等级 */
+#perm-btn.mode-ask { color: var(--text-muted); }
+#perm-btn.mode-auto_safe { color: #b45309; border-color: #fde68a; background: #fffbeb; }
+#perm-btn.mode-auto_all { color: var(--danger); border-color: #fecaca; background: #fef2f2; }
+
+/* 折叠态只剩一个环 —— 具体数字点开弹层看，按钮上不占位 */
+#token-btn { width: 30px; padding: 0; justify-content: center; }
+
+/* 折叠态用环形进度替代百分比数字:占位小,一眼看出余量,
+   而具体数字点开弹层才需要 */
+#token-ring { width: 16px; height: 16px; flex: 0 0 auto; }
+/* 没有上下文数据时环整体变淡，而不是消失 —— 按钮位置保持稳定，不会左右跳 */
+#token-ring.idle { opacity: 0.35; }
+#token-ring circle { fill: none; stroke-width: 3; }
+#token-ring .ring-bg { stroke: var(--border); }
+#token-ring .ring-fg {
+    stroke: var(--primary);
+    stroke-linecap: round;
+    transform: rotate(-90deg);
+    transform-origin: 50% 50%;
+    transition: stroke-dashoffset 0.3s ease, stroke 0.3s;
+}
+#token-ring.warn .ring-fg { stroke: #d97706; }
+#token-ring.danger .ring-fg { stroke: var(--danger); }
+
+.cbar-send {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: none;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 15px;
-    color: var(--text-muted);
+    line-height: 1;
     flex: 0 0 auto;
-    transition: background 0.12s;
-}
-.icon-btn:hover { background: var(--border-light); color: var(--text); }
-
-#send-btn {
     background: var(--primary);
     color: #fff;
-    border-color: var(--primary);
-    padding: 0 16px;
-    width: auto;
-    font-weight: 500;
-    font-size: 13px;
+    transition: background 0.12s, transform 0.1s;
 }
-#send-btn:hover { background: var(--primary-dark); color: #fff; }
-#send-btn:disabled {
-    background: #93c5fd;
-    border-color: #93c5fd;
-    color: #fff;
-    cursor: not-allowed;
+/* 字符 ↑ 在多数中文字体里笔画很细，改用 SVG 描边，粗细可控 */
+.cbar-send svg { display: block; }
+.cbar-send:active { transform: scale(0.94); }
+.cbar-send:hover { background: var(--primary-dark); }
+.cbar-send:disabled { background: #cbd5e1; cursor: not-allowed; }
+.cbar-send.stop { background: var(--danger); display: none; font-size: 11px; }
+.cbar-send.stop:hover { background: #dc2626; }
+
+/* 权限菜单锚在输入卡片左下 */
+#perm-menu {
+    top: auto;
+    right: auto;
+    bottom: 62px;
+    left: 18px;
+    min-width: 240px;
 }
-#stop-btn {
+#perm-menu .menu-item { align-items: flex-start; }
+#perm-menu .menu-item.active { background: #eff6ff; }
+#perm-menu .pm-text { display: flex; flex-direction: column; gap: 2px; }
+#perm-menu .pm-title { font-size: 12px; color: var(--text); }
+#perm-menu .pm-desc { font-size: 11px; color: var(--text-faint); line-height: 1.45; }
+#perm-menu .pm-check { margin-left: auto; color: var(--primary); font-size: 12px; visibility: hidden; }
+#perm-menu .menu-item.active .pm-check { visibility: visible; }
+
+/* ═════════════════════════════════════════════════════════════════
+   上下文用量弹层
+   ═════════════════════════════════════════════════════════════════ */
+#token-pop {
+    position: absolute;
+    right: 16px;
+    bottom: 62px;
+    width: 304px;
     background: #fff;
-    color: var(--danger);
-    border-color: var(--danger);
-    padding: 0 12px;
-    width: auto;
-    font-size: 13px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14);
+    padding: 14px 16px 12px;
+    z-index: 2600;
     display: none;
+    animation: menu-in 0.12s ease-out;
 }
-#stop-btn:hover { background: #fef2f2; color: var(--danger); }
+#token-pop.show { display: block; }
+.tp-head { display: flex; align-items: center; margin-bottom: 10px; }
+.tp-head h4 { flex: 1 1 auto; margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+.tp-close {
+    border: none; background: none; cursor: pointer;
+    color: var(--text-faint); font-size: 16px; line-height: 1; padding: 0 2px;
+}
+.tp-close:hover { color: var(--text); }
+.tp-main { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
+.tp-pct { font-size: 24px; font-weight: 700; color: var(--text); line-height: 1.1; }
+.tp-used { font-size: 11px; color: var(--text-muted); }
+.tp-bar {
+    display: flex;
+    height: 7px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--border-light);
+    margin-bottom: 12px;
+}
+.tp-bar i { display: block; height: 100%; }
+.tp-row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3.5px 0; }
+.tp-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.tp-label { flex: 1 1 auto; color: var(--text); }
+.tp-val { color: var(--text-muted); font-family: Consolas, monospace; font-size: 11.5px; }
+.tp-foot {
+    margin-top: 10px;
+    padding-top: 9px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-faint);
+    line-height: 1.65;
+}
 
 /* ═════════════════════════════════════════════════════════════════
    状态栏
@@ -545,9 +711,24 @@ button { font-family: inherit; }
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-#token-text {
-    flex: 0 0 auto;
-    font-family: Consolas, monospace;
+
+
+/* 可点击的文件路径 */
+.file-link {
+    color: var(--primary);
+    cursor: pointer;
+    border-bottom: 1px dashed rgba(59, 130, 246, 0.45);
+    word-break: break-all;
+}
+.file-link:hover {
+    background: rgba(59, 130, 246, 0.08);
+    border-bottom-style: solid;
+}
+.file-link::after {
+    content: "↗";
+    font-size: 0.8em;
+    opacity: 0.55;
+    margin-left: 2px;
 }
 
 /* ═════════════════════════════════════════════════════════════════
@@ -642,50 +823,64 @@ button { font-family: inherit; }
 }
 
 /* 工具面板 modal */
-.modal.tools-modal {
-    padding: 0;
-    width: 620px;
+/* 可用工具面板 —— 侧滑 drawer,跟历史对话样式一致 */
+#tools-drawer-mask {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.25);
+    display: none;
+    z-index: 1500;
+}
+#tools-drawer-mask.show { display: block; }
+#tools-drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    height: 100%;
+    width: 420px;
     max-width: 92vw;
-    max-height: 82vh;
+    background: #fff;
+    box-shadow: -4px 0 12px rgba(0, 0, 0, 0.1);
+    transform: translateX(100%);
+    transition: transform 0.22s ease;
+    z-index: 1600;
     display: flex;
     flex-direction: column;
 }
-.tools-modal .tm-head {
-    padding: 12px 18px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-.tools-modal .tm-head h3 { flex: 1 1 auto; font-size: 14px; margin: 0; }
-.tools-modal .tm-count { font-size: 12px; color: var(--text-muted); font-weight: 400; }
-.tools-modal .tm-close {
-    border: none; background: none;
-    font-size: 16px; color: var(--text-muted);
-    cursor: pointer; padding: 4px 8px;
-}
-.tools-modal .tm-close:hover { color: var(--text); }
-.tools-modal .tm-filter {
-    margin: 10px 18px 4px;
+#tools-drawer.show { transform: translateX(0); }
+#tools-drawer .tm-count { font-size: 12px; color: var(--text-muted); font-weight: 400; margin-left: 4px; }
+#tools-drawer .tm-filter {
+    margin: 10px 16px 4px;
     padding: 6px 10px;
     border: 1px solid var(--border);
     border-radius: 6px;
     font-size: 12px;
     outline: none;
-    width: auto;             /* 覆盖 .modal input 通用的 width:100%,避免 margin 让宽度超出 modal */
     display: block;
     box-sizing: border-box;
-    font-family: inherit;    /* .modal input 默认 Consolas 等宽,过滤框改回正常字体更易读 */
+    font-family: inherit;
 }
-.tools-modal .tm-filter:focus { border-color: var(--primary); }
-.tools-modal .tm-list {
+#tools-drawer .tm-filter:focus { border-color: var(--primary); }
+#tools-drawer .tm-list {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: 6px 18px 14px;
+    padding: 6px 16px 14px;
 }
 .tool-item {
-    padding: 10px 0;
+    padding: 10px 12px;
+    margin: 0 -12px;
     border-bottom: 1px solid var(--border-light);
+    cursor: pointer;
+    border-radius: 6px;
+    transition: background 0.12s;
+    position: relative;
+}
+.tool-item:hover {
+    background: var(--border-light);
+}
+.tool-item:hover .tool-item-cta {
+    opacity: 1;
+    transform: translateX(0);
 }
 .tool-item:last-child { border-bottom: none; }
 .tool-item-head {
@@ -709,12 +904,23 @@ button { font-family: inherit; }
 }
 .tool-item-badge.readonly { background: #ecfdf5; color: #047857; }
 .tool-item-badge.mutating { background: #fef3c7; color: #b45309; }
+/* hover 时右上角出现的"填入输入框"暗示 */
+.tool-item-cta {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--primary);
+    opacity: 0;
+    transform: translateX(-4px);
+    transition: opacity 0.15s, transform 0.15s;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
 .tool-item-desc {
     font-size: 12px;
     color: var(--text-muted);
     line-height: 1.55;
 }
-.tools-modal .tm-empty {
+#tools-drawer .tm-empty {
     padding: 24px;
     text-align: center;
     color: var(--text-faint);
@@ -825,6 +1031,148 @@ button { font-family: inherit; }
 .modal-mask.no-mask-close { }
 
 /* ═════════════════════════════════════════════════════════════════
+   ask_user modal (AI 主动提问)
+   confirm: 显示 是/否 两按钮
+   choice:  显示每个 option 一个按钮
+   input:   显示文本框 + 提交
+   ═════════════════════════════════════════════════════════════════ */
+.modal.askuser-modal {
+    width: 460px;
+    max-width: 92vw;
+    padding: 0;
+}
+.askuser-modal .au-head {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.askuser-modal .au-head-icon { font-size: 18px; }
+.askuser-modal .au-head h3 { flex: 1 1 auto; font-size: 14px; margin: 0; }
+.askuser-modal .au-body {
+    padding: 18px 20px;
+    max-height: 55vh;
+    overflow-y: auto;
+}
+.askuser-modal .au-question {
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text);
+    margin-bottom: 14px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.askuser-modal .au-choices {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.askuser-modal .au-choices button {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #fff;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 12.5px;
+    font-family: inherit;
+    text-align: left;
+    transition: background 0.12s, border-color 0.12s;
+}
+.askuser-modal .au-choices button:hover {
+    background: var(--border-light);
+    border-color: var(--primary);
+}
+.askuser-modal .au-choices button.primary {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+}
+.askuser-modal .au-choices button.primary:hover { background: var(--primary-dark); }
+.askuser-modal .au-input {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    box-sizing: border-box;
+}
+.askuser-modal .au-input:focus { border-color: var(--primary); }
+.askuser-modal .au-foot {
+    padding: 10px 20px 14px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+.askuser-modal .au-foot button {
+    padding: 6px 16px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: inherit;
+}
+.askuser-modal .au-cancel { background: #fff; color: var(--text-muted); }
+.askuser-modal .au-cancel:hover { background: var(--border-light); }
+.askuser-modal .au-submit {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+}
+.askuser-modal .au-submit:hover { background: var(--primary-dark); }
+
+/* 字段化渲染:multi_choice / 带自定义的 choice / form 混合表单共用同一套外观,
+   避免多选长得跟单选不是一套控件 */
+.askuser-modal .au-form { display: flex; flex-direction: column; gap: 16px; }
+.askuser-modal .au-field { display: flex; flex-direction: column; gap: 7px; }
+.askuser-modal .au-field-label {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text);
+}
+.askuser-modal .au-opts { display: flex; flex-direction: column; gap: 2px; }
+.askuser-modal .au-opt {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    padding: 6px 8px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--text);
+    transition: background 0.12s;
+}
+.askuser-modal .au-opt:hover { background: var(--border-light); }
+.askuser-modal .au-opt input { margin: 3px 0 0 0; flex: 0 0 auto; cursor: pointer; }
+.askuser-modal .au-opt span { flex: 1 1 auto; word-break: break-word; }
+.askuser-modal .au-bulk { display: flex; gap: 14px; padding: 2px 8px; }
+.askuser-modal .au-bulk a {
+    font-size: 11.5px;
+    color: var(--primary);
+    cursor: pointer;
+    text-decoration: none;
+}
+.askuser-modal .au-bulk a:hover { text-decoration: underline; }
+.askuser-modal .au-field .au-input { width: 100%; }
+.askuser-modal textarea.au-input {
+    min-height: 92px;
+    resize: vertical;
+    line-height: 1.6;
+}
+.askuser-modal .au-custom { margin-left: 26px; margin-top: 2px; }
+.askuser-modal select.au-input {
+    appearance: auto;
+    background: #fff;
+    cursor: pointer;
+}
+
+/* ═════════════════════════════════════════════════════════════════
    历史对话抽屉
    ═════════════════════════════════════════════════════════════════ */
 #drawer-mask {
@@ -915,18 +1263,19 @@ button { font-family: inherit; }
 ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
 </style>
+<link rel="stylesheet" href="recipe-sidebar.css">
 </head>
 
 <body>
 
+<!-- 配方侧边栏:横向 flex 容器。聊天区 #app 与侧边栏做兄弟,min-width:0 不能省 ——
+     flex 子项默认 min-width:auto,聊天区一条长消息不换行就会把侧边栏挤出可视区。 -->
+<div id="shell" style="display:flex; height:100vh; overflow:hidden;">
+<div id="app" style="flex:1 1 auto; min-width:0; display:flex; flex-direction:column;">
+
 <div id="topbar">
     <span class="brand">TxAgent</span>
     <select id="model-select" title="选择模型"></select>
-    <select id="approval-mode" title="工具执行审批模式">
-        <option value="ask">🛡 询问</option>
-        <option value="auto_safe">⚡ 半自动</option>
-        <option value="auto_all">⚠ 全自动</option>
-    </select>
     <span class="spacer"></span>
     <button id="btn-new" title="新对话">+ 新对话</button>
     <button id="btn-more" title="更多">⋯</button>
@@ -958,19 +1307,71 @@ button { font-family: inherit; }
 </div>
 
 <div id="composer">
-    <div id="attachments"></div>
-    <div id="input-row">
+    <div id="composer-card">
+        <div id="attachments"></div>
         <input type="file" id="file-input" multiple style="display:none" />
-        <button class="icon-btn" id="attach-btn" title="上传文件 (可拖入或粘贴)">📎</button>
         <textarea id="input-box" placeholder="输入消息...  (Enter 发送 · Shift+Enter 换行 · 拖入/粘贴文件上传)" rows="1"></textarea>
-        <button id="stop-btn" class="icon-btn" title="停止">■</button>
-        <button id="send-btn" class="icon-btn">发送</button>
+        <div id="composer-bar">
+            <button class="cbar-btn icon-only" id="attach-btn" title="上传文件 (可拖入或粘贴)">＋</button>
+            <button class="cbar-btn mode-ask" id="perm-btn" title="工具执行审批模式">
+                <span id="perm-icon">🛡</span><span id="perm-label">询问</span><span class="caret">▾</span>
+            </button>
+            <span class="cbar-spacer"></span>
+            <button class="cbar-btn" id="token-btn" title="上下文用量">
+                <svg id="token-ring" viewBox="0 0 20 20" aria-hidden="true" class="idle">
+                    <circle class="ring-bg" cx="10" cy="10" r="8"></circle>
+                    <circle class="ring-fg" cx="10" cy="10" r="8"
+                            stroke-dasharray="50.27" stroke-dashoffset="50.27"></circle>
+                </svg>
+            </button>
+            <button id="stop-btn" class="cbar-send stop" title="停止">■</button>
+            <button id="send-btn" class="cbar-send" title="发送 (Enter)">
+                <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+                    <path d="M12 20V5M12 5l-6.5 6.5M12 5l6.5 6.5"
+                          fill="none" stroke="currentColor" stroke-width="2.6"
+                          stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
+        </div>
     </div>
+</div>
+
+<!-- 权限档位菜单 (原顶栏下拉,移入输入卡片) -->
+<div id="perm-menu" class="pop-menu">
+    <div class="menu-item" data-mode="ask">
+        <span class="menu-icon">🛡</span>
+        <span class="pm-text"><span class="pm-title">询问</span><span class="pm-desc">每次变更场景前弹窗确认</span></span>
+        <span class="pm-check">✓</span>
+    </div>
+    <div class="menu-item" data-mode="auto_safe">
+        <span class="menu-icon">⚡</span>
+        <span class="pm-text"><span class="pm-title">半自动</span><span class="pm-desc">代码仍弹审阅框，其余变更自动通过</span></span>
+        <span class="pm-check">✓</span>
+    </div>
+    <div class="menu-item" data-mode="auto_all">
+        <span class="menu-icon">⚠</span>
+        <span class="pm-text"><span class="pm-title">全自动</span><span class="pm-desc">全部自动执行，含 run_csharp 代码</span></span>
+        <span class="pm-check">✓</span>
+    </div>
+</div>
+
+<!-- 上下文用量弹层 -->
+<div id="token-pop">
+    <div class="tp-head">
+        <h4>上下文用量</h4>
+        <button class="tp-close" id="tp-close">×</button>
+    </div>
+    <div class="tp-main">
+        <span class="tp-pct" id="tp-pct">—</span>
+        <span class="tp-used" id="tp-used">尚无数据</span>
+    </div>
+    <div class="tp-bar" id="tp-bar"></div>
+    <div id="tp-list"></div>
+    <div class="tp-foot" id="tp-foot"></div>
 </div>
 
 <div id="status-bar">
     <span id="status-text">初始化中...</span>
-    <span id="token-text"></span>
 </div>
 
 <!-- Drop overlay -->
@@ -1004,16 +1405,15 @@ button { font-family: inherit; }
     <div class="drawer-body" id="drawer-list"></div>
 </div>
 
-<!-- 工具面板 modal -->
-<div class="modal-mask" id="tools-modal">
-    <div class="modal tools-modal">
-        <div class="tm-head">
-            <h3>可用工具 <span class="tm-count" id="tm-count"></span></h3>
-            <button class="tm-close" id="tm-close" title="关闭">✕</button>
-        </div>
-        <input type="text" class="tm-filter" id="tm-filter" placeholder="按名称或说明过滤..." />
-        <div class="tm-list" id="tm-list"></div>
+<!-- 工具面板 —— 侧滑 drawer -->
+<div id="tools-drawer-mask"></div>
+<div id="tools-drawer">
+    <div class="drawer-head">
+        <h3>可用工具 <span class="tm-count" id="tm-count"></span></h3>
+        <button id="tools-drawer-close" title="关闭">✕</button>
     </div>
+    <input type="text" class="tm-filter" id="tm-filter" placeholder="按名称或说明过滤..." />
+    <div class="tm-list" id="tm-list"></div>
 </div>
 
 <!-- 审批 modal (代码/通用两种,共用) -->
@@ -1031,6 +1431,26 @@ button { font-family: inherit; }
     </div>
 </div>
 
+<!-- ask_user modal (AI 主动向用户问 confirm/choice/input) -->
+<div class="modal-mask no-mask-close" id="askuser-modal">
+    <div class="modal askuser-modal">
+        <div class="au-head">
+            <span class="au-head-icon">💬</span>
+            <h3>助手询问</h3>
+        </div>
+        <div class="au-body">
+            <div class="au-question" id="au-question"></div>
+            <div class="au-choices" id="au-choices"></div>
+            <div class="au-form" id="au-form" style="display:none"></div>
+            <input type="text" class="au-input" id="au-input" placeholder="回车提交,Esc 取消" style="display:none" />
+        </div>
+        <div class="au-foot">
+            <button class="au-cancel" id="au-cancel">取消</button>
+            <button class="au-submit" id="au-submit" style="display:none">提交</button>
+        </div>
+    </div>
+</div>
+
 <script>
 "use strict";
 
@@ -1042,6 +1462,11 @@ const state = {
     keyReady: false,
     busy: false,
     attachments: [],              // 已上传成功待发送: [{id, name}]
+    approvalMode: "ask",          // 当前权限档位
+    tokens: {},                   // 最近一次 tokenUsage 负载
+    currentThinkBlock: null,      // 本轮思考块 DOM
+    currentThinkBody: null,
+    currentThinkBuffer: "",
     pendingUploads: 0,            // 正在上传的文件数
     currentAssistantMsg: null,    // 当前流式渲染中的 assistant 消息 DOM
     currentAssistantContent: null,// 上面消息的 .msg-content
@@ -1080,19 +1505,22 @@ window.dispatchMessage = function (json) {
         case "message":        onMessage(msg.role, msg.text); break;
         case "delta":          onDelta(msg.text); break;
         case "closeAssistant": onCloseAssistant(); break;
+        case "reasoningStart": onReasoningStart(); break;
+        case "reasoningDelta": onReasoningDelta(msg.text); break;
+        case "reasoningEnd":   onReasoningEnd(); break;
         case "toolCall":       onToolCall(msg.name, msg.input); break;
         case "toolResult":     onToolResult(msg.name, msg.result, msg.isErr); break;
         case "status":         onStatus(msg.text); break;
+        case "userTextPrefill": onUserTextPrefill(msg.text); break;
         case "busy":           onBusy(msg.value); break;
-        case "tokenUsage":     onTokenUsage(msg.prompt, msg.completion, msg.total); break;
+        case "tokenUsage":     onTokenUsage(msg); break;
         case "attachmentInfo": onAttachmentInfo(msg); break;
         case "toolList":       onToolList(msg.items); break;
         case "askApproval":    onAskApproval(msg); break;
-        case "approvalMode": {
-            const sel = document.getElementById("approval-mode");
-            if (sel && msg.value) sel.value = msg.value;
+        case "askUser":        onAskUser(msg); break;
+        case "approvalMode":
+            if (msg.value) setPermMode(msg.value, false);
             break;
-        }
     }
 };
 
@@ -1101,28 +1529,158 @@ window.dispatchMessage = function (json) {
 // ═════════════════════════════════════════════════════════════════
 document.getElementById("model-select").addEventListener("change", (e) => {
     const opt = e.target.selectedOptions[0];
-    if (opt && opt.dataset.providerId) {
-        state.currentProviderId = opt.dataset.providerId;
-    }
-    postToHost({ type: "switchModel", model: e.target.value });
+    if (!opt) return;
+
+    // 【必须把 providerId 一起发过去】只发模型名的话，C# 侧遇到
+    // "deepseek-v4-flash" 这种跨 provider 同名模型只能猜，必然串。
+    const providerId = opt.dataset.providerId || state.currentProviderId;
+    const model = opt.dataset.model || opt.value;
+
+    state.currentProviderId = providerId;
+    postToHost({ type: "switchModel", model: model, providerId: providerId });
 });
-document.getElementById("approval-mode").addEventListener("change", (e) => {
-    const mode = e.target.value;
-    if (mode === "auto_all") {
-        const ok = confirm(
-            "确认切换到「全自动」审批模式?\n\n" +
-            "此模式下 AI 生成的 C# 代码(run_csharp)将直接执行,不再弹出代码审阅框。\n" +
-            "AI 可能创建/修改/删除场景对象,建议仅在验证过的会话中使用。\n\n" +
-            "确认继续?"
-        );
-        if (!ok) {
-            e.target.value = "ask";
-            postToHost({ type: "setApprovalMode", mode: "ask" });
-            return;
+// ═════════════════════════════════════════════════════════════════
+//  权限档位 (原顶栏下拉,现为输入卡片内的按钮 + 菜单)
+// ═════════════════════════════════════════════════════════════════
+const PERM_MODES = {
+    ask:       { icon: "\u{1F6E1}", label: "\u8be2\u95ee",   desc: "\u6bcf\u6b21\u53d8\u66f4\u573a\u666f\u524d\u5f39\u7a97\u786e\u8ba4" },
+    auto_safe: { icon: "\u26a1",     label: "\u534a\u81ea\u52a8", desc: "\u4ee3\u7801\u4ecd\u5f39\u5ba1\u9605\u6846\uff0c\u5176\u4f59\u53d8\u66f4\u81ea\u52a8\u901a\u8fc7" },
+    auto_all:  { icon: "\u26a0",     label: "\u5168\u81ea\u52a8", desc: "\u5168\u90e8\u81ea\u52a8\u6267\u884c\uff0c\u542b\u4ee3\u7801" }
+};
+
+function setPermMode(mode, notifyHost) {
+    if (!PERM_MODES[mode]) mode = "ask";
+    state.approvalMode = mode;
+
+    const btn = document.getElementById("perm-btn");
+    btn.className = "cbar-btn mode-" + mode;
+    btn.title = PERM_MODES[mode].desc;
+    document.getElementById("perm-icon").textContent = PERM_MODES[mode].icon;
+    document.getElementById("perm-label").textContent = PERM_MODES[mode].label;
+
+    const items = document.querySelectorAll("#perm-menu .menu-item");
+    for (let i = 0; i < items.length; i++) {
+        items[i].classList.toggle("active", items[i].dataset.mode === mode);
+    }
+
+    if (notifyHost) postToHost({ type: "setApprovalMode", mode: mode });
+}
+
+document.getElementById("perm-btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    document.getElementById("perm-menu").classList.toggle("show");
+});
+
+document.querySelectorAll("#perm-menu .menu-item").forEach((item) => {
+    item.addEventListener("click", () => {
+        const mode = item.dataset.mode;
+        document.getElementById("perm-menu").classList.remove("show");
+
+        if (mode === "auto_all" && state.approvalMode !== "auto_all") {
+            const ok = confirm(
+                "\u786e\u8ba4\u5207\u6362\u5230\u300c\u5168\u81ea\u52a8\u300d\u5ba1\u6279\u6a21\u5f0f?\n\n" +
+                "\u6b64\u6a21\u5f0f\u4e0b AI \u751f\u6210\u7684 C# \u4ee3\u7801(run_csharp)\u5c06\u76f4\u63a5\u6267\u884c,\u4e0d\u518d\u5f39\u51fa\u4ee3\u7801\u5ba1\u9605\u6846\u3002\n" +
+                "AI \u53ef\u80fd\u521b\u5efa/\u4fee\u6539/\u5220\u9664\u573a\u666f\u5bf9\u8c61,\u5efa\u8bae\u4ec5\u5728\u9a8c\u8bc1\u8fc7\u7684\u4f1a\u8bdd\u4e2d\u4f7f\u7528\u3002\n\n" +
+                "\u786e\u8ba4\u7ee7\u7eed?"
+            );
+            if (!ok) return;
         }
-    }
-    postToHost({ type: "setApprovalMode", mode: mode });
+        setPermMode(mode, true);
+    });
 });
+
+// ═════════════════════════════════════════════════════════════════
+//  上下文用量弹层
+// ═════════════════════════════════════════════════════════════════
+const TP_PARTS = [
+    { key: "system",   label: "\u7cfb\u7edf\u63d0\u793a\u8bcd", color: "#10b981" },
+    { key: "tools",    label: "\u5de5\u5177\u5b9a\u4e49",       color: "#f59e0b" },
+    { key: "messages", label: "\u5bf9\u8bdd\u6d88\u606f",       color: "#7c3aed" },
+    { key: "other",    label: "\u5176\u5b83",                     color: "#38bdf8" }
+];
+
+document.getElementById("token-btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const pop = document.getElementById("token-pop");
+    const show = !pop.classList.contains("show");
+    pop.classList.toggle("show", show);
+    if (show) renderTokenPop();
+});
+document.getElementById("tp-close").addEventListener("click", () => {
+    document.getElementById("token-pop").classList.remove("show");
+});
+
+function renderTokenPop() {
+    const d = state.tokens || {};
+    const bar = document.getElementById("tp-bar");
+    const list = document.getElementById("tp-list");
+    bar.innerHTML = "";
+    list.innerHTML = "";
+
+    const max = d.ctxMax || 0;
+    const used = d.ctxUsed || 0;
+
+    if (max > 0) {
+        const pct = used / max * 100;
+        document.getElementById("tp-pct").textContent = pct.toFixed(1) + "%";
+        document.getElementById("tp-used").textContent =
+            "\u5df2\u4f7f\u7528 " + fmtNum(used) + " / " + fmtNum(max);
+    } else {
+        document.getElementById("tp-pct").textContent = "\u2014";
+        document.getElementById("tp-used").textContent = "\u5c1a\u65e0\u4e0a\u4e0b\u6587\u6570\u636e";
+    }
+
+    const parts = d.parts || {};
+    let shown = 0;
+
+    for (let i = 0; i < TP_PARTS.length; i++) {
+        const p = TP_PARTS[i];
+        const v = parts[p.key] || 0;
+        if (v <= 0) continue;
+        shown += v;
+
+        if (max > 0) {
+            const seg = document.createElement("i");
+            seg.style.width = (v / max * 100) + "%";
+            seg.style.background = p.color;
+            bar.appendChild(seg);
+        }
+
+        const row = document.createElement("div");
+        row.className = "tp-row";
+        const dot = document.createElement("span");
+        dot.className = "tp-dot";
+        dot.style.background = p.color;
+        const lab = document.createElement("span");
+        lab.className = "tp-label";
+        lab.textContent = p.label;
+        const val = document.createElement("span");
+        val.className = "tp-val";
+        val.textContent = max > 0
+            ? (v / max * 100).toFixed(1) + "%  \u00b7  " + fmtNum(v)
+            : fmtNum(v);
+        row.appendChild(dot);
+        row.appendChild(lab);
+        row.appendChild(val);
+        list.appendChild(row);
+    }
+
+    if (shown === 0) {
+        const row = document.createElement("div");
+        row.className = "tp-row";
+        row.innerHTML = "<span class='tp-label' style='color:var(--text-faint)'>" +
+            "\u5bbf\u4e3b\u672a\u4e0b\u53d1\u5206\u9879\u6570\u636e</span>";
+        list.appendChild(row);
+    }
+
+    document.getElementById("tp-foot").textContent =
+        "\u672c\u4f1a\u8bdd\u7d2f\u8ba1(\u542b\u5386\u53f2)\uff1a\u8f93\u5165 " + fmtNum(d.prompt || 0) +
+        " \u00b7 \u8f93\u51fa " + fmtNum(d.completion || 0) +
+        " \u00b7 \u5408\u8ba1 " + fmtNum(d.total || 0) +
+        (max > 0 ? "\n\u5206\u9879\u4e3a\u4f30\u7b97\u503c\uff0c\u4ec5\u4f9b\u53c2\u8003" : "");
+    document.getElementById("tp-foot").style.whiteSpace = "pre-line";
+}
+
 document.getElementById("btn-new").addEventListener("click", () => {
     postToHost({ type: "newConv" });
     clearAllAttachments();
@@ -1139,6 +1697,18 @@ document.addEventListener("click", (e) => {
     if (e.target.id === "btn-more") return;
     if (menu.contains(e.target)) return;
     menu.classList.remove("show");
+});
+
+// 点击别处关掉权限菜单 / 用量弹层
+document.addEventListener("click", (e) => {
+    const pm = document.getElementById("perm-menu");
+    if (pm.classList.contains("show") && !pm.contains(e.target) && e.target.id !== "perm-btn") {
+        pm.classList.remove("show");
+    }
+    const tp = document.getElementById("token-pop");
+    if (tp.classList.contains("show") && !tp.contains(e.target) && e.target.id !== "token-btn") {
+        tp.classList.remove("show");
+    }
 });
 document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
@@ -1159,7 +1729,6 @@ function handleMenuAction(action) {
             showDrawer();
             break;
         case "tools":
-            postToHost({ type: "listTools" });
             openToolsModal();
             break;
         case "extract":
@@ -1191,18 +1760,33 @@ function onModelList(items, current, providers, currentProvider) {
     if (providers && providers.length > 0) {
         state.providers = providers;
         state.currentProviderId = currentProvider || providers[0].id;
+        // 【option 的 value 必须带 provider】
+        // 同一个模型名会同时出现在多个 provider 下(百炼代理了 deepseek/kimi)。
+        // value 只写模型名的话:
+        //   · 恢复选中时 "m === current" 会把两个同名项都标 selected，
+        //     浏览器只保留最后一个 —— 于是永远落在最后那个 provider 上；
+        //   · change 事件里 e.target.value 也分不出是哪个组点的。
+        // 用 "provider|model" 复合键，两个问题一起消失。
         for (const p of providers) {
             const g = document.createElement("optgroup");
             g.label = p.displayName + (p.isLocal ? "  (\u672c\u5730)" : "");
             for (const m of (p.models || [])) {
                 const opt = document.createElement("option");
-                opt.value = m;
+                opt.value = p.id + "|" + m;
                 opt.textContent = m;
                 opt.dataset.providerId = p.id;
-                if (m === current) opt.selected = true;
+                opt.dataset.model = m;
+                if (m === current && p.id === state.currentProviderId) opt.selected = true;
                 g.appendChild(opt);
             }
             sel.appendChild(g);
+        }
+
+        // 上面按 provider+model 精确匹配没命中(比如首次启动、或 provider 变了)，
+        // 退回只按模型名选第一个 —— 总比一个都不选好
+        if (sel.selectedIndex < 0 && current) {
+            for (const o of sel.options)
+                if (o.dataset.model === current) { o.selected = true; break; }
         }
     } else if (items) {
         for (const it of items) {
@@ -1308,6 +1892,7 @@ function onMessage(role, text) {
 
 function onDelta(text) {
     hideThinking();
+    onReasoningEnd();   // 正文开始即思考结束
 
     // 情况 1: 没有当前 assistant 大气泡 → 新建
     if (!state.currentAssistantMsg) {
@@ -1332,9 +1917,107 @@ function onDelta(text) {
     scrollToBottom();
 }
 
+// ═════════════════════════════════════════════════════════════════
+//  思考过程
+//
+//  只有推理模型(DeepSeek reasoner 系列)会返回 reasoning_content,
+//  普通模型这三个事件根本不会触发,不影响任何现有行为。
+//
+//  注意:思考内容【不进历史】—— API 明确禁止把 reasoning_content 回传下一轮,
+//  所以它也不落盘,重开对话看不到。它是本轮的过程性信息。
+// ═════════════════════════════════════════════════════════════════
+
+function ensureAssistantBubble() {
+    if (!state.currentAssistantMsg) {
+        state.currentAssistantMsg = appendMessage("assistant", "");
+        state.lastAssistantMsg = state.currentAssistantMsg;
+    }
+    return state.currentAssistantMsg;
+}
+
+function onReasoningStart() {
+    hideThinking();
+    if (state.currentThinkBlock) return;   // 已在思考中,不重复建块
+
+    const msgEl = ensureAssistantBubble();
+
+    const block = document.createElement("div");
+    block.className = "think-block expanded live";
+
+    const head = document.createElement("div");
+    head.className = "think-head";
+
+    const icon = document.createElement("span");
+    icon.className = "th-icon";
+    icon.textContent = "💭";
+
+    const title = document.createElement("span");
+    title.className = "th-title";
+    title.textContent = "思考中…";
+
+    const hint = document.createElement("span");
+    hint.className = "th-hint";
+    hint.textContent = "▾";
+
+    head.appendChild(icon);
+    head.appendChild(title);
+    head.appendChild(hint);
+
+    const body = document.createElement("div");
+    body.className = "think-body";
+
+    head.addEventListener("click", () => {
+        const on = block.classList.toggle("expanded");
+        hint.textContent = on ? "▾" : "▸";
+    });
+
+    block.appendChild(head);
+    block.appendChild(body);
+    // 按时序追加到大气泡末尾 —— 思考块会排在本轮正文之前
+    msgEl.appendChild(block);
+
+    state.currentThinkBlock = block;
+    state.currentThinkBody = body;
+    state.currentThinkBuffer = "";
+    scrollToBottom();
+}
+
+function onReasoningDelta(text) {
+    if (!text) return;
+    if (!state.currentThinkBlock) onReasoningStart();
+
+    state.currentThinkBuffer += text;
+    state.currentThinkBody.textContent = state.currentThinkBuffer;
+
+    // 思考区自己滚到底,不抢外层滚动
+    state.currentThinkBody.scrollTop = state.currentThinkBody.scrollHeight;
+    scrollToBottom();
+}
+
+function onReasoningEnd() {
+    const block = state.currentThinkBlock;
+    if (!block) return;
+
+    block.classList.remove("live");
+
+    // 思考结束自动收起 —— 它是过程,正文才是要看的
+    block.classList.remove("expanded");
+
+    const title = block.querySelector(".th-title");
+    const hint = block.querySelector(".th-hint");
+    const chars = state.currentThinkBuffer.length;
+    if (title) title.textContent = "思考过程 (" + chars + " 字)";
+    if (hint) hint.textContent = "▸";
+
+    state.currentThinkBlock = null;
+    state.currentThinkBody = null;
+    state.currentThinkBuffer = "";
+}
+
 function onCloseAssistant() {
     // 只关闭"当前流式段落",大气泡保留 —— 下一段 delta/tool_call 会挂到同一气泡里,
     // 视觉上一整轮 assistant 回复共享一个"助手"标签 + 一个大气泡容器。
+    onReasoningEnd();   // 兜底:一轮结束时思考块必须收尾,否则会一直闪
     state.currentAssistantContent = null;
     state.currentAssistantBuffer = "";
     // busy 仍在 → 空档期显示思考动画
@@ -1362,6 +2045,16 @@ function onToolResult(name, result, isErr) {
 
 function onStatus(text) {
     document.getElementById("status-text").textContent = text || "";
+}
+
+// 预填输入框并聚焦(配方 promote 用:塞一句固化指令,用户确认后回车即发送)
+function onUserTextPrefill(text) {
+    const box = document.getElementById("input-box");
+    if (box) {
+        box.value = text || "";
+        box.focus();
+        box.dispatchEvent(new Event("input"));
+    }
 }
 
 function onBusy(value) {
@@ -1433,9 +2126,38 @@ function renderMarkdownStreaming(text) {
     return renderMarkdown(text);
 }
 
-function onTokenUsage(p, c, t) {
-    document.getElementById("token-text").textContent =
-        "↑" + fmtNum(p) + "  ↓" + fmtNum(c) + "  ·  " + fmtNum(t) + " tok";
+function onTokenUsage(msg) {
+    state.tokens = msg || {};
+
+    const ring = document.getElementById("token-ring");
+    const fg = ring.querySelector(".ring-fg");
+    const C = 2 * Math.PI * 8;   // r=8 的周长
+    const total = msg.total || 0;
+
+    if (msg.ctxMax > 0) {
+        const pct = Math.max(0, Math.min(1, (msg.ctxUsed || 0) / msg.ctxMax));
+        fg.setAttribute("stroke-dasharray", C.toFixed(2));
+        fg.setAttribute("stroke-dashoffset", (C * (1 - pct)).toFixed(2));
+
+        ring.classList.remove("idle");
+        ring.classList.toggle("warn", pct >= 0.7 && pct < 0.9);
+        ring.classList.toggle("danger", pct >= 0.9);
+
+        document.getElementById("token-btn").title =
+            "上下文用量 " + (pct * 100).toFixed(1) + "%"
+            + "（" + fmtNum(msg.ctxUsed || 0) + " / " + fmtNum(msg.ctxMax) + "）"
+            + "\n本会话累计 " + fmtNum(total) + " tok"
+            + "\n点击查看明细";
+    } else {
+        // 空环 + 变淡，而不是隐藏：按钮宽度固定，工具条不会跳动
+        fg.setAttribute("stroke-dashoffset", C.toFixed(2));
+        ring.classList.add("idle");
+        ring.classList.remove("warn", "danger");
+        document.getElementById("token-btn").title =
+            "本会话累计 " + fmtNum(total) + " tok\n点击查看明细";
+    }
+
+    if (document.getElementById("token-pop").classList.contains("show")) renderTokenPop();
 }
 
 function fmtNum(n) {
@@ -1448,6 +2170,105 @@ function fmtNum(n) {
 // ═════════════════════════════════════════════════════════════════
 //  消息节点构造
 // ═════════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════
+//  用户消息里的附件前缀
+//
+//  C# 的 BuildAttachmentPrefix 会把文件摘要拼进用户消息正文再发给模型。
+//  实时发送时前端自己显示的是 "📎 文件名",但 restore 时读的是 C# 存的原文 ——
+//  于是几千字的摘要被当成用户输入渲染成一整块大气泡。
+//  这里把前缀解析回附件卡片,正文只留用户真正打的字。
+// ═════════════════════════════════════════════════════════════════
+const ATT_PREFIX = "[已附加文件]";
+const ATT_FOOTER = "[如需精读完整内容,调用 read_uploaded_file(file_id=...)]";
+
+function parseAttachmentPrefix(text) {
+    if (!text) return null;
+    if (text.indexOf(ATT_PREFIX) !== 0) return null;
+
+    const foot = text.indexOf(ATT_FOOTER);
+    if (foot < 0) return null;
+
+    const head = text.slice(ATT_PREFIX.length, foot);
+    const body = text.slice(foot + ATT_FOOTER.length).replace(/^\s+/, "");
+
+    const files = [];
+    let cur = null;
+    const lines = head.split("\n");
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].replace(/\r$/, "");
+        const h = line.match(/^\s*(\d+)\)\s+(.*?)\s+\((id=[^)]*)\)\s*$/);
+        if (h) {
+            cur = { name: h[2], meta: h[3], warn: null, summary: [] };
+            files.push(cur);
+            continue;
+        }
+        if (!cur) continue;
+        if (/^\s*摘要[:：]\s*$/.test(line)) continue;
+        if (/^\s*⚠/.test(line)) { cur.warn = line.trim(); continue; }
+        if (line.trim() !== "") cur.summary.push(line.replace(/^ {5}/, ""));
+    }
+
+    if (files.length === 0) return null;
+    return { files: files, body: body };
+}
+
+function buildAttachmentList(files) {
+    const wrap = document.createElement("div");
+    wrap.className = "att-list";
+
+    for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        const card = document.createElement("div");
+        card.className = "att-card";
+
+        const head = document.createElement("div");
+        head.className = "att-head";
+
+        const icon = document.createElement("span");
+        icon.className = "att-icon";
+        icon.textContent = "📎";
+
+        const name = document.createElement("span");
+        name.className = "att-name";
+        name.textContent = f.name;
+
+        const info = document.createElement("span");
+        info.className = "att-info";
+        info.textContent = (f.meta || "").replace(/^id=[^,]*,\s*/, "");
+
+        head.appendChild(icon);
+        head.appendChild(name);
+        head.appendChild(info);
+
+        const hasDetail = (f.summary && f.summary.length > 0) || f.warn;
+        if (hasDetail) {
+            const hint = document.createElement("span");
+            hint.className = "att-toggle-hint";
+            hint.textContent = "▸";
+            head.appendChild(hint);
+            head.addEventListener("click", () => {
+                const on = card.classList.toggle("expanded");
+                hint.textContent = on ? "▾" : "▸";
+            });
+        } else {
+            head.style.cursor = "default";
+        }
+
+        card.appendChild(head);
+
+        if (hasDetail) {
+            const sum = document.createElement("div");
+            sum.className = "att-summary att-body";
+            sum.textContent = (f.warn ? f.warn + "\n" : "") + f.summary.join("\n");
+            card.appendChild(sum);
+        }
+
+        wrap.appendChild(card);
+    }
+    return wrap;
+}
+
 function appendMessage(uiRole, text) {
     const msg = document.createElement("div");
     msg.className = "msg " + uiRole;
@@ -1461,7 +2282,16 @@ function appendMessage(uiRole, text) {
     const content = document.createElement("div");
     content.className = "msg-content";
     if (text) {
-        if (uiRole === "user" || uiRole === "system") {
+        const att = (uiRole === "user") ? parseAttachmentPrefix(text) : null;
+        if (att) {
+            // 附件前缀 → 卡片;剩下的才是用户真正输入的内容
+            content.appendChild(buildAttachmentList(att.files));
+            if (att.body) {
+                const bodyEl = document.createElement("div");
+                bodyEl.innerHTML = escapeHtml(att.body).replace(/\n/g, "<br>");
+                content.appendChild(bodyEl);
+            }
+        } else if (uiRole === "user" || uiRole === "system") {
             // 用户/系统消息保留纯文本换行 (不做 markdown 渲染, 避免用户 * 被误解为斜体等)
             content.innerHTML = escapeHtml(text).replace(/\n/g, "<br>");
         } else {
@@ -1734,6 +2564,12 @@ const inputBox = document.getElementById("input-box");
 const sendBtn = document.getElementById("send-btn");
 
 inputBox.addEventListener("input", autoGrow);
+inputBox.addEventListener("focus", () => {
+    document.getElementById("composer-card").classList.add("focused");
+});
+inputBox.addEventListener("blur", () => {
+    document.getElementById("composer-card").classList.remove("focused");
+});
 inputBox.addEventListener("compositionstart", () => { state.isComposing = true; });
 inputBox.addEventListener("compositionend", () => { state.isComposing = false; });
 inputBox.addEventListener("keydown", (e) => {
@@ -1935,11 +2771,8 @@ function closeKeyModal() {
 // ═════════════════════════════════════════════════════════════════
 let _allTools = [];
 
-document.getElementById("tm-close").addEventListener("click", closeToolsModal);
-document.getElementById("tools-modal").addEventListener("click", function (e) {
-    // 点击遮罩(而非里层 modal)关闭
-    if (e.target === document.getElementById("tools-modal")) closeToolsModal();
-});
+document.getElementById("tools-drawer-close").addEventListener("click", closeToolsModal);
+document.getElementById("tools-drawer-mask").addEventListener("click", closeToolsModal);
 document.getElementById("tm-filter").addEventListener("input", function () {
     const q = this.value.toLowerCase().trim();
     if (!q) { renderToolsList(_allTools); return; }
@@ -1950,21 +2783,43 @@ document.getElementById("tm-filter").addEventListener("input", function () {
     renderToolsList(filtered);
 });
 
+/// 名字保留 openToolsModal (调用点多),内部改成 drawer 开关
 function openToolsModal() {
-    document.getElementById("tools-modal").classList.add("show");
+    document.getElementById("tools-drawer-mask").classList.add("show");
+    document.getElementById("tools-drawer").classList.add("show");
     // 打开时清空 filter
     const f = document.getElementById("tm-filter");
     if (f) { f.value = ""; setTimeout(function () { f.focus(); }, 60); }
+
+    // 立即渲染当前缓存,避免打开→C#回消息之间那段视觉空白。
+    if (_allTools && _allTools.length > 0) {
+        renderToolsList(_allTools);
+        updateToolCount();
+    } else {
+        const list = document.getElementById("tm-list");
+        if (list) list.innerHTML = '<div class="tm-empty">\u6b63\u5728\u52a0\u8f7d\u5de5\u5177\u5217\u8868...</div>';
+        const cnt = document.getElementById("tm-count");
+        if (cnt) cnt.textContent = "";
+    }
+
+    // 主动向 C# 请求最新列表(避免缓存过期,同时不管从哪个入口打开都会拿到数据)
+    postToHost({ type: "listTools" });
 }
 function closeToolsModal() {
-    document.getElementById("tools-modal").classList.remove("show");
+    document.getElementById("tools-drawer-mask").classList.remove("show");
+    document.getElementById("tools-drawer").classList.remove("show");
+}
+
+function updateToolCount() {
+    const cnt = document.getElementById("tm-count");
+    if (cnt) cnt.textContent = (_allTools && _allTools.length > 0)
+        ? ("\u5171 " + _allTools.length + " \u4e2a") : "";
 }
 
 function onToolList(items) {
     _allTools = items || [];
     renderToolsList(_allTools);
-    const cnt = document.getElementById("tm-count");
-    if (cnt) cnt.textContent = "共 " + _allTools.length + " 个";
+    updateToolCount();
 }
 
 function renderToolsList(items) {
@@ -1980,18 +2835,51 @@ function renderToolsList(items) {
     for (const t of items) {
         const item = document.createElement("div");
         item.className = "tool-item";
+        item.title = "点击填入输入框";
         const ro = !!t.isReadOnly;
         item.innerHTML =
             '<div class="tool-item-head">' +
                 '<span class="tool-item-name"></span>' +
                 '<span class="tool-item-badge ' + (ro ? "readonly" : "mutating") + '"></span>' +
+                '<span class="tool-item-cta">↵ 填入输入框</span>' +
             '</div>' +
             '<div class="tool-item-desc"></div>';
         item.querySelector(".tool-item-name").textContent = t.name || "";
         item.querySelector(".tool-item-badge").textContent = ro ? "只读" : "变更 · 需审批";
         item.querySelector(".tool-item-desc").textContent = t.description || "";
+        item.addEventListener("click", function () {
+            fillInputFromTool(t);
+        });
         list.appendChild(item);
     }
+}
+
+/**
+ * 点击"可用工具"里某条时:关闭 modal,把极简调用引导 "使用 <name>: " 填入输入框,
+ * 光标停在末尾方便用户补具体任务描述。极简格式为了省 token —— 工具 description
+ * 已经在 tools 参数里传给了 API, prompt 里再重复一遍浪费。
+ * 已有内容时追加而非覆盖。
+ */
+function fillInputFromTool(t) {
+    if (!t) return;
+    closeToolsModal();
+    const input = document.getElementById("input-box");
+    if (!input) return;
+
+    const template = "使用 " + (t.name || "") + ": ";
+    const cur = input.value || "";
+    if (cur && cur.trim().length > 0) {
+        input.value = cur.replace(/\s+$/, "") + "\n" + template;
+    } else {
+        input.value = template;
+    }
+    input.focus();
+    try {
+        const end = input.value.length;
+        input.setSelectionRange(end, end);
+    } catch {}
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    scrollToBottom();
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -2012,6 +2900,16 @@ document.addEventListener("keydown", function (e) {
     if (!modal.classList.contains("show")) return;
     if (e.key === "Escape") { e.preventDefault(); closeApprovalModal(false); }
     // Enter 不做默认允许 —— 避免误批
+});
+
+// ask_user modal 的取消按钮 + Esc 兜底(input 模式已在 keydown 里处理)
+document.getElementById("au-cancel").addEventListener("click", function () {
+    closeAskUserModal(null);
+});
+document.addEventListener("keydown", function (e) {
+    const modal = document.getElementById("askuser-modal");
+    if (!modal.classList.contains("show")) return;
+    if (e.key === "Escape") { e.preventDefault(); closeAskUserModal(null); }
 });
 
 function onAskApproval(msg) {
@@ -2062,6 +2960,278 @@ function addApRow(container, label, value, isDesc) {
     row.appendChild(l);
     row.appendChild(v);
     container.appendChild(row);
+}
+
+// ═════════════════════════════════════════════════════════════════
+//  ask_user modal —— AI 主动向用户提问
+//  kind = confirm/choice/input,对应"是否/多选一/自由输入"三种交互
+// ═════════════════════════════════════════════════════════════════
+// 当前弹窗的字段读取器:每项返回 [name, value]
+let auReaders = [];
+let auIsForm = false;
+
+function onAskUser(msg) {
+    const qEl       = document.getElementById("au-question");
+    const choicesEl = document.getElementById("au-choices");
+    const inputEl   = document.getElementById("au-input");
+    const formEl    = document.getElementById("au-form");
+    const submitBtn = document.getElementById("au-submit");
+
+    qEl.textContent = msg.question || "(无问题)";
+
+    // 复位
+    choicesEl.innerHTML = "";
+    formEl.innerHTML = "";
+    inputEl.value = "";
+    choicesEl.style.display = "none";
+    formEl.style.display = "none";
+    inputEl.style.display = "none";
+    submitBtn.style.display = "none";
+    submitBtn.onclick = null;
+    auReaders = [];
+    auIsForm = false;
+
+    const kind = (msg.kind || "confirm").toLowerCase();
+
+    // ── 快捷交互:confirm 与不带自定义项的 choice,点一下即答,不用再点提交 ──
+    if (kind === "confirm") {
+        choicesEl.style.display = "";
+        const yes = document.createElement("button");
+        yes.className = "primary";
+        yes.textContent = "是";
+        yes.addEventListener("click", () => closeAskUserModal("yes"));
+        const no = document.createElement("button");
+        no.textContent = "否";
+        no.addEventListener("click", () => closeAskUserModal("no"));
+        choicesEl.appendChild(yes);
+        choicesEl.appendChild(no);
+        showAskUserModal(() => choicesEl.querySelector("button"));
+        return;
+    }
+
+    if (kind === "choice" && !msg.allowCustom) {
+        choicesEl.style.display = "";
+        const opts = msg.options || [];
+        for (let i = 0; i < opts.length; i++) {
+            const btn = document.createElement("button");
+            btn.textContent = opts[i];
+            const val = opts[i];
+            if (msg.default && val === msg.default) btn.className = "primary";
+            btn.addEventListener("click", () => closeAskUserModal(val));
+            choicesEl.appendChild(btn);
+        }
+        showAskUserModal(() => choicesEl.querySelector("button.primary") || choicesEl.querySelector("button"));
+        return;
+    }
+
+    // ── 字段化渲染:multi_choice / 带自定义的 choice / input / form ──
+    auIsForm = (kind === "form");
+    const fields = auIsForm
+        ? (msg.fields || [])
+        : [{
+            name: "value",
+            type: kind,
+            options: msg.options,
+            "default": msg.default,
+            allowCustom: msg.allowCustom,
+            multiline: msg.multiline
+          }];
+
+    for (let i = 0; i < fields.length; i++) {
+        auReaders.push(auRenderField(formEl, fields[i], auIsForm));
+    }
+
+    formEl.style.display = "";
+    submitBtn.style.display = "";
+    submitBtn.onclick = auSubmit;
+
+    showAskUserModal(() => formEl.querySelector("input[type=text], textarea, select, input[type=radio], input[type=checkbox]"));
+}
+
+function auSubmit() {
+    if (!auIsForm) {
+        const kv = auReaders.length ? auReaders[0]() : ["value", ""];
+        closeAskUserModal(kv[1]);
+        return;
+    }
+    const obj = {};
+    for (let i = 0; i < auReaders.length; i++) {
+        const kv = auReaders[i]();
+        obj[kv[0]] = kv[1];
+    }
+    closeAskUserModal(JSON.stringify(obj));
+}
+
+// 渲染一个字段,返回读取函数 () => [name, value]
+function auRenderField(container, f, showLabel) {
+    const name = f.name || "value";
+    const type = (f.type || "input").toLowerCase();
+    const opts = f.options || [];
+    const dflt = f["default"] || "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "au-field";
+    container.appendChild(wrap);
+
+    if (showLabel) {
+        const lab = document.createElement("div");
+        lab.className = "au-field-label";
+        lab.textContent = f.label || name;
+        wrap.appendChild(lab);
+    }
+
+    if (type === "input") {
+        const el = document.createElement(f.multiline ? "textarea" : "input");
+        el.className = "au-input";
+        if (!f.multiline) el.type = "text";
+        el.value = dflt;
+        wrap.appendChild(el);
+        if (!f.multiline) {
+            el.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") { e.preventDefault(); auSubmit(); }
+            });
+        }
+        return () => [name, (el.value || "").trim()];
+    }
+
+    if (type === "confirm") {
+        const box = document.createElement("div");
+        box.className = "au-opts";
+        wrap.appendChild(box);
+        const group = "au_" + name + "_" + Math.random().toString(36).slice(2, 8);
+        const yes = auOption(box, "radio", group, "是");
+        const no  = auOption(box, "radio", group, "否");
+        if (String(dflt).toLowerCase() === "no") no.checked = true; else yes.checked = true;
+        return () => [name, yes.checked ? "yes" : "no"];
+    }
+
+    if (type === "choice") {
+        // 选项过多改用下拉,免得弹窗被撑得很长
+        if (opts.length >= 8 && !f.allowCustom) {
+            const sel = document.createElement("select");
+            sel.className = "au-input";
+            for (let i = 0; i < opts.length; i++) {
+                const o = document.createElement("option");
+                o.value = opts[i];
+                o.textContent = opts[i];
+                if (opts[i] === dflt) o.selected = true;
+                sel.appendChild(o);
+            }
+            wrap.appendChild(sel);
+            return () => [name, sel.value || ""];
+        }
+
+        const box = document.createElement("div");
+        box.className = "au-opts";
+        wrap.appendChild(box);
+
+        const group = "au_" + name + "_" + Math.random().toString(36).slice(2, 8);
+        const radios = [];
+        for (let i = 0; i < opts.length; i++) {
+            const r = auOption(box, "radio", group, opts[i]);
+            if (opts[i] === dflt) r.checked = true;
+            radios.push({ el: r, val: opts[i] });
+        }
+
+        let customBox = null, customRadio = null;
+        if (f.allowCustom) {
+            customRadio = auOption(box, "radio", group, "其他(自行填写)");
+            customBox = document.createElement("input");
+            customBox.type = "text";
+            customBox.className = "au-input au-custom";
+            customBox.addEventListener("focus", () => { customRadio.checked = true; });
+            box.appendChild(customBox);
+        }
+
+        if (!radios.some(r => r.el.checked) && (!customRadio || !customRadio.checked)) {
+            if (radios.length) radios[0].el.checked = true;
+            else if (customRadio) customRadio.checked = true;
+        }
+
+        return () => {
+            for (let i = 0; i < radios.length; i++)
+                if (radios[i].el.checked) return [name, radios[i].val];
+            if (customRadio && customRadio.checked)
+                return [name, (customBox.value || "").trim()];
+            return [name, ""];
+        };
+    }
+
+    // multi_choice
+    const box = document.createElement("div");
+    box.className = "au-opts";
+    wrap.appendChild(box);
+
+    const boxes = [];
+    for (let i = 0; i < opts.length; i++) {
+        const c = auOption(box, "checkbox", null, opts[i]);
+        if (opts[i] === dflt) c.checked = true;
+        boxes.push({ el: c, val: opts[i] });
+    }
+
+    if (boxes.length > 5) {
+        const bulk = document.createElement("div");
+        bulk.className = "au-bulk";
+        const a1 = document.createElement("a");
+        a1.textContent = "全选";
+        a1.addEventListener("click", () => boxes.forEach(b => { b.el.checked = true; }));
+        const a2 = document.createElement("a");
+        a2.textContent = "清空";
+        a2.addEventListener("click", () => boxes.forEach(b => { b.el.checked = false; }));
+        bulk.appendChild(a1);
+        bulk.appendChild(a2);
+        wrap.appendChild(bulk);
+    }
+
+    return () => {
+        const picked = boxes.filter(b => b.el.checked).map(b => b.val);
+        return [name, picked.length ? picked.join(", ") : "(未选择任何项)"];
+    };
+}
+
+// 一行选项:整行可点,与单选/多选外观统一
+function auOption(container, inputType, group, text) {
+    const row = document.createElement("label");
+    row.className = "au-opt";
+    const inp = document.createElement("input");
+    inp.type = inputType;
+    if (group) inp.name = group;
+    const span = document.createElement("span");
+    span.textContent = text;
+    row.appendChild(inp);
+    row.appendChild(span);
+    container.appendChild(row);
+    return inp;
+}
+
+function showAskUserModal(pickFocus) {
+    const modal = document.getElementById("askuser-modal");
+    modal.classList.add("show");
+    setTimeout(function () {
+        try {
+            const el = pickFocus ? pickFocus() : null;
+            if (el) el.focus();
+        } catch (e) {}
+    }, 60);
+}
+
+document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    const modal = document.getElementById("askuser-modal");
+    if (modal && modal.classList.contains("show")) {
+        e.preventDefault();
+        closeAskUserModal(null);
+    }
+});
+
+/// answer=null 视为取消;否则视为用户答复(form 模式下是 JSON 字符串)
+function closeAskUserModal(answer) {
+    document.getElementById("askuser-modal").classList.remove("show");
+    postToHost({
+        type: "askUserResponse",
+        cancelled: answer === null || answer === undefined,
+        answer: answer || ""
+    });
 }
 
 function closeApprovalModal(allow) {
@@ -2205,8 +3375,68 @@ function renderMarkdown(text) {
     text = text.replace(/\u0001CB(\d+)\u0001/g, (m, i) => codeBlocks[+i]);
     text = text.replace(/\u0001IC(\d+)\u0001/g, (m, i) => inlineCodes[+i]);
 
+    // 11) 文件路径转成可点击链接
+    text = linkifyPaths(text);
+
     return text;
 }
+
+// ═════════════════════════════════════════════════════════════════
+//  文件路径识别
+//
+//  模型经常在回答里给出生成的文件路径(导出的 xlsx、截图、日志)。
+//  让它可点击省掉"复制路径 → 打开资源管理器 → 粘贴"这三步。
+//
+//  【只在标签外的纯文本上做】renderMarkdown 此时已经生成了 HTML,
+//  直接全局替换会把 <a href="..."> 里的路径也改掉,破坏结构。
+//  所以按标签切分,只处理标签之间的文本片段。
+//
+//  【行内 code 要处理,只跳过 pre 代码块】模型给文件路径时几乎总是用反引号包起来,
+//  一开始把 <code> 一并跳过,结果绝大多数路径都点不了。
+//  真正该跳过的只有 <pre> 里的大段代码 —— 那里的路径通常是示例而非真实产物。
+// ═════════════════════════════════════════════════════════════════
+
+// C:\dir\file.ext 或 \\server\share\file.ext
+// 要求必须有扩展名，避免把普通句子里的反斜杠误判成路径
+const PATH_RE = /(?:[A-Za-z]:\\|\\\\)[^\s<>"'|?*\u0001]*[^\s<>"'|?*.,;:!)\]}\u0001]\.[A-Za-z0-9]{1,8}/g;
+
+function linkifyPaths(html) {
+    if (!html || html.indexOf("\\") < 0) return html;
+
+    // 按标签切开：偶数段是文本，奇数段是标签
+    const parts = html.split(/(<[^>]*>)/);
+    let inSkip = 0;
+
+    for (let i = 0; i < parts.length; i++) {
+        const seg = parts[i];
+
+        if (i % 2 === 1) {
+            // 只跳过 <pre> 大段代码和已有链接；行内 <code> 要处理
+            if (/^<(pre|a)\b/i.test(seg)) inSkip++;
+            else if (/^<\/(pre|a)>/i.test(seg)) inSkip = Math.max(0, inSkip - 1);
+            continue;
+        }
+
+        if (inSkip > 0 || !seg) continue;
+
+        parts[i] = seg.replace(PATH_RE, (m) => {
+            const attr = m.replace(/"/g, "&quot;");
+            return '<span class="file-link" data-path="' + attr + '" title="点击打开">' + m + "</span>";
+        });
+    }
+
+    return parts.join("");
+}
+
+// 事件委托：气泡是动态生成的，逐个绑定会漏
+document.addEventListener("click", (e) => {
+    const el = e.target.closest ? e.target.closest(".file-link") : null;
+    if (!el) return;
+    const path = el.getAttribute("data-path");
+    if (!path) return;
+    e.preventDefault();
+    postToHost({ type: "openPath", path: path });
+});
 
 // ═════════════════════════════════════════════════════════════════
 //  启动
@@ -2259,5 +3489,34 @@ try {
 }
 
 </script>
+
+<!-- 配方侧边栏:宿主回复(recipe.*)经 PostWebMessageAsJson 走页面 message 事件,
+     在这里统一接住后分流转交;其余消息仍走 dispatchMessage,不受影响。 -->
+<script>
+if (window.chrome && window.chrome.webview) {
+    window.chrome.webview.addEventListener("message", function (e) {
+        try {
+            var msg = (typeof e.data === "string") ? JSON.parse(e.data) : e.data;
+            if (msg && msg.type && msg.type.indexOf("recipe.") === 0) {
+                if (window.txRecipes) { window.txRecipes.onHostMessage(msg); }
+                return;
+            }
+        } catch (err) { console.error("recipe message parse:", err); }
+    });
+}
+</script>
+<script src="recipe-sidebar.js"></script>
+<script>
+try {
+    if (window.txRecipes && document.getElementById("shell")) {
+        window.txRecipes.mount(document.getElementById("shell"));
+    } else {
+        console.error("txRecipes 或 #shell 不存在,配方侧边栏未挂载");
+    }
+} catch (e) { console.error("recipe sidebar mount:", e); }
+</script>
+
+</div><!-- /#app -->
+</div><!-- /#shell -->
 </body>
 </html>

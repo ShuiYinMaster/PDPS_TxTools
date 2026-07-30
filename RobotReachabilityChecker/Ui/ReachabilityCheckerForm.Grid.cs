@@ -16,6 +16,7 @@ using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
 using Tecnomatix.Engineering.Ui;
+using TxTools.Common;
 using Tecnomatix.Engineering.Ui.WPF;
 using TxTools.RobotReachabilityChecker.Models;
 using TxTools.RobotReachabilityChecker.Services;
@@ -25,6 +26,9 @@ namespace TxTools.RobotReachabilityChecker.Ui
 {
     public partial class ReachabilityCheckerForm
     {
+        // 内容列宽上限（px）：按内容自动调整但不超过此值，防止备注列被挤到底线
+        private const int MAX_COL_W = 320;
+
         // =====================================================================
         // 构建表格
         // =====================================================================
@@ -38,7 +42,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 AllowEditing = false,
                 AllowSorting = C1.Win.C1FlexGrid.AllowSortingEnum.SingleColumn,
                 ShowCursor = true,
-                Font = SystemFonts.DefaultFont
+                Font = FormUiKit.BaseFont
             };
 
             _grid.Rows.Fixed = 1;
@@ -57,12 +61,12 @@ namespace TxTools.RobotReachabilityChecker.Ui
             // 用 Graphics 测量表头，确保列宽足以显示完整表头
             using (var g = CreateGraphics())
             {
-                var hdrFont = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+                var hdrFont = FormUiKit.BoldFont;
                 for (int i = 0; i < 14; i++)
                 {
                     int textW = (int)g.MeasureString(captions[i], hdrFont).Width + 16;
-                    if (i == COL_OP) _grid.Cols[i].Width = 140;
-                    else if (i == COL_PT) _grid.Cols[i].Width = 140;
+                    if (i == COL_OP) _grid.Cols[i].Width = 110;
+                    else if (i == COL_PT) _grid.Cols[i].Width = 110;
                     else if (i == COL_NOTE) _grid.Cols[i].Width = 120;  // 在 Resize 中填充剩余
                     else _grid.Cols[i].Width = Math.Max(textW, 42);
                 }
@@ -72,20 +76,19 @@ namespace TxTools.RobotReachabilityChecker.Ui
             var hdrStyle = _grid.Styles[C1.Win.C1FlexGrid.CellStyleEnum.Fixed];
             hdrStyle.BackColor = TxClrGridHeader.Color;
             hdrStyle.ForeColor = TxClrGridHeaderText.Color;
-            hdrStyle.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+            hdrStyle.Font = FormUiKit.BoldFont;
 
             _grid.Styles[C1.Win.C1FlexGrid.CellStyleEnum.Normal].BackColor = SystemColors.Window;
             _grid.Styles[C1.Win.C1FlexGrid.CellStyleEnum.Alternate].BackColor = TxClrGridAlt.Color;
             _grid.Styles[C1.Win.C1FlexGrid.CellStyleEnum.Highlight].BackColor = TxClrGridHighlight.Color;
             _grid.Styles[C1.Win.C1FlexGrid.CellStyleEnum.Highlight].ForeColor = SystemColors.WindowText;
 
-            // 单击行 → 只更新状态栏（不再驱动姿态，避免与双击冲突）
-            //          + 在 _tripleClickWindowMs 内连击双击行 → 触发三击（Robot Jog）
+            // 单击行 → 驱动机器人 + 自动选中焊点；双击行 → 打开 Robot Jog
             _grid.AfterSelChange += Grid_AfterSelChange;
-            _grid.MouseClick += Grid_SingleClickForTriple;
+            _grid.MouseClick += Grid_SingleClick_Drive;
 
-            // 双击行 → 驱动机器人到该点位姿态
-            _grid.MouseDoubleClick += Grid_DblClick_Mouse;
+            // 双击行 → 选中点位 + 打开 Robot Jog
+            _grid.MouseDoubleClick += Grid_DblClick_Jog;
 
             this.Resize += (s, e) => ResizeGridCols();
             Controls.Add(_grid);
@@ -110,8 +113,8 @@ namespace TxTools.RobotReachabilityChecker.Ui
             _rsAlt0 = _grid.Styles.Add("rsAlt0"); _rsAlt0.BackColor = SystemColors.Window;
             _rsAlt1 = _grid.Styles.Add("rsAlt1"); _rsAlt1.BackColor = TxClrGridAlt.Color;
 
-            _csOver = _grid.Styles.Add("csOver"); _csOver.BackColor = TxClrCellOver.Color; _csOver.ForeColor = Color.White;
-            _csSing = _grid.Styles.Add("csSing"); _csSing.BackColor = TxClrCellSingular.Color; _csSing.ForeColor = Color.White;
+            _csOver = _grid.Styles.Add("csOver"); _csOver.BackColor = TxClrCellOver.Color; _csOver.ForeColor = FormUiKit.Theme.BtnFore;
+            _csSing = _grid.Styles.Add("csSing"); _csSing.BackColor = TxClrCellSingular.Color; _csSing.ForeColor = FormUiKit.Theme.BtnFore;
             _csNear = _grid.Styles.Add("csNear"); _csNear.BackColor = TxClrCellNear.Color;
             _csCrit = _grid.Styles.Add("csCrit"); _csCrit.BackColor = TxClrCellCritical.Color;
         }
@@ -137,7 +140,9 @@ namespace TxTools.RobotReachabilityChecker.Ui
             if (_grid == null || _grid.Cols.Count < 14) return;
             try
             {
-                int[] autoSizeCols = { COL_IDX, COL_BRAND, COL_ROBOT, COL_TYPE,
+                // 除备注列外，所有列都按内容量自动调整（含操作名/点名，取内容最宽者）
+                int[] autoSizeCols = { COL_IDX, COL_BRAND, COL_ROBOT, COL_OP, COL_PT,
+                                       COL_TYPE,
                                        COL_J1, COL_J2, COL_J3, COL_J4, COL_J5, COL_J6,
                                        COL_RESULT };
                 foreach (int ci in autoSizeCols)
@@ -147,10 +152,12 @@ namespace TxTools.RobotReachabilityChecker.Ui
                         _grid.AutoSizeCol(ci);
                         using (var g = CreateGraphics())
                         {
-                            var hdrFont = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+                            var hdrFont = FormUiKit.BoldFont;
                             int hdrW = (int)g.MeasureString(_grid.Cols[ci].Caption, hdrFont).Width + 16;
                             if (_grid.Cols[ci].Width < hdrW) _grid.Cols[ci].Width = hdrW;
                         }
+                        // 内容列上限：避免单个超长内容把备注列挤到 80 底线
+                        if (_grid.Cols[ci].Width > MAX_COL_W) _grid.Cols[ci].Width = MAX_COL_W;
                     }
                     catch { }
                 }
@@ -159,7 +166,8 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 for (int i = 0; i < 13; i++) fixedTotal += _grid.Cols[i].Width;
                 int remaining = _grid.ClientSize.Width - fixedTotal
                               - (SystemInformation.VerticalScrollBarWidth + 2);
-                if (remaining > 60) _grid.Cols[COL_NOTE].Width = remaining;
+                // 备注列吸走全部剩余宽度，保证表格填满无右方空隙
+                _grid.Cols[COL_NOTE].Width = Math.Max(remaining, 80);
             }
             catch { }
         }

@@ -109,7 +109,11 @@ namespace TxTools.Agent.Tools
                 return JObject.Parse(@"{
                     ""type"": ""object"",
                     ""properties"": {
-                        ""name"": { ""type"": ""string"", ""description"": ""机器人名称"" }
+                        ""name"": { ""type"": ""string"", ""description"": ""机器人名称"" },
+                        ""object_id"": {
+                            ""type"": ""string"",
+                            ""description"": ""对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 object_id 就会忽略 name。""
+                        }
                     },
                     ""required"": [""name""]
                 }");
@@ -118,7 +122,7 @@ namespace TxTools.Agent.Tools
 
         public override string Execute(JObject input)
         {
-            return PsBridge.InspectRobotKinematics(GetString(input, "name", null));
+            return PsBridge.InspectRobotKinematics(GetString(input, "name", null), GetString(input, "object_id", null));
         }
     }
 

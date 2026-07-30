@@ -5,6 +5,8 @@ using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui.WPF;
 using static TxTools.RobotReachabilityChecker.Ui.Theme;
 
+using TxTools.Common;
+
 namespace TxTools.RobotReachabilityChecker.Ui
 {
     // =========================================================================
@@ -54,7 +56,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             Size = new System.Drawing.Size(480, 400);
             MinimumSize = new System.Drawing.Size(420, 340);
             FormBorderStyle = FormBorderStyle.SizableToolWindow;
-            BackColor = SystemColors.Control;
+            BackColor = FormUiKit.CardBack;
             Build();
         }
 
@@ -67,7 +69,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 Dock = DockStyle.Top,
                 Height = 26,
                 Padding = new Padding(8, 5, 0, 0),
-                Font = new System.Drawing.Font(SystemFonts.DefaultFont, FontStyle.Bold),
+                Font = FormUiKit.BoldFont,
                 ForeColor = TxClrAccent.Color,
                 BackColor = TxClrEditHeader.Color
             };
@@ -83,7 +85,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 Height = 22,
                 Location = new System.Drawing.Point(6, 7),
                 ForeColor = SystemColors.GrayText,
-                Font = SystemFonts.DefaultFont
+                Font = FormUiKit.BaseFont
             };
 
             _btnReset = new Button
@@ -92,7 +94,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 Width = 72,
                 Height = 26,
                 FlatStyle = FlatStyle.System,
-                Font = SystemFonts.DefaultFont,
+                Font = FormUiKit.BaseFont,
                 Anchor = AnchorStyles.Right | AnchorStyles.Top
             };
             _btnReset.Click += BtnReset_Click;
@@ -103,7 +105,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 Width = 72,
                 Height = 26,
                 FlatStyle = FlatStyle.System,
-                Font = SystemFonts.DefaultFont,
+                Font = FormUiKit.BaseFont,
                 Anchor = AnchorStyles.Right | AnchorStyles.Top
             };
             _btnClose.Click += (s, e) => Close();
@@ -121,7 +123,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             _host = new System.Windows.Forms.Integration.ElementHost
             {
                 Dock = DockStyle.Fill,
-                BackColor = SystemColors.Control,
+                BackColor = FormUiKit.CardBack,
                 BackColorTransparent = false
             };
 

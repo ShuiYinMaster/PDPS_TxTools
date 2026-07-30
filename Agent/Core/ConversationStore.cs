@@ -19,6 +19,9 @@ namespace TxTools.Agent.Core
         public string Id { get; set; }
         public string Title { get; set; }
         public DateTime UpdatedUtc { get; set; }
+
+        /// <summary>是否正被【另一个 TxAgent 进程】打开着。为 true 时不应自动载入。</summary>
+        public bool HeldByOther { get; set; }
     }
 
     public sealed class Conversation
@@ -27,6 +30,15 @@ namespace TxTools.Agent.Core
         public string Title { get; set; }
         public DateTime CreatedUtc { get; set; }
         public DateTime UpdatedUtc { get; set; }
+
+        /// <summary>
+        /// 本会话累计 token 用量。持久化的原因:AgentLoop 的计数器随实例存活,
+        /// 重开对话就归零 —— 但用户看到的应该是"这个会话到目前为止一共花了多少",
+        /// 而不是"本次打开之后花了多少"。
+        /// </summary>
+        public int PromptTokens { get; set; }
+        public int CompletionTokens { get; set; }
+
         public List<ChatMessage> Messages { get; set; }
 
         public Conversation() { Messages = new List<ChatMessage>(); }
@@ -39,7 +51,10 @@ namespace TxTools.Agent.Core
 
         public static string NewId()
         {
-            return "conv_" + DateTime.UtcNow.ToString("yyyyMMddHHmmssfff");
+            // 【必须带进程标识】只精确到毫秒的话，两个 PDPS 同时新建对话就是同一个 id，
+            // 两边各写各的，后保存的整份覆盖先保存的。
+            return "conv_" + DateTime.UtcNow.ToString("yyyyMMddHHmmssfff")
+                 + "_" + ProcessSync.InstanceId;
         }
 
         /// <summary>列出全部对话(按更新时间倒序)。</summary>
@@ -57,7 +72,13 @@ namespace TxTools.Agent.Core
                         {
                             var c = JsonConvert.DeserializeObject<Conversation>(File.ReadAllText(f, Encoding.UTF8));
                             if (c != null && !string.IsNullOrEmpty(c.Id))
-                                metas.Add(new ConversationMeta { Id = c.Id, Title = c.Title, UpdatedUtc = c.UpdatedUtc });
+                                metas.Add(new ConversationMeta
+                                {
+                                    Id = c.Id,
+                                    Title = c.Title,
+                                    UpdatedUtc = c.UpdatedUtc,
+                                    HeldByOther = ProcessSync.IsHeldByOther(dir, c.Id)
+                                });
                         }
                         catch { }
                     }
@@ -89,10 +110,49 @@ namespace TxTools.Agent.Core
             {
                 var dir = FolderPath();
                 Directory.CreateDirectory(dir);
-                File.WriteAllText(Path.Combine(dir, Safe(conv.Id) + ".json"),
-                    JsonConvert.SerializeObject(conv, Formatting.Indented), Encoding.UTF8);
+
+                // 同一个 conv 理论上只被一个进程持有，但锁失效时仍可能并发写，
+                // 加一道互斥保证文件不会写到一半被另一个进程截断
+                ProcessSync.WithFileLock("conv_" + Safe(conv.Id), delegate
+                {
+                    File.WriteAllText(Path.Combine(dir, Safe(conv.Id) + ".json"),
+                        JsonConvert.SerializeObject(conv, Formatting.Indented), Encoding.UTF8);
+                });
+
+                ProcessSync.RenewConversation(dir, conv.Id);   // 保存即心跳
             }
             catch { /* 持久化失败不影响对话本身 */ }
+
+            // JSON 是给 API 无损重放用的;MD 摘要是给检索用的。两者一起更新。
+            // 索引失败不抛 —— 它只是加速层。
+            ConversationIndex.Rebuild(conv);
+        }
+
+        /// <summary>占用某会话。已被别的活进程占着时返回 false。</summary>
+        public static bool Acquire(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return false;
+            return ProcessSync.AcquireConversation(FolderPath(), id);
+        }
+
+        public static void Release(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return;
+            ProcessSync.ReleaseConversation(FolderPath(), id);
+        }
+
+        /// <summary>启动时挑一个可用会话:最近的、且没被别的进程占着的。</summary>
+        public static ConversationMeta PickAvailable()
+        {
+            foreach (var m in List())
+                if (!m.HeldByOther) return m;
+            return null;
+        }
+
+        /// <summary>监听目录变化，对方新建/更新对话时回调。</summary>
+        public static ProcessSync.Watcher Watch(Action onChanged)
+        {
+            return new ProcessSync.Watcher(FolderPath(), "*.json", onChanged);
         }
 
         public static void Delete(string id)
@@ -104,6 +164,7 @@ namespace TxTools.Agent.Core
                 if (File.Exists(p)) File.Delete(p);
             }
             catch { }
+            ConversationIndex.Delete(id);
         }
 
         /// <summary>是否含有至少一条用户消息(用于判断空对话不必落盘)。</summary>
@@ -149,6 +210,9 @@ namespace TxTools.Agent.Core
             }
             catch { }
         }
+
+        /// <summary>供 ConversationIndex 定位 index 子目录。</summary>
+        public static string FolderPathPublic() { return FolderPath(); }
 
         private static string FolderPath()
         {

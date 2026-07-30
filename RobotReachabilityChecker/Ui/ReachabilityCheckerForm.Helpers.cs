@@ -21,7 +21,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
         {
             Text = text,
             AutoSize = true,
-            Font = SystemFonts.DefaultFont,
+            Font = FormUiKit.BaseFont,
             ForeColor = ClrMuted,
             Margin = new Padding(0, 7, 4, 0)
         };
@@ -36,30 +36,39 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 FlatStyle = FlatStyle.Flat,
                 BgColor = SystemColors.ControlLight,
                 ForeColor = SystemColors.ControlText,
-                BorderColor = SystemColors.ControlDark,
-                Font = SystemFonts.DefaultFont,
+                BorderColor = FormUiKit.Theme.BtnBorder,
+                HoverColor = FormUiKit.Theme.BtnHover,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 2, 4, 2)
             };
         }
 
-        /// <summary>功能区按钮：自适应文本宽度、单行、带背景色</summary>
-        private Button MkFuncButton(string text, Color bgColor)
+        /// <summary>功能区按钮：自适应文本宽度、单行、带背景色。fixedWidth &gt; 0 时使用固定宽度（按钮等宽）。</summary>
+        private Button MkFuncButton(string text, Color bgColor, int fixedWidth = 0)
         {
-            return new FormUiKit.FlatColorButton
+            var btn = new FormUiKit.FlatColorButton
             {
                 Text = text,
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 Height = 26,
                 FlatStyle = FlatStyle.Flat,
-                Font = SystemFonts.DefaultFont,
+                Font = FormUiKit.BaseFont,
                 BgColor = bgColor,
-                ForeColor = Color.White,
-                BorderColor = bgColor,
+                // 文字色按背景亮度自动取黑/白，避免深色按钮 + 黑字不可读（如 Flat 主题下 TxClrBtn* 灰底 + BtnFore 黑字）
+                ForeColor = bgColor.GetBrightness() > 0.62f ? FormUiKit.Theme.BtnFore : System.Drawing.Color.White,
+                BorderColor = FormUiKit.Theme.BtnBorder,
+                HoverColor = FormUiKit.Theme.BtnHover,
                 Margin = new Padding(0, 2, 4, 2),
                 Padding = new Padding(8, 2, 8, 2),
                 Cursor = Cursors.Hand
             };
+            if (fixedWidth > 0)
+            {
+                btn.AutoSize = false;
+                btn.Width = fixedWidth;
+            }
+            return btn;
         }
 
         // =====================================================================

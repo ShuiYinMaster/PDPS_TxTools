@@ -53,47 +53,17 @@ using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
 
+// 配色/控件统一收编到 TxTools.Common.FormUiKit（套件统一 GUI 规范）
+using TxTools.Common;
+using Theme = TxTools.Common.FormUiKit.Theme;
+using ColoredGroupBox = TxTools.Common.FormUiKit.ColoredGroupBox;
+using FlatColorButton = TxTools.Common.FormUiKit.FlatColorButton;
+using FlatColorLabel = TxTools.Common.FormUiKit.FlatColorLabel;
+
 namespace TxTools.ExportGun
 {
     public partial class ExportGunForm : TxForm
     {
-        // ════════════════════════════════════════════════════════════
-        //  Theme：集中管理所有颜色常量
-        // ════════════════════════════════════════════════════════════
-        private static class Theme
-        {
-            // 区块/卡片标题色（TxColor 形式，传给 PS API 时用 .Color 取 System.Drawing.Color）
-            public static readonly TxColor TxAccent = new TxColor(0, 70, 127);
-            public static readonly TxColor TxCol1 = new TxColor(0, 100, 140);
-            public static readonly TxColor TxGun = new TxColor(155, 120, 0);
-            public static readonly TxColor TxBall = new TxColor(150, 70, 90);
-            public static readonly TxColor TxLog = new TxColor(50, 120, 60);
-            public static readonly TxColor TxPoints = new TxColor(95, 75, 140);
-
-            // 功能按钮色
-            public static readonly Color BtnPrimary = Color.FromArgb(0, 100, 167);
-            public static readonly Color BtnSecondary = Color.FromArgb(80, 120, 140);
-            public static readonly Color BtnMuted = Color.FromArgb(120, 124, 135);
-            public static readonly Color BtnDanger = Color.FromArgb(130, 50, 50);
-            public static readonly Color BtnExport = Color.FromArgb(80, 80, 130);
-            public static readonly Color BtnGun = Color.Orange;
-
-            // 日志面板
-            public static readonly Color LogBg = Color.FromArgb(20, 22, 27);
-            public static readonly Color LogText = Color.FromArgb(178, 200, 178);
-            public static readonly Color LogOk = Color.FromArgb(90, 210, 110);
-            public static readonly Color LogErr = Color.FromArgb(228, 88, 88);
-            public static readonly Color LogWarn = Color.FromArgb(228, 180, 70);
-            public static readonly Color LogPs = Color.FromArgb(110, 180, 228);
-            public static readonly Color LogCoord = Color.FromArgb(160, 200, 255);
-            public static readonly Color LogExcel = Color.FromArgb(180, 228, 160);
-
-            // 状态色（参考坐标状态条）
-            public static readonly Color StatusOkFg = Color.FromArgb(25, 110, 25);
-            public static readonly Color StatusOkBg = Color.FromArgb(210, 252, 210);
-            public static readonly Color StatusRefFg = Color.FromArgb(25, 60, 130);
-            public static readonly Color StatusRefBg = Color.FromArgb(180, 220, 255);
-        }
 
         // ════════════════════════════════════════════════════════════
         //  日志级别
@@ -155,7 +125,6 @@ namespace TxTools.ExportGun
         private TextBox _txtGunProductName;
         private Button _btnExportGun;
         private Label _lblGunInfo;
-        private ComboBox _cmbGunExportMode;   // 导出方式：共享几何 / 独立命名
         // TCP 选择
         private ComboBox _cmbTcp;                 // 多 TCP 下拉
         private Panel _tcpCustomPanel;            // 自定义坐标选择器容器
@@ -207,7 +176,7 @@ namespace TxTools.ExportGun
             BuildUI();
             // 关闭 Siemens flat style 皮肤以让自定义配色生效；
             // 低版本 PDPS 可能无此属性，故用反射设置，失败静默忽略。
-            
+
             try
             {
                 var flatStyleProp = this.GetType().GetProperty("FlatStyleEnabled");
@@ -278,19 +247,8 @@ namespace TxTools.ExportGun
             if (_listAdapter is GridAdapter)
             {
                 Log("[系统] 点击列表内高亮行，在 PS 中选中对象即可加入");
-                // TxObjGridCtrl 启动后首次拾取需要先获得焦点
-                BeginInvoke(new Action(delegate ()
-                {
-                    try
-                    {
-                        if (_objGrid != null && _objGrid.Visible)
-                        {
-                            _objGrid.Focus();
-                            try { _objGrid.SetCurrentCell(0, 0); } catch { }
-                        }
-                    }
-                    catch { }
-                }));
+                // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点
+                FormUiKit.GridPickFocus.Wire(_objGrid);
             }
         }
 
@@ -364,7 +322,7 @@ namespace TxTools.ExportGun
                     Text = "坐标控件不可用: " + ex.Message,
                     Dock = DockStyle.Fill,
                     ForeColor = Theme.BtnDanger,
-                    Font = SystemFonts.MessageBoxFont
+                    Font = FormUiKit.BaseFont
                 });
                 Log("[警告] 自定义TCP坐标控件创建失败: " + ex.Message, LogLevel.Warn);
             }
@@ -458,8 +416,8 @@ namespace TxTools.ExportGun
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
-            BackColor = SystemColors.Control;
-            Font = SystemFonts.MessageBoxFont;
+            BackColor = FormUiKit.CardBack;
+            Font = FormUiKit.BaseFont;
 
             var root = new TableLayoutPanel
             {
@@ -555,7 +513,7 @@ namespace TxTools.ExportGun
                 AutoSize = true,
                 Text = "就绪",
                 ForeColor = SystemColors.GrayText,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 4, 0, 2)
             };
             lf.Controls.Add(_progressBar);
@@ -651,8 +609,8 @@ namespace TxTools.ExportGun
                 Padding = new Padding(0, 2, 0, 2),
                 TextAlign = ContentAlignment.MiddleCenter,
                 ForeColor = SystemColors.GrayText,
-                BackColor = SystemColors.ControlLight,
-                Font = SystemFonts.MessageBoxFont
+                BackColor = FormUiKit.CardBack,
+                Font = FormUiKit.BaseFont
             };
             gridPanel.Controls.Add(_lblListHint);
             flow.Controls.Add(gridPanel);
@@ -681,7 +639,7 @@ namespace TxTools.ExportGun
                     : "在上方选择框拾取单个操作，自动加入列表；也可在PS中选中后点[拾取自PS]",
                 AutoSize = true,
                 ForeColor = SystemColors.GrayText,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 0, 6)
             };
             flow.Controls.Add(opsHint);
@@ -715,7 +673,7 @@ namespace TxTools.ExportGun
                     Text = "坐标控件不可用: " + ex.Message,
                     Dock = DockStyle.Fill,
                     ForeColor = Theme.BtnDanger,
-                    Font = SystemFonts.MessageBoxFont
+                    Font = FormUiKit.BaseFont
                 });
             }
             flow.Controls.Add(frameCtrlPanel);
@@ -727,7 +685,7 @@ namespace TxTools.ExportGun
                 AutoSize = true,
                 ForeColor = Theme.StatusOkFg,
                 BackColor = Theme.StatusOkBg,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 0, 4),
                 Padding = new Padding(6, 3, 6, 3)
             };
@@ -750,7 +708,7 @@ namespace TxTools.ExportGun
                 Text = "在PS中选择Component/Frame即可自动获取",
                 AutoSize = true,
                 ForeColor = SystemColors.GrayText,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 0, 2)
             };
             flow.Controls.Add(coordHint);
@@ -771,7 +729,7 @@ namespace TxTools.ExportGun
             _cmbPointType = new ComboBox
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(2, 3, 0, 0)
             };
             _cmbPointType.Items.AddRange(new object[] { "焊点", "路径点", "连续点", "全部类型" });
@@ -785,7 +743,7 @@ namespace TxTools.ExportGun
             {
                 Text = "采用MFG名称",
                 AutoSize = true,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 2, 0, 2)
             };
             _chkUseMfgName.CheckedChanged += delegate { ReloadPointsList(); };
@@ -796,7 +754,7 @@ namespace TxTools.ExportGun
                 Text = "将导出点数量：0",
                 AutoSize = true,
                 ForeColor = Theme.StatusOkFg,
-                Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold),
+                Font = FormUiKit.BoldFont,
                 Margin = new Padding(0, 2, 0, 4)
             };
             flow.Controls.Add(_lblPointCount);
@@ -840,7 +798,7 @@ namespace TxTools.ExportGun
             _txtGunProductName = new TextBox
             {
                 Width = 140,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(2, 3, 0, 0)
             };
             rowProd.Controls.Add(_txtGunProductName);
@@ -850,7 +808,7 @@ namespace TxTools.ExportGun
                 Text = "留空则使用活动文档内产品名",
                 AutoSize = true,
                 ForeColor = SystemColors.GrayText,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 0, 2)
             };
             flow.Controls.Add(prodHint);
@@ -861,7 +819,7 @@ namespace TxTools.ExportGun
             {
                 Text = "自定义焊枪数模",
                 AutoSize = true,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 4, 6, 2)
             };
             var seletGun = MkRowFlow();
@@ -870,7 +828,7 @@ namespace TxTools.ExportGun
                 Width = 120,
                 ReadOnly = true,
                 Enabled = false,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 4, 6, 2)
             };
             _btnBrowseGun = MkFuncButton("选择", Theme.BtnMuted);
@@ -891,44 +849,17 @@ namespace TxTools.ExportGun
                 Text = "焊钳：（待选取）",
                 AutoSize = true,
                 ForeColor = SystemColors.GrayText,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 2, 0, 4)
             };
             flow.Controls.Add(_lblGunInfo);
-
-            // ── 导出方式（共享几何 vs 独立命名） ──
-            var rowMode = MkRowFlow();
-            rowMode.Controls.Add(MkLabel("导出方式"));
-            _cmbGunExportMode = new ComboBox
-            {
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                Width = 220,
-                Font = SystemFonts.MessageBoxFont,
-                Margin = new Padding(2, 3, 0, 0)
-            };
-            _cmbGunExportMode.Items.Add("共享几何（体积最小，名称=CGR原名）");
-            _cmbGunExportMode.Items.Add("独立命名（体积×焊点数，名称=焊点名）");
-            _cmbGunExportMode.SelectedIndex = 0;
-            rowMode.Controls.Add(_cmbGunExportMode);
-            flow.Controls.Add(rowMode);
-
-            var modeHint = new Label
-            {
-                Text = "共享几何：3DXML ≈ 1 份 CGR，实例名保持 CGR 原名\n独立命名：3DXML ≈ N 份 CGR，实例名可读为焊点名",
-                AutoSize = true,
-                ForeColor = SystemColors.GrayText,
-                Font = SystemFonts.MessageBoxFont,
-                Margin = new Padding(0, 0, 0, 4)
-            };
-            flow.Controls.Add(modeHint);
-            WrapLabelInFlow(flow, modeHint);
 
             _chkGunOriginTCP = new CheckBox
             {
                 Text = "焊枪以TCP为原点",
                 AutoSize = true,
                 Checked = true,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 2, 0, 2)
             };
             flow.Controls.Add(_chkGunOriginTCP);
@@ -940,7 +871,7 @@ namespace TxTools.ExportGun
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Width = 200,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(2, 3, 0, 0)
             };
             _cmbTcp.Items.Add(PsReader.DefaultTcpLabel);
@@ -966,7 +897,7 @@ namespace TxTools.ExportGun
                 Text = "TCP：默认（机器人当前TCP）",
                 AutoSize = true,
                 ForeColor = SystemColors.GrayText,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 0, 4)
             };
             flow.Controls.Add(_lblTcpInfo);
@@ -976,7 +907,7 @@ namespace TxTools.ExportGun
             {
                 Text = "导出TCP坐标",
                 AutoSize = true,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 2, 0, 4)
             };
             flow.Controls.Add(_chkExportTCP);
@@ -1001,7 +932,7 @@ namespace TxTools.ExportGun
             _cmbBallTarget = new ComboBox
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(2, 3, 0, 0)
             };
             _cmbBallTarget.Items.AddRange(new object[] { "当前Part文档", "新建Part文档" });
@@ -1015,7 +946,7 @@ namespace TxTools.ExportGun
             _cmbBallOption = new ComboBox
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(2, 3, 0, 0)
             };
             _cmbBallOption.Items.AddRange(new object[] { "轨迹点 + 点球", "仅轨迹点", "仅点球" });
@@ -1032,7 +963,7 @@ namespace TxTools.ExportGun
                 Maximum = 500,
                 Value = 10,
                 DecimalPlaces = 0,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(2, 3, 0, 0)
             };
             AutoFitNumericWidth(_nudDiameter);
@@ -1045,7 +976,7 @@ namespace TxTools.ExportGun
             {
                 Text = "Geometry_Spheres",
                 Width = 140,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(2, 3, 0, 0)
             };
             rowGeom.Controls.Add(_txtGeomSet);
@@ -1057,7 +988,7 @@ namespace TxTools.ExportGun
             {
                 Text = "SPHERE",
                 Width = 140,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(2, 3, 0, 0)
             };
             rowPrefix.Controls.Add(_txtNamePrefix);
@@ -1068,7 +999,7 @@ namespace TxTools.ExportGun
             _txtBallPartName = new TextBox
             {
                 Width = 140,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(2, 3, 0, 0)
             };
             rowPart.Controls.Add(_txtBallPartName);
@@ -1078,7 +1009,7 @@ namespace TxTools.ExportGun
                 Text = "新建Part时生效，留空用默认名",
                 AutoSize = true,
                 ForeColor = SystemColors.GrayText,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 0, 2)
             };
             flow.Controls.Add(partHint);
@@ -1103,7 +1034,7 @@ namespace TxTools.ExportGun
                 Text = "操作点列表",
                 Dock = DockStyle.Fill,
                 AutoSize = false,
-                Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold),
+                Font = FormUiKit.BoldFont,
                 TitleColor = Theme.TxPoints.Color,
                 Margin = new Padding(2, 2, 2, 4),
                 Padding = new Padding(8, 6, 8, 6)
@@ -1123,7 +1054,7 @@ namespace TxTools.ExportGun
                 ShowGroups = true,
                 HeaderStyle = ColumnHeaderStyle.Nonclickable,
                 BackColor = SystemColors.Window,
-                Font = SystemFonts.MessageBoxFont
+                Font = FormUiKit.BaseFont
             };
             _lvPoints.Columns.Add("点名称", 170);
             _lvPoints.Columns.Add("类型", 70);
@@ -1160,8 +1091,8 @@ namespace TxTools.ExportGun
                 Height = 22,
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = SystemColors.GrayText,
-                BackColor = SystemColors.ControlLight,
-                Font = SystemFonts.MessageBoxFont,
+                BackColor = FormUiKit.CardBack,
+                Font = FormUiKit.BaseFont,
                 Padding = new Padding(6, 0, 0, 0)
             };
             container.Controls.Add(_lblPointSel);
@@ -1201,7 +1132,7 @@ namespace TxTools.ExportGun
                 Text = "▸  运行日志（点击展开）",
                 ForeColor = TxColor.TxColorWhite.Color,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold),
+                Font = FormUiKit.BoldFont,
                 Padding = new Padding(8, 0, 0, 0),
                 Cursor = Cursors.Hand
             };
@@ -1216,7 +1147,7 @@ namespace TxTools.ExportGun
                 Width = 56,
                 BgColor = Theme.TxAccent.Color,
                 ForeColor = TxColor.TxColorWhite.Color,
-                Font = SystemFonts.MessageBoxFont
+                Font = FormUiKit.BaseFont
             };
             btnClear.Click += delegate { if (_rtbLog != null) _rtbLog.Clear(); };
             bar.Controls.Add(btnClear);
@@ -1718,62 +1649,26 @@ namespace TxTools.ExportGun
         }
 
         // ════════════════════════════════════════════════════════════
-        //  控件工厂
+        //  控件工厂（实现收编在 TxTools.Common.FormUiKit）
         // ════════════════════════════════════════════════════════════
         private static Label MkHeaderLabel(string text, TxColor bg)
         {
-            return new FlatColorLabel
-            {
-                Text = text,
-                Dock = DockStyle.Fill,
-                BgColor = bg.Color,
-                ForeColor = TxColor.TxColorWhite.Color,
-                TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold),
-                Margin = new Padding(1, 0, 1, 0)
-            };
+            return FormUiKit.MkHeaderLabel(text, bg.Color);
         }
 
         private static GroupBox MkCard(string title, TxColor titleColor)
         {
-            return new ColoredGroupBox
-            {
-                Text = title,
-                Dock = DockStyle.Fill,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold),
-                TitleColor = titleColor.Color,
-                Margin = new Padding(2, 2, 2, 4),
-                Padding = new Padding(8, 6, 8, 4)
-            };
+            return FormUiKit.MkCardGroup(title, titleColor.Color);
         }
 
         private static FlowLayoutPanel MkCardContent()
         {
-            return new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                FlowDirection = FlowDirection.TopDown,
-                WrapContents = false,
-                BackColor = Color.Transparent,
-                Font = SystemFonts.MessageBoxFont,
-                Padding = new Padding(0, 2, 0, 0)
-            };
+            return FormUiKit.MkCardContent();
         }
 
         private static Label MkLabel(string text)
         {
-            return new Label
-            {
-                Text = text,
-                AutoSize = true,
-                Font = SystemFonts.MessageBoxFont,
-                ForeColor = SystemColors.GrayText,
-                Margin = new Padding(0, 7, 4, 0)
-            };
+            return FormUiKit.MkFieldLabel(text);
         }
 
         // FlowLayoutPanel(TopDown) 不会拉伸子控件宽度，也不会让 AutoSize 标签按容器宽换行。
@@ -1782,80 +1677,34 @@ namespace TxTools.ExportGun
         /// <summary>让子控件宽度始终填满 flow 内容区。</summary>
         private void FillWidthInFlow(FlowLayoutPanel flow, Control child)
         {
-            if (flow == null || child == null) return;
-            EventHandler h = delegate (object s, EventArgs ev)
-            {
-                int w = flow.ClientSize.Width - flow.Padding.Horizontal - child.Margin.Horizontal;
-                if (w > 0 && child.Width != w) child.Width = w;
-            };
-            flow.ClientSizeChanged += h;
-            flow.SizeChanged += h;
-            h(flow, EventArgs.Empty);
+            FormUiKit.FillWidthInFlow(flow, child);
         }
 
         /// <summary>让 AutoSize 标签按 flow 内容区宽度换行（高度自适应，不被裁剪）。</summary>
         private void WrapLabelInFlow(FlowLayoutPanel flow, Label lbl)
         {
-            if (flow == null || lbl == null) return;
-            lbl.AutoSize = true;
-            EventHandler h = delegate (object s, EventArgs ev)
-            {
-                int w = flow.ClientSize.Width - flow.Padding.Horizontal - lbl.Margin.Horizontal;
-                if (w > 20) lbl.MaximumSize = new Size(w, 0);
-            };
-            flow.ClientSizeChanged += h;
-            flow.SizeChanged += h;
-            h(flow, EventArgs.Empty);
+            FormUiKit.WrapLabelInFlow(flow, lbl);
         }
 
         private static FlowLayoutPanel MkRowFlow()
         {
-            return new FlowLayoutPanel
-            {
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
-                BackColor = Color.Transparent,
-                Margin = new Padding(0, 0, 0, 2)
-            };
+            return FormUiKit.MkRowFlow();
         }
 
         private static Button MkFuncButton(string text, Color bgColor)
         {
-            return new FlatColorButton
-            {
-                Text = text,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Height = 26,
-                Font = SystemFonts.MessageBoxFont,
-                BgColor = bgColor,
-                BorderColor = bgColor,
-                Margin = new Padding(0, 2, 4, 2),
-                Padding = new Padding(8, 2, 8, 2)
-            };
+            return FormUiKit.MkFuncButton(text, bgColor);
         }
 
         /// <summary>用 TextRenderer 测量，避免 CreateGraphics 在窗体未显示时不准。</summary>
         private static void AutoFitComboBoxWidth(ComboBox cb)
         {
-            if (cb == null || cb.Items.Count == 0) return;
-            int maxW = 0;
-            foreach (var item in cb.Items)
-            {
-                int w = TextRenderer.MeasureText(item.ToString(), cb.Font).Width;
-                if (w > maxW) maxW = w;
-            }
-            cb.Width = maxW + 28;
+            FormUiKit.AutoFitComboBoxWidth(cb);
         }
 
         private static void AutoFitNumericWidth(NumericUpDown nud)
         {
-            if (nud == null) return;
-            string maxText = nud.Maximum.ToString("F" + nud.DecimalPlaces);
-            int w = TextRenderer.MeasureText(maxText, nud.Font).Width;
-            nud.Width = w + 26;
+            FormUiKit.AutoFitNumericWidth(nud);
         }
 
         // ════════════════════════════════════════════════════════════
@@ -2420,10 +2269,7 @@ namespace TxTools.ExportGun
                 PointFilter = GetPtType(),
                 UseMfgName = _chkUseMfgName.Checked,
                 TcpName = _tcpCustomMatrix == null ? _tcpChoiceName : null,
-                TcpCustomMatrix = _tcpCustomMatrix,
-                ExportMode = (_cmbGunExportMode != null && _cmbGunExportMode.SelectedIndex == 1)
-                    ? GunExportMode.IndependentNaming
-                    : GunExportMode.SharedGeometry
+                TcpCustomMatrix = _tcpCustomMatrix
             };
         }
 
@@ -2462,7 +2308,7 @@ namespace TxTools.ExportGun
                 dlg.MinimumSize = new Size(520, 360);
                 dlg.MaximizeBox = false;
                 dlg.MinimizeBox = false;
-                dlg.BackColor = SystemColors.Control;
+                dlg.BackColor = FormUiKit.CardBack;
 
                 var header = new Label
                 {
@@ -2472,7 +2318,7 @@ namespace TxTools.ExportGun
                     Dock = DockStyle.Top,
                     Height = 64,
                     Padding = new Padding(10, 8, 10, 0),
-                    Font = SystemFonts.MessageBoxFont,
+                    Font = FormUiKit.BaseFont,
                     ForeColor = SystemColors.ControlText
                 };
 
@@ -2482,7 +2328,7 @@ namespace TxTools.ExportGun
                     Dock = DockStyle.Bottom,
                     Height = 22,
                     Padding = new Padding(10, 4, 10, 0),
-                    Font = SystemFonts.MessageBoxFont,
+                    Font = FormUiKit.BaseFont,
                     ForeColor = SystemColors.GrayText,
                     AutoEllipsis = true,
                     Text = ""
@@ -2492,7 +2338,7 @@ namespace TxTools.ExportGun
                 {
                     Dock = DockStyle.Fill,
                     IntegralHeight = false,
-                    Font = SystemFonts.MessageBoxFont,
+                    Font = FormUiKit.BaseFont,
                     BorderStyle = BorderStyle.FixedSingle
                 };
                 foreach (var c in candidates)
@@ -2534,7 +2380,7 @@ namespace TxTools.ExportGun
                     Height = 44,
                     FlowDirection = FlowDirection.RightToLeft,
                     Padding = new Padding(10, 6, 10, 6),
-                    BackColor = SystemColors.Control
+                    BackColor = FormUiKit.CardBack
                 };
 
                 bool browseFallback = false;
@@ -2613,7 +2459,7 @@ namespace TxTools.ExportGun
                 dlg.FormBorderStyle = FormBorderStyle.FixedDialog;
                 dlg.MaximizeBox = false;
                 dlg.MinimizeBox = false;
-                dlg.BackColor = SystemColors.Control;
+                dlg.BackColor = FormUiKit.CardBack;
 
                 var body = new Label
                 {
@@ -2627,7 +2473,7 @@ namespace TxTools.ExportGun
                         + "  · 取消本次导出。",
                     Dock = DockStyle.Fill,
                     Padding = new Padding(14, 12, 14, 0),
-                    Font = SystemFonts.MessageBoxFont,
+                    Font = FormUiKit.BaseFont,
                     ForeColor = SystemColors.ControlText
                 };
 
@@ -2637,7 +2483,7 @@ namespace TxTools.ExportGun
                     Height = 44,
                     FlowDirection = FlowDirection.RightToLeft,
                     Padding = new Padding(10, 6, 10, 6),
-                    BackColor = SystemColors.Control
+                    BackColor = FormUiKit.CardBack
                 };
 
                 bool browse = false;
@@ -2776,7 +2622,6 @@ namespace TxTools.ExportGun
             _txtGunModel.Text = "";
             _txtGunModel.Tag = null;
             if (_txtGunProductName != null) _txtGunProductName.Text = "";
-            if (_cmbGunExportMode != null) try { _cmbGunExportMode.SelectedIndex = 0; } catch { }
             // 复位 TCP 选择
             _tcpChoiceName = null;
             _tcpCustomMatrix = null;
@@ -3049,130 +2894,8 @@ namespace TxTools.ExportGun
         }
 
         // ════════════════════════════════════════════════════════════
-        //  自绘控件 — 绕开 PS 宿主主题对 BackColor/ForeColor 的劫持
+        //  自绘控件（FlatColorButton / FlatColorLabel / ColoredGroupBox）
+        //  已统一收编到 TxTools.Common.FormUiKit，本文件通过 using 别名引用。
         // ════════════════════════════════════════════════════════════
-
-        /// <summary>
-        /// 自绘按钮，绕过 WinForms 主题覆盖 BackColor。
-        /// 支持 Hover/Pressed/Disabled 三态，AutoSize 沿用 Button 基类行为。
-        /// </summary>
-        private class FlatColorButton : Button
-        {
-            public Color BgColor { get; set; } = Color.FromArgb(0, 100, 167);
-            /// <summary>边框色（本实现为无边框设计，保留属性以兼容统一 API）。</summary>
-            public Color BorderColor { get; set; } = Color.Empty;
-            private bool _hover;
-            private bool _pressed;
-
-            public FlatColorButton()
-            {
-                SetStyle(ControlStyles.UserPaint
-                       | ControlStyles.AllPaintingInWmPaint
-                       | ControlStyles.OptimizedDoubleBuffer
-                       | ControlStyles.ResizeRedraw
-                       | ControlStyles.SupportsTransparentBackColor, true);
-                FlatStyle = FlatStyle.Flat;
-                FlatAppearance.BorderSize = 0;
-                ForeColor = Color.White;
-                Cursor = Cursors.Hand;
-            }
-
-            protected override void OnPaint(PaintEventArgs e)
-            {
-                Color fill;
-                if (!Enabled)
-                    fill = Color.FromArgb(
-                        (BgColor.R + 255) / 2,
-                        (BgColor.G + 255) / 2,
-                        (BgColor.B + 255) / 2);
-                else if (_pressed)
-                    fill = ControlPaint.Dark(BgColor, 0.15f);
-                else if (_hover)
-                    fill = ControlPaint.Light(BgColor, 0.25f);
-                else
-                    fill = BgColor;
-
-                e.Graphics.Clear(fill);
-                var textColor = Enabled ? ForeColor : Color.FromArgb(230, 230, 230);
-                TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, textColor,
-                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
-                    | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
-            }
-
-            protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
-            protected override void OnMouseLeave(EventArgs e) { _hover = false; _pressed = false; Invalidate(); base.OnMouseLeave(e); }
-            protected override void OnMouseDown(MouseEventArgs e) { _pressed = true; Invalidate(); base.OnMouseDown(e); }
-            protected override void OnMouseUp(MouseEventArgs e) { _pressed = false; Invalidate(); base.OnMouseUp(e); }
-            protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
-        }
-
-        /// <summary>
-        /// 自绘标签，绕过 WinForms 主题覆盖 BackColor。
-        /// 用于顶部分区标题条（通用信息 / 导插枪 / 日志）。
-        /// </summary>
-        private class FlatColorLabel : Label
-        {
-            public Color BgColor { get; set; } = Color.FromArgb(0, 100, 140);
-
-            public FlatColorLabel()
-            {
-                SetStyle(ControlStyles.UserPaint
-                       | ControlStyles.AllPaintingInWmPaint
-                       | ControlStyles.OptimizedDoubleBuffer
-                       | ControlStyles.ResizeRedraw, true);
-                ForeColor = Color.White;
-                TextAlign = ContentAlignment.MiddleCenter;
-            }
-
-            protected override void OnPaint(PaintEventArgs e)
-            {
-                e.Graphics.Clear(BgColor);
-                TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ForeColor,
-                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
-            }
-        }
-
-        /// <summary>
-        /// 自绘 GroupBox，绕过 WinForms 视觉主题对 GroupBox.ForeColor 的忽略。
-        /// 保持 AutoSize 行为（尺寸仍由 GroupBox 基类计算）。
-        /// </summary>
-        private class ColoredGroupBox : GroupBox
-        {
-            public Color TitleColor { get; set; } = Color.Black;
-            public Color BorderColor { get; set; } = Color.FromArgb(200, 200, 200);
-
-            public ColoredGroupBox()
-            {
-                SetStyle(ControlStyles.UserPaint
-                       | ControlStyles.AllPaintingInWmPaint
-                       | ControlStyles.OptimizedDoubleBuffer
-                       | ControlStyles.ResizeRedraw, true);
-            }
-
-            protected override void OnPaint(PaintEventArgs e)
-            {
-                var g = e.Graphics;
-                string title = Text ?? "";
-                Size textSize = TextRenderer.MeasureText(g, title, Font, Size.Empty, TextFormatFlags.NoPadding);
-                int halfH = textSize.Height / 2;
-
-                using (var bgBrush = new SolidBrush(BackColor))
-                    g.FillRectangle(bgBrush, ClientRectangle);
-
-                var borderRect = new Rectangle(0, halfH, Width - 1, Height - halfH - 1);
-                using (var borderPen = new Pen(BorderColor))
-                    g.DrawRectangle(borderPen, borderRect);
-
-                if (!string.IsNullOrEmpty(title))
-                {
-                    var titleRect = new Rectangle(8, 0, textSize.Width + 6, textSize.Height);
-                    using (var bgBrush = new SolidBrush(BackColor))
-                        g.FillRectangle(bgBrush, titleRect);
-                    TextRenderer.DrawText(g, title, Font,
-                        new Point(titleRect.X + 3, titleRect.Y), TitleColor,
-                        TextFormatFlags.NoPadding);
-                }
-            }
-        }
     }
 }
