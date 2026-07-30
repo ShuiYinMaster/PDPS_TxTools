@@ -115,7 +115,8 @@ namespace TxTools.Agent.Core
 
             try
             {
-                var cp = PsCompoundHelper.CreatePart(psParent, typeName, desiredName);
+                // 空零件集:不传 TypeName,否则 PlanningType 丢失变成非标准对象。
+                var cp = PsCompoundHelper.CreatePart(psParent, typeName, desiredName, setTypeName: false);
                 created++;
                 // 只打印前若干条,防止 log 爆
                 if (created <= 30)

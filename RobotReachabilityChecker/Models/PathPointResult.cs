@@ -41,6 +41,9 @@ namespace TxTools.RobotReachabilityChecker.Models
         /// </summary>
         public bool HasCollision { get; set; } = false;
 
+        /// <summary>干涉检查三态结果（P2-11）。仅在启用干涉检查时从 NotChecked 变为实际状态。</summary>
+        public CollisionCheckState CollisionState { get; set; } = CollisionCheckState.NotChecked;
+
         /// <summary>
         /// 检查时缓存的 PS 姿态对象（实际类型 Tecnomatix.Engineering.TxPoseData）。
         /// 用 object 避免 Models 层依赖 PS API。
@@ -51,5 +54,13 @@ namespace TxTools.RobotReachabilityChecker.Models
         /// 内存代价：每个点位约 200~500 字节；1000 点位约 0.5MB，可接受。
         /// </summary>
         public object PoseDataRef { get; set; }
+
+        /// <summary>
+        /// 检查时缓存的点位对象实例引用（实际类型 ITxRoboticLocationOperation）。
+        /// 用 object 避免 Models 层依赖 PS API。
+        ///
+        /// 作为唯一标识：定位/选中该点位时直接用实例，不做按名反查（避免同名混淆）。
+        /// </summary>
+        public object LocationRef { get; set; }
     }
 }

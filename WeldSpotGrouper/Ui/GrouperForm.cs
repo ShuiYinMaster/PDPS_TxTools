@@ -15,9 +15,12 @@ using System.Drawing;
 using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
+using TxTools.Common;
 
 namespace TxTools.WeldSpotGrouper
 {
+    using Theme = TxTools.Common.FormUiKit.Theme;
+
     public class GrouperForm : TxForm
     {
         private TxObjGridCtrl _scopeGrid;
@@ -32,25 +35,19 @@ namespace TxTools.WeldSpotGrouper
         private readonly List<string> _log = new List<string>();
         private bool _scaled;
 
-        private readonly Size _design = new Size(560, 660);
+        // 宽度只容纳一行四个按钮（扫描/执行/清空/日志），不留大空白
+        private readonly Size _design = new Size(404, 660);
+        private readonly Size _min = new Size(404, 420);
 
         public GrouperForm()
         {
+            FormUiKit.InitStandardForm(this, "焊点自动分组", _design, _min);
+            // 双安全：构造即置非模态（InitStandardForm 不动 SemiModal）。
+            // 若等 OnInitTxForm 才置 false，Show() 可能已进入 PS 模态循环，
+            // 关闭后模态不释放，会导致其他插件全部无法开启。
             try { SemiModal = false; } catch { }
-            try
-            {
-                var flatStyleProp = this.GetType().GetProperty("FlatStyleEnabled");
-                if (flatStyleProp != null && flatStyleProp.CanWrite)
-                {
-                    flatStyleProp.SetValue(this, false, null);
-                }
-            }
-            catch
-            {
-                // 反射失败时静默忽略，确保插件继续运行
-            }
+            FormClosed += (s, e) => _closed = true;
             BuildUI();
-            try { Name = GetType().FullName; } catch { }
         }
 
         // ── 窗体 OnInitTxForm：public override，不调 grid.Init ──
@@ -68,90 +65,105 @@ namespace TxTools.WeldSpotGrouper
             }));
         }
 
+        /// <summary>是否已关闭（供命令层判断是否复用实例，避免对已关闭窗体再次 Show）。</summary>
+        internal bool Closed { get { return _closed; } }
+        private bool _closed;
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            // 释放拾取网格持有的 PS 对象引用，防止关闭后残留、影响后续插件
+            try { while (_scopeGrid != null && _scopeGrid.Count > 0) _scopeGrid.DeleteRow(0); } catch { }
+            base.OnFormClosing(e);
+        }
+
         protected override void OnLoad(EventArgs e)
         {
             base.OnLoad(e);
-            if (_scaled) return;
-            _scaled = true;
-            try
-            {
-                float sc = CreateGraphics().DpiX / 96f;
-                if (sc > 1.01f)
-                {
-                    Scale(new SizeF(sc, sc));
-                    ClientSize = new Size((int)(_design.Width * sc), (int)(_design.Height * sc));
-                }
-            }
-            catch { }
+            FormUiKit.ApplyDpiScaling(this, ref _scaled, _design);
         }
 
         // ════════════════════════════════════════════════════════════
         private void BuildUI()
         {
-            Text = "焊点自动分组";
-            AutoScaleMode = AutoScaleMode.None;
-            Font = new Font("Microsoft YaHei UI", 9F);
-            ClientSize = _design;
-            MinimumSize = new Size(_design.Width, 420);
+            
 
-            var title = new Label
+            var title = new FormUiKit.FlatColorLabel
             {
                 Text = "按绑定零件自动分组焊点",
-                Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Bold),
+                Font = FormUiKit.TitleFont,
+                ForeColor = Theme.TextDim,
                 Location = new Point(12, 10),
-                Size = new Size(_design.Width - 24, 24),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+                Size = new Size(ClientSize.Width - 24, 24),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+                BackColor = Color.Transparent
             };
             Controls.Add(title);
 
             // 1. 范围拾取
-            Controls.Add(new Label { Text = "① 拾取范围节点（焊接/复合操作或资源），可拾取多个", Location = new Point(12, 42), AutoSize = true });
-            _scopeGrid = new TxObjGridCtrl
+            Controls.Add(new Label { Text = "① 拾取范围节点（焊接/复合操作或资源），可拾取多个", Location = new Point(12, 42), AutoSize = true, Font = FormUiKit.BaseFont });
+            // 与 ExportGun 同款：Objects 选择框外包 FixedSingle 边框面板，
+            // 保证四周/右侧边界可见（PS 原生控件自身不画外框）
+            var scopeHost = new Panel
             {
                 Location = new Point(12, 64),
-                Size = new Size(_design.Width - 24, 88),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+                Size = new Size(ClientSize.Width - 24, 90),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+                BackColor = SystemColors.Window,
+                Padding = new Padding(1),
+                BorderStyle = BorderStyle.FixedSingle
             };
+            _scopeGrid = new TxObjGridCtrl { Dock = DockStyle.Fill, MinimumSize = new Size(0, 0), AutoSize = false };
             try { _scopeGrid.ListenToPick = true; } catch { }
             try { _scopeGrid.EnableMultipleSelection = true; } catch { }
             try { _scopeGrid.EnableRecurringObjects = false; } catch { }
+            // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点
+            FormUiKit.GridPickFocus.Wire(_scopeGrid);
             try { _scopeGrid.ObjectInserted += (s, a) => RefreshScopeLabel(); } catch { }
-            Controls.Add(_scopeGrid);
+            scopeHost.Controls.Add(_scopeGrid);
+            Controls.Add(scopeHost);
 
-            _lblScope = new Label { Text = "已选范围：0", Location = new Point(12, 156), AutoSize = true, ForeColor = Color.DimGray };
+            _lblScope = new Label { Text = "已选范围：0", Location = new Point(12, 156), AutoSize = true, Font = FormUiKit.BaseFont, ForeColor = Theme.TextFaint };
             Controls.Add(_lblScope);
 
             // 2. 选项
-            Controls.Add(new Label { Text = "② 选项", Location = new Point(12, 182), AutoSize = true, Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold) });
-            Controls.Add(new Label { Text = "命名前缀", Location = new Point(12, 208), AutoSize = true });
-            _prefix = new TextBox { Text = "焊点分组_", Location = new Point(80, 205), Size = new Size(180, 24) };
+            Controls.Add(new Label { Text = "② 选项", Location = new Point(12, 182), AutoSize = true, Font = FormUiKit.BoldFont });
+            Controls.Add(new Label { Text = "命名前缀", Location = new Point(12, 208), AutoSize = true, Font = FormUiKit.BaseFont });
+            _prefix = new TextBox { Text = "焊点分组_", Location = new Point(80, 205), Size = new Size(180, 24), Font = FormUiKit.BaseFont };
             Controls.Add(_prefix);
-            _ignoreCase = new CheckBox { Text = "零件名忽略大小写", Location = new Point(280, 206), AutoSize = true, Checked = false };
+            _ignoreCase = FormUiKit.MkCheckBox("零件名忽略大小写");
+            _ignoreCase.Location = new Point(252, 206);
             Controls.Add(_ignoreCase);
-            _skipUnbound = new CheckBox { Text = "跳过无绑定零件的点", Location = new Point(12, 236), AutoSize = true, Checked = true };
+            _skipUnbound = FormUiKit.MkCheckBox("跳过无绑定零件的点", true);
+            _skipUnbound.Location = new Point(12, 236);
             Controls.Add(_skipUnbound);
 
             // 3. 按钮
-            _btnScan = new Button { Text = "扫描预览", Location = new Point(12, 266), Size = new Size(96, 30) };
+            _btnScan = FormUiKit.MkBtn("扫描预览", Theme.BtnPrimary, 96, 30);
+            _btnScan.SetBounds(12, 266, 96, 30);
             _btnScan.Click += (s, e) => DoScan();
             Controls.Add(_btnScan);
-            _btnApply = new Button { Text = "执行分组", Location = new Point(116, 266), Size = new Size(96, 30), Enabled = false };
+            _btnApply = FormUiKit.MkBtn("执行分组", Theme.BtnSecondary, 96, 30);
+            _btnApply.SetBounds(116, 266, 96, 30);
+            _btnApply.Enabled = false;
             _btnApply.Click += (s, e) => DoApply();
             Controls.Add(_btnApply);
-            _btnClear = new Button { Text = "清空", Location = new Point(220, 266), Size = new Size(70, 30) };
+            _btnClear = FormUiKit.MkBtn("清空", Theme.BtnMuted, 70, 30);
+            _btnClear.SetBounds(220, 266, 70, 30);
             _btnClear.Click += (s, e) => DoClear();
             Controls.Add(_btnClear);
-            _btnLog = new Button { Text = "日志", Location = new Point(_design.Width - 90, 266), Size = new Size(70, 30), Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            _btnLog = FormUiKit.MkBtn("日志", Theme.BtnMuted, 70, 30);
+            _btnLog.SetBounds(ClientSize.Width - 90, 266, 70, 30);
+            _btnLog.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             _btnLog.Click += (s, e) => ToggleLog();
             Controls.Add(_btnLog);
 
             // 4. 预览表
-            _lblCount = new Label { Text = "预览：0 组", Location = new Point(12, 302), AutoSize = true };
+            _lblCount = new Label { Text = "预览：0 组", Location = new Point(12, 302), AutoSize = true, Font = FormUiKit.BaseFont };
             Controls.Add(_lblCount);
             _lv = new ListView
             {
                 Location = new Point(12, 324),
-                Size = new Size(_design.Width - 24, 232),
+                Size = new Size(ClientSize.Width - 24, 232),
                 View = View.Details,
                 FullRowSelect = true,
                 GridLines = true,
@@ -159,18 +171,20 @@ namespace TxTools.WeldSpotGrouper
             };
             _lv.Columns.Add("组", 40);
             _lv.Columns.Add("焊点数", 60);
-            _lv.Columns.Add("绑定零件（指纹）", _design.Width - 24 - 40 - 60 - 24);
+            _lv.Columns.Add("绑定零件（指纹）", ClientSize.Width - 24 - 40 - 60 - 24);
             Controls.Add(_lv);
 
             // 5. 日志（默认隐藏）
             _txtLog = new TextBox
             {
                 Location = new Point(12, 564),
-                Size = new Size(_design.Width - 24, 84),
+                Size = new Size(ClientSize.Width - 24, 84),
                 Multiline = true,
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical,
-                Font = new Font("Consolas", 8.5F),
+                Font = FormUiKit.MonoFont,
+                BackColor = Theme.LogBg,
+                ForeColor = Theme.LogText,
                 Visible = false,
                 Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
             };

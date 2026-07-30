@@ -46,6 +46,10 @@ namespace TxTools.Agent.Tools
                             ""type"": ""string"",
                             ""enum"": [""rpy"", ""euler"", ""matrix""],
                             ""description"": ""输出格式，默认 rpy""
+                        },
+                        ""object_id"": {
+                            ""type"": ""string"",
+                            ""description"": ""对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 object_id 就会忽略 name。""
                         }
                     }
                 }");
@@ -56,7 +60,8 @@ namespace TxTools.Agent.Tools
         {
             var name = GetString(input, "name", null);
             var format = GetString(input, "format", "rpy");
-            return PsBridge.GetObjectLocation(name, format);
+            var objectId = GetString(input, "object_id", null);
+            return PsBridge.GetObjectLocation(name, format, objectId);
         }
     }
 
@@ -98,7 +103,11 @@ namespace TxTools.Agent.Tools
                         ""z"": { ""type"": ""number"", ""description"": ""Z坐标(mm)"" },
                         ""rx"": { ""type"": ""number"", ""description"": ""RX旋转(度)，可选"" },
                         ""ry"": { ""type"": ""number"", ""description"": ""RY旋转(度)，可选"" },
-                        ""rz"": { ""type"": ""number"", ""description"": ""RZ旋转(度)，可选"" }
+                        ""rz"": { ""type"": ""number"", ""description"": ""RZ旋转(度)，可选"" },
+                        ""object_id"": {
+                            ""type"": ""string"",
+                            ""description"": ""对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 object_id 就会忽略 name。""
+                        }
                     },
                     ""required"": [""name"", ""x"", ""y"", ""z""]
                 }");
@@ -130,7 +139,9 @@ namespace TxTools.Agent.Tools
             var rzTok = input != null ? input["rz"] : null;
             if (rzTok != null && rzTok.Type != JTokenType.Null) rz = ToDouble(rzTok);
 
-            return PsBridge.SetObjectLocation(name, x, y, z, rx, ry, rz);
+            var objectId = GetString(input, "object_id", null);
+
+            return PsBridge.SetObjectLocation(name, x, y, z, rx, ry, rz, objectId);
         }
 
         private static double ToDouble(JToken tok)

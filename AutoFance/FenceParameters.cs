@@ -1,4 +1,5 @@
 using System.Drawing;
+using TxTools.Common;
 
 namespace TxTools.FenceBuilder
 {
@@ -18,23 +19,23 @@ namespace TxTools.FenceBuilder
         public double MeshFrameThickness = 40.0;    // 外框方管截面厚
         public double GroundClearance = 150.0;      // 网片下沿离地间隙 - 默认 150
         public bool EnableMeshTexture = true;
-        // 默认黄色
-        public Color MeshColor = Color.FromArgb(255, 200, 0);
-        public Color FrameColor = Color.FromArgb(230, 180, 0);
+        // 默认黄色（收编 FormUiKit.Theme.Fence* 色系）
+        public Color MeshColor = FormUiKit.Theme.FenceMesh;
+        public Color FrameColor = FormUiKit.Theme.FenceFrame;
 
         // ===== 立柱参数 =====
         public double PostWidth = 60.0;
         public double PostThickness = 60.0;
         public double PostGap = 5.0;                // 立柱与网片之间的水平间隙
         public double PostTopMargin = 100.0;        // 立柱顶高出网片顶的距离 - 默认 100
-        public Color PostColor = Color.FromArgb(230, 180, 0);
+        public Color PostColor = FormUiKit.Theme.FencePost;
 
         // ===== 底座参数 =====
         public BaseplateMode BaseplateMode = BaseplateMode.None;
         public double BaseplateWidth = 150.0;
         public double BaseplateLength = 150.0;
         public double BaseplateThickness = 10.0;
-        public Color BaseplateColor = Color.FromArgb(200, 160, 0);
+        public Color BaseplateColor = FormUiKit.Theme.FenceBaseplate;
 
         // ===== 其他 =====
         public bool ShareCornerPost = true;

@@ -25,6 +25,23 @@ namespace TxTools.Agent
     {
         private static TxAgentForm _form;
 
+        // ── 多 PDPS 无界面执行器:插件一加载就启动 ──
+        // PS 反射扫描命令类注册按钮时会触发静态构造,趁这时把 RPC 执行器跑起来。
+        // 这样被控端 PDPS 什么都不用点,主控端就能发现并调用它。
+        static TxAgentCommand()
+        {
+            try
+            {
+                TxAgentService.StudyNameGetter = () =>
+                {
+                    try { return TxApplication.ActiveDocument.CurrentStudy.Name; }
+                    catch { return null; }
+                };
+                TxAgentService.Start(BuildToolRegistry());
+            }
+            catch { /* 服务起不来不影响窗口本身 */ }
+        }
+
         public override string Name { get { return "TxAgent"; } }
         public override string Category { get { return "TxTools"; } }
         public override string LargeBitmap { get { return "image.ai.png"; } }
@@ -109,26 +126,63 @@ namespace TxTools.Agent
             reg.Register(new DeleteRecipeTool(reg));
 
             // 3) 记忆系统工具 (v2) —— 跨对话记忆的读写入口
-            //    convId 通过 AgentLoop.Current 静态入口获取。form 构造 loop 后写入 Current,
-            //    lambda 每次调用时读取,即使 Current 为 null(未打开窗口)也返回 null 不崩。
-            reg.Register(new SearchPastConversationsTool(() => AgentLoop.Current?.CurrentConvId));
+            //    convId 通过 AgentLoop.Current / HarnessAgentLoop.Current 静态入口获取。
+            //    form 构造 loop 后写入 Current,lambda 每次调用时读取,即使 Current 为 null 也返回 null 不崩。
+            var getConvId = new Func<string>(() =>
+                AgentLoop.Current?.CurrentConvId ?? TxTools.Agent.Harness.HarnessAgentLoop.Current?.CurrentConvId);
+
+            // 片段固化/归因需要 convId:统一注入 AgentContext,工具层挂钩共用同一个来源
+            AgentContext.ConvIdProvider = getConvId;
+
+            reg.Register(new SearchPastConversationsTool(getConvId));
             reg.Register(new ListGotchasTool());
             reg.Register(new AddGotchaCorrectionTool());
             reg.Register(new ListFactsTool());
-            reg.Register(new AddFactTool(() => AgentLoop.Current?.CurrentConvId));
+            reg.Register(new AddFactTool(getConvId));
 
-            // 4) 上传文件解析工具 (v2) —— 让 AI 感知与按需精读 xlsx/csv/txt 等
-            //    上传时前端会把摘要注入用户消息前缀,通常不必先 list;
-            //    但当用户后续再次引用同一附件、或需要深读大文件时,list + read 组合是标准姿势。
-            reg.Register(new ListUploadedFilesTool(() => AgentLoop.Current?.CurrentConvId));
+            // 4) 上传文件解析工具 (v2)
+            reg.Register(new ListUploadedFilesTool(getConvId));
             reg.Register(new ReadUploadedFileTool());
 
+            // 4.5) 弹窗提问工具 —— AI 主动向用户问 confirm/choice/input,阻塞等答复
+            //      简化传统"AI 说话→用户输入框回复"的多步流程,一次点击就返回
+            reg.Register(new AskUserTool());
+
+            // 4.6) 源码工作区工具 —— AI 改项目源码(读/搜/改/建/回滚/编译验证)
+            //      全部限定在 open_workspace 指定的根目录内,防路径穿越。
+            //      code_edit/code_create_file/code_revert 是变更操作,走审批(不加 AutoApprove)。
+            //      code_build 实现了 ITxOffUiThreadTool,编译在后台线程跑,不冻结 PS 主线程。
+            reg.Register(new OpenWorkspaceTool());     // 读：打开工作区(项目根目录)
+            reg.Register(new CodeOutlineTool());       // 读：C# 文件骨架(类型/成员/行号)
+            reg.Register(new CodeReadTool());          // 读：按符号/行号读源码片段
+            reg.Register(new CodeSearchTool());        // 读：跨文件搜索(定位首选)
+            reg.Register(new CodeEditTool());          // 变更：精确串替换(唯一匹配硬约束)
+            reg.Register(new CodeCreateFileTool());    // 变更：新建源码文件
+            reg.Register(new CodeRevertTool());        // 变更：回滚到会话首版(从 .txagent_backup)
+            reg.Register(new CodeBuildTool());         // 读：编译工作区项目(只回错误诊断)
+
+            // 4.7) 工具组开关 —— 工具按组暴露(ToolGate),code/cee 默认关;
+            //      开关持久化,新建对话后生效
+            reg.Register(new ListToolGroupsTool());    // 读：列出工具组及启用状态
+            reg.Register(new SetToolGroupsTool());     // 变更：开/关工具组(需审批)
+
+            // 4.8) 多 PDPS 环境 —— 同时开多个 PDPS 时跨窗口查询/对比(只读)
+            reg.Register(new ListEnvironmentsTool());  // 读：列出所有 PDPS 环境
+            reg.Register(new RunInEnvironmentTool());  // 读：在指定环境执行只读工具
+            reg.Register(new CompareEnvironmentsTool());// 读：两环境跑同一工具并排对比
+
+            // 4.9) 片段健康 —— 修补丁 / 体检(配合待定池自动固化)
+            reg.Register(new PatchSnippetTool());      // 变更：就地修片段一小段(记修订历史)
+            reg.Register(new SnippetHealthTool());     // 读：片段库健康体检 + 待定池状态
+
             // 5) 加载已保存的配方,注册成工具 (启动即可用)
-            foreach (var recipe in RecipeStore.Load())
+            foreach (var recipe in RecipeStore.All())
                 reg.Register(new RecipeTool(recipe, reg));
 
-            // 6) 预置内置配方(仅注册到内存,不写盘;启动即在,可被 list_recipes 看到)
-            SeedDefaultRecipes(reg);
+            // 6) 预置内置配方 —— 已随配方模型升级(工具序列 → 代码)移除:
+            // 6) 预置内置配方 —— 已随配方模型升级(工具序列 → 代码)移除:
+            //    旧的内置配方基于 RecipeStep 步骤序列,新模型是"代码 + 参数声明"。
+            //    模型侧如需固化,用 save_recipe 或侧边栏的 promote 功能。
 
             // 7) 自动发现:反射扫程序集里所有实现 ITxAgentTool 且有公共无参构造的类,
             //    自动补注册。这样以后新加 XxxTool.cs 只要有默认构造函数,扔进项目即可,
@@ -138,12 +192,7 @@ namespace TxTools.Agent
             return reg;
         }
 
-        /// <summary>
-        /// 反射扫本程序集里所有实现 ITxAgentTool 且有公共无参构造函数的类,补注册到 reg。
-        /// 已存在同名工具则跳过 (避免覆盖上面 BuildToolRegistry 里手工注册的带依赖构造)。
-        /// 需要依赖注入的工具 (如 SaveRecipeTool(reg) / AddFactTool(convIdSupplier) / RecipeTool(recipe,reg))
-        /// 应继续在 BuildToolRegistry 里手工注册,它们没有无参构造,会被自动扫描自然忽略。
-        /// </summary>
+        /// <summary>需要依赖注入的工具 (如 SaveRecipeTool(reg) / AddFactTool(convIdSupplier) / RecipeTool(recipe,reg))</summary>
         private static void AutoRegisterTools(ToolRegistry reg)
         {
             var asm = typeof(TxAgentCommand).Assembly;
@@ -200,63 +249,6 @@ namespace TxTools.Agent
             System.Diagnostics.Debug.WriteLine(
                 "[TxAgent] AutoRegisterTools 完成: new=" + registered
                 + " skipped=" + skipped + " failed=" + failed);
-        }
-
-        /// <summary>预置几条开箱即用的只读配方(都由现有只读工具组合，免审批)。</summary>
-        private static void SeedDefaultRecipes(ToolRegistry reg)
-        {
-            // 导出前点检：列操作 + 焊点数 + 参考系
-            SeedIfAbsent(reg, "preflight_check", "导出前点检：列出选中操作、统计焊点数、确认参考坐标系。",
-                new[]
-                {
-                    Step("list_operations", null),
-                    Step("count_points", new JObject { ["point_type"] = "WeldPoint" }),
-                    Step("get_reference_frame", null)
-                });
-
-            // 场景概览：全场景类型直方图 + 当前文档
-            SeedIfAbsent(reg, "scene_overview", "场景概览：全场景对象类型直方图 + 当前文档信息。",
-                new[]
-                {
-                    Step("count_objects", null),
-                    Step("query_scene", new JObject { ["scope"] = "document" })
-                });
-
-            // 机器人综合审计：BASE0偏差校验 + 按类型统计场景对象数量
-            SeedIfAbsent(reg, "robot_audit", "机器人综合审计：BASE0偏差校验 + 按类型统计场景对象数量。",
-                new[]
-                {
-                    Step("check_robot_base", new JObject { ["tolerance_mm"] = 5.0, ["rot_tolerance"] = 1.0, ["brand_mode"] = "Auto" }),
-                    Step("count_objects", null)
-                });
-
-            // 焊接前置检查：列出选中操作 + 统计焊点数 + 确认参考坐标系
-            SeedIfAbsent(reg, "weld_preflight", "焊接前置检查：列出选中操作 + 统计焊点数 + 确认参考坐标系。",
-                new[]
-                {
-                    Step("list_operations", null),
-                    Step("count_points", new JObject { ["point_type"] = "WeldPoint" }),
-                    Step("get_reference_frame", null)
-                });
-        }
-
-        private static RecipeStep Step(string tool, JObject input)
-        {
-            return new RecipeStep { Tool = tool, Input = input ?? new JObject() };
-        }
-
-        private static void SeedIfAbsent(ToolRegistry reg, string name, string desc, RecipeStep[] steps)
-        {
-            ITxAgentTool existing;
-            if (reg.TryGet(name, out existing)) return; // 用户已有同名(配方或工具)则不覆盖
-            var recipe = new Recipe
-            {
-                Name = name,
-                Description = desc,
-                Parameters = new System.Collections.Generic.List<RecipeParam>(),
-                Steps = new System.Collections.Generic.List<RecipeStep>(steps)
-            };
-            reg.Register(new RecipeTool(recipe, reg));
         }
 
         private static IWin32Window TryGetPsMainWindow()

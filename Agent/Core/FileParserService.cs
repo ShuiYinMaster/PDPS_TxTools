@@ -54,11 +54,71 @@ namespace TxTools.Agent.Core
                         ParseJson(file);
                         break;
                     case ".xml":
+                    case ".html":
+                    case ".htm":
+                    case ".xaml":
+                    case ".svg":
                         ParseXmlLike(file);
                         break;
+                    // === 代码文件 —— 语言感知的智能摘要 ===
+                    case ".cs":
+                    case ".py":
+                    case ".js":
+                    case ".jsx":
+                    case ".ts":
+                    case ".tsx":
+                    case ".vue":
+                    case ".svelte":
+                    case ".java":
+                    case ".kt":
+                    case ".scala":
+                    case ".cpp":
+                    case ".cc":
+                    case ".cxx":
+                    case ".hpp":
+                    case ".hxx":
+                    case ".c":
+                    case ".h":
+                    case ".go":
+                    case ".rs":
+                    case ".rb":
+                    case ".php":
+                    case ".swift":
+                    case ".m":
+                    case ".mm":
+                    case ".sh":
+                    case ".bash":
+                    case ".zsh":
+                    case ".ps1":
+                    case ".psm1":
+                    case ".bat":
+                    case ".cmd":
+                    case ".sql":
+                    case ".lua":
+                    case ".r":
+                    case ".dart":
+                        ParseCode(file);
+                        break;
+                    // === 配置/样式 —— 走纯文本 ===
+                    case ".yml":
+                    case ".yaml":
+                    case ".toml":
+                    case ".ini":
+                    case ".cfg":
+                    case ".conf":
+                    case ".env":
+                    case ".properties":
+                    case ".css":
+                    case ".scss":
+                    case ".sass":
+                    case ".less":
+                    case ".gitignore":
+                    case ".dockerignore":
                     case ".txt":
                     case ".md":
                     case ".log":
+                    case ".rst":
+                    case ".tex":
                     case "":
                         ParsePlainText(file);
                         break;
@@ -339,6 +399,294 @@ namespace TxTools.Agent.Core
             sb.AppendLine(TrimToMax(text, TextPreviewChars));
             f.RowCount = lineCount;
             f.ParsedSummary = TrimToMax(sb.ToString(), 2000);
+        }
+
+        // ── 代码文件 —— 语言感知的智能摘要 ──
+
+        /// <summary>
+        /// 代码文件解析:
+        ///   [语言] 文件名  N 行 (M 有效行,注释/空 K)
+        ///   依赖 (imports/using/require/#include 顶部扫 60 行)
+        ///   顶层符号 (class/interface/struct/enum + function/method + arrow const)
+        ///   前 30 行预览
+        /// AI 拿到摘要就知道文件长什么样,不确定细节再 read_uploaded_file。
+        /// </summary>
+        private static void ParseCode(UploadedFile f)
+        {
+            var text = ReadTextAuto(f.LocalPath);
+            var lines = text.Split('\n');
+            var lang = LanguageFromExt(f.Extension);
+            var effective = CountEffectiveLines(lines, lang);
+
+            var imports = ExtractImports(lines, lang);
+            var symbols = ExtractSymbols(text, lang);
+
+            var sb = new StringBuilder();
+            sb.Append("[").Append(lang).Append("] ").Append(f.OriginalName)
+              .Append("  ").Append(lines.Length).Append(" 行");
+            if (effective > 0 && effective != lines.Length)
+                sb.Append(" (").Append(effective).Append(" 有效行,注释/空 ")
+                  .Append(lines.Length - effective).Append(")");
+            sb.AppendLine();
+
+            if (imports.Count > 0)
+            {
+                sb.AppendLine();
+                sb.Append("依赖 (").Append(imports.Count).AppendLine("):");
+                int shown = 0;
+                foreach (var imp in imports)
+                {
+                    sb.Append("  ").AppendLine(imp);
+                    if (++shown >= 10)
+                    {
+                        if (imports.Count > 10)
+                            sb.Append("  ...(").Append(imports.Count - 10).AppendLine(" more)");
+                        break;
+                    }
+                }
+            }
+
+            if (symbols.Count > 0)
+            {
+                sb.AppendLine();
+                sb.Append("顶层符号 (").Append(symbols.Count).AppendLine("):");
+                int shown = 0;
+                foreach (var sym in symbols)
+                {
+                    sb.Append("  ").AppendLine(sym);
+                    if (++shown >= 25)
+                    {
+                        if (symbols.Count > 25)
+                            sb.Append("  ...(").Append(symbols.Count - 25).AppendLine(" more)");
+                        break;
+                    }
+                }
+            }
+
+            sb.AppendLine();
+            sb.AppendLine("前 30 行预览:");
+            int previewLines = Math.Min(30, lines.Length);
+            for (int i = 0; i < previewLines; i++)
+                sb.AppendLine(lines[i].TrimEnd('\r'));
+            if (lines.Length > 30)
+                sb.Append("... (还有 ").Append(lines.Length - 30)
+                  .AppendLine(" 行,用 read_uploaded_file 读完整内容)");
+
+            f.RowCount = lines.Length;
+            f.ParsedSummary = TrimToMax(sb.ToString(), 3000);
+        }
+
+        /// <summary>把扩展名映射到语言标识,给 UI/AI 一个明确的类型 tag。</summary>
+        private static string LanguageFromExt(string ext)
+        {
+            switch ((ext ?? "").ToLowerInvariant())
+            {
+                case ".cs": return "csharp";
+                case ".py": return "python";
+                case ".js": case ".jsx": case ".vue": case ".svelte": return "javascript";
+                case ".ts": case ".tsx": return "typescript";
+                case ".java": return "java";
+                case ".kt": return "kotlin";
+                case ".scala": return "scala";
+                case ".cpp": case ".cc": case ".cxx": case ".hpp": case ".hxx": return "cpp";
+                case ".c": case ".h": return "c";
+                case ".go": return "go";
+                case ".rs": return "rust";
+                case ".rb": return "ruby";
+                case ".php": return "php";
+                case ".swift": return "swift";
+                case ".m": case ".mm": return "objc";
+                case ".sh": case ".bash": case ".zsh": return "shell";
+                case ".ps1": case ".psm1": return "powershell";
+                case ".bat": case ".cmd": return "batch";
+                case ".sql": return "sql";
+                case ".lua": return "lua";
+                case ".r": return "r";
+                case ".dart": return "dart";
+                default: return "code";
+            }
+        }
+
+        /// <summary>统计非空、非纯注释行。仅对单行注释精确;块注释里的行按普通处理。</summary>
+        private static int CountEffectiveLines(string[] lines, string lang)
+        {
+            string singleComment = "//";
+            if (lang == "python" || lang == "shell" || lang == "ruby") singleComment = "#";
+            else if (lang == "sql") singleComment = "--";
+            else if (lang == "batch") singleComment = "REM";
+
+            int count = 0;
+            foreach (var line in lines)
+            {
+                var t = line.Trim();
+                if (t.Length == 0) continue;
+                if (t.StartsWith(singleComment, StringComparison.Ordinal)) continue;
+                count++;
+            }
+            return count;
+        }
+
+        /// <summary>从顶部 60 行扫 import/using/require/#include 类语句。</summary>
+        private static List<string> ExtractImports(string[] lines, string lang)
+        {
+            var result = new List<string>();
+            System.Text.RegularExpressions.Regex regex;
+
+            switch (lang)
+            {
+                case "csharp":
+                    regex = new System.Text.RegularExpressions.Regex(@"^\s*using\s+[\w\.]+\s*;"); break;
+                case "python":
+                    regex = new System.Text.RegularExpressions.Regex(@"^\s*(?:from\s+[\w\.]+\s+)?import\s+[\w\.\*,\s]+"); break;
+                case "javascript": case "typescript":
+                    regex = new System.Text.RegularExpressions.Regex(@"^\s*(?:import\s+.*from\s+['""].+['""]|const\s+\w+\s*=\s*require\s*\()"); break;
+                case "java": case "kotlin":
+                    regex = new System.Text.RegularExpressions.Regex(@"^\s*import\s+[\w\.]+\s*;?"); break;
+                case "cpp": case "c": case "objc":
+                    regex = new System.Text.RegularExpressions.Regex(@"^\s*#include\s+[<""].+[>""]"); break;
+                case "go":
+                    regex = new System.Text.RegularExpressions.Regex(@"^\s*import\s+[\(""]"); break;
+                case "rust":
+                    regex = new System.Text.RegularExpressions.Regex(@"^\s*use\s+[\w:]+\s*;"); break;
+                case "ruby":
+                    regex = new System.Text.RegularExpressions.Regex(@"^\s*(?:require|require_relative)\s+['""]"); break;
+                default: return result;
+            }
+
+            int scan = Math.Min(60, lines.Length);
+            for (int i = 0; i < scan; i++)
+            {
+                var line = lines[i].TrimEnd('\r').Trim();
+                if (line.Length == 0) continue;
+                if (regex.IsMatch(line)) result.Add(line);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// 顶层符号:class/interface/struct/enum + function/method + JS/TS arrow const。
+        /// 用简单正则,不追求 100% 精确;目的是给 AI 一个文件目录级别的概览。
+        /// </summary>
+        private static List<string> ExtractSymbols(string text, string lang)
+        {
+            var result = new List<string>();
+            var Rx = new Func<string, System.Text.RegularExpressions.Regex>(p =>
+                new System.Text.RegularExpressions.Regex(p, System.Text.RegularExpressions.RegexOptions.Multiline));
+
+            switch (lang)
+            {
+                case "csharp":
+                case "java":
+                case "kotlin":
+                    // 类型声明
+                    foreach (System.Text.RegularExpressions.Match m in Rx(
+                        @"^\s*(?:public|internal|private|protected)?\s*(?:static\s+|abstract\s+|sealed\s+|partial\s+)*(class|interface|struct|enum|record)\s+(\w+)").Matches(text))
+                        result.Add(m.Groups[1].Value + " " + m.Groups[2].Value);
+                    // 方法(粗略:有访问修饰符 + 返回类型 + 名 + 括号)
+                    foreach (System.Text.RegularExpressions.Match m in Rx(
+                        @"^\s*(?:public|internal|private|protected)\s+(?:static\s+|virtual\s+|override\s+|async\s+|abstract\s+)*[\w<>\[\]\?,\s]+?\s+(\w+)\s*\(").Matches(text))
+                    {
+                        var name = m.Groups[1].Value;
+                        if (!IsReservedWord(name)) result.Add("  " + name + "()");
+                    }
+                    break;
+
+                case "python":
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^class\s+(\w+)").Matches(text))
+                        result.Add("class " + m.Groups[1].Value);
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^\s*(?:async\s+)?def\s+(\w+)\s*\(").Matches(text))
+                    {
+                        // 用缩进区分顶层 def 和 方法
+                        var indented = m.Value.StartsWith(" ") || m.Value.StartsWith("\t");
+                        result.Add((indented ? "  " : "") + "def " + m.Groups[1].Value + "()");
+                    }
+                    break;
+
+                case "javascript":
+                case "typescript":
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^\s*(?:export\s+(?:default\s+)?)?(?:abstract\s+)?class\s+(\w+)").Matches(text))
+                        result.Add("class " + m.Groups[1].Value);
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^\s*(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s+\*?\s*(\w+)").Matches(text))
+                        result.Add("function " + m.Groups[1].Value + "()");
+                    // arrow function 赋给 const
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^\s*(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s*)?[\(<]").Matches(text))
+                        result.Add("const " + m.Groups[1].Value + " = (…) => …");
+                    // interface / type (TS)
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^\s*(?:export\s+)?(interface|type|enum)\s+(\w+)").Matches(text))
+                        result.Add(m.Groups[1].Value + " " + m.Groups[2].Value);
+                    break;
+
+                case "cpp":
+                case "c":
+                case "objc":
+                    // class/struct/union
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^\s*(class|struct|union|enum)\s+(\w+)").Matches(text))
+                        result.Add(m.Groups[1].Value + " " + m.Groups[2].Value);
+                    // 函数定义(粗略)
+                    foreach (System.Text.RegularExpressions.Match m in Rx(
+                        @"^(?:[\w:<>,\s\*&]+)\s+(\w+)\s*\([^)]*\)\s*(?:const)?\s*\{?").Matches(text))
+                    {
+                        var name = m.Groups[1].Value;
+                        if (!IsReservedWord(name)) result.Add("  " + name + "()");
+                    }
+                    break;
+
+                case "go":
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^func\s+(?:\([^)]+\)\s+)?(\w+)\s*\(").Matches(text))
+                        result.Add("func " + m.Groups[1].Value + "()");
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^type\s+(\w+)\s+(struct|interface)").Matches(text))
+                        result.Add(m.Groups[2].Value + " " + m.Groups[1].Value);
+                    break;
+
+                case "rust":
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^\s*(?:pub\s+)?fn\s+(\w+)").Matches(text))
+                        result.Add("fn " + m.Groups[1].Value + "()");
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^\s*(?:pub\s+)?(struct|enum|trait|impl)\s+(\w+)").Matches(text))
+                        result.Add(m.Groups[1].Value + " " + m.Groups[2].Value);
+                    break;
+
+                case "ruby":
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^\s*(class|module)\s+(\w+)").Matches(text))
+                        result.Add(m.Groups[1].Value + " " + m.Groups[2].Value);
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^\s*def\s+(?:self\.)?(\w+)").Matches(text))
+                        result.Add("  def " + m.Groups[1].Value + "()");
+                    break;
+
+                case "php":
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^\s*(?:abstract\s+|final\s+)?(class|interface|trait)\s+(\w+)").Matches(text))
+                        result.Add(m.Groups[1].Value + " " + m.Groups[2].Value);
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^\s*(?:public\s+|private\s+|protected\s+)?(?:static\s+)?function\s+(\w+)").Matches(text))
+                        result.Add("  function " + m.Groups[1].Value + "()");
+                    break;
+
+                case "sql":
+                    foreach (System.Text.RegularExpressions.Match m in Rx(
+                        @"^\s*(CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|FUNCTION|PROCEDURE|TRIGGER|INDEX))\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w\.]+)").Matches(text))
+                        result.Add(m.Groups[1].Value.ToUpperInvariant() + " " + m.Groups[2].Value);
+                    break;
+
+                case "shell":
+                case "powershell":
+                    foreach (System.Text.RegularExpressions.Match m in Rx(@"^\s*(?:function\s+)?(\w+)\s*\(\s*\)\s*\{").Matches(text))
+                        result.Add("function " + m.Groups[1].Value + "()");
+                    break;
+            }
+
+            return result;
+        }
+
+        /// <summary>过滤符号提取里会把 if/for/return 之类当函数名的误命中。</summary>
+        private static bool IsReservedWord(string s)
+        {
+            switch (s)
+            {
+                case "if": case "else": case "for": case "foreach": case "while": case "do":
+                case "switch": case "case": case "catch": case "try": case "finally":
+                case "return": case "throw": case "using": case "new": case "typeof":
+                case "sizeof": case "goto": case "break": case "continue":
+                    return true;
+            }
+            return false;
         }
 
         // ── 表格预览渲染 ──

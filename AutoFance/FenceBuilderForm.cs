@@ -8,6 +8,7 @@ using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
 using TxTools.Common;
 using TxTools.LineToSolid;
+using Theme = TxTools.Common.FormUiKit.Theme;
 
 namespace TxTools.FenceBuilder
 {
@@ -34,11 +35,11 @@ namespace TxTools.FenceBuilder
         private CheckBox _chkIgnoreZ, _chkForceAxis, _chkUseActiveModeling;
         private NumericUpDown _nudMinLastPanel;
 
-        // 颜色状态
-        private Color _meshColor = Color.FromArgb(255, 200, 0);
-        private Color _frameColor = Color.FromArgb(230, 180, 0);
-        private Color _postColor = Color.FromArgb(230, 180, 0);
-        private Color _bpColor = Color.FromArgb(200, 160, 0);
+        // 颜色状态（收编 FormUiKit.Theme.Fence* 色系）
+        private Color _meshColor = Theme.FenceMesh;
+        private Color _frameColor = Theme.FenceFrame;
+        private Color _postColor = Theme.FencePost;
+        private Color _bpColor = Theme.FenceBaseplate;
 
         // 基线列表
         private TxObjGridCtrl _baselineGrid;
@@ -111,7 +112,7 @@ namespace TxTools.FenceBuilder
                 ColumnCount = 2,
                 RowCount = 1,
                 Padding = new Padding(4),
-                BackColor = SystemColors.Control
+                BackColor = FormUiKit.CardBack
             };
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 320));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
@@ -167,6 +168,8 @@ namespace TxTools.FenceBuilder
             baseInner.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
             _baselineGrid = new TxObjGridCtrl { Dock = DockStyle.Fill };
+            // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点
+            FormUiKit.GridPickFocus.Wire(_baselineGrid);
             baseInner.Controls.Add(_baselineGrid, 0, 0);
 
             FlowLayoutPanel baseBtns = new FlowLayoutPanel
@@ -223,8 +226,8 @@ namespace TxTools.FenceBuilder
             {
                 Dock = DockStyle.Fill,
                 Font = new Font("Consolas", 9F),
-                BackColor = Color.FromArgb(30, 30, 30),
-                ForeColor = Color.LightGray,
+                BackColor = Theme.LogBg,
+                ForeColor = Theme.LogText,   // 跟随主题（默认白底黑字，深色主题下自动反色）
                 ReadOnly = true,
                 BorderStyle = BorderStyle.None
             };
@@ -364,8 +367,8 @@ namespace TxTools.FenceBuilder
                 Margin = new Padding(0, 0, 0, 8),
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowOnly,
-                HeaderColor = Color.FromArgb(60, 90, 150),
-                ForeColor = Color.FromArgb(60, 90, 150)
+                HeaderColor = Theme.CardTitle,
+                ForeColor = Theme.CardTitle
             };
         }
 
@@ -487,9 +490,10 @@ namespace TxTools.FenceBuilder
                 Width = width,
                 Height = 26,
                 FlatStyle = FlatStyle.Flat,
-                BgColor = primary ? Color.FromArgb(0, 122, 204) : SystemColors.ControlLight,
-                ForeColor = primary ? Color.White : SystemColors.ControlText,
-                BorderColor = primary ? Color.FromArgb(0, 122, 204) : SystemColors.ControlDark,
+                BgColor = primary ? Theme.BtnPrimary : SystemColors.ControlLight,
+                ForeColor = primary ? Theme.BtnFore : SystemColors.ControlText,
+                BorderColor = FormUiKit.Theme.BtnBorder,
+                HoverColor = FormUiKit.Theme.BtnHover,
                 Font = primary ? _boldFont : _baseFont,
                 Margin = new Padding(0, 0, 4, 0)
             };
@@ -780,9 +784,9 @@ namespace TxTools.FenceBuilder
                     _logBox.BeginInvoke(new Action<string>(Log), msg);
                     return;
                 }
-                Color c = Color.LightGray;
-                if (msg.Contains("ERR")) c = Color.IndianRed;
-                else if (msg.Contains("WARN")) c = Color.Gold;
+                Color c = Theme.LogText;
+                if (msg.Contains("ERR")) c = Theme.LogErr;
+                else if (msg.Contains("WARN")) c = Theme.LogWarn;
 
                 int start = _logBox.TextLength;
                 string line = "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + msg + Environment.NewLine;

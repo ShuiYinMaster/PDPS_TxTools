@@ -8,6 +8,8 @@ using System.Text;
 using System.Windows.Forms;
 using Tecnomatix.Engineering;      // 必须引用：用于 TxApplication, TxRobot, TxFrame
 using Tecnomatix.Engineering.Ui;   // TxForm
+using TxTools.Common;
+using Theme = TxTools.Common.FormUiKit.Theme;
 
 // 别名，避免 WPF/WinForms 冲突（按 TxTools 惯例）
 using TextBox = System.Windows.Forms.TextBox;
@@ -37,9 +39,10 @@ namespace TxTools.RobotBaseChecker
 
         public RobotBaseCheckerForm()
         {
+            FormUiKit.InitStandardForm(this, "机器人 BASE0 一致性检查",
+                _designSize, new Size(900, 500), sizable: true);
             SemiModal = false;            // 非模态：双安全（构造 + OnInitTxForm）
             BuildUi();
-            TryInitUiKit();
         }
 
         public override void OnInitTxForm()
@@ -48,40 +51,8 @@ namespace TxTools.RobotBaseChecker
             SemiModal = false;
         }
 
-        private void TryInitUiKit()
-        {
-            // 若套件内有 FormUiKit 则统一外观；没有也不影响运行
-            try
-            {
-                var t = Type.GetType("TxTools.Common.FormUiKit, TxTools.Common");
-                var mi = t?.GetMethod("InitStandardForm");
-                mi?.Invoke(null, new object[] { this });
-            }
-            catch { }
-
-            // 唯一持久化键，消除跨插件窗口几何串扰
-            Name = GetType().FullName;
-            try
-            {
-                var flatStyleProp = this.GetType().GetProperty("FlatStyleEnabled");
-                if (flatStyleProp != null && flatStyleProp.CanWrite)
-                {
-                    flatStyleProp.SetValue(this, false, null);
-                }
-            }
-            catch
-            {
-                // 反射失败时静默忽略，确保插件继续运行
-            }
-        }
-
         private void BuildUi()
         {
-            Text = "机器人 BASE0 一致性检查";
-            ClientSize = _designSize;
-            StartPosition = FormStartPosition.CenterScreen;
-            AutoScaleMode = AutoScaleMode.None;
-
             var root = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -104,7 +75,16 @@ namespace TxTools.RobotBaseChecker
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
             // ── 容差参数卡片 ──
-            var tolGroup = new GroupBox { Text = "容差参数", Dock = DockStyle.Fill, Padding = new Padding(6, 2, 6, 2) };
+            var tolGroup = new FormUiKit.ColoredGroupBox
+            {
+                Text = "容差参数",
+                TitleColor = Theme.CardTitle,
+                BorderColor = FormUiKit.CardBorder,
+                Dock = DockStyle.Fill,
+                Padding = new Padding(6, 2, 6, 2),
+                Font = FormUiKit.BoldFont,
+                BackColor = FormUiKit.CardBack
+            };
             var tolPanel = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -114,36 +94,49 @@ namespace TxTools.RobotBaseChecker
             tolPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             tolPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-            _posTol = new NumericUpDown { DecimalPlaces = 3, Increment = 0.1M, Minimum = 0, Maximum = 1000, Value = 0.5M, Width = 80 };
-            _rotTol = new NumericUpDown { DecimalPlaces = 4, Increment = 0.01M, Minimum = 0, Maximum = 360, Value = 0.01M, Width = 80 };
+            _posTol = FormUiKit.MkNumeric(0, 1000, 0.5M, 0.1M, 3);
+            _rotTol = FormUiKit.MkNumeric(0, 360, 0.01M, 0.01M, 4);
+            _posTol.Width = 80;
+            _rotTol.Width = 80;
 
-            tolPanel.Controls.Add(new Label { Text = "位置容差(mm):", AutoSize = true }, 0, 0);
+            tolPanel.Controls.Add(new Label { Text = "位置容差(mm):", AutoSize = true, Font = FormUiKit.BaseFont }, 0, 0);
             tolPanel.Controls.Add(_posTol, 1, 0);
-            tolPanel.Controls.Add(new Label { Text = "旋转容差:", AutoSize = true }, 0, 1);
+            tolPanel.Controls.Add(new Label { Text = "旋转容差:", AutoSize = true, Font = FormUiKit.BaseFont }, 0, 1);
             tolPanel.Controls.Add(_rotTol, 1, 1);
 
             tolGroup.Controls.Add(tolPanel);
             toolbar.Controls.Add(tolGroup, 0, 0);
 
             // ── 操作卡片 ──
-            var opGroup = new GroupBox { Text = "操作", Dock = DockStyle.Fill, Padding = new Padding(6, 2, 6, 2) };
+            var opGroup = new FormUiKit.ColoredGroupBox
+            {
+                Text = "操作",
+                TitleColor = Theme.CardTitle,
+                BorderColor = FormUiKit.CardBorder,
+                Dock = DockStyle.Fill,
+                Padding = new Padding(6, 2, 6, 2),
+                Font = FormUiKit.BoldFont,
+                BackColor = FormUiKit.CardBack
+            };
             var opPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
 
-            opPanel.Controls.Add(new Label { Text = "品牌:", AutoSize = true, Padding = new Padding(0, 6, 0, 0) });
-            _brandMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 130 };
+            opPanel.Controls.Add(new Label { Text = "品牌:", AutoSize = true, Font = FormUiKit.BaseFont, Padding = new Padding(0, 6, 0, 0) });
+            _brandMode = FormUiKit.MkComboBox(130);
             _brandMode.Items.AddRange(new object[] { "自动检测", "通用(底座面)", "FANUC(J1∩J2)" });
             _brandMode.SelectedIndex = 0;
             opPanel.Controls.Add(_brandMode);
 
-            _btnCheck = new Button { Text = "开始检查", Width = 100, Height = 28 };
+            _btnCheck = FormUiKit.MkBtn("开始检查", Theme.BtnPrimary, 100, 28);
             _btnCheck.Click += (s, e) => RunCheck();
             opPanel.Controls.Add(_btnCheck);
 
-            _btnSync = new Button { Text = "同步全部 BASE0", Width = 130, Height = 28, Enabled = false };
+            _btnSync = FormUiKit.MkBtn("同步全部 BASE0", Theme.BtnSecondary, 130, 28);
+            _btnSync.Enabled = false;
             _btnSync.Click += (s, e) => SyncAll();
             opPanel.Controls.Add(_btnSync);
 
-            _btnExport = new Button { Text = "导出 CSV", Width = 100, Height = 28, Enabled = false };
+            _btnExport = FormUiKit.MkBtn("导出 CSV", Theme.BtnExport, 100, 28);
+            _btnExport.Enabled = false;
             _btnExport.Click += (s, e) => ExportCsv();
             opPanel.Controls.Add(_btnExport);
 
@@ -195,7 +188,9 @@ namespace TxTools.RobotBaseChecker
                 Multiline = true,
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical,
-                Font = new Font("Consolas", 9F),
+                Font = FormUiKit.MonoFont,
+                BackColor = Theme.LogBg,
+                ForeColor = Theme.LogText,
                 WordWrap = false
             };
             root.Controls.Add(_logBox, 0, 2);
@@ -206,17 +201,7 @@ namespace TxTools.RobotBaseChecker
         protected override void OnLoad(EventArgs e)
         {
             base.OnLoad(e);
-            if (!_scaled)
-            {
-                _scaled = true;
-                float sc = CreateGraphics().DpiX / 96f;
-                if (sc > 1.01f)
-                {
-                    Scale(new SizeF(sc, sc));
-                    Size = new Size((int)(_designSize.Width * sc) + (Width - ClientSize.Width),
-                                    (int)(_designSize.Height * sc) + (Height - ClientSize.Height));
-                }
-            }
+            FormUiKit.ApplyDpiScaling(this, ref _scaled, _designSize);
         }
 
         // ----------------------------------------------------------------
@@ -359,10 +344,10 @@ namespace TxTools.RobotBaseChecker
                 int idx = _grid.Rows.Add(r.RobotName, r.Brand, self, baseTxt, expTxt, dp, dr, r.Verdict);
                 var row = _grid.Rows[idx];
 
-                if (r.Verdict == "一致") { row.DefaultCellStyle.BackColor = Color.FromArgb(225, 245, 225); ok++; }
-                else if (r.Verdict == "存在偏差") { row.DefaultCellStyle.BackColor = Color.FromArgb(255, 230, 225); dev++; }
-                else if (r.Verdict == "无当前BASE0") { row.DefaultCellStyle.BackColor = Color.FromArgb(255, 248, 225); nobase++; }
-                else { row.DefaultCellStyle.BackColor = Color.FromArgb(245, 245, 245); fail++; }
+                if (r.Verdict == "一致") { row.DefaultCellStyle.BackColor = Theme.RowOkText; ok++; }
+                else if (r.Verdict == "存在偏差") { row.DefaultCellStyle.BackColor = Theme.RowFailText; dev++; }
+                else if (r.Verdict == "无当前BASE0") { row.DefaultCellStyle.BackColor = Theme.RowWarnText; nobase++; }
+                else { row.DefaultCellStyle.BackColor = Theme.RowNeutral; fail++; }
             }
 
             // 统计信息写入日志区（不再使用 _summary 标签）

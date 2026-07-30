@@ -9,7 +9,7 @@ namespace TxTools.WeldAnnotator
     public class WeldPointAnnotatorCmd : TxButtonCommand
     {
         public override string Name        => ".焊点标注截图";
-        public override string Category    => "My Plugins";
+        public override string Category    => "TxTools";
         public override string Tooltip     => "焊点标注截图 → Excel";
         public override string Description => "将PS视口截图与焊点标注导出到活动Excel";
         public override string Bitmap      => "image.WeldAnnotator.bmp";
@@ -21,7 +21,7 @@ namespace TxTools.WeldAnnotator
             {
                 var form = new WeldAnnotatorForm();
                 form.Show();
-                // 打开后立即把焦点还给 PS 主窗口
+                // 打开后立即把焦点还给 PS 主窗口。
                 try
                 {
                     var ps = System.Diagnostics.Process.GetCurrentProcess();

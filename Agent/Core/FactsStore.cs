@@ -39,21 +39,86 @@ namespace TxTools.Agent.Core
 
     public static class FactsStore
     {
-        private const string FileName = "facts.json";
+        private const string Folder = "facts";
 
         public static List<Fact> All()
         {
-            foreach (var path in CandidatePaths())
+            EnsureMigrated();
+
+            var list = new List<Fact>();
+            foreach (var doc in MdStore.LoadAll(Folder))
             {
-                try
-                {
-                    if (!File.Exists(path)) continue;
-                    var list = JsonConvert.DeserializeObject<List<Fact>>(File.ReadAllText(path, Encoding.UTF8));
-                    if (list != null) return list;
-                }
-                catch { }
+                var f = FromDoc(doc);
+                if (f != null) list.Add(f);
             }
-            return new List<Fact>();
+            return list;
+        }
+
+        // ── MD 映射 ──
+        //  事实本身是一句话,放正文;类别/计数/时间放 frontmatter。
+        //  文件名取自内容前若干字,目录扫一眼就知道记住了些什么。
+
+        private static MarkdownDoc ToDoc(Fact f)
+        {
+            var doc = new MarkdownDoc();
+            doc.Set("key", f.Id ?? "");
+            doc.Set("id", f.Id ?? "");
+            doc.Set("category", f.Category ?? "misc");
+            doc.Set("used_count", f.UsedCount);
+            doc.Set("conv_id", f.ConvId ?? "");
+            doc.Set("created", f.CreatedUtc);
+            if (f.LastConfirmedUtc.HasValue) doc.Set("last_confirmed", f.LastConfirmedUtc.Value);
+            doc.Body = (f.Content ?? "").Trim();
+            return doc;
+        }
+
+        private static Fact FromDoc(MarkdownDoc doc)
+        {
+            if (doc == null) return null;
+            var content = (doc.Body ?? "").Trim();
+            if (content.Length == 0) return null;
+
+            var lc = doc.GetDate("last_confirmed");
+
+            return new Fact
+            {
+                Id = doc.Get("id", doc.Get("key", "")),
+                Content = content,
+                Category = doc.Get("category", "misc"),
+                UsedCount = doc.GetInt("used_count", 0),
+                ConvId = doc.Get("conv_id", ""),
+                CreatedUtc = doc.GetDate("created"),
+                LastConfirmedUtc = lc == default(DateTime) ? (DateTime?)null : lc
+            };
+        }
+
+        private static void EnsureMigrated()
+        {
+            MdStore.MigrateOnce(Folder, "facts.json", json =>
+            {
+                var list = JsonConvert.DeserializeObject<List<Fact>>(json);
+                if (list == null) return;
+                foreach (var f in list)
+                {
+                    if (f == null || string.IsNullOrWhiteSpace(f.Content)) continue;
+                    if (string.IsNullOrEmpty(f.Id))
+                        f.Id = "f_" + Math.Abs(f.Content.GetHashCode()).ToString("D10");
+                    WriteOne(f);
+                }
+            });
+        }
+
+        private static void WriteOne(Fact f)
+        {
+            MdStore.Write(Folder, SlugOf(f), ToDoc(f));
+        }
+
+        /// <summary>文件名用内容前 40 字,可读;撞名时 MdStore 会按 id 补后缀。</summary>
+        private static string SlugOf(Fact f)
+        {
+            var basis = (f.Content ?? f.Id ?? "fact").Trim();
+            if (basis.Length > 40) basis = basis.Substring(0, 40);
+            return MdStore.UniqueSlug(Folder, MarkdownDoc.Slug(basis), f.Id ?? basis);
         }
 
         /// <summary>
@@ -70,7 +135,7 @@ namespace TxTools.Agent.Core
             if (similar != null)
             {
                 similar.LastConfirmedUtc = DateTime.UtcNow;
-                SaveAll(all);
+                WriteOne(similar);
                 return similar;
             }
 
@@ -83,19 +148,16 @@ namespace TxTools.Agent.Core
                 LastConfirmedUtc = DateTime.UtcNow,
                 ConvId = convId
             };
-            all.Add(f);
-            SaveAll(all);
+            WriteOne(f);
             return f;
         }
 
         public static bool Remove(string id)
         {
             if (string.IsNullOrWhiteSpace(id)) return false;
-            var all = All();
-            int n = all.RemoveAll(f => string.Equals(f.Id, id, StringComparison.OrdinalIgnoreCase));
-            if (n == 0) return false;
-            SaveAll(all);
-            return true;
+            var f = All().FirstOrDefault(x => string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase));
+            if (f == null) return false;
+            return MdStore.Delete(Folder, SlugOf(f));
         }
 
         public static List<Fact> FindByKeyword(string query)
@@ -124,7 +186,7 @@ namespace TxTools.Agent.Core
             var f = all.FirstOrDefault(x => x.Id == id);
             if (f == null) return;
             f.UsedCount++;
-            SaveAll(all);
+            WriteOne(f);
         }
 
         // ── 排序打分：类别 + 最近确认 + 引用次数 ──
@@ -179,41 +241,5 @@ namespace TxTools.Agent.Core
             return set;
         }
 
-        // ── 持久化 ──
-
-        private static void SaveAll(List<Fact> all)
-        {
-            var json = JsonConvert.SerializeObject(all ?? new List<Fact>(), Formatting.Indented);
-            foreach (var path in CandidatePaths())
-            {
-                try
-                {
-                    var dir = Path.GetDirectoryName(path);
-                    if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                    File.WriteAllText(path, json, Encoding.UTF8);
-                    return;
-                }
-                catch { }
-            }
-        }
-
-        private static string[] CandidatePaths()
-        {
-            string pluginDir = null;
-            try { pluginDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location); }
-            catch { }
-
-            var localDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TxTools.Agent");
-
-            if (string.IsNullOrEmpty(pluginDir))
-                return new[] { Path.Combine(localDir, FileName) };
-
-            return new[]
-            {
-                Path.Combine(pluginDir, FileName),
-                Path.Combine(localDir, FileName)
-            };
-        }
     }
 }

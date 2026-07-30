@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Forms;
@@ -63,6 +63,10 @@ namespace TxTools.AutoPathPlanner
         public double ApproachRetractMin = 10.0;
         public bool UseWorldZForApproach = false;
         public bool GenerateApproachRetract = true;
+        /// <summary>v6.7: 进/出枪搜索距离上限 (原区间 [Min,Max] 全失败后递增搜索, 默认150mm)</summary>
+        public double ApproachRetractSearchMax = 150.0;
+        /// <summary>v6.7: 常驻接触豁免 (透传 CollisionSetService, 默认关)</summary>
+        public bool BaselineExemptionEnabled = false;
         public double RrtStepSize = 50.0;      // 精度提升 (80→50)
         public int RrtMaxIterations = 5000;    // 迭代上限提升 (3000→5000)
         public double RrtGoalBias = 0.15;
@@ -262,6 +266,10 @@ namespace TxTools.AutoPathPlanner
 
                         w.ApplyGunOpenPoses(); // 焊枪张开后再进行任何碰撞查询
                         cs.RecaptureBaseline(); // 张开后的形态重拍常驻接触基线
+
+                        // v6.7: 被焊工件移出障碍方 + 常驻接触豁免开关
+                        cs.BaselineExemption = BaselineExemptionEnabled;
+                        cs.ExcludeObstacles(CollectWeldPartsOf(op));
                         worldCache[robot] = w;
 
                         // v6.0: 关节节拍代价模型 (每台机器人一份)
@@ -493,6 +501,46 @@ namespace TxTools.AutoPathPlanner
                 freeCount, weldPoints.Count, weldPoints.Count - freeCount));
 
             // ================================================================
+
+            // ================================================================
+            //  v6.8 规划前静态干涉检查 — 提前暴露问题点, 避免无谓的动态规划
+            // ================================================================
+            _log("\n  == 静态干涉检查 (规划前) ==");
+            int stFree = 0, stNoIk = 0, stColl = 0;
+            var stProblems = new List<string>();
+            for (int si = 0; si < weldPoints.Count; si++)
+            {
+                ThrowIfCancelled();
+                var wp = weldPoints[si];
+                _world.SetOrientation(wp.AbsTransform, wp.RpyZyx);
+                CollisionWorld.PositionState stWeld = _world.ClassifyStrict(wp.Position);
+                CollisionWorld.PositionState stOff = offsetFree[si]
+                    ? CollisionWorld.PositionState.Free
+                    : _world.ClassifyStrict(offsets[si]);
+                if (stWeld == CollisionWorld.PositionState.Free
+                    && stOff == CollisionWorld.PositionState.Free)
+                {
+                    stFree++;
+                }
+                else
+                {
+                    if (stWeld == CollisionWorld.PositionState.NoIk
+                        || stOff == CollisionWorld.PositionState.NoIk)
+                        stNoIk++;
+                    else
+                        stColl++;
+                    stProblems.Add(string.Format("    [!] {0}: 焊点{1} 进/出枪点{2}",
+                        wp.Source, stWeld, stOff));
+                }
+            }
+            _log(string.Format("  静态检查: {0} 个焊点 — 无干涉 {1} / 不可达 {2} / 碰撞 {3}",
+                weldPoints.Count, stFree, stNoIk, stColl));
+            foreach (var pr in stProblems)
+                _log(pr);
+            if (stNoIk + stColl > 0)
+                _log(string.Format("  [提示] {0} 个焊点存在静态问题(不可达/碰撞), 建议先调整焊点姿态或夹具再规划",
+                    stNoIk + stColl));
+
             //  结构骨架优先 (用户既定流程):
             //   ①创建两个 home Via → 移到 POSE home 位姿
             //   ②点序重排: 一个 home 到操作最前, 另一个到最末
@@ -1972,6 +2020,53 @@ namespace TxTools.AutoPathPlanner
         // ================================================================
         //  辅助
         // ================================================================
+        /// <summary>
+        /// v6.7: 收集操作下所有焊点的被焊零件 (LeadingPart)。
+        /// 焊枪电极必须接触工件才能焊接 → 工件不能作为焊枪的碰撞障碍,
+        /// 从障碍判定中排除后, 焊枪贴工件不再判碰撞。
+        /// </summary>
+        private List<ITxObject> CollectWeldPartsOf(ITxObject op)
+        {
+            var result = new List<ITxObject>();
+            try
+            {
+                var locs = CollectWeldLocationsOf(op);
+                foreach (var loc in locs)
+                {
+                    try
+                    {
+                        if (loc == null) continue;
+                        TxWeldPoint wp = loc.WeldPoint;
+                        if (wp == null) continue;
+                        ITxLeadingPart lp = wp.LeadingPart;
+                        if (lp == null) continue;
+                        var o = lp as ITxObject;
+                        if (o == null) continue;
+                        bool dup = false;
+                        for (int k = 0; k < result.Count; k++)
+                        {
+                            if (ReferenceEquals(result[k], o)) { dup = true; break; }
+                        }
+                        if (!dup) result.Add(o);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            if (result.Count > 0)
+            {
+                var names = new List<string>();
+                foreach (var o in result)
+                {
+                    try { names.Add(o.Name); }
+                    catch { names.Add(o.GetType().Name); }
+                }
+                _log(string.Format("  [被焊工件] 从障碍方排除 {0} 项: {1}",
+                    result.Count, string.Join(", ", names.ToArray())));
+            }
+            return result;
+        }
+
         private List<TxWeldLocationOperation> CollectWeldLocationsOf(ITxObject op)
         {
             var result = new List<TxWeldLocationOperation>();
@@ -2064,10 +2159,31 @@ namespace TxTools.AutoPathPlanner
                 ? new[] { dMax }
                 : new[] { dMax, dMid, dMin };
 
+            // v6.7: 原区间 [Min,Max] 全失败 → 超出 Max 递增搜索 (40→SearchMax),
+            // 让焊枪先退深到净空, 而不是强制在 20mm 处生成必然干涉的点。
+            double sMax = ApproachRetractSearchMax > dMax ? ApproachRetractSearchMax : dMax;
+            double[] farDists = new[] { 40.0, 60.0, 100.0, sMax };
+
             foreach (Vec3 dir in directions)
             {
                 foreach (double d in dists)
                 {
+                    Vec3 p = weld.Position + dir * d;
+                    if (_world.ClassifyStrict(p) == CollisionWorld.PositionState.Free)
+                    {
+                        pos = p;
+                        return true;
+                    }
+                }
+            }
+
+
+            // v6.7 第二阶段: 超出原区间的净空搜索 (从近到远, 找到即用)
+            foreach (Vec3 dir in directions)
+            {
+                foreach (double d in farDists)
+                {
+                    if (d <= dMax + 1e-6) continue; // 与第一阶段重叠的跳过
                     Vec3 p = weld.Position + dir * d;
                     if (_world.ClassifyStrict(p) == CollisionWorld.PositionState.Free)
                     {

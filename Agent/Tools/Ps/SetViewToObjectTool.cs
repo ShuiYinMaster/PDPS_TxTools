@@ -19,6 +19,7 @@ using System;
 using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 using Tecnomatix.Engineering;
+using TxTools.Agent.Ps;
 
 namespace TxTools.Agent.Core
 {
@@ -31,6 +32,7 @@ namespace TxTools.Agent.Core
             {
                 return "\u628a PS \u4e3b\u89c6\u53e3\u805a\u7126\u5230\u6307\u5b9a\u5bf9\u8c61(\u9009\u4e2d + Zoom-to-Selection \u547d\u4ee4)\u3002" +
                        "\u53c2\u6570 object_name (\u53ef\u9009,\u540c\u540d\u5219\u5168\u9009\u4e2d)\u3001" +
+                       "object_id (\u53ef\u9009,\u573a\u666f\u552f\u4e00 ID,\u7ed9\u4e86\u5c31\u7cbe\u786e\u805a\u7126\u8fd9\u4e2a\u5b9e\u4f8b)\u3001" +
                        "use_current_selection (\u53ef\u9009,true=\u76f4\u63a5\u7528\u5f53\u524d ActiveSelection,\u907f\u514d\u540c\u540d\u6b67\u4e49)\u3002";
             }
         }
@@ -44,6 +46,7 @@ namespace TxTools.Agent.Core
                     'type': 'object',
                     'properties': {
                         'object_name':           { 'type': 'string', 'description': '按名字找; 同名对象全部选中并整体聚焦' },
+                        'object_id':             { 'type': 'string', 'description': '对象的场景唯一 ID(形如 3,57,2,1)。同名对象只能用它精确聚焦；给了 object_id 就忽略 object_name' },
                         'use_current_selection': { 'type': 'boolean', 'default': false, 'description': 'true=直接用当前 ActiveSelection (先 select_objects 再本工具最实用)' }
                     }
                 }");
@@ -53,10 +56,26 @@ namespace TxTools.Agent.Core
         public string Execute(JObject input)
         {
             var name = ToolInputHelpers.String(input["object_name"]);
+            var objectId = ToolInputHelpers.String(input["object_id"]);
             var useCurrentSel = ToolInputHelpers.Bool(input["use_current_selection"], false);
 
             var doc = TxApplication.ActiveDocument;
             if (doc == null) return "Error: \u65e0\u6d3b\u52a8\u6587\u6863";
+
+            // 模式 0: 给了 object_id —— 直接按 ID 精确命中，跳过按名查找
+            if (!string.IsNullOrWhiteSpace(objectId))
+            {
+                ITxObject o = null;
+                try { o = doc.GetObjectById(objectId.Trim()); } catch { }
+                if (o == null) return "Error: \u6309 ID \"" + objectId + "\" \u627e\u4e0d\u5230\u5bf9\u8c61\u3002";
+
+                var list = new TxObjectList(1);
+                list.Add(o);
+                try { TxApplication.ActiveSelection.SetItems(list); }
+                catch (Exception ex) { return "Error: \u9009\u4e2d\u5931\u8d25: " + ex.Message; }
+
+                return DoZoomToCurrentSelection(PsBridge.Ref(o));
+            }
 
             // 模式 1: 用当前 ActiveSelection
             if (useCurrentSel || string.IsNullOrWhiteSpace(name))
@@ -82,7 +101,11 @@ namespace TxTools.Agent.Core
                 foreach (var t in targets) list.Add(t);
                 TxApplication.ActiveSelection.SetItems(list);
 
-                return DoZoomToCurrentSelection(name + " (\u5339\u914d " + targets.Count + " \u4e2a)");
+                // 命中多个时列出各自的 名称 [Id]，方便用户/模型接着用 object_id 精确指定
+                var labels = new string[targets.Count];
+                for (int i = 0; i < targets.Count; i++) labels[i] = PsBridge.Ref(targets[i]);
+                return DoZoomToCurrentSelection(name + " (\u5339\u914d " + targets.Count + " \u4e2a: "
+                    + string.Join(", ", labels) + ")");
             }
             catch (Exception ex)
             {

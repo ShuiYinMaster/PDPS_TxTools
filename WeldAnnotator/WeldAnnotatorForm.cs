@@ -20,6 +20,7 @@ using Tecnomatix.Engineering.Ui;
 using C1.Win.C1FlexGrid;
 using TxTools.ExportGun;
 using TxTools.Common;
+using Theme = TxTools.Common.FormUiKit.Theme;
 
 using D  = System.Drawing;
 using DI = System.Drawing.Imaging;
@@ -92,9 +93,8 @@ namespace TxTools.WeldAnnotator
         private Dictionary<int, string>   _categories     = new Dictionary<int, string>();
         private HashSet<int>              _categoriesManuallyEdited = new HashSet<int>();
 
-        private static readonly D.Size _myDefaultSize = new D.Size(1000, 620);
-        private static readonly D.Size _myMinimumSize = new D.Size(820, 480);
-        private readonly D.Font _font = new D.Font("Microsoft YaHei UI", 9f);
+        private static readonly D.Size _myDefaultSize = new D.Size(1000, 760);
+        private static readonly D.Size _myMinimumSize = new D.Size(820, 700);
         private bool _dpiApplied;
 
         // ════════════════════════════════════════════════════════════════
@@ -106,7 +106,7 @@ namespace TxTools.WeldAnnotator
             FormUiKit.InitStandardForm(this, "焊点标注截图导出",
                 _myDefaultSize, _myMinimumSize);
 
-            Font = _font;
+            Font = FormUiKit.BaseFont;
             ShowInTaskbar = true;
             PlaceTopRight();
 
@@ -346,7 +346,7 @@ namespace TxTools.WeldAnnotator
                 PsReader.HideAllExcept(whitelist, s => Log("INFO", s));
                 _btnRestore.Enabled      = true;
                 _lblSnapStatus.Text       = "已隐藏其他对象";
-                _lblSnapStatus.ForeColor  = D.Color.FromArgb(197, 90, 17);
+                _lblSnapStatus.ForeColor  = Theme.StatusWarn;
                 SetStatus("已仅显示操作绑定外观");
             }
             catch (InvalidOperationException iex) { Log("WARN", iex.Message); TxMessageBox.ShowModal(iex.Message, "无法执行", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
@@ -520,8 +520,8 @@ namespace TxTools.WeldAnnotator
                 _grid[row, C_TYPE] = cat;
 
                 var cs = _grid.Rows[row].Style ?? _grid.Styles.Add("r" + row);
-                cs.BackColor = pt.InViewport ? D.Color.FromArgb(198, 239, 206)
-                             : (pt.ScreenX != 0 || pt.ScreenY != 0) ? D.Color.FromArgb(255, 235, 156)
+                cs.BackColor = pt.InViewport ? Theme.RowOk
+                             : (pt.ScreenX != 0 || pt.ScreenY != 0) ? Theme.RowWarn
                              : D.Color.Empty;
                 _grid.Rows[row].Style = cs;
             }
@@ -848,8 +848,8 @@ namespace TxTools.WeldAnnotator
                         dynamic cell = ws.Cells[ds, c + 1];
                         cell.Value2 = hdr[c];
                         cell.Font.Bold = true;
-                        cell.Interior.Color = D.ColorTranslator.ToOle(D.Color.FromArgb(68, 114, 196));
-                        cell.Font.Color     = D.ColorTranslator.ToOle(D.Color.White);
+                        cell.Interior.Color = D.ColorTranslator.ToOle(Theme.GridHeader);
+                        cell.Font.Color     = D.ColorTranslator.ToOle(D.SystemColors.ControlText);   // 浅底配深字
                     }
                     for (int i = 0; i < _points.Count; i++)
                     {
@@ -867,7 +867,7 @@ namespace TxTools.WeldAnnotator
                         if (i % 2 == 1)
                         {
                             dynamic rng = ws.Range[ws.Cells[row, 1], ws.Cells[row, 8]];
-                            rng.Interior.Color = D.ColorTranslator.ToOle(D.Color.FromArgb(242, 242, 242));
+                            rng.Interior.Color = D.ColorTranslator.ToOle(Theme.GridAlt);
                         }
                     }
                     dynamic dr2 = ws.Range[ws.Cells[ds, 1], ws.Cells[ds + _points.Count, 8]];
@@ -894,7 +894,9 @@ namespace TxTools.WeldAnnotator
         private void Log(string level, string msg)
         {
             if (_logBox == null) return;
-            D.Color c = level == "ERR" ? D.Color.Tomato : level == "WARN" ? D.Color.Yellow : D.Color.LightGray;
+            D.Color c = level == "ERR" ? Theme.LogErr
+                      : level == "WARN" ? Theme.LogWarn
+                                        : Theme.LogText;   // 跟随主题，避免浅灰/黄字在白底日志上不可读
             _logBox.SelectionColor = c;
             _logBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {level}: {msg}\r\n");
             _logBox.ScrollToCaret();

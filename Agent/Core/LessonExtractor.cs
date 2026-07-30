@@ -9,6 +9,12 @@
 //   (3) 用户显式点 "记住我们这次的结论" 按钮
 //
 // 用便宜模型(deepseek-v4-flash)即可,萃取任务对推理能力要求不高。
+//
+// 【前缀续写】末尾预填一条 prefix=true 的 assistant 消息("{"),模型只能接着补 JSON,
+// 不会再包 ```json 围栏或写解释,"萃取输出非合法 JSON" 这类失败基本消失。
+// 该特性需要 beta 端点:构造 DeepSeekClient 时 baseUrl 传 https://api.deepseek.com/beta。
+// 端点不对时 API 会忽略或拒绝 prefix 字段 —— 此时 StripCodeFence + RestorePrefix
+// 仍能兜住普通输出,不会退化,只是少了这层保障。
 
 using System;
 using System.Collections.Generic;
@@ -71,7 +77,12 @@ namespace TxTools.Agent.Core
                     {
                         new ChatMessage("system",
                             "你是对话经验萃取器。仅输出严格 JSON，不要 markdown 代码块围栏，不要额外说明。"),
-                        new ChatMessage("user", extractPrompt)
+                        new ChatMessage("user", extractPrompt),
+                        // 前缀续写(Prefix Completion):预填一个 "{" 作为 assistant 开头,
+                        // 模型只能接着往下补 JSON,不会再自作主张包 ```json 围栏或写解释。
+                        // 需要 API 支持该特性;不支持时该消息会被当成普通 assistant 轮,
+                        // 输出仍能被 StripCodeFence + RepairJson 兜住,不会退化。
+                        new ChatMessage("assistant", "{") { Prefix = true }
                     }
                 };
 
@@ -81,7 +92,8 @@ namespace TxTools.Agent.Core
                     : "";
                 result.RawJson = content;
 
-                var json = StripCodeFence(content);
+                // 前缀续写生效时模型的输出不含开头的 "{",要补回来
+                var json = RestorePrefix(StripCodeFence(content));
                 JObject obj;
                 try { obj = JObject.Parse(json); }
                 catch (Exception parseEx)
@@ -195,6 +207,18 @@ namespace TxTools.Agent.Core
                 sb.AppendLine(line);
             }
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// 前缀续写下模型接着 "{" 往下写,返回内容不含开头的花括号 —— 这里补回来。
+        /// 若 API 不支持该特性、模型仍返回了完整 JSON,则原样放行。
+        /// </summary>
+        private static string RestorePrefix(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json)) return "{}";
+            var t = json.TrimStart();
+            if (t.StartsWith("{")) return t;
+            return "{" + json;
         }
 
         /// <summary>去掉模型有时会包上的 ```json ... ``` 围栏。</summary>

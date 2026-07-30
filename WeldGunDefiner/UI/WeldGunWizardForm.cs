@@ -10,6 +10,7 @@ using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
 using TxTools.WeldGunDefiner.Core;
+using Theme = TxTools.Common.FormUiKit.Theme;
 using TxTools.WeldGunDefiner.Math;
 using TxTools.Common;
 
@@ -143,8 +144,8 @@ namespace TxTools.WeldGunDefiner.UI
             {
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Font = new Font(SystemFonts.MessageBoxFont.FontFamily, 10, FontStyle.Bold),
-                ForeColor = Color.FromArgb(0, 100, 180),
+                Font = new Font(FormUiKit.BaseFont.FontFamily, 10, FontStyle.Bold),
+                ForeColor = Theme.CardTitle,
                 Padding = new Padding(2, 0, 0, 0)
             };
             root.Controls.Add(_lblStepTitle, 0, 1);
@@ -172,6 +173,14 @@ namespace TxTools.WeldGunDefiner.UI
         private Panel BuildStepIndicator()
         {
             _stepIndicator = new Panel { Dock = DockStyle.Fill };
+            // 步骤条下方补一条 1px 分隔线：原来面板无边框、底色与窗体相同，
+            // 选项卡底部没有任何边界，看起来像四个悬空的框
+            _stepIndicator.Paint += (s, e) =>
+            {
+                using (var pen = new Pen(FormUiKit.CardBorder))
+                    e.Graphics.DrawLine(pen, 0, _stepIndicator.Height - 1,
+                                        _stepIndicator.Width, _stepIndicator.Height - 1);
+            };
             string[] labels = { "1. 焊枪本体", "2. 铰点/Link", "3. 参数", "4. 生成" };
             int w = 120;
             for (int i = 0; i < labels.Length; i++)
@@ -517,7 +526,7 @@ namespace TxTools.WeldGunDefiner.UI
             {
                 autoLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
                 autoLayout.Controls.Add(new Label { Text = lbl, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(0, 0, 4, 0) }, 0, ar);
-                var tb = new TextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.FromArgb(242, 242, 242) };
+                var tb = new TextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Theme.ReadOnlyBg };
                 autoLayout.Controls.Add(tb, 1, ar);
                 autoLayout.Controls.Add(new Label { Text = unit, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.Gray }, 2, ar);
                 ar++; autoLayout.RowCount = ar; return tb;
@@ -559,7 +568,7 @@ namespace TxTools.WeldGunDefiner.UI
             {
                 Dock = DockStyle.Fill,
                 ReadOnly = true,
-                BackColor = Color.FromArgb(245, 250, 255),
+                BackColor = Theme.InputBg,
                 Font = new Font("Consolas", 8),
                 Text = "（请先完成铰点选取，参数将自动填入）"
             };
@@ -623,8 +632,8 @@ namespace TxTools.WeldGunDefiner.UI
             stack.Controls.Add(MkCard("关节命名 & 状态适配", nameWrap), 0, 0);
 
             // 公式预览
-            _txtFormula2 = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.FromArgb(248, 248, 248), Font = new Font("Consolas", 8) };
-            _txtFormulaInput = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.FromArgb(248, 248, 248), Font = new Font("Consolas", 8) };
+            _txtFormula2 = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Theme.ReadOnlyBg, Font = new Font("Consolas", 8) };
+            _txtFormulaInput = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Theme.ReadOnlyBg, Font = new Font("Consolas", 8) };
             var fmlLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
             fmlLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
             fmlLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -637,7 +646,7 @@ namespace TxTools.WeldGunDefiner.UI
             stack.Controls.Add(MkFixedCard("Joint Dependency 公式预览（可复制）", 110, fmlLayout), 0, 1);
 
             // 结果
-            _txtResult = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.FromArgb(250, 252, 255) };
+            _txtResult = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Theme.InputBg };
             stack.Controls.Add(MkFixedCard("生成结果", 200, _txtResult), 0, 2);
 
             scroll.Controls.Add(stack);
@@ -652,14 +661,18 @@ namespace TxTools.WeldGunDefiner.UI
         private static GroupBox MkCard(string title, Control inner)
         {
             inner.Dock = DockStyle.Top;
-            var g = new GroupBox
+            var g = new FormUiKit.ColoredGroupBox
             {
                 Text = title,
+                TitleColor = Theme.CardTitle,
+                BorderColor = FormUiKit.CardBorder,
                 Dock = DockStyle.Top,
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 Padding = new Padding(8, 4, 8, 8),
-                Margin = new Padding(0, 0, 0, 6)
+                Margin = new Padding(0, 0, 0, 6),
+                Font = FormUiKit.BoldFont,
+                BackColor = FormUiKit.CardBack
             };
             g.Controls.Add(inner);
             return g;
@@ -667,14 +680,18 @@ namespace TxTools.WeldGunDefiner.UI
         private static GroupBox MkFixedCard(string title, int height, Control inner)
         {
             inner.Dock = DockStyle.Fill;
-            var g = new GroupBox
+            var g = new FormUiKit.ColoredGroupBox
             {
                 Text = title,
+                TitleColor = Theme.CardTitle,
+                BorderColor = FormUiKit.CardBorder,
                 Dock = DockStyle.Top,
                 AutoSize = false,
                 Height = height,
                 Padding = new Padding(8, 4, 8, 8),
-                Margin = new Padding(0, 0, 0, 6)
+                Margin = new Padding(0, 0, 0, 6),
+                Font = FormUiKit.BoldFont,
+                BackColor = FormUiKit.CardBack
             };
             g.Controls.Add(inner);
             return g;
@@ -846,28 +863,19 @@ namespace TxTools.WeldGunDefiner.UI
         /// 统一处理 grid 拾取激活，解决"点击选择框后鼠标不变十字"的焦点问题。
         /// 根因：TxObjGridCtrl 首次显示时 PS 拾取提供者未注册，需在控件获得焦点/
         /// 点击时主动 Focus() + 重设 ListenToPick 来触发 PS 重新注册拾取监听。
+        /// （复用 FormUiKit.GridPickFocus 统一助手：启动抢焦点 + 点击重获焦点 + ESC 取消焦点）
         /// </summary>
         private static void WireGridPick(TxObjGridCtrl g)
         {
-            try { g.ListenToPick = true; } catch { }
-            // 点击/进入控件时强制激活拾取
-            g.Enter += (s, e) => ActivateGridPick(g);
-            g.MouseDown += (s, e) => ActivateGridPick(g);
-            g.Click += (s, e) => ActivateGridPick(g);
+            FormUiKit.GridPickFocus.Wire(g);
         }
 
         private static void ActivateGridPick(TxObjGridCtrl g)
         {
-            try
-            {
-                g.Focus();              // 抢回输入焦点
-                g.ListenToPick = false; // 切换一次触发 PS 重新注册拾取提供者
-                g.ListenToPick = true;
-            }
-            catch { }
+            FormUiKit.GridPickFocus.Activate(g);
         }
-        private static Button NewBtn(string t) => new Button { Text = t, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(8, 2, 8, 2), Margin = new Padding(4) };
-        private static Label MakeLabel(string t) => new Label { Text = t, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(0, 0, 6, 0) };
+        private static Button NewBtn(string t) => FormUiKit.MkFuncButton(t, Theme.BtnSecondary);
+        private static Label MakeLabel(string t) => new Label { Text = t, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(0, 0, 6, 0), Font = FormUiKit.BaseFont };
 
         // ═════════════════════════════════════════════════════════════════
         // 铰点 Grid：双路坐标（Frame原点 / Picked点击位置）
@@ -1191,9 +1199,9 @@ namespace TxTools.WeldGunDefiner.UI
             {
                 if (c is Label lbl && lbl.Tag is int idx)
                 {
-                    if (idx == _currentStep) { lbl.BackColor = Color.FromArgb(0, 114, 188); lbl.ForeColor = Color.White; }
-                    else if (idx < _currentStep) { lbl.BackColor = Color.FromArgb(198, 230, 198); lbl.ForeColor = Color.DarkGreen; }
-                    else { lbl.BackColor = SystemColors.Control; lbl.ForeColor = SystemColors.ControlText; }
+                    if (idx == _currentStep) { lbl.BackColor = Theme.BtnPrimary; lbl.ForeColor = Theme.BtnFore; }
+                    else if (idx < _currentStep) { lbl.BackColor = Theme.RowOk; lbl.ForeColor = Color.DarkGreen; }
+                    else { lbl.BackColor = FormUiKit.CardBack; lbl.ForeColor = Theme.BtnFore; }
                 }
             }
         }

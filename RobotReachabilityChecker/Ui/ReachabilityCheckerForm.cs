@@ -90,12 +90,11 @@ namespace TxTools.RobotReachabilityChecker.Ui
         // 缓存每行数据索引（TxFlexGrid 行 → PathPointResult），用于点击跳转
         private readonly Dictionary<int, PathPointResult> _rowToResult = new Dictionary<int, PathPointResult>();
 
-        // 双击 → 三击 检测：记录上次双击的时间和行号
-        // 在 _tripleClickWindowMs 内对同一行再次单击 → 触发三击（Robot Jog）
-        private DateTime _lastDoubleClickTime = DateTime.MinValue;
-        private int _lastDoubleClickRow = -1;
-        private const int _tripleClickWindowMs = 500;
-        private static readonly Size _designSize = new Size(1280, 780);
+        // 单击/双击识别：记录上次单击的时间和行号，
+        // 用于抑制"双击的第二击"触发单击驱动（双击应只打开 Robot Jog）
+        private DateTime _lastClickTime = DateTime.MinValue;
+        private int _lastClickRow = -1;
+        private static readonly Size _designSize = new Size(1024, 740);
         private bool _dpiApplied;
 
         // =====================================================================
@@ -106,7 +105,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             SemiModal = false;
             // 统一窗体规范 + DPI（套件唯一一处缩放设置，详见 FormUiKit）
             FormUiKit.InitStandardForm(this, "机器人路径点位检查",
-                _designSize, new Size(960, 580));
+                _designSize, new Size(900, 560));
 
             InitializeComponent();
             // 防御：InitStandardForm 已设唯一 Name 作为 TxForm 几何持久化键（消除串扰），
@@ -175,12 +174,6 @@ namespace TxTools.RobotReachabilityChecker.Ui
             _logBox.AppendText(line + "\n");
             _logBox.SelectionColor = _logBox.ForeColor;
             _logBox.ScrollToCaret();
-
-            if ((level == "ERR" || level == "WARN") && !_logVisible)
-            {
-                _logVisible = true; _logPanel.Visible = true;
-                if (_btnFooterLog != null) _btnFooterLog.Text = "▼ 隐藏日志";
-            }
         }
 
         private void SetStatus(string text)

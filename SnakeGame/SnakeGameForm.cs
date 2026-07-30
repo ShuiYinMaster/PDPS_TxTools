@@ -2,6 +2,8 @@ using System;
 using System.Drawing;
 using System.Windows.Forms;
 using Tecnomatix.Engineering;
+using TxTools.Common;
+using Theme = TxTools.Common.FormUiKit.Theme;
 
 namespace TxTools.SnakeGame
 {
@@ -59,7 +61,7 @@ namespace TxTools.SnakeGame
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(460, 380);
             Size = new Size(480, 420);
-            BackColor = SystemColors.Control;
+            BackColor = FormUiKit.CardBack;
 
             // 顶部信息 + 按钮区
             var top = new TableLayoutPanel
@@ -109,8 +111,8 @@ namespace TxTools.SnakeGame
                 Multiline = true,
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical,
-                BackColor = Color.FromArgb(32, 32, 32),
-                ForeColor = Color.Gainsboro,
+                BackColor = Theme.LogBg,
+                ForeColor = Theme.LogText,   // 跟随主题（默认白底黑字，深色主题下自动反色）
                 Font = new Font("Consolas", 9f),
                 WordWrap = false,
             };
@@ -128,7 +130,7 @@ namespace TxTools.SnakeGame
                 Text = text,
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Font = new Font(SystemFonts.MessageBoxFont.FontFamily, 9f, FontStyle.Regular),
+                Font = new Font(FormUiKit.BaseFont.FontFamily, 9f, FontStyle.Regular),
             };
         }
 

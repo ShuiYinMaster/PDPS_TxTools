@@ -9,6 +9,7 @@ using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
 using TxTools.Common;
+using Theme = TxTools.Common.FormUiKit.Theme;
 
 // System.Threading.Timer 和 System.Windows.Forms.Timer 命名冲突，显式选 Forms 那个
 using WinFormsTimer = System.Windows.Forms.Timer;
@@ -229,6 +230,8 @@ namespace TxTools.AutoRecorder
                 _grid.EnableRecurringObjects = false;
             }
             catch { }
+            // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点
+            FormUiKit.GridPickFocus.Wire(_grid);
 
             // 底部：信息行 + 视角控制行（表格自排，替代绝对坐标）
             var grp1Bottom = new TableLayoutPanel
@@ -249,7 +252,7 @@ namespace TxTools.AutoRecorder
             {
                 Text = "未选择操作（在主视口拾取操作，可多次拾取以批量录制）",
                 ForeColor = SystemColors.GrayText,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 AutoSize = true,
                 Anchor = AnchorStyles.Left,
                 Margin = new Padding(2, 2, 0, 2)
@@ -260,7 +263,7 @@ namespace TxTools.AutoRecorder
             _chkAutoApplyView = new CheckBox
             {
                 Text = "拾取时自动定位视角",
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Checked = true,
                 AutoSize = true,
                 Anchor = AnchorStyles.Left,
@@ -276,11 +279,12 @@ namespace TxTools.AutoRecorder
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 MinimumSize = new Size(150, 26),
                 FlatStyle = FlatStyle.Flat,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Enabled = false,
-                BgColor = Color.FromArgb(80, 120, 140),
-                ForeColor = Color.White,
-                BorderColor = Color.FromArgb(80, 120, 140),
+                BgColor = Theme.BtnSecondary,
+                ForeColor = Theme.BtnFore,
+                BorderColor = FormUiKit.Theme.BtnBorder,
+                HoverColor = FormUiKit.Theme.BtnHover,
                 Anchor = AnchorStyles.Right,
                 Margin = new Padding(6, 2, 0, 0)
             };
@@ -327,10 +331,11 @@ namespace TxTools.AutoRecorder
                 Text = "▼ 展开日志",
                 FlatStyle = FlatStyle.Flat,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 BgColor = SystemColors.ControlLight,
                 ForeColor = SystemColors.ControlText,
-                BorderColor = SystemColors.ControlDark,
+                BorderColor = FormUiKit.Theme.BtnBorder,
+                HoverColor = FormUiKit.Theme.BtnHover,
                 Anchor = AnchorStyles.Left,
                 Margin = new Padding(0, 0, 0, 4)
             };
@@ -349,7 +354,7 @@ namespace TxTools.AutoRecorder
                 Dock = DockStyle.Fill,
                 ReadOnly = true,
                 Font = new Font(FontFamily.GenericMonospace, 8.5F),
-                BackColor = Color.FromArgb(250, 250, 250),
+                BackColor = Theme.InputBg,
                 BorderStyle = BorderStyle.None,
                 DetectUrls = false,
                 HideSelection = false,
@@ -360,7 +365,7 @@ namespace TxTools.AutoRecorder
             this.Controls.Add(_root);
 
             // ---------- StatusStrip ----------
-            _statusStrip = new StatusStrip { Font = SystemFonts.MessageBoxFont };
+            _statusStrip = new StatusStrip { Font = FormUiKit.BaseFont };
             _lblStatus = new ToolStripStatusLabel("状态：待机")
             {
                 Spring = true,
@@ -421,7 +426,7 @@ namespace TxTools.AutoRecorder
             _lblPath = ParamLabel("输出路径：");
             _txtPath = new TextBox
             {
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Anchor = AnchorStyles.Left | AnchorStyles.Right,
                 Margin = new Padding(0, 3, 4, 3)
             };
@@ -431,10 +436,11 @@ namespace TxTools.AutoRecorder
                 Width = 80,
                 Height = 26,
                 FlatStyle = FlatStyle.Flat,
-                Font = SystemFonts.MessageBoxFont,
-                BgColor = Color.FromArgb(120, 124, 135),
-                ForeColor = Color.White,
-                BorderColor = Color.FromArgb(120, 124, 135),
+                Font = FormUiKit.BaseFont,
+                BgColor = Theme.BtnMuted,
+                ForeColor = Theme.BtnFore,
+                BorderColor = FormUiKit.Theme.BtnBorder,
+                HoverColor = FormUiKit.Theme.BtnHover,
                 Anchor = AnchorStyles.Right,
                 Margin = new Padding(0, 1, 0, 1)
             };
@@ -458,7 +464,7 @@ namespace TxTools.AutoRecorder
             _cmbCodec = new ComboBox
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 MaxDropDownItems = 12,
                 DropDownHeight = 240,
                 IntegralHeight = false,
@@ -471,7 +477,7 @@ namespace TxTools.AutoRecorder
             _cmbTimeSource = new ComboBox
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 MaxDropDownItems = 12,
                 DropDownHeight = 240,
                 IntegralHeight = false,
@@ -488,7 +494,7 @@ namespace TxTools.AutoRecorder
                 Maximum = 120,
                 Value = 30,
                 Increment = 1,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 2, 0, 2)
             };
             _numCompression = new NumericUpDown
@@ -498,7 +504,7 @@ namespace TxTools.AutoRecorder
                 Maximum = 100,
                 Value = 70,
                 Increment = 5,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 2, 0, 2)
             };
             var fpsFlow = MkInlineFlow();
@@ -513,7 +519,7 @@ namespace TxTools.AutoRecorder
             _chkCustomRes = new CheckBox
             {
                 Text = "自定义分辨率",
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Checked = false,
                 AutoSize = true,
                 Anchor = AnchorStyles.Left,
@@ -526,7 +532,7 @@ namespace TxTools.AutoRecorder
                 Maximum = 7680,
                 Value = 1920,
                 Increment = 4,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Enabled = false,
                 Margin = new Padding(0, 2, 0, 2)
             };
@@ -537,7 +543,7 @@ namespace TxTools.AutoRecorder
                 Maximum = 4320,
                 Value = 1080,
                 Increment = 4,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Enabled = false,
                 Margin = new Padding(0, 2, 0, 2)
             };
@@ -554,7 +560,7 @@ namespace TxTools.AutoRecorder
             {
                 Width = 110,
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 MaxDropDownItems = 10,
                 DropDownHeight = 240,
                 IntegralHeight = false,
@@ -577,7 +583,7 @@ namespace TxTools.AutoRecorder
             {
                 AutoSize = true,
                 Text = "需 ffmpeg.exe（放插件目录或 PATH）",
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 ForeColor = SystemColors.GrayText,
                 Anchor = AnchorStyles.Left,
                 Margin = new Padding(6, 5, 0, 0)
@@ -591,7 +597,7 @@ namespace TxTools.AutoRecorder
             _chkFocus = new CheckBox
             {
                 Text = "录制前自动聚焦视角到操作（推荐）",
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Checked = true,
                 AutoSize = true,
                 Anchor = AnchorStyles.Left,
@@ -621,7 +627,7 @@ namespace TxTools.AutoRecorder
             {
                 Text = text,
                 AutoSize = true,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Anchor = AnchorStyles.Left,
                 Margin = new Padding(2, 6, 8, 2)
             };
@@ -633,7 +639,7 @@ namespace TxTools.AutoRecorder
             {
                 Text = text,
                 AutoSize = true,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 ForeColor = gray ? SystemColors.GrayText : SystemColors.ControlText,
                 Anchor = AnchorStyles.Left,
                 Margin = new Padding(2, 5, 2, 0)
@@ -661,9 +667,9 @@ namespace TxTools.AutoRecorder
             return new FormUiKit.ColoredGroupBox
             {
                 Text = text,
-                Font = SystemFonts.MessageBoxFont,
-                HeaderColor = Color.FromArgb(60, 90, 150),
-                ForeColor = Color.FromArgb(60, 90, 150)
+                Font = FormUiKit.BaseFont,
+                HeaderColor = Theme.CardTitle,
+                ForeColor = Theme.CardTitle
             };
         }
 
@@ -675,11 +681,12 @@ namespace TxTools.AutoRecorder
                 Width = width,
                 Height = 26,
                 FlatStyle = FlatStyle.Flat,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(4, 0, 4, 0),
-                BgColor = primary ? Color.FromArgb(0, 122, 204) : SystemColors.ControlLight,
-                ForeColor = primary ? Color.White : SystemColors.ControlText,
-                BorderColor = primary ? Color.FromArgb(0, 122, 204) : SystemColors.ControlDark
+                BgColor = primary ? Theme.BtnPrimary : SystemColors.ControlLight,
+                ForeColor = primary ? Theme.BtnFore : SystemColors.ControlText,
+                BorderColor = FormUiKit.Theme.BtnBorder,
+                HoverColor = FormUiKit.Theme.BtnHover
             };
         }
 
@@ -835,10 +842,11 @@ namespace TxTools.AutoRecorder
                 Text = "[+] 视角关键帧（点击展开） — 高级：操作内多视角切换",
                 FlatStyle = FlatStyle.Flat,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 BgColor = SystemColors.ControlLight,
                 ForeColor = SystemColors.ControlText,
-                BorderColor = SystemColors.ControlDark
+                BorderColor = FormUiKit.Theme.BtnBorder,
+                HoverColor = FormUiKit.Theme.BtnHover
             };
             _btnKfToggle.Click += OnToggleKeyframePanel;
 
@@ -854,7 +862,7 @@ namespace TxTools.AutoRecorder
                 Dock = DockStyle.Bottom,
                 Height = 20,
                 Text = "",
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 ForeColor = SystemColors.GrayText,
                 TextAlign = ContentAlignment.MiddleLeft,
                 Visible = false,
@@ -880,12 +888,13 @@ namespace TxTools.AutoRecorder
                 MinimumSize = new Size(140, 26),
                 Height = 26,
                 FlatStyle = FlatStyle.Flat,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 6, 0),
                 Enabled = false,
-                BgColor = Color.FromArgb(0, 100, 167),
-                ForeColor = Color.White,
-                BorderColor = Color.FromArgb(0, 100, 167)
+                BgColor = Theme.BtnPrimary,
+                ForeColor = Theme.BtnFore,
+                BorderColor = FormUiKit.Theme.BtnBorder,
+                HoverColor = FormUiKit.Theme.BtnHover
             };
             _btnKfSet.Click += OnKfSet;
 
@@ -897,12 +906,13 @@ namespace TxTools.AutoRecorder
                 MinimumSize = new Size(70, 26),
                 Height = 26,
                 FlatStyle = FlatStyle.Flat,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 6, 0),
                 Enabled = false,
-                BgColor = Color.FromArgb(80, 120, 140),
-                ForeColor = Color.White,
-                BorderColor = Color.FromArgb(80, 120, 140)
+                BgColor = Theme.BtnSecondary,
+                ForeColor = Theme.BtnFore,
+                BorderColor = FormUiKit.Theme.BtnBorder,
+                HoverColor = FormUiKit.Theme.BtnHover
             };
             _btnKfPreview.Click += OnKfPreview;
 
@@ -914,12 +924,13 @@ namespace TxTools.AutoRecorder
                 MinimumSize = new Size(70, 26),
                 Height = 26,
                 FlatStyle = FlatStyle.Flat,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Margin = new Padding(0),
                 Enabled = false,
-                BgColor = Color.FromArgb(120, 124, 135),
-                ForeColor = Color.White,
-                BorderColor = Color.FromArgb(120, 124, 135)
+                BgColor = Theme.BtnMuted,
+                ForeColor = Theme.BtnFore,
+                BorderColor = FormUiKit.Theme.BtnBorder,
+                HoverColor = FormUiKit.Theme.BtnHover
             };
             _btnKfClear.Click += OnKfClear;
 
@@ -942,7 +953,7 @@ namespace TxTools.AutoRecorder
                 Top = 5,
                 AutoSize = true,
                 Text = "编辑操作:",
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 TextAlign = ContentAlignment.MiddleLeft,
             };
             _cmbKfOpSelector = new ComboBox
@@ -950,7 +961,7 @@ namespace TxTools.AutoRecorder
                 Top = 2,
                 Height = 22,
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 MaxDropDownItems = 12,
                 DropDownHeight = 240,
                 IntegralHeight = false,
@@ -981,7 +992,7 @@ namespace TxTools.AutoRecorder
                 ReadOnly = true,
                 BackgroundColor = SystemColors.Window,
                 BorderStyle = BorderStyle.FixedSingle,
-                Font = SystemFonts.MessageBoxFont,
+                Font = FormUiKit.BaseFont,
                 Visible = false,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
                 ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
@@ -991,9 +1002,9 @@ namespace TxTools.AutoRecorder
                 ScrollBars = ScrollBars.Vertical,
             };
             _gridKf.ColumnHeadersDefaultCellStyle.Font =
-                new Font(SystemFonts.MessageBoxFont, FontStyle.Bold);
+                FormUiKit.BoldFont;
             _gridKf.ColumnHeadersDefaultCellStyle.Padding = new Padding(2, 2, 2, 2);
-            _gridKf.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(235, 240, 245);
+            _gridKf.ColumnHeadersDefaultCellStyle.BackColor = Theme.GridHeader;
             _gridKf.ColumnHeadersDefaultCellStyle.ForeColor = SystemColors.ControlText;
             _gridKf.ColumnHeadersDefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleLeft;
 
@@ -1214,7 +1225,7 @@ namespace TxTools.AutoRecorder
                 "op 起始时",
                 "—",
                 sched.InitialCamera != null ? "已设" : "—");
-            _gridKf.Rows[rowStart].DefaultCellStyle.BackColor = Color.FromArgb(245, 247, 252);
+            _gridKf.Rows[rowStart].DefaultCellStyle.BackColor = Theme.GridAlt;
 
             // 接下来一行行 = location 列表
             try
@@ -1257,7 +1268,7 @@ namespace TxTools.AutoRecorder
                 _lblKfStatus.Text = string.Format(
                     "已设定 {0}/{1} 个视角 —— 该操作没有读到 location（仅有起始视角可编辑）",
                     setCount, totalCount);
-                _lblKfStatus.ForeColor = Color.FromArgb(180, 100, 0);
+                _lblKfStatus.ForeColor = Theme.StatusWarn;
             }
             else
             {

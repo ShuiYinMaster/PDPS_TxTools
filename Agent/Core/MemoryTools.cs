@@ -1,6 +1,7 @@
 // TxTools.Agent / Core / MemoryTools.cs
-// 记忆系统对外暴露的 5 个工具:
-//   search_past_conversations  — 跨对话搜索历史(只读)
+// 记忆系统对外暴露的 6 个工具:
+//   search_past_conversations  — 跨对话搜索(只读,走 MD 摘要索引)
+//   read_past_conversation     — 按 id 取某次对话的详情(只读)
 //   list_gotchas               — 列出踩坑清单(只读)
 //   add_gotcha_correction      — 补充踩坑正解(写库)
 //   list_facts                 — 列出已知事实(只读)
@@ -42,9 +43,11 @@ namespace TxTools.Agent.Core
         {
             get
             {
-                return "在过往所有对话中按关键字搜索,返回匹配的对话标题、时间和最相关的消息片段。" +
-                       "遇到“我之前是否处理过X”/“上次那个方案怎么做的”/“记得当时的结论吗”等需要跨对话回忆时使用。" +
-                       "多个关键字用空格分隔。";
+                return "在过往所有对话中搜索,返回匹配的对话标题、时间、涉及的工具和相关摘要片段。" +
+                       "遇到「我之前是否处理过X」/「上次那个方案怎么做的」/「记得当时的结论吗」等需要跨对话回忆时使用。" +
+                       "关键字除了普通词,还可以直接搜工具名(如 run_csharp)或 PS 类型名(如 TxWeldPoint) —— " +
+                       "索引对这两类做了加权,命中率最高。" +
+                       "本工具搜的是摘要索引;拿到 conv_id 后用 read_past_conversation 取该对话的细节。";
             }
         }
 
@@ -79,92 +82,156 @@ namespace TxTools.Agent.Core
                 .ToArray();
             if (keywords.Length == 0) return "关键字过短或无效(需≥2字符)。";
 
+            // 老对话没有索引,首次搜索时补建一次
+            ConversationIndex.EnsureAll();
+
             string excludeId = includeCurrent ? null
                 : (_currentConvIdGetter != null ? _currentConvIdGetter() : null);
 
-            var metas = ConversationStore.List();
-            var scored = new List<Hit>();
+            var hits = ConversationIndex.Search(keywords, excludeId, maxResults);
+            if (hits.Count == 0)
+                return "未找到相关对话。可换用更具体的关键字,例如工具名(run_csharp)或 PS 类型名(TxWeldPoint)。";
 
-            foreach (var m in metas)
-            {
-                if (!string.IsNullOrEmpty(excludeId) && string.Equals(m.Id, excludeId, StringComparison.Ordinal))
-                    continue;
-
-                var conv = ConversationStore.Load(m.Id);
-                if (conv == null || conv.Messages == null) continue;
-
-                double score = 0;
-                var hits = new List<string>();
-
-                // 标题命中加权更高
-                foreach (var kw in keywords)
-                    if (!string.IsNullOrEmpty(m.Title) && m.Title.ToLowerInvariant().Contains(kw))
-                        score += 3;
-
-                foreach (var msg in conv.Messages)
-                {
-                    if (msg == null || string.IsNullOrEmpty(msg.Content)) continue;
-                    if (msg.Role == "system") continue;
-
-                    var lower = msg.Content.ToLowerInvariant();
-                    int localHits = 0;
-                    foreach (var kw in keywords)
-                        if (lower.Contains(kw)) localHits++;
-
-                    if (localHits > 0)
-                    {
-                        score += localHits;
-                        if (hits.Count < 3)
-                            hits.Add(ExtractSnippet(msg.Content, keywords));
-                    }
-                }
-
-                if (score > 0)
-                    scored.Add(new Hit { Meta = m, Score = score, Snippets = hits });
-            }
-
-            if (scored.Count == 0) return "未找到相关对话。";
-
-            var top = scored.OrderByDescending(x => x.Score).Take(maxResults).ToList();
             var sb = new StringBuilder();
-            sb.AppendLine("找到 " + top.Count + " 条相关对话:");
-            foreach (var t in top)
+            sb.AppendLine("找到 " + hits.Count + " 条相关对话:");
+            foreach (var h in hits)
             {
                 sb.AppendLine();
-                sb.AppendLine("[" + t.Meta.Id + "] " + (t.Meta.Title ?? "(无标题)")
-                    + " — " + t.Meta.UpdatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
-                    + "  score=" + t.Score.ToString("0.0"));
-                foreach (var s in t.Snippets) sb.AppendLine("  · " + s);
+                sb.AppendLine("[" + h.Id + "] " + (string.IsNullOrEmpty(h.Title) ? "(无标题)" : h.Title)
+                    + " — " + h.UpdatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                    + "  score=" + h.Score.ToString("0.0"));
+                if (h.Tools != null && h.Tools.Count > 0)
+                    sb.AppendLine("  工具: " + string.Join(", ", h.Tools.Take(8)));
+                foreach (var s2 in h.Snippets) sb.AppendLine("  · " + s2);
             }
+            sb.AppendLine();
+            sb.AppendLine("需要某条的完整经过,用 read_past_conversation(conv_id=\"...\")。");
+            return sb.ToString();
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // 1b) read_past_conversation —— 按 id 取细节
+    // ─────────────────────────────────────────────────────────────────
+
+    public sealed class ReadPastConversationTool : TxAgentToolBase
+    {
+        public override string Name { get { return "read_past_conversation"; } }
+
+        public override string Description
+        {
+            get
+            {
+                return "读取某个历史对话的详情。先用 search_past_conversations 拿到 conv_id 再调本工具。" +
+                       "默认返回该对话的逐轮摘要(用户问了什么 → 调了哪些工具 → 结论);" +
+                       "传 query 时额外回原始消息里命中该关键字的完整片段,用于查当时的具体代码或参数。";
+            }
+        }
+
+        public override bool IsReadOnly { get { return true; } }
+
+        public override JObject InputSchema
+        {
+            get
+            {
+                return JObject.Parse(
+                    "{ \"type\": \"object\", \"properties\": {" +
+                    "  \"conv_id\": { \"type\": \"string\", \"description\": \"对话 id,形如 conv_20260727095802719\" }," +
+                    "  \"query\": { \"type\": \"string\", \"description\": \"可选。在原始消息里检索该关键字并返回完整片段\" }," +
+                    "  \"max_excerpts\": { \"type\": \"integer\", \"description\": \"query 命中片段数上限,默认 5\" }" +
+                    "}, \"required\": [\"conv_id\"] }");
+            }
+        }
+
+        public override string Execute(JObject input)
+        {
+            var convId = GetString(input, "conv_id");
+            var query = GetString(input, "query", "");
+            int maxExcerpts = input != null && input["max_excerpts"] != null && input["max_excerpts"].Type == JTokenType.Integer
+                ? (int)input["max_excerpts"] : 5;
+
+            if (string.IsNullOrWhiteSpace(convId)) return "参数 conv_id 不能为空。";
+
+            var sb = new StringBuilder();
+
+            var doc = ConversationIndex.Get(convId);
+            if (doc == null)
+            {
+                // 索引缺失(可能是刚导入的旧对话),现建一次
+                var c0 = ConversationStore.Load(convId);
+                if (c0 == null) return "未找到对话 " + convId + "。请先用 search_past_conversations 确认 id。";
+                ConversationIndex.Rebuild(c0);
+                doc = ConversationIndex.Get(convId);
+            }
+
+            if (doc != null)
+            {
+                sb.AppendLine("[" + convId + "] " + doc.Get("title", "(无标题)"));
+                sb.AppendLine("时间: " + doc.Get("updated", "?") + "  轮数: " + doc.Get("turns", "?"));
+                var tools = doc.Get("tools", "");
+                if (!string.IsNullOrWhiteSpace(tools) && tools != "[]") sb.AppendLine("工具: " + tools);
+                var types = doc.Get("types", "");
+                if (!string.IsNullOrWhiteSpace(types) && types != "[]") sb.AppendLine("涉及类型: " + types);
+                var files = doc.Get("files", "");
+                if (!string.IsNullOrWhiteSpace(files) && files != "[]") sb.AppendLine("附件: " + files);
+                sb.AppendLine();
+                sb.AppendLine(doc.Body);
+            }
+
+            if (!string.IsNullOrWhiteSpace(query))
+            {
+                var conv = ConversationStore.Load(convId);
+                if (conv == null || conv.Messages == null)
+                {
+                    sb.AppendLine("(原始记录不可读,无法检索片段)");
+                }
+                else
+                {
+                    var kws = query.ToLowerInvariant()
+                        .Split(new[] { ' ', ',', '|' }, StringSplitOptions.RemoveEmptyEntries)
+                        .Where(k => k.Length >= 2).ToArray();
+
+                    var found = 0;
+                    sb.AppendLine("── 原始记录中命中 \"" + query + "\" 的片段 ──");
+
+                    foreach (var m in conv.Messages)
+                    {
+                        if (found >= maxExcerpts) break;
+                        if (m == null || string.IsNullOrEmpty(m.Content)) continue;
+                        if (m.Role == "system") continue;
+
+                        var lower = m.Content.ToLowerInvariant();
+                        if (!kws.Any(k => lower.Contains(k))) continue;
+
+                        found++;
+                        sb.AppendLine();
+                        sb.AppendLine("[" + m.Role + "] " + Excerpt(m.Content, kws, 500));
+                    }
+
+                    if (found == 0) sb.AppendLine("(无命中)");
+                }
+            }
+
             return sb.ToString();
         }
 
-        private sealed class Hit
+        private static string Excerpt(string content, string[] keywords, int span)
         {
-            public ConversationMeta Meta;
-            public double Score;
-            public List<string> Snippets;
-        }
-
-        private static string ExtractSnippet(string content, string[] keywords)
-        {
-            content = content.Replace("\r", "").Replace("\n", " ").Trim();
             var lower = content.ToLowerInvariant();
-
-            int firstHit = int.MaxValue;
+            int first = int.MaxValue;
             foreach (var kw in keywords)
             {
-                int idx = lower.IndexOf(kw, StringComparison.Ordinal);
-                if (idx >= 0 && idx < firstHit) firstHit = idx;
+                int i = lower.IndexOf(kw, StringComparison.Ordinal);
+                if (i >= 0 && i < first) first = i;
             }
-            if (firstHit == int.MaxValue) firstHit = 0;
+            if (first == int.MaxValue) first = 0;
 
-            int from = Math.Max(0, firstHit - 30);
-            int len = Math.Min(160, content.Length - from);
-            var snippet = content.Substring(from, len);
-            if (from > 0) snippet = "…" + snippet;
-            if (from + len < content.Length) snippet += "…";
-            return snippet;
+            int from = Math.Max(0, first - 120);
+            int len = Math.Min(span, content.Length - from);
+            var s = content.Substring(from, len);
+            if (from > 0) s = "…" + s;
+            if (from + len < content.Length) s += "…";
+            return s;
         }
     }
 

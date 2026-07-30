@@ -1,4 +1,4 @@
-// AutoPathPlannerForm.cs — C# 7.3
+﻿// AutoPathPlannerForm.cs — C# 7.3
 //
 // v5.5 全参数 GUI 可调:
 // - 规划参数区改 TabControl 四组: 常用 / 定向搜索L1 / 动态检查 / RRT&采样
@@ -100,38 +100,18 @@ using Panel = System.Windows.Forms.Panel;
 using Control = System.Windows.Forms.Control;
 using ProgressBar = System.Windows.Forms.ProgressBar;
 
+// 配色统一收编到 TxTools.Common.FormUiKit
+using TxTools.Common;
+using Theme = TxTools.Common.FormUiKit.Theme;
+
+// 规划前可达性校验: 复用点位检查插件的 IK 求解器与日志接口
+using TxTools.RobotReachabilityChecker.Diagnostics;
+using TxTools.RobotReachabilityChecker.Services;
+
 namespace TxTools.AutoPathPlanner
 {
     public partial class AutoPathPlannerForm : TxForm
     {
-        // ════════════════════════════════════════════════════════════
-        //  Theme：集中管理所有颜色常量
-        // ════════════════════════════════════════════════════════════
-        private static class Theme
-        {
-            // 卡片标题色
-            public static readonly Color CardOps = Color.FromArgb(0, 100, 140);
-            public static readonly Color CardObs = Color.FromArgb(80, 120, 140);
-            public static readonly Color CardParams = Color.FromArgb(155, 120, 0);
-            public static readonly Color CardLog = Color.FromArgb(50, 120, 60);
-
-            // 功能按钮色
-            public static readonly Color BtnPrimary = Color.FromArgb(0, 100, 167);
-            public static readonly Color BtnSecondary = Color.FromArgb(80, 120, 140);
-            public static readonly Color BtnMuted = Color.FromArgb(120, 124, 135);
-            public static readonly Color BtnDanger = Color.FromArgb(130, 50, 50);
-
-            // 日志面板
-            public static readonly Color LogBg = Color.FromArgb(20, 22, 27);
-            public static readonly Color LogText = Color.FromArgb(178, 200, 178);
-            public static readonly Color LogOk = Color.FromArgb(90, 210, 110);
-            public static readonly Color LogErr = Color.FromArgb(228, 88, 88);
-            public static readonly Color LogWarn = Color.FromArgb(228, 180, 70);
-            public static readonly Color LogPs = Color.FromArgb(110, 180, 228);
-            public static readonly Color LogDebug = Color.FromArgb(140, 140, 160);
-            public static readonly Color LogInfo = Color.FromArgb(178, 200, 178);
-        }
-
         // ════════════════════════════════════════════════════════════
         //  日志级别
         // ════════════════════════════════════════════════════════════
@@ -214,6 +194,7 @@ namespace TxTools.AutoPathPlanner
         private NumericUpDown _nudGunMaxOpen;    // v6.4 最大开口幅值覆盖
 
         private CheckBox _chkCache;              // v6.3 查询缓存
+        private CheckBox _chkBaselineExempt;   // v6.7 常驻接触豁免
 
         private Button _btnResetParams;
         #endregion
@@ -239,13 +220,19 @@ namespace TxTools.AutoPathPlanner
         public static void ShowSingleton()
         {
             if (_instance == null || _instance.IsDisposed)
+            {
                 _instance = new AutoPathPlannerForm();
+                _instance.FormClosed += (s, e) => { if (ReferenceEquals(_instance, s)) _instance = null; };
+            }
             _instance.Show();
             _instance.BringToFront();
         }
 
         public AutoPathPlannerForm()
         {
+            FormUiKit.InitStandardForm(this, "自动路径规划器 v6.5.1 · API 校正",
+                _designSize, new Size(700, 560), sizable: true);
+            MaximizeBox = false;
             SemiModal = false;
             BuildUI();
         }
@@ -260,18 +247,7 @@ namespace TxTools.AutoPathPlanner
         protected override void OnLoad(EventArgs e)
         {
             base.OnLoad(e);
-            if (!_dpiApplied)
-            {
-                _dpiApplied = true;
-                try
-                {
-                    Size = _designSize;
-                    float sc = CreateGraphics().DpiX / 96f;
-                    if (sc < 1f) sc = 1f;
-                    if (sc > 1.01f) Scale(new SizeF(sc, sc));
-                }
-                catch { }
-            }
+            FormUiKit.ApplyDpiScaling(this, ref _dpiApplied, _designSize);
         }
 
         // ════════════════════════════════════════════════════════════
@@ -280,24 +256,6 @@ namespace TxTools.AutoPathPlanner
         private void BuildUI()
         {
             SuspendLayout();
-            AutoScaleDimensions = new SizeF(96F, 96F);
-            AutoScaleMode = AutoScaleMode.None;
-            Text = "自动路径规划器 v6.5.1 · API 校正";
-            Size = _designSize;
-            StartPosition = FormStartPosition.CenterScreen;
-            FormBorderStyle = FormBorderStyle.Sizable;
-            MaximizeBox = false;
-            BackColor = SystemColors.Control;
-            Font = SystemFonts.MessageBoxFont;
-
-            // ---- 关闭 Siemens flat style 皮肤 ----
-            try
-            {
-                var flatStyleProp = GetType().GetProperty("FlatStyleEnabled");
-                if (flatStyleProp != null && flatStyleProp.CanWrite)
-                    flatStyleProp.SetValue(this, false, null);
-            }
-            catch { }
 
             // ══════════ 卡片1: 操作选择 ══════════
             var cardOps = MakeCard("焊接操作 (规划范围)", Theme.CardOps, 180);
@@ -307,6 +265,8 @@ namespace TxTools.AutoPathPlanner
                     Location = new Point(10, 24),
                     Size = new Size(690, 120)
                 };
+                // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点
+                FormUiKit.GridPickFocus.Wire(_gridOps);
                 cardOps.Controls.Add(_gridOps);
 
                 _btnAddOps = MakeBtn("添加选中", Theme.BtnPrimary, 10, 150);
@@ -332,7 +292,7 @@ namespace TxTools.AutoPathPlanner
                     Location = new Point(180, 36),
                     AutoSize = true,
                     Text = "状态: 未检测 (规划前必须先创建, 规划器不再自动新建)",
-                    ForeColor = Color.FromArgb(90, 90, 90)
+                    ForeColor = Theme.TextDim
                 };
                 cardCS.Controls.Add(_lblCollisionSetStatus);
             }
@@ -373,6 +333,9 @@ namespace TxTools.AutoPathPlanner
                         "关闭后只做静态点位检查, 看不见枪体扫掠 —— 强烈建议保持开启");
                     _chkPrune = AddCheck(tp1, "共线过渡点剪枝", 330, ref y2, true,
                         "直线段上的连续过渡点只保留首尾 (删除后会复验安全性)");
+                    _chkBaselineExempt = AddCheck(tp1, "豁免常驻接触(基线)", 330, ref y2, false,
+                        "初始姿态已存在的接触(如夹具|机器人)在本次规划中不再判碰撞。\n" +
+                        "适用于夹具/机器人几何近似导致的常驻误报; 开启后可能漏检真实碰撞。");
                 }
                 tabs.TabPages.Add(tp1);
 
@@ -547,7 +510,7 @@ namespace TxTools.AutoPathPlanner
                     Location = new Point(580, 12),
                     AutoSize = true,
                     Text = "就绪",
-                    ForeColor = Color.FromArgb(90, 90, 90)
+                    ForeColor = Theme.TextDim
                 };
                 pnlBtn.Controls.Add(_lblStage);
 
@@ -563,7 +526,7 @@ namespace TxTools.AutoPathPlanner
                 {
                     Dock = DockStyle.Fill,
                     Location = new Point(10, 24),
-                    Font = new Font("Consolas", 9f),
+                    Font = FormUiKit.MonoFont,
                     BackColor = Theme.LogBg,
                     ForeColor = Theme.LogText,
                     ReadOnly = true,
@@ -584,13 +547,15 @@ namespace TxTools.AutoPathPlanner
         // ════════════════════════════════════════════════════════════
         private static GroupBox MakeCard(string title, Color titleColor, int height)
         {
-            var g = new GroupBox
+            var g = new FormUiKit.ColoredGroupBox
             {
                 Text = title,
-                ForeColor = titleColor,
+                TitleColor = titleColor,
+                BorderColor = FormUiKit.CardBorder,
                 Dock = height == 0 ? DockStyle.Fill : DockStyle.Top,
-                Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold),
-                Padding = new Padding(6, 4, 6, 4)
+                Font = FormUiKit.BoldFont,
+                Padding = new Padding(6, 4, 6, 4),
+                BackColor = FormUiKit.CardBack
             };
             if (height > 0) g.Height = height;
             return g;
@@ -599,17 +564,18 @@ namespace TxTools.AutoPathPlanner
         private static Button MakeBtn(string text, Color backColor, int x, int y,
             int w = 90, int h = 26)
         {
-            var b = new Button
+            var b = new FormUiKit.FlatColorButton
             {
                 Text = text,
                 Location = new Point(x, y),
                 Size = new Size(w, h),
-                BackColor = backColor,
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Font = SystemFonts.MessageBoxFont
+                AutoSize = false,
+                BgColor = backColor,
+                ForeColor = Theme.BtnFore,
+                BorderColor = FormUiKit.Theme.BtnBorder,
+                HoverColor = FormUiKit.Theme.BtnHover,
+                Font = FormUiKit.BaseFont
             };
-            b.FlatAppearance.BorderColor = backColor;
             return b;
         }
 
@@ -682,7 +648,7 @@ namespace TxTools.AutoPathPlanner
                     Text = text,
                     Location = new Point(x, y + 2),
                     AutoSize = true,
-                    ForeColor = Color.FromArgb(100, 100, 100)
+                    ForeColor = Theme.StatusNeutral
                 });
             }
             y += 22;
@@ -863,6 +829,11 @@ namespace TxTools.AutoPathPlanner
                     return;
                 }
 
+                // ---- 规划前可达性校验 ----
+                // 对每个操作的所有焊点做 IK 可达性检查；存在不可达焊点时提示并拒绝规划
+                if (!RunReachabilityGate(selectedOps, robot))
+                    return;
+
                 // ---- RRT 自定义路径规划 ----
                 // v4: 干涉集由 CollisionSetService 自动检测/复用/新建, UI 不再传自定义障碍
                 var planner = new WeldPathPlanner(Log)
@@ -922,7 +893,10 @@ namespace TxTools.AutoPathPlanner
                     GunMaxOpeningOverride = (double)_nudGunMaxOpen.Value,
 
                     // v6.3 性能
-                    QueryCacheEnabled = _chkCache.Checked
+                    QueryCacheEnabled = _chkCache.Checked,
+
+                    // v6.7 常驻接触豁免
+                    BaselineExemptionEnabled = _chkBaselineExempt.Checked
                 };
                 planner.IsCancelled = delegate { return _stopRequested; };
 
@@ -1066,7 +1040,7 @@ namespace TxTools.AutoPathPlanner
                     if (wantFallback != DialogResult.Yes)
                     {
                         SetCsStatus("状态: 已取消 (建议先添加操作)",
-                            Color.FromArgb(150, 100, 0));
+                            Theme.StatusWarn);
                         return;
                     }
 
@@ -1077,7 +1051,7 @@ namespace TxTools.AutoPathPlanner
                             "场景与选择中均未找到机器人, 无法创建干涉集。",
                             "自动创建干涉集",
                             MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        SetCsStatus("状态: 未找到机器人", Color.FromArgb(160, 40, 40));
+                        SetCsStatus("状态: 未找到机器人", Theme.StatusErr);
                         return;
                     }
                     Log("========== 自动创建干涉集 (回退模式) ==========", LogLevel.Ok);
@@ -1117,10 +1091,10 @@ namespace TxTools.AutoPathPlanner
                 if (cancelled > 0) parts.Add(cancelled + " 取消");
                 if (failed > 0) parts.Add(failed + " 失败");
                 Color statusColor =
-                    failed > 0 ? Color.FromArgb(160, 40, 40) :
-                    createdOk > 0 ? Color.FromArgb(0, 120, 50) :
-                    reused > 0 ? Color.FromArgb(0, 100, 167) :
-                                 Color.FromArgb(150, 100, 0);
+                    failed > 0 ? Theme.StatusErr :
+                    createdOk > 0 ? Theme.StatusOk :
+                    reused > 0 ? Theme.BtnPrimary :
+                                 Theme.StatusWarn;
                 SetCsStatus(
                     string.Format("状态: {0} 台机器人 ({1})",
                         robots.Count,
@@ -1132,7 +1106,7 @@ namespace TxTools.AutoPathPlanner
             catch (Exception ex)
             {
                 Log("[严重错误] 自动创建干涉集: " + ex.Message, LogLevel.Error);
-                SetCsStatus("状态: 异常 — 见日志", Color.FromArgb(160, 40, 40));
+                SetCsStatus("状态: 异常 — 见日志", Theme.StatusErr);
             }
             finally
             {
@@ -1260,6 +1234,108 @@ namespace TxTools.AutoPathPlanner
         }
 
         /// <summary>
+        /// 规划前可达性校验 (复用点位检查插件的 IK 求解器)。
+        /// 对每个操作的所有焊点做 IK 可达性检查; 存在不可达焊点时提示并拒绝规划。
+        /// </summary>
+        private bool RunReachabilityGate(List<ITxObject> ops, TxRobot fallbackRobot)
+        {
+            int total = 0, unreachable = 0;
+            var problems = new List<string>();
+            var logger = new FormLogAdapter((m, lv) => Log(m, lv));
+
+            foreach (var op in ops)
+            {
+                TxRobot robot = ResolveRobotOf(op) ?? fallbackRobot;
+                if (robot == null)
+                {
+                    problems.Add(string.Format("  操作 {0}: 无法解析关联机器人, 该操作焊点未校验",
+                        SafeName(op)));
+                    continue;
+                }
+
+                var weldLocs = CollectWeldLocationsOf(op);
+                if (weldLocs.Count == 0) continue;
+
+                int djCount = 0;
+                try { djCount = robot.DrivingJoints != null ? robot.DrivingJoints.Count : 0; } catch { }
+
+                // 路径连续性锚点: 首点 null, 每点成功后更新为该点解 (与主检查一致)
+                double[] anchor = null;
+                foreach (var loc in weldLocs)
+                {
+                    total++;
+                    var locOp = loc as ITxRoboticLocationOperation;
+                    string err = "";
+                    try
+                    {
+                        double[] vals = locOp == null ? null : IkSolver.TryIKWithTcpfSwitch(
+                            robot, (ITxObject)loc, locOp, anchor, djCount, out err, logger);
+                        if (vals != null && vals.Length > 0)
+                        {
+                            anchor = vals;
+                            continue;
+                        }
+                    }
+                    catch (Exception ex) { err = ex.Message; }
+
+                    unreachable++;
+                    problems.Add(string.Format("  [{0}] / [{1}]: {2}",
+                        SafeName(op), SafeName(loc),
+                        string.IsNullOrEmpty(err) ? "IK无解" : err));
+                }
+            }
+
+            Log(string.Format("== 规划前可达性校验: 共 {0} 个焊点, 不可达 {1} 个 ==",
+                total, unreachable), unreachable > 0 ? LogLevel.Warn : LogLevel.Ok);
+            foreach (var p in problems) Log(p, LogLevel.Warn);
+
+            if (unreachable == 0) return true;
+
+            string listText = string.Join("\n", problems);
+            if (problems.Count > 15)
+                listText = string.Join("\n", problems.GetRange(0, 15)) +
+                           string.Format("\n  ... 共 {0} 条", problems.Count);
+            MessageBox.Show(
+                string.Format("存在 {0} 个不可达焊点，已拒绝规划：\n\n{1}\n\n" +
+                              "请调整焊点姿态/机器人位置或移除不可达焊点后重试。",
+                    unreachable, listText),
+                "可达性校验未通过", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
+        /// <summary>安全取对象名 (PS 对象访问可能抛异常)。</summary>
+        private static string SafeName(ITxObject obj)
+        {
+            try { return obj != null && !string.IsNullOrEmpty(obj.Name) ? obj.Name : "?"; }
+            catch { return "?"; }
+        }
+
+        /// <summary>收集操作下所有焊点 (与 WeldPathPlanner 内部逻辑对齐)。</summary>
+        private static List<TxWeldLocationOperation> CollectWeldLocationsOf(ITxObject op)
+        {
+            var result = new List<TxWeldLocationOperation>();
+            var self = op as TxWeldLocationOperation;
+            if (self != null) { result.Add(self); return result; }
+
+            try
+            {
+                var container = op as ITxObjectCollection;
+                if (container != null)
+                {
+                    var filter = new TxTypeFilter(typeof(TxWeldLocationOperation));
+                    TxObjectList descendants = container.GetAllDescendants(filter);
+                    foreach (ITxObject d in descendants)
+                    {
+                        var w = d as TxWeldLocationOperation;
+                        if (w != null) result.Add(w);
+                    }
+                }
+            }
+            catch { }
+            return result;
+        }
+
+        /// <summary>
         /// 打印机器人身份 (名称 + HashCode + 基座位置) —
         /// 与 WeldPathPlanner.LogRobotIdentity 一致, 便于用户在多同名机器人
         /// 场景下比对"按钮建的这台"是否就是"规划器要跑的那台"。
@@ -1283,6 +1359,24 @@ namespace TxTools.AutoPathPlanner
             if (_lblCollisionSetStatus == null) return;
             _lblCollisionSetStatus.Text = text;
             _lblCollisionSetStatus.ForeColor = color;
+        }
+
+        /// <summary>
+        /// ILogger → 本窗体日志 适配器 (供 IK 求解器把诊断写进 AutoPath 日志区)。
+        /// </summary>
+        private sealed class FormLogAdapter : ILogger
+        {
+            private readonly Action<string, LogLevel> _log;
+            public FormLogAdapter(Action<string, LogLevel> log) { _log = log; }
+
+            public void Log(string message, string level = "INFO")
+            {
+                LogLevel lv = level == "ERR" ? LogLevel.Error
+                            : level == "WARN" ? LogLevel.Warn
+                            : level == "OK" ? LogLevel.Ok
+                            : LogLevel.Info;
+                _log(message, lv);
+            }
         }
     }
 }

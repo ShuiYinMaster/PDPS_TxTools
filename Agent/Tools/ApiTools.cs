@@ -76,14 +76,18 @@ namespace TxTools.Agent.Tools
                 return JObject.Parse(@"{
                     ""type"": ""object"",
                     ""properties"": {
-                        ""name"": { ""type"": ""string"", ""description"": ""对象名, 缺省用当前选中第一个"" }
+                        ""name"": { ""type"": ""string"", ""description"": ""对象名, 缺省用当前选中第一个"" },
+                        ""object_id"": {
+                            ""type"": ""string"",
+                            ""description"": ""对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 object_id 就会忽略 name。""
+                        }
                     }
                 }");
             }
         }
         public override string Execute(JObject input)
         {
-            return PsBridge.InspectObject(GetString(input, "name", null));
+            return PsBridge.InspectObject(GetString(input, "name", null), GetString(input, "object_id", null));
         }
     }
 }

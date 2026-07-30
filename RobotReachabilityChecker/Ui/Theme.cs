@@ -1,12 +1,9 @@
 // ============================================================================
-// Theme.cs
+// Theme.cs  —  UI 配色统一收编点（转发到 TxTools.Common.FormUiKit.Theme）
 //
-// 所有 UI 颜色常量集中定义。基于 PS SDK 的 TxColor，并提供 .Color 转换为
-// System.Drawing.Color 供 WinForms 控件使用。
-//
-// 命名约定：
-//   TxClrXxx (TxColor)       — SDK 类型，给 PS 原生控件用
-//   ClrXxx   (System.Drawing.Color) — 给 WinForms 控件用
+// 所有 UI 颜色常量现在集中在 TxTools.Common.FormUiKit.Theme（套件统一 GUI
+// 规范），本文件仅做成员级转发，保持旧命名（TxClrXxx / ClrXxx）与
+// "using static ...Theme;" 用法兼容，避免改动大量引用点。
 // ============================================================================
 using System.Drawing;
 using Tecnomatix.Engineering;
@@ -16,52 +13,52 @@ namespace TxTools.RobotReachabilityChecker.Ui
     internal static class Theme
     {
         // ── 主色调 ─────────────────────────────────────────────
-        public static readonly TxColor TxClrAccent  = new TxColor(0,   70,  127);
-        public static readonly TxColor TxClrSuccess = new TxColor(0,   128, 0);
-        public static readonly TxColor TxClrDanger  = new TxColor(192, 0,   0);
-        public static readonly TxColor TxClrWarning = new TxColor(160, 100, 0);
+        public static readonly TxColor TxClrAccent  = TxTools.Common.FormUiKit.Theme.TxClrAccent;
+        public static readonly TxColor TxClrSuccess = TxTools.Common.FormUiKit.Theme.TxClrSuccess;
+        public static readonly TxColor TxClrDanger  = TxTools.Common.FormUiKit.Theme.TxClrDanger;
+        public static readonly TxColor TxClrWarning = TxTools.Common.FormUiKit.Theme.TxClrWarning;
 
         // ── 功能区按钮色 ────────────────────────────────────────
-        public static readonly TxColor TxClrBtnCheck  = new TxColor(0,   100, 167);
-        public static readonly TxColor TxClrBtnAll    = new TxColor(0,   120, 90);
-        public static readonly TxColor TxClrBtnExport = new TxColor(80,  80,  130);
-        public static readonly TxColor TxClrBtnReset  = new TxColor(130, 100, 40);
-        public static readonly TxColor TxClrBtnClose  = new TxColor(130, 50,  50);
+        public static readonly TxColor TxClrBtnCheck  = TxTools.Common.FormUiKit.Theme.TxClrBtnCheck;
+        public static readonly TxColor TxClrBtnAll    = TxTools.Common.FormUiKit.Theme.TxClrBtnAll;
+        public static readonly TxColor TxClrBtnExport = TxTools.Common.FormUiKit.Theme.TxClrBtnExport;
+        public static readonly TxColor TxClrBtnReset  = TxTools.Common.FormUiKit.Theme.TxClrBtnReset;
+        public static readonly TxColor TxClrBtnClose  = TxTools.Common.FormUiKit.Theme.TxClrBtnClose;
 
         // ── 表格色 ─────────────────────────────────────────────
-        public static readonly TxColor TxClrGridHeader     = new TxColor(218, 227, 243);
-        public static readonly TxColor TxClrGridHeaderText = new TxColor(20,  20,  60);
-        public static readonly TxColor TxClrGridAlt        = new TxColor(242, 244, 248);
-        public static readonly TxColor TxClrGridHighlight  = new TxColor(189, 215, 238);
-        public static readonly TxColor TxClrRowOk          = new TxColor(198, 239, 206);
-        public static readonly TxColor TxClrRowFail        = new TxColor(255, 199, 206);
-        public static readonly TxColor TxClrRowWarn        = new TxColor(255, 235, 156);
-        public static readonly TxColor TxClrRowSingular    = new TxColor(248, 187, 208);  // 浅紫红
-        public static readonly TxColor TxClrRowCritical    = new TxColor(207, 216, 220);  // 浅蓝灰
+        public static readonly TxColor TxClrGridHeader     = TxTools.Common.FormUiKit.Theme.TxClrGridHeader;
+        public static readonly TxColor TxClrGridHeaderText = TxTools.Common.FormUiKit.Theme.TxClrGridHeaderText;
+        public static readonly TxColor TxClrGridAlt        = TxTools.Common.FormUiKit.Theme.TxClrGridAlt;
+        public static readonly TxColor TxClrGridHighlight  = TxTools.Common.FormUiKit.Theme.TxClrGridHighlight;
+        public static readonly TxColor TxClrRowOk          = TxTools.Common.FormUiKit.Theme.TxClrRowOk;
+        public static readonly TxColor TxClrRowFail        = TxTools.Common.FormUiKit.Theme.TxClrRowFail;
+        public static readonly TxColor TxClrRowWarn        = TxTools.Common.FormUiKit.Theme.TxClrRowWarn;
+        public static readonly TxColor TxClrRowSingular    = TxTools.Common.FormUiKit.Theme.TxClrRowSingular;
+        public static readonly TxColor TxClrRowCritical    = TxTools.Common.FormUiKit.Theme.TxClrRowCritical;
 
         // ── 单元格级（轴级）问题高亮色 ────────────────────────
-        public static readonly TxColor TxClrCellOver     = new TxColor(198, 40,  40);   // 深红 — 轴超限（白字）
-        public static readonly TxColor TxClrCellNear     = new TxColor(255, 179, 0);    // 橙黄 — 轴近极限
-        public static readonly TxColor TxClrCellSingular = new TxColor(233, 30,  99);   // 紫红 — J5奇异（白字）
-        public static readonly TxColor TxClrCellCritical = new TxColor(144, 164, 174);  // 蓝灰 — 临界
+        public static readonly TxColor TxClrCellOver     = TxTools.Common.FormUiKit.Theme.TxClrCellOver;
+        public static readonly TxColor TxClrCellNear     = TxTools.Common.FormUiKit.Theme.TxClrCellNear;
+        public static readonly TxColor TxClrCellSingular = TxTools.Common.FormUiKit.Theme.TxClrCellSingular;
+        public static readonly TxColor TxClrCellCritical = TxTools.Common.FormUiKit.Theme.TxClrCellCritical;
 
         // ── 日志面板 ───────────────────────────────────────────
-        public static readonly TxColor TxClrLogBg   = new TxColor(30,  30,  30);
-        public static readonly TxColor TxClrLogText = new TxColor(204, 204, 204);
-        public static readonly TxColor TxClrLogErr  = new TxColor(255, 100, 100);
-        public static readonly TxColor TxClrLogWarn = new TxColor(255, 200, 80);
-        public static readonly TxColor TxClrLogOk   = new TxColor(80,  220, 120);
+        public static readonly TxColor TxClrLogBg   = TxTools.Common.FormUiKit.Theme.TxClrLogBg;
+        public static readonly TxColor TxClrLogText = TxTools.Common.FormUiKit.Theme.TxClrLogText;
+        public static readonly TxColor TxClrLogErr  = TxTools.Common.FormUiKit.Theme.TxClrLogErr;
+        public static readonly TxColor TxClrLogWarn = TxTools.Common.FormUiKit.Theme.TxClrLogWarn;
+        public static readonly TxColor TxClrLogOk   = TxTools.Common.FormUiKit.Theme.TxClrLogOk;
 
         // ── 点位编辑头栏 ────────────────────────────────────────
-        public static readonly TxColor TxClrEditHeader = new TxColor(235, 241, 250);
+        public static readonly TxColor TxClrEditHeader = TxTools.Common.FormUiKit.Theme.TxClrEditHeader;
 
         // ── WinForms 快捷引用（.Color 转换） ────────────────────
-        public static readonly Color ClrAccent  = TxClrAccent.Color;
-        public static readonly Color ClrSuccess = TxClrSuccess.Color;
-        public static readonly Color ClrDanger  = TxClrDanger.Color;
-        public static readonly Color ClrWarning = TxClrWarning.Color;
-        public static readonly Color ClrMuted   = SystemColors.GrayText;
-        public static readonly Color ClrText    = SystemColors.WindowText;
-        public static readonly Color ClrBg      = SystemColors.Control;
+        public static readonly Color ClrAccent  = TxTools.Common.FormUiKit.Theme.ClrAccent;
+        public static readonly Color ClrSuccess = TxTools.Common.FormUiKit.Theme.ClrSuccess;
+        public static readonly Color ClrDanger  = TxTools.Common.FormUiKit.Theme.ClrDanger;
+        public static readonly Color ClrWarning = TxTools.Common.FormUiKit.Theme.ClrWarning;
+        public static readonly Color ClrMuted   = TxTools.Common.FormUiKit.Theme.ClrMuted;
+        public static readonly Color ClrText    = TxTools.Common.FormUiKit.Theme.ClrText;
+        public static readonly Color ClrBg      = TxTools.Common.FormUiKit.Theme.ClrBg;
     }
 }

@@ -44,39 +44,55 @@ namespace TxTools.RobotReachabilityChecker.Services
 
             // 1) 保存 TCPF（必恢复）
             TxTransformation savedTCPF = null;
-            bool tcpfChanged = false;
+            Action tcpfRestore = null;
             try { savedTCPF = robot.TCPF.AbsoluteLocation; }
             catch (Exception ex) { errMsg = $"读 TCPF 失败: {ex.Message}"; return null; }
 
             try
             {
                 // 2) 切换 TCPF (若 location 有 RRS_TOOL_FRAME)
+                //    P0-3：切换失败 → 直接失败该点，不再静默继续
                 TxFrame locTool = ToolFrameReader.ReadLocationToolFrame(loc);
                 if (locTool != null)
                 {
-                    try
+                    string ownershipWarn = ToolFrameSwitcher.ValidateFrameOwnership(robot, locTool);
+                    if (ownershipWarn != null) log.Log($"  [{loc.Name}] {ownershipWarn}", "WARN");
+
+                    string switchErr = null;
+                    tcpfRestore = ToolFrameSwitcher.SwitchToFrame(robot, locTool, log, out switchErr);
+                    if (tcpfRestore == null)
                     {
-                        var locToolAbs = locTool.AbsoluteLocation;
-                        if (locToolAbs != null)
-                        {
-                            robot.TCPF.AbsoluteLocation = locToolAbs;
-                            tcpfChanged = true;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        log.Log($"  TCPF切换异常({locTool.Name}): {ex.Message}", "DEBUG");
+                        errMsg = string.IsNullOrEmpty(switchErr) ? "TCPF切换失败" : $"TCPF切换失败: {switchErr}";
+                        return null;
                     }
                 }
 
-                // 3) IK 调用
+                // 3) IK 调用（P1-5：多 InverseType 回退，优先 InverseFullReach）
                 ArrayList solutions = null;
                 try
                 {
-                    var inv = new TxRobotInverseData();
-                    inv.Destination = ((ITxLocatableObject)locOp).AbsoluteLocation;
-                    inv.InverseType = TxRobotInverseData.TxInverseType.InverseFullReach;
-                    solutions = robot.CalcInverseSolutions(inv);
+                    var types = (TxRobotInverseData.TxInverseType[])Enum.GetValues(
+                        typeof(TxRobotInverseData.TxInverseType));
+                    ArrayList fullReach = null;
+                    ArrayList fallback = null;
+                    foreach (var type in types)
+                    {
+                        bool isFull = type == TxRobotInverseData.TxInverseType.InverseFullReach;
+                        try
+                        {
+                            var inv = new TxRobotInverseData();
+                            inv.Destination = ((ITxLocatableObject)locOp).AbsoluteLocation;
+                            inv.InverseType = type;
+                            var sol = robot.CalcInverseSolutions(inv);
+                            if (sol != null && sol.Count > 0)
+                            {
+                                if (isFull) { fullReach = sol; break; }
+                                if (fallback == null) fallback = sol;
+                            }
+                        }
+                        catch { /* 该类型不被支持 → 试下一种 */ }
+                    }
+                    solutions = fullReach ?? fallback;
                 }
                 catch (Exception ex)
                 {
@@ -102,22 +118,70 @@ namespace TxTools.RobotReachabilityChecker.Services
                 if (effectiveAnchor == null)
                 {
                     effectiveAnchor = ReadCurrentJointsDeg(robot, djCount);
+                    // P1-6：首点且无 location 自带 config → 选解受机器人当前姿态影响
+                    if (targetCfg == null)
+                        log.Log($"  [{loc.Name}] 首点无 configuration 数据，选解受机器人当前姿态影响", "WARN");
                 }
 
                 TxPoseData chosenPose = PickWithContinuity(
                     solutions, targetCfg, effectiveAnchor, djCount, robot);
                 if (chosenPose == null) { errMsg = "选解失败"; return null; }
 
-                // 6) 提取关节值并归一化到度
+                // 6) 正向验证（位置 + 姿态双验证）：防"数学伪解"
+                //    CalcInverseSolutions 只保证 TCP 位置可达，不保证姿态与目标一致 ——
+                //    超臂展/姿态冲突点可能返回"位置对、姿态错"的解，若直接采信会把
+                //    实际不可达误判为可达。用 GetTCPFByPoseData 正向算出该解对应的
+                //    TCPF 完整位姿，与目标点比较：
+                //      · 位置偏差 > 10mm        → 伪解（工作空间外）
+                //      · 任一轴方向夹角 > 5°    → 伪解（姿态不匹配）
+                //    命中任一条即返回 null，交给上层判 Unreachable。
+                try
+                {
+                    TxTransformation tcpAtPose = robot.GetTCPFByPoseData(chosenPose);
+                    if (tcpAtPose != null)
+                    {
+                        TxTransformation dest = ((ITxLocatableObject)locOp).AbsoluteLocation;
+
+                        // 位置偏差
+                        TxVector p1 = tcpAtPose.Translation;
+                        TxVector p2 = dest.Translation;
+                        double dx = p1.X - p2.X, dy = p1.Y - p2.Y, dz = p1.Z - p2.Z;
+                        double posErr = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+
+                        // 姿态偏差：目标与解的姿态矩阵三轴方向的最大夹角
+                        double maxRotErr = 0.0;
+                        double[] axis = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+                        for (int k = 0; k < 3; k++)
+                        {
+                            TxVector v1 = dest.TransformNormal(new TxVector(axis[k * 3], axis[k * 3 + 1], axis[k * 3 + 2]));
+                            TxVector v2 = tcpAtPose.TransformNormal(new TxVector(axis[k * 3], axis[k * 3 + 1], axis[k * 3 + 2]));
+                            double dot = v1.X * v2.X + v1.Y * v2.Y + v1.Z * v2.Z;
+                            if (dot > 1.0) dot = 1.0; else if (dot < -1.0) dot = -1.0;
+                            double ang = Math.Acos(dot) * 180.0 / Math.PI;
+                            if (ang > maxRotErr) maxRotErr = ang;
+                        }
+
+                        if (posErr > 10.0 || maxRotErr > 5.0)
+                        {
+                            errMsg = string.Format("IK 伪解(位置偏差 {0:F1}mm / 姿态偏差 {1:F1}°，超出工作空间或姿态不可达)", posErr, maxRotErr);
+                            log.Log($"  [{loc.Name}] {errMsg}", "WARN");
+                            return null;
+                        }
+                    }
+                }
+                catch (Exception exV)
+                {
+                    log.Log($"  [{loc.Name}] 正解验证跳过: {exV.Message}", "DEBUG");
+                }
+
+                // 7) 提取关节值并归一化到度
                 double[] vals = PoseValueExtractor.TryExtractPoseValues(chosenPose, djCount);
-                return NormalizeToDegrees(vals);
+                return RadToDeg(vals);
             }
             finally
             {
-                if (tcpfChanged && savedTCPF != null)
-                {
-                    try { robot.TCPF.AbsoluteLocation = savedTCPF; } catch { }
-                }
+                if (tcpfRestore != null) { try { tcpfRestore(); } catch { } }
+                if (savedTCPF != null) { try { robot.TCPF.AbsoluteLocation = savedTCPF; } catch { } }
             }
         }
 
@@ -213,7 +277,7 @@ namespace TxTools.RobotReachabilityChecker.Services
             foreach (var pd in stageB)
             {
                 double[] cand = PoseValueExtractor.TryExtractPoseValues(pd, djCount);
-                cand = NormalizeToDegrees(cand);
+                cand = RadToDeg(cand);
                 if (cand == null) continue;
                 double d = L1Distance(cand, anchorDeg);
                 if (d < bestDist) { bestDist = d; best = pd; }
@@ -291,7 +355,7 @@ namespace TxTools.RobotReachabilityChecker.Services
                     try { dynamic jt = joints[i]; vals[i] = (double)jt.CurrentValue; }
                     catch { vals[i] = 0; }
                 }
-                return NormalizeToDegrees(vals);
+                return RadToDeg(vals);
             }
             catch { return null; }
         }
@@ -299,6 +363,23 @@ namespace TxTools.RobotReachabilityChecker.Services
         // =====================================================================
         // 度/弧度归一化
         // =====================================================================
+        /// <summary>
+        /// 弧度 → 度（来源确定为弧度时无条件转换，如 TxJoint.CurrentValue / TxPoseData.JointValues）。
+        /// 修复（P0-2）：多圈姿态（如 400°=6.98rad）不再被启发式误判为"度"而漏转换。
+        /// </summary>
+        public static double[] RadToDeg(double[] vals)
+        {
+            if (vals == null || vals.Length == 0) return vals;
+            double k = 180.0 / Math.PI;
+            double[] r = new double[vals.Length];
+            for (int i = 0; i < vals.Length; i++) r[i] = vals[i] * k;
+            return r;
+        }
+
+        /// <summary>
+        /// 启发式归一化（仅限来源不明的数据）：|max| ≤ 2π+ε 视为弧度。
+        /// 业务代码已全部改用 RadToDeg（来源均为 PS 弧度），此接口仅为兼容保留。
+        /// </summary>
         public static double[] NormalizeToDegrees(double[] vals)
         {
             if (vals == null || vals.Length == 0) return vals;
@@ -306,13 +387,7 @@ namespace TxTools.RobotReachabilityChecker.Services
             for (int i = 0; i < vals.Length; i++)
                 if (Math.Abs(vals[i]) > maxAbs) maxAbs = Math.Abs(vals[i]);
             bool isRad = maxAbs > 0 && maxAbs <= 2 * Math.PI + 0.05;
-            if (isRad)
-            {
-                double k = 180.0 / Math.PI;
-                double[] r = new double[vals.Length];
-                for (int i = 0; i < vals.Length; i++) r[i] = vals[i] * k;
-                return r;
-            }
+            if (isRad) return RadToDeg(vals);
             return vals;
         }
 
@@ -320,7 +395,12 @@ namespace TxTools.RobotReachabilityChecker.Services
         {
             int n = Math.Min(a.Length, b.Length);
             double s = 0;
-            for (int i = 0; i < n; i++) s += Math.Abs(a[i] - b[i]);
+            for (int i = 0; i < n; i++)
+            {
+                double diff = Math.Abs(a[i] - b[i]);
+                // P1-4：角度环绕差 — 避免 359° 与 1° 误判为 358° 的跳变
+                s += Math.Min(diff, 360.0 - diff);
+            }
             return s;
         }
 

@@ -29,6 +29,8 @@ namespace TxTools.Agent.Core
         public string ProviderId { get; set; }
         public string Model { get; set; }
         public string ApprovalMode { get; set; }
+        /// <summary>启用的工具组(ToolGate)。null/空 = 用代码默认值。</summary>
+        public List<string> EnabledToolGroups { get; set; }
         public Dictionary<string, ProviderModelsCache> Models { get; set; }
             = new Dictionary<string, ProviderModelsCache>(StringComparer.Ordinal);
     }
@@ -90,6 +92,16 @@ namespace TxTools.Agent.Core
         {
             var p = Load();
             p.ApprovalMode = mode;
+            Save(p);
+        }
+
+        /// <summary>保存启用的工具组清单(空清单 = 回退代码默认)。</summary>
+        public static void UpdateToolGroups(IEnumerable<string> enabledGroups)
+        {
+            var p = Load();
+            p.EnabledToolGroups = enabledGroups == null
+                ? null
+                : new List<string>(enabledGroups);
             Save(p);
         }
 

@@ -116,8 +116,11 @@ namespace TxTools.Agent.Core
         }
 
         // ── 创建 CompoundPart ──
+        // setTypeName=false：空零件集场景。传了 TypeName 会设置 TypeName 导致 PlanningType
+        // 丢失变成非标准对象；默认创建才是标准 CompoundPart (PlanningType = PmCompoundPart)。
 
-        public static TxCompoundPart CreatePart(ITxObject parent, string typeName, string desiredName)
+        public static TxCompoundPart CreatePart(ITxObject parent, string typeName, string desiredName,
+            bool setTypeName = true)
         {
             var creator = parent as ITxCompoundPartCreation;
             if (creator == null)
@@ -133,7 +136,7 @@ namespace TxTools.Agent.Core
                 if (p != null && p.CanWrite) p.SetValue(data, parent as ITxObjectCollection, null);
             }
             catch { }
-            if (!string.IsNullOrEmpty(typeName)) data.TypeName = typeName;
+            if (setTypeName && !string.IsNullOrEmpty(typeName)) data.TypeName = typeName;
 
             var result = creator.CreateCompoundPart(data);
             var cp = result as TxCompoundPart;

@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Text;
 using System.Windows.Forms;
 using Tecnomatix.Engineering;
-using TxTools.RobotReachabilityChecker.Diagnostics;
 using TxTools.RobotReachabilityChecker.Models;
 using TxTools.RobotReachabilityChecker.Services;
 
@@ -14,11 +13,11 @@ namespace TxTools.RobotReachabilityChecker.Ui
     //
     // 包含：
     //   · OnOpNodePicked            — TxObjEditBoxCtrl.Picked 处理（唯一拾取入口）
-    //   · Grid_AfterSelChange       — 单击行 → 仅更新状态栏（不再驱动姿态）
-    //   · Grid_DblClick_Mouse/Core  — 双击行 → 驱动机器人到记录的关节姿态
-    //                                  · 同一行 500ms 内再次单击 → 触发三击（Robot Jog）
+    //   · Grid_AfterSelChange       — 单击行 → 仅更新状态栏
+    //   · Grid_SingleClick_Drive    — 单击行 → 驱动机器人 + 自动选中焊点
+    //   · Grid_DblClick_Jog         — 双击行 → 选中点位 + 打开 Robot Jog
     //   · OpenRobotJogDialog        — 通过 CommandsManager 触发 PS 内置 Robot Jog
-    //   · BtnCheck_Click / BtnCheckAll_Click / BtnReset_Click / BtnExport_Click / BtnOlpDiag_Click
+    //   · BtnCheck_Click / BtnReset_Click / BtnExport_Click
     //   · StartCheck                — 编排检查任务（异步推进 + 进度回调）
     //   · BuildCheckOptions         — 把 UI 控件值打包为 CheckOptions
     //   · LoadRobotsAndOperations   — 文档校验 + 状态初始化
@@ -31,6 +30,10 @@ namespace TxTools.RobotReachabilityChecker.Ui
         // PS 内置 Robot Jog 命令 ID（来自 RibbonConfiguration.xml）
         private const string CMD_ROBOT_JOG =
             "DnProcessSimulateCommands.RobotJog.CApRJRobotJogCmd";
+
+        // PS 内置「多个位置操作」命令 ID（非 Via 点双击时打开，用于调整点位位置）
+        private const string CMD_MULTI_LOC_MANIP =
+            "DnProcessSimulateCommands.CApMultipleLocationsManipulationCmd";
 
         // =====================================================================
         // OP 节点拾取
@@ -101,45 +104,15 @@ namespace TxTools.RobotReachabilityChecker.Ui
 
             SetStatus($"[{res.PointName}]  {res.RobotName}  " +
                       $"J1={res.J1:F1}° J2={res.J2:F1}° J3={res.J3:F1}°    " +
-                      $"双击：驱动姿态 ▌ 三击：Robot Jog");
+                      $"单击：驱动+选中焊点 ▌ 双击：调整点位");
         }
 
         // =====================================================================
-        // 表格交互 — 三击检测：在双击发生后 _tripleClickWindowMs 内再来一次单击
-        //                   → 视为三击，触发 Robot Jog
+        // 表格交互 — 单击行 → 驱动机器人到该点位姿态 + 自动选中焊点
+        //   双击的第二击（间隔 < SystemInformation.DoubleClickTime 且同行）→ 抑制，
+        //   由 Grid_DblClick_Jog 打开 Robot Jog，避免驱动两次。
         // =====================================================================
-        private void Grid_SingleClickForTriple(object sender, MouseEventArgs e)
-        {
-            try
-            {
-                if (e.Button != MouseButtons.Left) return;
-
-                var ht = _grid.HitTest(e.X, e.Y);
-                int row = ht.Row;
-                if (row < _grid.Rows.Fixed) return;
-
-                // 必须是 "双击留下的行" + 还在时间窗内
-                if (row != _lastDoubleClickRow) return;
-                if ((DateTime.UtcNow - _lastDoubleClickTime).TotalMilliseconds > _tripleClickWindowMs) return;
-
-                // 已确认三击 → 重置窗口，避免连发
-                _lastDoubleClickRow = -1;
-                _lastDoubleClickTime = DateTime.MinValue;
-
-                Log($">>> 三击触发 (row={row}) → 打开 Robot Jog", "DEBUG");
-                Grid_TripleClick_Core(row);
-            }
-            catch (Exception ex)
-            {
-                Log($"三击处理异常: {ex.Message}", "ERR");
-            }
-        }
-
-        // =====================================================================
-        // 表格交互 — 双击行 → 驱动机器人到该点位姿态
-        //                   并记录 (row, time) 供三击检测使用
-        // =====================================================================
-        private void Grid_DblClick_Mouse(object sender, MouseEventArgs e)
+        private void Grid_SingleClick_Drive(object sender, MouseEventArgs e)
         {
             try
             {
@@ -151,11 +124,40 @@ namespace TxTools.RobotReachabilityChecker.Ui
 
                 _grid.RowSel = row;
 
-                // 记录双击发生 — 供三击检测
-                _lastDoubleClickRow = row;
-                _lastDoubleClickTime = DateTime.UtcNow;
+                // 双击的第二击 → 抑制（交给 MouseDoubleClick 打开 Robot Jog）
+                if (row == _lastClickRow &&
+                    (DateTime.UtcNow - _lastClickTime).TotalMilliseconds < SystemInformation.DoubleClickTime)
+                    return;
 
-                Grid_DblClick_DrivePose(row);
+                _lastClickRow = row;
+                _lastClickTime = DateTime.UtcNow;
+
+                // 驱动 + 选中焊点
+                Grid_Click_DrivePose(row);
+                SelectPointInPS(row);
+            }
+            catch (Exception ex)
+            {
+                Log($"单击处理异常: {ex.Message}", "ERR");
+            }
+        }
+
+        // =====================================================================
+        // 表格交互 — 双击行 → 选中点位 + 打开 Robot Jog
+        // =====================================================================
+        private void Grid_DblClick_Jog(object sender, MouseEventArgs e)
+        {
+            try
+            {
+                if (e.Button != MouseButtons.Left) return;
+
+                var ht = _grid.HitTest(e.X, e.Y);
+                int row = ht.Row;
+                if (row < _grid.Rows.Fixed) return;
+
+                _grid.RowSel = row;
+                Log($">>> 双击 (row={row}) → 打开点位调整工具", "DEBUG");
+                Grid_Jog_Core(row);
             }
             catch (Exception ex)
             {
@@ -163,10 +165,10 @@ namespace TxTools.RobotReachabilityChecker.Ui
             }
         }
 
-        // 双击：驱动机器人姿态
+        // 单击：驱动机器人姿态
         // 主路径：res.PoseDataRef 缓存了 TxPoseData → robot.CurrentPose = pd 一次写入（最快）
         // 兜底：逐 joint 写 CurrentValue（缓存丢失时使用，慢但可靠）
-        private void Grid_DblClick_DrivePose(int row)
+        private void Grid_Click_DrivePose(int row)
         {
             if (!_rowToResult.TryGetValue(row, out var res)) return;
 
@@ -194,7 +196,8 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 try
                 {
                     robot.CurrentPose = pd;
-                    SetStatus($"▶ 已驱动到 [{res.PointName}]   再次单击同一行可打开 Robot Jog");
+                    SetStatus($"▶ 已驱动到 [{res.PointName}]   双击同一行可调整点位");
+                    try { TxApplication.RefreshDisplay(); } catch { }
                     return;
                 }
                 catch (Exception ex)
@@ -234,17 +237,28 @@ namespace TxTools.RobotReachabilityChecker.Ui
                         try { curVal = joint.CurrentValue; sawCur = true; } catch { }
 
                         double valToWrite;
-                        if (sawCur && Math.Abs(curVal) <= 2 * Math.PI + 0.05)
-                            valToWrite = valDeg * Math.PI / 180.0;
-                        else
-                            valToWrite = valDeg;
+                        bool rotary = false;
+                        try
+                        {
+                            // P0-2：优先用软限位量级判断旋转轴，避免多圈姿态下把弧度误判为度
+                            dynamic jt = joint;
+                            double lo = 0, hi = 0;
+                            try { lo = (double)jt.LowerSoftLimit; } catch { }
+                            try { hi = (double)jt.UpperSoftLimit; } catch { }
+                            rotary = (Math.Abs(lo) <= 2 * Math.PI + 0.5 && Math.Abs(hi) <= 2 * Math.PI + 0.5);
+                        }
+                        catch { }
+                        if (!rotary && sawCur)
+                            rotary = Math.Abs(curVal) <= 2 * Math.PI + 0.05;
+                        valToWrite = rotary ? valDeg * Math.PI / 180.0 : valDeg;
 
                         joint.CurrentValue = valToWrite;
                     }
                     catch { /* 单关节失败不影响其他 */ }
                 }
 
-                SetStatus($"▶ 已驱动到 [{res.PointName}]   再次单击同一行可打开 Robot Jog");
+                SetStatus($"▶ 已驱动到 [{res.PointName}]   双击同一行可调整点位");
+                try { TxApplication.RefreshDisplay(); } catch { }
             }
             catch (Exception ex)
             {
@@ -256,8 +270,10 @@ namespace TxTools.RobotReachabilityChecker.Ui
             }
         }
 
-        // 三击：选中点位 + 打开 Robot Jog
-        private void Grid_TripleClick_Core(int row)
+        // 双击：选中点位 + 打开调整工具
+        // 非 Via 点 → 「多个位置操作」(CApMultipleLocationsManipulationCmd) 调整点位位置
+        // Via 点   → 保持原「Robot Jog」调用不变
+        private void Grid_Jog_Core(int row)
         {
             try
             {
@@ -274,58 +290,87 @@ namespace TxTools.RobotReachabilityChecker.Ui
                     Log("当前行没有点位名，无法定位", "WARN");
                     return;
                 }
-                Log($"三击点位: [{opName}] / [{pointName}]", "DEBUG");
+                Log($"双击点位: [{opName}] / [{pointName}]", "DEBUG");
 
-                TxDocument doc = TxApplication.ActiveDocument;
-                if (doc == null)
+                // 选中焊点；找不到时弹窗提示（仅 Jog 场景弹窗，单击驱动时不打扰）
+                if (!SelectPointInPS(row))
                 {
-                    Log("ActiveDocument 为 null", "ERR");
-                    return;
-                }
-
-                ITxObject locObj = LocationEnumerator.FindLocationInDoc(doc, opName, pointName, this);
-                if (locObj == null)
-                {
-                    Log($"未在 PS 文档中找到点位: {pointName}", "ERR");
                     MessageBox.Show($"未在当前 Study 中找到点位 [{pointName}]，\n" +
                                     "可能该点位已被删除或操作已变更。",
                                     "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
-                // 设置 PS ActiveSelection（Robot Jog 会读取它）
-                try
-                {
-                    TxSelection sel = TxApplication.ActiveSelection;
-                    sel.Clear();
-
-                    TxObjectList list = new TxObjectList();
-                    list.Add(locObj);
-                    sel.AddItems(list);
-
-                    Log($"已设置 ActiveSelection: {locObj.Name}", "DEBUG");
-                }
-                catch (Exception exSel)
-                {
-                    Log($"设置 ActiveSelection 失败: {exSel.Message}", "ERR");
-                    return;
-                }
-
-                OpenRobotJogDialog();
+                bool isVia = string.Equals(res.PointType, "Via", StringComparison.OrdinalIgnoreCase);
+                if (isVia)
+                    OpenRobotJogDialog();
+                else
+                    OpenMultipleLocationsManipulation();
             }
             catch (Exception ex)
             {
-                Log($"三击处理异常: {ex.Message}", "ERR");
+                Log($"双击处理异常: {ex.Message}", "ERR");
             }
         }
 
         // =====================================================================
-        // 调用 PS 内置 Robot Jog 命令
+        // 在 PS 场景中选中该点位（设置 ActiveSelection）
+        //   供"单击驱动"与"双击 Robot Jog"共用。找不到点位返回 false（不弹窗）。
+        //   点位以检查时缓存的实例引用（LocationRef）唯一标识定位，不做按名反查。
+        // =====================================================================
+        private bool SelectPointInPS(int row)
+        {
+            if (!_rowToResult.TryGetValue(row, out var res)) return false;
+
+            string pointName = res.PointName;
+            if (string.IsNullOrEmpty(pointName)) return false;
+
+            // 直接用检查时缓存的点位实例作为唯一标识
+            ITxObject locObj = res.LocationRef as ITxObject;
+            if (locObj == null)
+            {
+                Log($"该行未缓存点位实例，无法定位: {pointName}", "WARN");
+                return false;
+            }
+
+            try
+            {
+                TxSelection sel = TxApplication.ActiveSelection;
+                sel.Clear();
+
+                TxObjectList list = new TxObjectList();
+                list.Add(locObj);
+                sel.AddItems(list);
+
+                Log($"已设置 ActiveSelection: {locObj.Name}", "DEBUG");
+                return true;
+            }
+            catch (Exception exSel)
+            {
+                Log($"设置 ActiveSelection 失败: {exSel.Message}", "ERR");
+                return false;
+            }
+        }
+
+        // =====================================================================
+        // 调用 PS 内置命令（Robot Jog / 多个位置操作）
         //
-        // 关键：ExecuteCommand 是同步阻塞的（直到用户关闭 Robot Jog 才返回）。
-        // Robot Jog 关闭后清空 ActiveSelection，避免影响后续 OP 节点拾取。
+        // 关键：ExecuteCommand 是同步阻塞的（直到用户关闭命令界面才返回）。
+        // 命令关闭后清空 ActiveSelection，避免影响后续 OP 节点拾取。
         // =====================================================================
         private void OpenRobotJogDialog()
+        {
+            ExecutePsCommand(CMD_ROBOT_JOG, "Robot Jog",
+                "目标点位已选中，可手动点击工具栏的 Robot Jog 按钮。");
+        }
+
+        private void OpenMultipleLocationsManipulation()
+        {
+            ExecutePsCommand(CMD_MULTI_LOC_MANIP, "多个位置操作",
+                "目标点位已选中，可手动打开「多个位置操作」工具调整点位。");
+        }
+
+        private void ExecutePsCommand(string cmdId, string displayName, string manualHint)
         {
             TxCommandsManager mgr = null;
             try { mgr = TxApplication.CommandsManager; }
@@ -343,22 +388,22 @@ namespace TxTools.RobotReachabilityChecker.Ui
 
             try
             {
-                Log($"  执行命令: {CMD_ROBOT_JOG}", "DEBUG");
-                mgr.ExecuteCommand(CMD_ROBOT_JOG);
-                Log($"  ✓ Robot Jog 已触发", "DEBUG");
+                Log($"  执行命令: {cmdId}", "DEBUG");
+                mgr.ExecuteCommand(cmdId);
+                Log($"  ✓ {displayName} 已触发", "DEBUG");
             }
             catch (TxCommandIdentifierDoesNotExistException)
             {
-                Log($"  命令ID不存在: {CMD_ROBOT_JOG}（PS 版本可能不同）", "ERR");
+                Log($"  命令ID不存在: {cmdId}（PS 版本可能不同）", "ERR");
                 MessageBox.Show(
-                    $"Robot Jog 命令未注册到当前 PS 实例。\n\n" +
-                    $"已使用的命令ID:\n  {CMD_ROBOT_JOG}\n\n" +
-                    $"目标点位已选中，可手动点击工具栏的 Robot Jog 按钮。",
+                    $"{displayName} 命令未注册到当前 PS 实例。\n\n" +
+                    $"已使用的命令ID:\n  {cmdId}\n\n" +
+                    manualHint,
                     "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             catch (TxCannotActivateCommandException exAct)
             {
-                Log($"  ✓ Robot Jog 命令已激活: {exAct.Message}", "OK");
+                Log($"  ✓ {displayName} 命令已激活: {exAct.Message}", "OK");
             }
             catch (Exception ex)
             {
@@ -366,7 +411,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             }
             finally
             {
-                // Robot Jog 关闭后，清空 ActiveSelection 避免影响后续拾取
+                // 命令关闭后，清空 ActiveSelection 避免影响后续拾取
                 try { TxApplication.ActiveSelection.Clear(); } catch { }
             }
         }
@@ -386,41 +431,19 @@ namespace TxTools.RobotReachabilityChecker.Ui
             StartCheck();
         }
 
-        private void BtnCheckAll_Click(object sender, EventArgs e)
-        {
-            // 弃用：批量按名字查找会拿错同名操作的副本
-            SetStatus("当前仅支持单路径检查，请使用「开始检查」");
-            MessageBox.Show(
-                "为了避免同名操作导致的检查错误，「检查所有路径」功能已暂时改为单路径模式。\n\n" +
-                "请在「OP节点」中拾取要检查的具体操作，然后点击「开始检查」。",
-                "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
-
         private void BtnReset_Click(object sender, EventArgs e)
         {
             // 合并原"刷新"功能：清空结果 + 清空拾取记忆 + 重新加载文档状态
             ClearResults();
             _pickedOperation = null;
             _currentRobot = null;
-            try { if (_txtOpNode != null) _txtOpNode.Object = null; } catch { }
+            // OP节点拾取框内容一并清掉（Object 与显示文本双清，防残留）
+            if (_txtOpNode != null)
+            {
+                try { _txtOpNode.Object = null; } catch { }
+                try { _txtOpNode.Text = ""; } catch { }
+            }
             LoadRobotsAndOperations();
-        }
-
-        private void BtnOlpDiag_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                if (_pickedOperation == null)
-                {
-                    MessageBox.Show("请先在 OP节点 拾取一个操作", "提示");
-                    return;
-                }
-                OlpDiagnostic.Run(_pickedOperation, this);
-            }
-            catch (Exception ex)
-            {
-                Log($"[OLP诊断] 总体异常: {ex.Message}", "ERR");
-            }
         }
 
         private void BtnExport_Click(object sender, EventArgs e)

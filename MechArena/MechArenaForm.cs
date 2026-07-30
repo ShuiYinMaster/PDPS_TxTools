@@ -6,6 +6,7 @@ using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
 using TxTools.Common;
+using Theme = TxTools.Common.FormUiKit.Theme;
 
 using Timer = System.Windows.Forms.Timer;
 
@@ -111,7 +112,7 @@ namespace TxTools.MechArena
                 ColumnCount = 2,
                 RowCount = 1,
                 Margin = Padding.Empty,
-                BackColor = SystemColors.Control
+                BackColor = FormUiKit.CardBack
             };
             body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 280));
             body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -157,7 +158,7 @@ namespace TxTools.MechArena
                 AutoSize = true,
                 Font = new Font(MonoFont().FontFamily, 10f, FontStyle.Bold),
                 BackColor = Color.Transparent,
-                ForeColor = Color.FromArgb(180, 40, 40),
+                ForeColor = Theme.StatusErr,
                 MaximumSize = new Size(240, 0),
                 Margin = new Padding(3, 6, 3, 3)
             };
@@ -182,7 +183,7 @@ namespace TxTools.MechArena
             {
                 Dock = DockStyle.Fill,
                 Padding = new Padding(4, 6, 8, 6),
-                BackColor = SystemColors.Control
+                BackColor = FormUiKit.CardBack
             };
 
             var card = new Panel
@@ -198,8 +199,8 @@ namespace TxTools.MechArena
                 Dock = DockStyle.Top,
                 Height = 24,
                 Font = new Font(FormUiKit.BaseFont, FontStyle.Bold),
-                BackColor = Color.FromArgb(240, 242, 245),
-                ForeColor = Color.FromArgb(60, 60, 60),
+                BackColor = Theme.GridRowEven,
+                ForeColor = Theme.TextDim,
                 TextAlign = ContentAlignment.MiddleLeft
             };
 
@@ -234,7 +235,7 @@ namespace TxTools.MechArena
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.RightToLeft,
                 Padding = new Padding(4, 6, 4, 6),
-                BackColor = SystemColors.Control
+                BackColor = FormUiKit.CardBack
             };
 
             _btnStop = (FormUiKit.FlatColorButton)FormUiKit.MkButton("停 止", primary: false, width: 100, height: 30);
@@ -382,7 +383,7 @@ namespace TxTools.MechArena
                     _restartCountdown -= 0.05;
                     int sec = (int)Math.Ceiling(_restartCountdown);
                     if (sec < 0) sec = 0;
-                    _lblBanner.ForeColor = Color.FromArgb(200, 40, 40);
+                    _lblBanner.ForeColor = Theme.StatusErr;
                     _lblBanner.Text = string.Format(
                         "★ GAME OVER ★\r\n最终分数: {0}\r\n{1} 秒后自动重开",
                         _engine.Score, sec);
@@ -394,7 +395,7 @@ namespace TxTools.MechArena
                 else if (_engine.Victory)
                 {
                     _tick.Stop();
-                    _lblBanner.ForeColor = Color.FromArgb(40, 140, 60);
+                    _lblBanner.ForeColor = Theme.StatusOk;
                     _lblBanner.Text = "☆ VICTORY ☆\r\n最终分数: " + _engine.Score;
                     _btnStart.Enabled = true;
                     _btnStop.Enabled = false;

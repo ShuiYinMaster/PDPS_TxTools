@@ -5,6 +5,7 @@ using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
 using TxTools.Common;
+using Theme = TxTools.Common.FormUiKit.Theme;
 
 namespace TxTools.LineToSolid
 {
@@ -99,19 +100,8 @@ namespace TxTools.LineToSolid
             base.OnLoad(e);
             FormUiKit.ApplyDpiScaling(this, ref _dpiApplied, _designSize);
 
-            // TxObjGridCtrl 首次拾取需要先获得焦点（ExportGunForm 同款）
-            BeginInvoke(new Action(() =>
-            {
-                try
-                {
-                    if (_featureGrid != null && _featureGrid.Visible)
-                    {
-                        _featureGrid.Focus();
-                        try { _featureGrid.SetCurrentCell(0, 0); } catch { }
-                    }
-                }
-                catch { }
-            }));
+            // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点
+            FormUiKit.GridPickFocus.Wire(_featureGrid);
         }
 
         // =================================================================
@@ -168,8 +158,8 @@ namespace TxTools.LineToSolid
             {
                 Text = "基线特征列表（PS 原生拾取）",
                 Dock = DockStyle.Fill,
-                HeaderColor = Color.FromArgb(60, 90, 150),
-                ForeColor = Color.FromArgb(60, 90, 150),
+                HeaderColor = Theme.CardTitle,
+                ForeColor = Theme.CardTitle,
                 Padding = new Padding(8, 18, 8, 8)
             };
 
@@ -248,8 +238,8 @@ namespace TxTools.LineToSolid
             {
                 Text = "截面参数",
                 Dock = DockStyle.Fill,
-                HeaderColor = Color.FromArgb(60, 90, 150),
-                ForeColor = Color.FromArgb(60, 90, 150),
+                HeaderColor = Theme.CardTitle,
+                ForeColor = Theme.CardTitle,
                 Padding = new Padding(8, 18, 8, 8)
             };
 
@@ -288,9 +278,10 @@ namespace TxTools.LineToSolid
             {
                 Dock = DockStyle.Fill,
                 FlatStyle = FlatStyle.Flat,
-                BgColor = Color.FromArgb(0, 100, 167),
-                BorderColor = Color.FromArgb(0, 100, 167),
-                ForeColor = Color.White,
+                BgColor = Theme.BtnPrimary,
+                BorderColor = FormUiKit.Theme.BtnBorder,
+                HoverColor = FormUiKit.Theme.BtnHover,
+                ForeColor = Theme.BtnFore,
                 Font = FormUiKit.BaseFont
             };
             _btnBuild.Click += (s, e) => OnBuild();
@@ -511,8 +502,8 @@ namespace TxTools.LineToSolid
                 Dock = DockStyle.Fill,
                 ReadOnly = true,
                 Font = new Font("Consolas", 8f),
-                BackColor = Color.FromArgb(30, 30, 30),
-                ForeColor = Color.LightGray,
+                BackColor = Theme.LogBg,
+                ForeColor = Theme.LogText,   // 跟随主题（默认白底黑字，深色主题下自动反色）
                 BorderStyle = BorderStyle.None,
                 WordWrap = false,
                 ScrollBars = RichTextBoxScrollBars.Vertical

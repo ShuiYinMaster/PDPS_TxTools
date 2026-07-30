@@ -96,16 +96,4 @@ namespace TxTools.Agent.Tools
 
         public override string Execute(JObject input) { return PsBridge.FindOperations(GetString(input, "keyword", null)); }
     }
-
-    /// <summary>读取当前参考坐标系。</summary>
-    public sealed class GetReferenceFrameTool : TxAgentToolBase
-    {
-        public override string Name { get { return "get_reference_frame"; } }
-        public override string Description
-        {
-            get { return "读取当前参考坐标系 (来自选中的 Frame/组件，否则按世界坐标系)。导出前确认参考系时用。"; }
-        }
-        public override bool IsReadOnly { get { return true; } }
-        public override string Execute(JObject input) { return PsBridge.GetReferenceFrameSummary(); }
-    }
 }

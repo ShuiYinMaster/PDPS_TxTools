@@ -70,7 +70,11 @@ namespace TxTools.Agent.Tools
                     ""type"": ""object"",
                     ""properties"": {
                         ""name"": { ""type"": ""string"", ""description"": ""组件名，缺省用当前选中对象"" },
-                        ""recursive"": { ""type"": ""boolean"", ""description"": ""是否递归到底，默认 false (仅直接子级)"" }
+                        ""recursive"": { ""type"": ""boolean"", ""description"": ""是否递归到底，默认 false (仅直接子级)"" },
+                        ""object_id"": {
+                            ""type"": ""string"",
+                            ""description"": ""对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 object_id 就会忽略 name。""
+                        }
                     }
                 }");
             }
@@ -82,7 +86,7 @@ namespace TxTools.Agent.Tools
             bool recursive = false;
             var t = input != null ? input["recursive"] : null;
             if (t != null && t.Type == JTokenType.Boolean) recursive = (bool)t;
-            return PsBridge.ListChildren(name, recursive);
+            return PsBridge.ListChildren(name, recursive, GetString(input, "object_id", null));
         }
     }
 }

@@ -562,6 +562,29 @@ namespace TxTools.ExportGun
             catch (Exception ex) { log($"[TCP] GetAllSystemFrames 异常：{ex.Message}"); return; }
             if (frames == null) { log("[TCP] GetAllSystemFrames 返回空"); return; }
 
+            // ── 建立实例参数 Type→Value 映射 ──────────────────────
+            // 不同厂商(ABB/KUKA/FANUC)的系统帧名通常只是 t1/t2/b1 等编号,
+            // 真正有语义的名字藏在实例参数里 —— ACR_TOOLNAME_N / ACR_BASENAME_N。
+            // 这里先建好查表,下面解析时直接取。
+            var pmap = new System.Collections.Generic.Dictionary<string, string>(
+                System.StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                dynamic dr = robot;
+                var allParams = dr.GetAllInstanceParameters() as IEnumerable;
+                if (allParams != null)
+                {
+                    foreach (object p in allParams)
+                    {
+                        if (p is TxRoboticStringParam sp
+                            && !string.IsNullOrEmpty(sp.Type)
+                            && !string.IsNullOrEmpty(sp.Value))
+                            pmap[sp.Type] = sp.Value;
+                    }
+                }
+            }
+            catch (Exception ex) { log($"[TCP] 实例参数读取异常(已忽略): {ex.Message}"); }
+
             int n = 0;
             foreach (object fobj in frames)
             {
@@ -572,8 +595,31 @@ namespace TxTools.ExportGun
                 if (string.IsNullOrEmpty(nm) || seen.Contains(nm)) continue;
                 double[] m = GetFrameWorldMatrix(fobj);
                 if (m == null) continue;
-                seen.Add(nm);
-                result.Add(new TcpOption { Name = nm, WorldMatrix = m });
+
+                // ── 帧名 → 真实名称解析 ──────────────────────────
+                // 约定: 系统帧名为 t{n} 或 b{n} 时, 去参数表找对应名字:
+                //   t1 → ACR_TOOLNAME_1,  b1 → ACR_BASENAME_1,  以此类推。
+                var displayName = nm;
+                if (nm.Length >= 2)
+                {
+                    char prefix = nm[0];
+                    string suffix = nm.Substring(1); // 去掉首字母后的数字部分
+                    if ((prefix == 't' || prefix == 'b') && int.TryParse(suffix, out _))
+                    {
+                        var key = (prefix == 't' ? "ACR_TOOLNAME_" : "ACR_BASENAME_") + suffix;
+                        if (pmap.TryGetValue(key, out var resolved)
+                            && !string.IsNullOrWhiteSpace(resolved))
+                        {
+                            displayName = resolved;
+                        }
+                    }
+                }
+
+                // 用显示名去重(同一个真实名可能对应不同编号,后出现的忽略)
+                if (seen.Contains(displayName)) continue;
+
+                seen.Add(displayName);
+                result.Add(new TcpOption { Name = displayName, WorldMatrix = m });
                 n++;
             }
             log($"[TCP] 系统坐标系 {n} 个（GetAllSystemFrames）");

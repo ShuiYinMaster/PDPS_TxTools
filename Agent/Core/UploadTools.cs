@@ -81,9 +81,9 @@ namespace TxTools.Agent.Core
                 return "按 file_id 精读已上传文件的具体内容。" +
                        "xlsx: 用 sheet(索引数或名称) + row_from/row_to 切片(1-based,含边界);" +
                        "csv/tsv: row_from/row_to 切片;" +
-                       "文本类: char_from/char_to 切片;" +
-                       "不指定切片时默认表格前 200 行 / 文本前 8000 字符。" +
-                       "单次返回最多 12000 字符,大数据请分片调用。";
+                       "文本/代码/配置类: 优先用 line_from/line_to 按行切片(1-based,含边界,带行号输出),或 char_from/char_to 按字符切片。" +
+                       "不指定切片时默认表格前 200 行 / 文本前 8000 字符 / 代码前 200 行。" +
+                       "单次返回最多 12000 字符,大文件请分片调用。";
             }
         }
         public override bool IsReadOnly { get { return true; } }
@@ -97,7 +97,9 @@ namespace TxTools.Agent.Core
                     "  \"sheet\": { \"type\": \"string\", \"description\": \"仅 xlsx:sheet 索引(0-based 字符串) 或 sheet 名。默认 0\" }," +
                     "  \"row_from\": { \"type\": \"integer\", \"description\": \"起始行(1-based,含)。表格类可选\" }," +
                     "  \"row_to\": { \"type\": \"integer\", \"description\": \"结束行(1-based,含)。表格类可选\" }," +
-                    "  \"char_from\": { \"type\": \"integer\", \"description\": \"起始字符(0-based)。文本类可选\" }," +
+                    "  \"line_from\": { \"type\": \"integer\", \"description\": \"起始行(1-based,含)。文本/代码类可选,输出带行号\" }," +
+                    "  \"line_to\": { \"type\": \"integer\", \"description\": \"结束行(1-based,含)。文本/代码类可选\" }," +
+                    "  \"char_from\": { \"type\": \"integer\", \"description\": \"起始字符(0-based)。文本类可选,与 line_* 二选一\" }," +
                     "  \"char_to\": { \"type\": \"integer\", \"description\": \"结束字符(0-based,不含)。文本类可选\" }" +
                     "}, \"required\": [\"file_id\"] }");
             }
@@ -122,11 +124,70 @@ namespace TxTools.Agent.Core
                     case ".csv":
                     case ".tsv":
                         return ReadDelimited(f, input);
+                    // 文本 / 代码 / 配置类 —— 都走 ReadText (支持字符或行切片)
                     case ".txt":
                     case ".md":
                     case ".log":
                     case ".json":
                     case ".xml":
+                    case ".html":
+                    case ".htm":
+                    case ".xaml":
+                    case ".svg":
+                    case ".rst":
+                    case ".tex":
+                    // 代码
+                    case ".cs":
+                    case ".py":
+                    case ".js":
+                    case ".jsx":
+                    case ".ts":
+                    case ".tsx":
+                    case ".vue":
+                    case ".svelte":
+                    case ".java":
+                    case ".kt":
+                    case ".scala":
+                    case ".cpp":
+                    case ".cc":
+                    case ".cxx":
+                    case ".hpp":
+                    case ".hxx":
+                    case ".c":
+                    case ".h":
+                    case ".go":
+                    case ".rs":
+                    case ".rb":
+                    case ".php":
+                    case ".swift":
+                    case ".m":
+                    case ".mm":
+                    case ".sh":
+                    case ".bash":
+                    case ".zsh":
+                    case ".ps1":
+                    case ".psm1":
+                    case ".bat":
+                    case ".cmd":
+                    case ".sql":
+                    case ".lua":
+                    case ".r":
+                    case ".dart":
+                    // 配置 / 样式
+                    case ".yml":
+                    case ".yaml":
+                    case ".toml":
+                    case ".ini":
+                    case ".cfg":
+                    case ".conf":
+                    case ".env":
+                    case ".properties":
+                    case ".css":
+                    case ".scss":
+                    case ".sass":
+                    case ".less":
+                    case ".gitignore":
+                    case ".dockerignore":
                     case "":
                         return ReadText(f, input);
                     default:
@@ -208,13 +269,45 @@ namespace TxTools.Agent.Core
             return Cap(sb.ToString());
         }
 
-        // ── 文本类 ──
+        // ── 文本/代码类 ──
 
         private static string ReadText(UploadedFile f, JObject input)
         {
             var text = FileParserService.ReadTextAuto(f.LocalPath);
             int total = text.Length;
 
+            // 优先走行切片(代码文件更自然,AI 说"读 100-200 行"就是这个)
+            int lineFrom = GetInt(input, "line_from", -1);
+            int lineTo = GetInt(input, "line_to", -1);
+            bool useLineSlice = lineFrom > 0 || lineTo > 0;
+
+            if (useLineSlice)
+            {
+                var lines = text.Split('\n');
+                int totalLines = lines.Length;
+                if (lineFrom <= 0) lineFrom = 1;
+                if (lineTo <= 0) lineTo = Math.Min(totalLines, lineFrom + 199);   // 默认 200 行
+                if (lineTo > totalLines) lineTo = totalLines;
+                if (lineFrom > totalLines) lineFrom = totalLines;
+
+                var sb = new StringBuilder();
+                sb.Append("[").Append(string.IsNullOrEmpty(f.Extension) ? "text" : f.Extension.TrimStart('.'))
+                  .Append("] ").Append(f.OriginalName)
+                  .Append("  行 ").Append(lineFrom).Append("-").Append(lineTo)
+                  .Append(" / 共 ").Append(totalLines).AppendLine();
+                sb.AppendLine();
+                // 带行号输出,方便 AI 后续按行引用/修改
+                int lineNumWidth = totalLines.ToString().Length;
+                for (int i = lineFrom - 1; i < lineTo; i++)
+                {
+                    sb.Append((i + 1).ToString().PadLeft(lineNumWidth)).Append(": ")
+                      .AppendLine(lines[i].TrimEnd('\r'));
+                    if (sb.Length > MaxCharsPerCall) break;
+                }
+                return Cap(sb.ToString());
+            }
+
+            // 字符切片(与旧行为兼容)
             int cf = GetInt(input, "char_from", 0);
             int ct = GetInt(input, "char_to", Math.Min(total, cf + 8000));
             if (cf < 0) cf = 0;

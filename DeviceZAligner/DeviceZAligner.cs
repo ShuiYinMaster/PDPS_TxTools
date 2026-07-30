@@ -12,6 +12,7 @@ using System.Reflection;
 using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
+using Theme = TxTools.Common.FormUiKit.Theme;
 
 namespace TxTools.DeviceZAligner
 {
@@ -250,8 +251,8 @@ namespace TxTools.DeviceZAligner
             int sx = 12, gap = 108;
             _lblTotal     = CreateStatLabel(gbStats, "总数: -",     sx + gap * 0, SystemColors.ControlText);
             _lblSkipped   = CreateStatLabel(gbStats, "已忽略: -",   sx + gap * 1, SystemColors.GrayText);
-            _lblNeedAlign = CreateStatLabel(gbStats, "待对齐: -",   sx + gap * 2, Color.FromArgb(180, 130, 0));
-            _lblAligned   = CreateStatLabel(gbStats, "已对齐: -",   sx + gap * 3, Color.FromArgb(0, 130, 60));
+            _lblNeedAlign = CreateStatLabel(gbStats, "待对齐: -",   sx + gap * 2, Theme.StatusWarn);
+            _lblAligned   = CreateStatLabel(gbStats, "已对齐: -",   sx + gap * 3, Theme.StatusOk);
             _lblOk        = CreateStatLabel(gbStats, "正常: -",     sx + gap * 4, SystemColors.ControlText);
 
             topPanel.Controls.Add(gbStats);
@@ -337,8 +338,8 @@ namespace TxTools.DeviceZAligner
             _logBox = new RichTextBox();
             _logBox.Dock = DockStyle.Fill;
             _logBox.ReadOnly = true;
-            _logBox.BackColor = Color.FromArgb(30, 30, 30);
-            _logBox.ForeColor = Color.FromArgb(204, 204, 204);
+            _logBox.BackColor = Theme.TxClrLogBg.Color;
+            _logBox.ForeColor = Theme.TxClrLogText.Color;
             _logBox.Font = new Font("Consolas", 9f);
             _logBox.WordWrap = false;
             _logPanel.Controls.Add(_logBox);
@@ -1197,13 +1198,13 @@ namespace TxTools.DeviceZAligner
                 {
                     var rowStyle = _grid.Styles.Add($"rs_{row}");
                     if (d.IsSkipped)
-                        rowStyle.BackColor = Color.FromArgb(240, 240, 240);   // 浅灰
+                        rowStyle.BackColor = Theme.RowNeutral;          // 浅灰
                     else if (d.IsAligned)
-                        rowStyle.BackColor = Color.FromArgb(198, 239, 206);   // 绿
+                        rowStyle.BackColor = Theme.RowOk;                // 绿
                     else if (Math.Abs(d.OffsetZ) < 0.01)
-                        rowStyle.BackColor = SystemColors.Window;             // 白
+                        rowStyle.BackColor = SystemColors.Window;       // 白
                     else
-                        rowStyle.BackColor = Color.FromArgb(255, 235, 156);   // 黄
+                        rowStyle.BackColor = Theme.RowWarn;              // 黄
 
                     _grid.Rows[row].Style = rowStyle;
                 }
@@ -1323,10 +1324,10 @@ namespace TxTools.DeviceZAligner
             Color col;
             switch (level)
             {
-                case "ERR":  col = Color.FromArgb(255, 100, 100); break;
-                case "WARN": col = Color.FromArgb(255, 200, 80);  break;
-                case "OK":   col = Color.FromArgb(80, 220, 120);  break;
-                default:     col = Color.FromArgb(204, 204, 204); break;
+                case "ERR":  col = Theme.TxClrLogErr.Color; break;
+                case "WARN": col = Theme.TxClrLogWarn.Color;  break;
+                case "OK":   col = Theme.TxClrLogOk.Color;  break;
+                default:     col = Theme.TxClrLogText.Color; break;
             }
 
             _logBox.SelectionStart = _logBox.TextLength;

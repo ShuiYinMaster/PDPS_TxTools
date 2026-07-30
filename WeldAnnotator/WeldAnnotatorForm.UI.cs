@@ -4,6 +4,7 @@ using System.Windows.Forms;
 using C1.Win.C1FlexGrid;
 using Tecnomatix.Engineering.Ui;
 using TxTools.Common;
+using Theme = TxTools.Common.FormUiKit.Theme;
 
 namespace TxTools.WeldAnnotator
 {
@@ -20,7 +21,7 @@ namespace TxTools.WeldAnnotator
                 Dock = DockStyle.Left,
                 Width = 270,
                 AutoScroll = true,
-                BackColor = SystemColors.Control,
+                BackColor = FormUiKit.CardBack,
                 Padding = new Padding(6, 4, 6, 4)
             };
 
@@ -36,39 +37,54 @@ namespace TxTools.WeldAnnotator
 
             // 卡片①：操作节点（OP）
             GroupBox opCard = MakeRailCard("操作节点 (OP)");
-            _opGrid = new TxObjGridCtrl
+            // 与 ExportGun 同款：Objects 选择框外包 FixedSingle 边框面板，
+            // 保证四周/右侧边界可见（PS 原生控件自身不画外框）
+            var opHost = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 110,
+                Height = 112,
+                BackColor = SystemColors.Window,
+                Padding = new Padding(1),
+                Margin = new Padding(0, 0, 0, 2),
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            _opGrid = new TxObjGridCtrl
+            {
+                Dock = DockStyle.Fill,
+                MinimumSize = new Size(0, 0),   // 允许收缩：PS 网格默认最小宽较大，会撑破宿主面板并盖住右侧边框
+                AutoSize = false,
                 ListenToPick = true,
                 EnableMultipleSelection = false,
                 EnableRecurringObjects = false
             };
+            // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点
+            FormUiKit.GridPickFocus.Wire(_opGrid);
             _opGrid.ObjectInserted += OnOpInserted;
             _opGrid.RowDeleted      += OnOpDeleted;
+            opHost.Controls.Add(_opGrid);
             _lblOpHint = new Label
             {
                 Text = "在 PS 中选 OP 或视口选中",
                 Dock = DockStyle.Bottom,
                 Height = 18,
                 ForeColor = Color.Gray,
-                Font = new Font(_font.Name, 8f),
+                Font = new Font(FormUiKit.BaseFont.FontFamily, 8f),
                 TextAlign = ContentAlignment.MiddleCenter
             };
             opCard.Controls.Add(_lblOpHint);
-            opCard.Controls.Add(_opGrid);
+            opCard.Controls.Add(opHost);
 
             // 卡片②：显示控制
             GroupBox snapCard = MakeRailCard("显示控制");
-            _btnSnap     = MkRailBtn("拍摄快照",   BtnSnap_Click,    Color.FromArgb(0, 112, 192));
-            _btnRestore  = MkRailBtn("恢复快照",   BtnRestore_Click, Color.FromArgb(84, 130, 53));
-            _btnShowOnly = MkRailBtn("仅显示外观", BtnShowOnly_Click,Color.FromArgb(197, 90, 17));
-            _btnShowAll  = MkRailBtn("显示全部",   BtnShowAll_Click, Color.FromArgb(100, 100, 100));
+            _btnSnap     = MkRailBtn("拍摄快照",   BtnSnap_Click,    Theme.BtnPrimary);
+            _btnRestore  = MkRailBtn("恢复快照",   BtnRestore_Click, Theme.StatusOk);
+            _btnShowOnly = MkRailBtn("仅显示外观", BtnShowOnly_Click,Theme.StatusWarn);
+            _btnShowAll  = MkRailBtn("显示全部",   BtnShowAll_Click, Theme.StatusNeutral);
             _btnRestore.Enabled = false;
             _lblSnapStatus = new Label
             {
                 Text = "", AutoSize = false, Height = 16, Width = 240,
-                ForeColor = Color.Gray, Font = new Font(_font.Name, 8f),
+                ForeColor = Color.Gray, Font = new Font(FormUiKit.BaseFont.FontFamily, 8f),
                 Margin = new Padding(0, 4, 0, 0), TextAlign = ContentAlignment.MiddleLeft
             };
             FillRailCardGrid(snapCard, 2,
@@ -98,7 +114,7 @@ namespace TxTools.WeldAnnotator
             Label lblMode = new Label
             {
                 Text = "标注命名：", AutoSize = true, Margin = new Padding(0, 8, 0, 2),
-                Font = new Font(_font.Name, 8.5f, FontStyle.Bold)
+                Font = new Font(FormUiKit.BaseFont.FontFamily, 8.5f, FontStyle.Bold)
             };
             _cmbLabelMode = new ComboBox
             {
@@ -136,22 +152,22 @@ namespace TxTools.WeldAnnotator
 
             // 卡片④：操作按钮 + 状态
             GroupBox actCard = MakeRailCard("操作");
-            _btnExport = MkRailBtnWide("导出到 Excel", BtnExport_Click, Color.FromArgb(0, 120, 215));
-            _btnExport.Font = new Font(_font.Name, 10f, FontStyle.Bold);
+            _btnExport = MkRailBtnWide("导出到 Excel", BtnExport_Click, Theme.BtnPrimary);
+            _btnExport.Font = new Font(FormUiKit.BaseFont.FontFamily, 10f, FontStyle.Bold);
             _btnExport.Height = 32;
 
-            _btnClear = MkRailBtn("清空列表", BtnClear_Click, Color.FromArgb(183, 28, 28));
-            _btnStyle = MkRailBtn("标注样式", BtnStyle_Click, Color.FromArgb(66, 66, 66));
+            _btnClear = MkRailBtn("清空列表", BtnClear_Click, Theme.BtnDanger);
+            _btnStyle = MkRailBtn("标注样式", BtnStyle_Click, Theme.StatusNeutral);
             Button btnMinimize = MkRailBtn("最小化",
-                (s, e) => WindowState = FormWindowState.Minimized, Color.FromArgb(120, 120, 120));
+                (s, e) => WindowState = FormWindowState.Minimized, Theme.TextFaint);
             _sharedToolTip.SetToolTip(btnMinimize, "最小化本窗口，以便在 PS 中调整视角、选择/隐藏对象。");
 
             _lblCount = new Label
             {
                 Text = "焊点：0  视口内：0", AutoSize = true, Dock = DockStyle.Top,
                 Margin = new Padding(0, 4, 0, 4),
-                Font = new Font(_font.Name, 9f, FontStyle.Bold),
-                ForeColor = Color.FromArgb(0, 70, 127), TextAlign = ContentAlignment.MiddleLeft
+                Font = new Font(FormUiKit.BaseFont.FontFamily, 9f, FontStyle.Bold),
+                ForeColor = Theme.CardTitle, TextAlign = ContentAlignment.MiddleLeft
             };
 
             FillRailCardGrid(actCard, 1,
@@ -191,9 +207,9 @@ namespace TxTools.WeldAnnotator
             {
                 Text = title, Dock = DockStyle.Top, Width = 254,
                 AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Font = new Font(_font.Name, 9f, FontStyle.Bold),
-                HeaderColor = Color.FromArgb(0, 70, 127),
-                ForeColor = Color.FromArgb(0, 70, 127),
+                Font = new Font(FormUiKit.BaseFont.FontFamily, 9f, FontStyle.Bold),
+                HeaderColor = Theme.CardTitle,
+                ForeColor = Theme.CardTitle,
                 Padding = new Padding(6, 12, 6, 4),
                 Margin = new Padding(0, 0, 0, 4),
                 MinimumSize = new Size(254, 0)
@@ -202,11 +218,17 @@ namespace TxTools.WeldAnnotator
 
         private Button MkRailBtn(string text, EventHandler h, Color fg)
         {
+            // 中调色(Status*/TextFaint)做按钮底会显得浑浊且黑字对比偏低：
+            // 统一压深 30% 成"彩色按钮"再用白字；近白底色(如 BtnPrimary/BtnDanger)保持原样用主题黑字。
+            var bg = fg.GetBrightness() > 0.85f ? fg : ControlPaint.Dark(fg, 0.30f);
             var b = new FormUiKit.FlatColorButton
             {
                 Text = text, Width = 116, Height = 26,
-                BgColor = fg, ForeColor = Color.White, BorderColor = fg,
-                Font = new Font(_font.Name, 9f, FontStyle.Regular),
+                BgColor = bg,
+                ForeColor = bg.GetBrightness() > 0.62f ? Theme.BtnFore : Color.White,
+                BorderColor = FormUiKit.Theme.BtnBorder,
+                HoverColor = FormUiKit.Theme.BtnHover,
+                Font = new Font(FormUiKit.BaseFont.FontFamily, 9f, FontStyle.Regular),
                 Margin = new Padding(0, 2, 4, 2), Padding = new Padding(4, 2, 4, 2),
                 FlatStyle = FlatStyle.Flat
             };
@@ -216,12 +238,16 @@ namespace TxTools.WeldAnnotator
 
         private Button MkRailBtnWide(string text, EventHandler h, Color fg)
         {
+            var bg = fg.GetBrightness() > 0.85f ? fg : ControlPaint.Dark(fg, 0.30f);
             var b = new FormUiKit.FlatColorButton
             {
                 Text = text, Width = 240, Height = 28,
                 Dock = DockStyle.Top,
-                BgColor = fg, ForeColor = Color.White, BorderColor = fg,
-                Font = new Font(_font.Name, 10f, FontStyle.Bold),
+                BgColor = bg,
+                ForeColor = bg.GetBrightness() > 0.62f ? Theme.BtnFore : Color.White,
+                BorderColor = FormUiKit.Theme.BtnBorder,
+                HoverColor = FormUiKit.Theme.BtnHover,
+                Font = new Font(FormUiKit.BaseFont.FontFamily, 10f, FontStyle.Bold),
                 Padding = new Padding(4), FlatStyle = FlatStyle.Flat
             };
             b.Click += h;
@@ -278,10 +304,10 @@ namespace TxTools.WeldAnnotator
             _grid.Cols[C_TYPE].ComboList = string.Join("|", CATEGORY_OPTIONS);
             _grid.Cols[C_TYPE].TextAlign = TextAlignEnum.CenterCenter;
 
-            _grid.Styles[CellStyleEnum.Fixed].BackColor    = Color.FromArgb(68, 114, 196);
-            _grid.Styles[CellStyleEnum.Fixed].ForeColor    = Color.White;
-            _grid.Styles[CellStyleEnum.Fixed].Font         = new Font(_font.Name, 9f, FontStyle.Bold);
-            _grid.Styles[CellStyleEnum.Alternate].BackColor = Color.FromArgb(242, 242, 242);
+            _grid.Styles[CellStyleEnum.Fixed].BackColor    = Theme.GridHeader;
+            _grid.Styles[CellStyleEnum.Fixed].ForeColor    = SystemColors.ControlText;   // 表头浅底配深字，白字在浅底上不可读
+            _grid.Styles[CellStyleEnum.Fixed].Font         = new Font(FormUiKit.BaseFont.FontFamily, 9f, FontStyle.Bold);
+            _grid.Styles[CellStyleEnum.Alternate].BackColor = Theme.GridAlt;
 
             _grid.AfterEdit += Grid_AfterEdit;
 
@@ -311,8 +337,8 @@ namespace TxTools.WeldAnnotator
             _logPanel = new Panel { Dock = DockStyle.Bottom, Height = 110, Visible = false };
             _logBox = new RichTextBox
             {
-                Dock = DockStyle.Fill, BackColor = Color.FromArgb(30, 30, 30),
-                ForeColor = Color.LightGray, Font = new Font("Consolas", 8f), ReadOnly = true
+                Dock = DockStyle.Fill, BackColor = Theme.LogBg,
+                ForeColor = Theme.LogText, Font = new Font("Consolas", 8f), ReadOnly = true
             };
             _logPanel.Controls.Add(_logBox);
             Controls.Add(_logPanel);

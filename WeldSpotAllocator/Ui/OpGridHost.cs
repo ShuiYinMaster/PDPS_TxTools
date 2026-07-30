@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
+using TxTools.Common;
 
 namespace TxTools.WeldSpotAllocator
 {
@@ -31,6 +32,8 @@ namespace TxTools.WeldSpotAllocator
                     EnableMultipleSelection = true,
                     EnableRecurringObjects = false
                 };
+                // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点
+                FormUiKit.GridPickFocus.Wire(_grid);
                 _grid.ObjectInserted += new TxObjGridCtrl_ObjectInsertedEventHandler(OnInserted);
                 _grid.RowDeleted += new TxObjGridCtrl_RowDeletedEventHandler(OnRowDeleted);
                 host.Controls.Add(_grid);
