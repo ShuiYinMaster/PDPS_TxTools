@@ -155,7 +155,6 @@ namespace TxTools.ExportGun
         private TextBox _txtGunProductName;
         private Button _btnExportGun;
         private Label _lblGunInfo;
-        private ComboBox _cmbGunExportMode;   // 导出方式：共享几何 / 独立命名
         // TCP 选择
         private ComboBox _cmbTcp;                 // 多 TCP 下拉
         private Panel _tcpCustomPanel;            // 自定义坐标选择器容器
@@ -207,7 +206,7 @@ namespace TxTools.ExportGun
             BuildUI();
             // 关闭 Siemens flat style 皮肤以让自定义配色生效；
             // 低版本 PDPS 可能无此属性，故用反射设置，失败静默忽略。
-            
+
             try
             {
                 var flatStyleProp = this.GetType().GetProperty("FlatStyleEnabled");
@@ -895,33 +894,6 @@ namespace TxTools.ExportGun
                 Margin = new Padding(0, 2, 0, 4)
             };
             flow.Controls.Add(_lblGunInfo);
-
-            // ── 导出方式（共享几何 vs 独立命名） ──
-            var rowMode = MkRowFlow();
-            rowMode.Controls.Add(MkLabel("导出方式"));
-            _cmbGunExportMode = new ComboBox
-            {
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                Width = 220,
-                Font = SystemFonts.MessageBoxFont,
-                Margin = new Padding(2, 3, 0, 0)
-            };
-            _cmbGunExportMode.Items.Add("共享几何（体积最小，名称=CGR原名）");
-            _cmbGunExportMode.Items.Add("独立命名（体积×焊点数，名称=焊点名）");
-            _cmbGunExportMode.SelectedIndex = 0;
-            rowMode.Controls.Add(_cmbGunExportMode);
-            flow.Controls.Add(rowMode);
-
-            var modeHint = new Label
-            {
-                Text = "共享几何：3DXML ≈ 1 份 CGR，实例名保持 CGR 原名\n独立命名：3DXML ≈ N 份 CGR，实例名可读为焊点名",
-                AutoSize = true,
-                ForeColor = SystemColors.GrayText,
-                Font = SystemFonts.MessageBoxFont,
-                Margin = new Padding(0, 0, 0, 4)
-            };
-            flow.Controls.Add(modeHint);
-            WrapLabelInFlow(flow, modeHint);
 
             _chkGunOriginTCP = new CheckBox
             {
@@ -2420,10 +2392,7 @@ namespace TxTools.ExportGun
                 PointFilter = GetPtType(),
                 UseMfgName = _chkUseMfgName.Checked,
                 TcpName = _tcpCustomMatrix == null ? _tcpChoiceName : null,
-                TcpCustomMatrix = _tcpCustomMatrix,
-                ExportMode = (_cmbGunExportMode != null && _cmbGunExportMode.SelectedIndex == 1)
-                    ? GunExportMode.IndependentNaming
-                    : GunExportMode.SharedGeometry
+                TcpCustomMatrix = _tcpCustomMatrix
             };
         }
 
@@ -2776,7 +2745,6 @@ namespace TxTools.ExportGun
             _txtGunModel.Text = "";
             _txtGunModel.Tag = null;
             if (_txtGunProductName != null) _txtGunProductName.Text = "";
-            if (_cmbGunExportMode != null) try { _cmbGunExportMode.SelectedIndex = 0; } catch { }
             // 复位 TCP 选择
             _tcpChoiceName = null;
             _tcpCustomMatrix = null;
