@@ -33,7 +33,8 @@ namespace TxTools.AutoRecorder
     public class AutoRecorderForm : TxForm
     {
         // ===== 根布局 =====
-        private TableLayoutPanel _root;
+        private TableLayoutPanel _mainSplit;   // 外两层：左（参数/日志）+ 右（视角关键帧）
+        private TableLayoutPanel _leftPanel;   // 左列：单列 AutoSize 内容表（原 _root）
 
         // ===== 操作选择 =====
         private TxObjGridCtrl _grid;
@@ -46,11 +47,10 @@ namespace TxTools.AutoRecorder
             = new System.Collections.Generic.Dictionary<ITxObject, OperationViewSchedule>();
         private ITxObject _lastPickedOp;
 
-        // ===== 关键帧面板（折叠） =====
-        private Panel _grpKf;            // 折叠卡片（用 Panel 不用 GroupBox，避免 Title 区占高）
-        private Button _btnKfToggle;      // 标题栏点击展开/收起
-        private bool _kfExpanded;       // 当前是否展开
+        // ===== 关键帧面板（常驻右列，无折叠） =====
+        private Panel _grpKf;            // 面板（用 Panel 不用 GroupBox，避免 Title 区占高）
         private ComboBox _cmbKfOpSelector;  // 当前编辑哪个 op
+        private bool _syncingKfFromGrid;    // 防止 grid→下拉 同步造成的回环
         private DataGridView _gridKf;           // location 表
         private Button _btnKfSet;         // 用当前视角设定/更新
         private Button _btnKfPreview;     // 预览
@@ -73,7 +73,6 @@ namespace TxTools.AutoRecorder
         private NumericUpDown _numResH;
         private CheckBox _chkFocus;
         private ComboBox _cmbSpeedup;
-        private Label _lblSpeedupHint;
 
         // ===== 主按钮 =====
         private Button _btnStart;
@@ -101,7 +100,9 @@ namespace TxTools.AutoRecorder
 
         // 布局常量（仅作初始值 / 兜底；实际高度由 UpdateFormHeight 按内容实测）
         private const int PAD = 8;
-        private const int FORM_W = 520;
+        private const int FORM_W = 880;
+        private const float LEFT_PCT = 54F;    // 左列宽度占比
+        private const float RIGHT_PCT = 46F;   // 右列（视角关键帧）宽度占比
         private const int CARD1_H = 258;
         private const int LOG_H = 130;
         private const int FORM_H_FALLBACK = 798;   // 全折叠时的兜底高度（沿用原版实测值）
@@ -155,9 +156,9 @@ namespace TxTools.AutoRecorder
             PositionTopRight();      // 不挡主视口
             ApplyViewerSizeDefault();// 把视口尺寸填到分辨率输入框作为默认
             RefreshButtonState();
-
-            // 让焦点初始就在 grid 上，用户打开窗口就能直接到主视口拾取
-            try { this.ActiveControl = _grid; _grid.Focus(); } catch { }
+            RefreshKfOpSelector();
+            RefreshKfPanelContent();
+            // 启动抢焦点由 FormUiKit.GridPickFocus.Wire 统一处理
         }
 
         /// <summary>窗口移到当前屏幕右上角，避免遮挡 3D 主视口的拾取。</summary>
@@ -195,43 +196,66 @@ namespace TxTools.AutoRecorder
         }
 
         // ============================================================
-        // UI 构建 —— 单列根 TableLayoutPanel，行序：
-        //   [0] 操作选择卡（固定高）
-        //   [1] 视角关键帧卡（AutoSize，Height 切换 28/288）
-        //   [2] 录像参数卡（AutoSize，内部参数表自撑）
-        //   [3] 按钮行
-        //   [4] 日志折叠按钮
-        //   [5] 日志容器（AutoSize，Height 切换 0/130）
+        // UI 构建 —— 两列布局：
+        //   外两层 _mainSplit（2 列 × 1 行，行 Percent=100）：
+        //      [0] 左列 _leftPanel：单列 AutoSize 内容表（操作选择/录像参数/按钮/日志）
+        //      [1] 右列 视角关键帧卡（Dock=Fill，占满全部高度）
         // StatusStrip 独立 Dock=Bottom。
         // ============================================================
         private void BuildUi()
         {
-            _root = new TableLayoutPanel
+            _mainSplit = new TableLayoutPanel
             {
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                ColumnCount = 1,
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 1,
                 Padding = new Padding(PAD, PAD, PAD, 0),
                 Margin = Padding.Empty
             };
-            _root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            _mainSplit.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, LEFT_PCT));
+            _mainSplit.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, RIGHT_PCT));
+            _mainSplit.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+            // ---------- 左列：单列 AutoSize 内容表 ----------
+            _leftPanel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 1,
+                RowCount = 0,
+                Padding = Padding.Empty,
+                Margin = new Padding(0, 0, PAD, 0)
+            };
+            _leftPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            _mainSplit.Controls.Add(_leftPanel, 0, 0);
 
             // ---------- 卡片 1：操作选择（固定高，grid Fill） ----------
             var grp1 = NewGroupBox("操作选择（多选批量；每个操作可独立设置视角）");
             grp1.Height = CARD1_H;
             grp1.Padding = new Padding(10, 20, 10, 8);
 
+            // 参考 ExportGun：外层面板 + 1px 内边距 + FixedSingle 边框包住 TxObjGridCtrl
+            var gridPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = SystemColors.Window,
+                Padding = new Padding(1),
+                Margin = Padding.Empty,
+                BorderStyle = BorderStyle.FixedSingle
+            };
             _grid = new TxObjGridCtrl { Dock = DockStyle.Fill };
             try
             {
-                _grid.ListenToPick = true;
                 _grid.EnableMultipleSelection = true;
                 _grid.EnableRecurringObjects = false;
             }
             catch { }
-            // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点
+            // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点（含 ListenToPick=true）
             FormUiKit.GridPickFocus.Wire(_grid);
+            // 编辑操作选择：除下拉框外，监听 Objects 网格焦点行，同步关键帧编辑对象
+            try { _grid.SelectionChanged += OnObjectsGridSelectionChanged; } catch { }
+            gridPanel.Controls.Add(_grid);
 
             // 底部：信息行 + 视角控制行（表格自排，替代绝对坐标）
             var grp1Bottom = new TableLayoutPanel
@@ -264,7 +288,7 @@ namespace TxTools.AutoRecorder
             {
                 Text = "拾取时自动定位视角",
                 Font = FormUiKit.BaseFont,
-                Checked = true,
+                Checked = false,
                 AutoSize = true,
                 Anchor = AnchorStyles.Left,
                 Margin = new Padding(2, 4, 0, 0)
@@ -290,13 +314,9 @@ namespace TxTools.AutoRecorder
             };
             grp1Bottom.Controls.Add(_btnSaveView, 1, 1);
 
-            grp1.Controls.Add(_grid);          // Fill（先 Add）
+            grp1.Controls.Add(gridPanel);      // Fill（先 Add）
             grp1.Controls.Add(grp1Bottom);     // Bottom（后 Add → 占住底边）
             AddRootRow(grp1, SizeType.Absolute, CARD1_H, dockFill: true);
-
-            // ---------- 卡片 1.5：视角关键帧（默认折叠） ----------
-            BuildKeyframeCard();
-            AddRootRow(_grpKf, SizeType.AutoSize, 0, dockFill: false);
 
             // ---------- 卡片 2：录像参数 ----------
             var grp2 = NewGroupBox("录像参数");
@@ -362,10 +382,15 @@ namespace TxTools.AutoRecorder
             _pnlLogContainer.Controls.Add(_rtbLog);
             AddRootRow(_pnlLogContainer, SizeType.AutoSize, 0, dockFill: false);
 
-            this.Controls.Add(_root);
+            // ---------- 右列：视角关键帧（占满全部高度） ----------
+            BuildKeyframeCard();
+            _mainSplit.Controls.Add(_grpKf, 1, 0);
+
+            this.Controls.Add(_mainSplit);
 
             // ---------- StatusStrip ----------
             _statusStrip = new StatusStrip { Font = FormUiKit.BaseFont };
+            _statusStrip.SizingGrip = false;   // 取消右下角拉伸控件
             _lblStatus = new ToolStripStatusLabel("状态：待机")
             {
                 Spring = true,
@@ -383,7 +408,7 @@ namespace TxTools.AutoRecorder
         }
 
         /// <summary>
-        /// 往根表追加一行。
+        /// 往左列内容表追加一行。
         /// dockFill=true 用于固定高行（控件 Fill 撑满格子）；
         /// 其余行 AutoSize，控件 Dock=Top（宽度占满、高度自带）。
         /// stretch=false 时控件保持自身宽度靠左（如日志折叠按钮）。
@@ -391,9 +416,9 @@ namespace TxTools.AutoRecorder
         private void AddRootRow(Control ctrl, SizeType sizeType, float height,
                                 bool dockFill, bool stretch = true)
         {
-            int r = _root.RowCount;
-            _root.RowCount = r + 1;
-            _root.RowStyles.Add(sizeType == SizeType.Absolute
+            int r = _leftPanel.RowCount;
+            _leftPanel.RowCount = r + 1;
+            _leftPanel.RowStyles.Add(sizeType == SizeType.Absolute
                 ? new RowStyle(SizeType.Absolute, height)
                 : new RowStyle(SizeType.AutoSize));
 
@@ -403,7 +428,7 @@ namespace TxTools.AutoRecorder
 
             if (ctrl.Margin == Padding.Empty)
                 ctrl.Margin = new Padding(0, 0, 0, PAD);
-            _root.Controls.Add(ctrl, 0, r);
+            _leftPanel.Controls.Add(ctrl, 0, r);
         }
 
         // ============================================================
@@ -558,7 +583,7 @@ namespace TxTools.AutoRecorder
             // ---- Row 6: 录后加速（ffmpeg）----
             _cmbSpeedup = new ComboBox
             {
-                Width = 110,
+                Width = 160,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Font = FormUiKit.BaseFont,
                 MaxDropDownItems = 10,
@@ -579,18 +604,8 @@ namespace TxTools.AutoRecorder
             });
             _cmbSpeedup.SelectedIndex = 0;
 
-            _lblSpeedupHint = new Label
-            {
-                AutoSize = true,
-                Text = "需 ffmpeg.exe（放插件目录或 PATH）",
-                Font = FormUiKit.BaseFont,
-                ForeColor = SystemColors.GrayText,
-                Anchor = AnchorStyles.Left,
-                Margin = new Padding(6, 5, 0, 0)
-            };
             var spdFlow = MkInlineFlow();
             spdFlow.Controls.Add(_cmbSpeedup);
-            spdFlow.Controls.Add(_lblSpeedupHint);
             AddParamRow(t, ParamLabel("录后加速："), spdFlow);
 
             // ---- Row 7: 自动聚焦（跨两列）----
@@ -760,7 +775,8 @@ namespace TxTools.AutoRecorder
         private void OnOperationPicked()
         {
             // 【焦点修复】拾取后焦点要回到 grid，否则下次拾取/键盘操作无响应
-            try { _grid.Focus(); } catch { }
+            // （统一走 FormUiKit.GridPickFocus：Focus + 重设 ListenToPick 触发 PS 重新注册拾取）
+            FormUiKit.GridPickFocus.Activate(_grid);
 
             int count = GetGridCount();
             if (count == 0) { OnOperationCleared(); return; }
@@ -771,7 +787,7 @@ namespace TxTools.AutoRecorder
             if (latest != null && !ReferenceEquals(latest, _lastPickedOp))
             {
                 _lastPickedOp = latest;
-                // 为新 op 自动计算相机，并应用到视口
+                // 记录选取操作时的视角作为起始视角
                 HandleNewOpCamera(latest);
             }
 
@@ -818,39 +834,21 @@ namespace TxTools.AutoRecorder
         }
 
         // ============================================================
-        // 关键帧面板（折叠卡片）
-        // 内部用 Dock 布局：顶部 [op 选择行] / 底部 [按钮行][状态行] / 中间 DGV 填满
-        // 外层放在根表 AutoSize 行里，Height 切换后下方内容自动回流。
+        // 视角关键帧卡：常驻右列并占满全部高度（无折叠）。
+        // 内部用 Dock 布局：顶部 [op 选择行] /
+        // 底部 [按钮行][状态行] / 中间 DGV 填满剩余空间（可滚动）。
         // ============================================================
-        private const int KF_COLLAPSED_H = 28;
-        private const int KF_EXPANDED_H = 288;
-
         private void BuildKeyframeCard()
         {
             _grpKf = new Panel
             {
-                Height = KF_COLLAPSED_H,
+                Dock = DockStyle.Fill,          // 占满右列全部高度
                 BorderStyle = BorderStyle.FixedSingle,
                 Padding = new Padding(0),
+                Margin = Padding.Empty,
             };
 
-            // 折叠/展开 toggle（用 + / - 避免某些字体不支持 ▶ ▼）
-            _btnKfToggle = new FormUiKit.FlatColorButton
-            {
-                Dock = DockStyle.Top,
-                Height = KF_COLLAPSED_H - 2,   // 占满折叠高度（减 Panel 边框）
-                Text = "[+] 视角关键帧（点击展开） — 高级：操作内多视角切换",
-                FlatStyle = FlatStyle.Flat,
-                TextAlign = ContentAlignment.MiddleLeft,
-                Font = FormUiKit.BaseFont,
-                BgColor = SystemColors.ControlLight,
-                ForeColor = SystemColors.ControlText,
-                BorderColor = FormUiKit.Theme.BtnBorder,
-                HoverColor = FormUiKit.Theme.BtnHover
-            };
-            _btnKfToggle.Click += OnToggleKeyframePanel;
-
-            // === 折叠展开时显示的内容（用容器分区，Dock 自动布局） ===
+            // === 内容（用容器分区，Dock 自动布局） ===
             // 顺序：先 Add 的处于 Z 序底层；Dock=Bottom 优先底部
             //   1. 状态行 Dock=Bottom（最底）
             //   2. 按钮行 Dock=Bottom（次底）
@@ -865,7 +863,7 @@ namespace TxTools.AutoRecorder
                 Font = FormUiKit.BaseFont,
                 ForeColor = SystemColors.GrayText,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Visible = false,
+                Visible = true,
             };
 
             var pnlKfBtns = new FlowLayoutPanel
@@ -877,7 +875,7 @@ namespace TxTools.AutoRecorder
                 AutoSize = false,
                 Padding = new Padding(0, 4, 0, 4),
                 Margin = new Padding(0),
-                Visible = false,
+                Visible = true,
             };
 
             _btnKfSet = new FormUiKit.FlatColorButton
@@ -945,7 +943,7 @@ namespace TxTools.AutoRecorder
                 Height = 28,
                 Padding = new Padding(0),
                 Margin = new Padding(0),
-                Visible = false,
+                Visible = true,
             };
             var lblOp = new Label
             {
@@ -993,12 +991,12 @@ namespace TxTools.AutoRecorder
                 BackgroundColor = SystemColors.Window,
                 BorderStyle = BorderStyle.FixedSingle,
                 Font = FormUiKit.BaseFont,
-                Visible = false,
+                Visible = true,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
                 ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
                 ColumnHeadersHeight = 32,
                 EnableHeadersVisualStyles = false,
-                RowTemplate = { Height = 24 },
+                RowTemplate = { Height = 30 },
                 ScrollBars = ScrollBars.Vertical,
             };
             _gridKf.ColumnHeadersDefaultCellStyle.Font =
@@ -1011,14 +1009,14 @@ namespace TxTools.AutoRecorder
             _gridKf.Columns.Add(new DataGridViewTextBoxColumn
             {
                 HeaderText = "#",
-                Width = 56,
+                Width = 40,
                 Name = "colIdx",
                 AutoSizeMode = DataGridViewAutoSizeColumnMode.None
             });
             _gridKf.Columns.Add(new DataGridViewTextBoxColumn
             {
                 HeaderText = "触发时机",
-                Width = 140,
+                Width = 100,
                 Name = "colTrig",
                 AutoSizeMode = DataGridViewAutoSizeColumnMode.None
             });
@@ -1031,7 +1029,7 @@ namespace TxTools.AutoRecorder
             _gridKf.Columns.Add(new DataGridViewTextBoxColumn
             {
                 HeaderText = "视角",
-                Width = 100,
+                Width = 78,
                 Name = "colCam",
                 AutoSizeMode = DataGridViewAutoSizeColumnMode.None
             });
@@ -1040,14 +1038,13 @@ namespace TxTools.AutoRecorder
 
             // 按 Dock 优先级 Add：WinForms 是"后 Add 的更贴边"，所以
             //   最贴底边的（状态行）最后 Add 在 Bottom 组里
-            //   最贴顶边的（toggle 按钮）最后 Add 在 Top 组里
+            //   最贴顶边的（op 选择行）最后 Add 在 Top 组里
             _grpKf.Controls.Add(_gridKf);       // Fill
             _grpKf.Controls.Add(pnlKfBtns);     // Bottom（先 Add）
             _grpKf.Controls.Add(_lblKfStatus);  // Bottom（后 Add → 最底）
             _grpKf.Controls.Add(pnlOpRow);      // Top（先 Add）
-            _grpKf.Controls.Add(_btnKfToggle);  // Top（后 Add → 最顶）
 
-            // 保存引用用于折叠控制
+            // 保存引用
             _pnlOpRow = pnlOpRow;
             _pnlKfBtns = pnlKfBtns;
         }
@@ -1056,51 +1053,25 @@ namespace TxTools.AutoRecorder
         private Panel _pnlOpRow;
         private FlowLayoutPanel _pnlKfBtns;
 
-        private void OnToggleKeyframePanel(object sender, EventArgs e)
-        {
-            SetKeyframePanelExpanded(!_kfExpanded);
-        }
-
-        private void SetKeyframePanelExpanded(bool expanded)
-        {
-            _kfExpanded = expanded;
-            _grpKf.Height = expanded ? KF_EXPANDED_H : KF_COLLAPSED_H;
-            if (_pnlOpRow != null) _pnlOpRow.Visible = expanded;
-            if (_gridKf != null) _gridKf.Visible = expanded;
-            if (_pnlKfBtns != null) _pnlKfBtns.Visible = expanded;
-            if (_lblKfStatus != null) _lblKfStatus.Visible = expanded;
-
-            _btnKfToggle.Text = expanded
-                ? "[-] 视角关键帧（点击收起）"
-                : "[+] 视角关键帧（点击展开） — 高级：操作内多视角切换";
-
-            // 根表 AutoSize 行自动回流，只需重设窗体总高
-            UpdateFormHeight();
-            RefreshKfOpSelector();
-            RefreshKfPanelContent();
-        }
-
         /// <summary>
-        /// 按根表实测内容高度重设窗体 ClientSize（替代原 RelayoutBelowKeyframePanel
-        /// 的手动平移 + 硬编码高度常量；DPI 缩放后同样准确）。
+        /// 按左列内容实测高度重设窗体 ClientSize（高度由左列内容决定，右列关键帧占满该高度）。
         /// </summary>
         private void UpdateFormHeight()
         {
             int h;
             try
             {
-                _root.PerformLayout();
+                _leftPanel.PerformLayout();
                 int statusH = (_statusStrip != null && _statusStrip.Height > 0)
                     ? _statusStrip.Height : 24;
-                h = _root.Height + statusH;
+                h = _leftPanel.PreferredSize.Height + statusH;
                 if (h < 300) throw new InvalidOperationException("layout not ready");
             }
             catch
             {
                 // 兜底：常量法（与原版一致）
-                int kfExtra = _kfExpanded ? (KF_EXPANDED_H - KF_COLLAPSED_H) : 0;
                 int logExtra = _logExpanded ? (LOG_H + 2) : 0;
-                h = FORM_H_FALLBACK + kfExtra + logExtra;
+                h = FORM_H_FALLBACK + logExtra;
             }
             this.ClientSize = new Size(this.ClientSize.Width, h);
             if (_statusStrip != null) _statusStrip.BringToFront();
@@ -1152,6 +1123,43 @@ namespace TxTools.AutoRecorder
             var item = _cmbKfOpSelector.SelectedItem as KfOpItem;
             _kfEditingOp = (item != null) ? item.Op : null;
             RefreshKfPanelContent();
+        }
+
+        /// <summary>
+        /// 监听 Objects 网格焦点行：点击某行时，同步"编辑操作"下拉框与关键帧编辑对象。
+        /// 与下拉框互为双向选择（下拉改 → 触发 OnKfOpSelectorChanged；网格改 → 走这里）。
+        /// </summary>
+        private void OnObjectsGridSelectionChanged(object sender, EventArgs e)
+        {
+            if (_syncingKfFromGrid) return;
+            try
+            {
+                int row = _grid.CurrentRow;
+                if (row < 0 || row >= _grid.Count) return;
+                var op = _grid.GetObject(row) as ITxObject;
+                if (op == null || ReferenceEquals(op, _kfEditingOp)) return;
+
+                // 同步下拉框（通过 SelectedIndexChanged 统一刷新面板）
+                _syncingKfFromGrid = true;
+                try
+                {
+                    for (int i = 0; i < _cmbKfOpSelector.Items.Count; i++)
+                    {
+                        var item = _cmbKfOpSelector.Items[i] as KfOpItem;
+                        if (item != null && ReferenceEquals(item.Op, op))
+                        {
+                            _cmbKfOpSelector.SelectedIndex = i;
+                            return;
+                        }
+                    }
+                }
+                finally { _syncingKfFromGrid = false; }
+
+                // 下拉框未收录该 op 时，直接改编辑对象
+                _kfEditingOp = op;
+                RefreshKfPanelContent();
+            }
+            catch { }
         }
 
         /// <summary>下拉框条目 —— 提供友好显示名 + 持有 op 引用</summary>
@@ -1207,7 +1215,7 @@ namespace TxTools.AutoRecorder
         /// </summary>
         private void RefreshKfPanelContent()
         {
-            if (!_kfExpanded || _gridKf == null) return;
+            if (_gridKf == null) return;
             _gridKf.Rows.Clear();
             _kfLocations = null;
 
@@ -1431,33 +1439,35 @@ namespace TxTools.AutoRecorder
         /// <summary>
         /// 新拾取的 op 处理相机：自动计算 + 可选应用到视口 + 存储
         /// </summary>
+        /// <summary>
+        /// 拾取到新 op 时：把"当前视口视角"记为起始视角。
+        /// "拾取时自动定位视角"默认不勾选，故不会额外移动视口。
+        /// </summary>
         private void HandleNewOpCamera(ITxObject op)
         {
             try
             {
-                var cam = PsReader.ComputeOptimalCamera(op);
+                var viewer = PsReader.GetGraphicViewer();
+                if (viewer == null) return;
+                var cam = PsReader.GetCurrentCamera(viewer);
                 if (cam == null)
                 {
-                    AppendLog("无法自动计算 " + PsReader.GetObjectName(op)
-                             + " 的视角（缺机器人或焊点位置），将使用 ZoomToSelection 兜底",
-                             LogLevel.Warn);
+                    AppendLog("无法读取当前视口视角，未记录起始视角", LogLevel.Warn);
                     return;
                 }
                 GetOrCreateSchedule(op).InitialCamera = cam;
 
-                if (_chkAutoApplyView != null && _chkAutoApplyView.Checked)
+                // 勾选"拾取时自动定位视角"时才把起始视角应用到视口（此处即当前视角，实为确认）
+                if (_chkAutoApplyView != null && _chkAutoApplyView.Checked
+                    && PsReader.SetCurrentCamera(viewer, cam))
                 {
-                    var viewer = PsReader.GetGraphicViewer();
-                    if (viewer != null && PsReader.SetCurrentCamera(viewer, cam))
-                    {
-                        AppendLog("已自动定位 " + PsReader.GetObjectName(op) + " 的视角",
-                                  LogLevel.Detail);
-                    }
+                    AppendLog("已自动定位 " + PsReader.GetObjectName(op) + " 的视角",
+                              LogLevel.Detail);
                 }
             }
             catch (Exception ex)
             {
-                AppendLog("自动视角计算异常：" + ex.Message, LogLevel.Warn);
+                AppendLog("记录起始视角异常：" + ex.Message, LogLevel.Warn);
             }
         }
 

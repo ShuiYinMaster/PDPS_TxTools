@@ -315,6 +315,7 @@
     <Compile Include="Agent\Core\RecipeRunner.cs" />
     <Compile Include="Agent\Core\RecipeStore.cs" />
     <Compile Include="Agent\Core\RecipeTool.cs" />
+    <Compile Include="Agent\Core\SystemPromptBuilder.cs" />
     <Compile Include="Agent\Core\TaskPlan.cs" />
     <Compile Include="Agent\Core\ToolRegistry.cs" />
     <!-- TxAgent.Core harness 骨架(来自 files(83).zip,按 README_接入说明.md 接入) -->
@@ -477,6 +478,13 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="ExportByColor\ExportByColorService.cs" />
+    <Compile Include="ExportByColor\CgrWriter.cs" />
+    <Compile Include="ExportByColor\CgrCompact95.cs" />
+    <Compile Include="ExportByColor\CgrTemplate.cs" />
+    <Compile Include="ExportByColor\CgrSurfaceOrientation.cs" />
+    <Compile Include="ExportByColor\CgrTestData.cs" />
+    <Compile Include="ExportByColor\MeshExport.cs" />
+    <Compile Include="ExportByColor\FbxExport.cs" />
     <Compile Include="SRC\FormUiKit.cs" />
     <Compile Include="SRC\PsReader.cs" />
     <Compile Include="WeldAnnotator\AnnotationStyle.cs" />
@@ -536,6 +544,18 @@
     <Compile Include="CatiaPartTree\CatiaPartTreeForm.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="CrossEnvIO\Core\CojtTransfer.cs" />
+    <Compile Include="CrossEnvIO\Core\CrossEnvRebuildTool.cs" />
+    <Compile Include="CrossEnvIO\Core\EnvLibrary.cs" />
+    <Compile Include="CrossEnvIO\Core\PszPathFixer.cs" />
+    <Compile Include="CrossEnvIO\Core\StructureIO.cs" />
+    <Compile Include="CrossEnvIO\Core\WeldPointIO.cs" />
+    <Compile Include="CrossEnvIO\Core\ComponentIO.cs" />
+    <Compile Include="CrossEnvIO\Core\TxMath.cs" />
+    <Compile Include="CrossEnvIO\CrossEnvIOForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="CrossEnvIO\CrossEnvIOCmd.cs" />
     <Compile Include="ThemeTuner\ThemeTunerCmd.cs" />
     <Compile Include="ThemeTuner\ThemeTunerForm.cs">
       <SubType>Form</SubType>
@@ -545,6 +565,12 @@
     <EmbeddedResource Include="Properties\Resources.resx">
       <Generator>ResXFileCodeGenerator</Generator>
       <LastGenOutput>Resources.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Test\hellowouldui.resx">
+      <DependentUpon>hellowouldui.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="WeldSpotAllocator\Ui\AllocatorForm.resx">
+      <DependentUpon>AllocatorForm.cs</DependentUpon>
     </EmbeddedResource>
   </ItemGroup>
   <ItemGroup>
@@ -1429,8 +1455,12 @@
   <Import Project="packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets" Condition="Exists('packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets')" />
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
-      <ErrorText>这台计算机上缺少此项目引用的 NuGet 程序包。使用“NuGet 程序包还原”可下载这些程序包。有关更多信息，请参见 http://go.microsoft.com/fwlink/?LinkID=322105。缺少的文件是 {0}。</ErrorText>
+      <ErrorText>��̨�������ȱ�ٴ���Ŀ���õ� NuGet �������ʹ�á�NuGet �������ԭ�����������Щ��������йظ�����Ϣ����μ� http://go.microsoft.com/fwlink/?LinkID=322105��ȱ�ٵ��ļ��� {0}��</ErrorText>
     </PropertyGroup>
     <Error Condition="!Exists('packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets'))" />
+  </Target>
+  <!-- 编译 MCP 桥，并把 exe 输出到与插件 DLL 相同的目录（PS 的 DotNetCommands 加载目录）。 -->
+  <Target Name="BuildMcpBridge" AfterTargets="Build" Condition="Exists('McpBridge\McpBridge.csproj')">
+    <MSBuild Projects="McpBridge\McpBridge.csproj" Properties="Configuration=$(Configuration);OutDir=$(OutDir)" Targets="Build" />
   </Target>
 </Project>

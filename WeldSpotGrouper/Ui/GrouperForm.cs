@@ -55,14 +55,7 @@ namespace TxTools.WeldSpotGrouper
         {
             base.OnInitTxForm();
             try { SemiModal = false; } catch { }
-            BeginInvoke(new Action(delegate ()
-            {
-                try
-                {
-                    if (_scopeGrid != null) { _scopeGrid.Focus(); try { _scopeGrid.SetCurrentCell(0, 0); } catch { } }
-                }
-                catch { }
-            }));
+            // 启动抢焦点由 FormUiKit.GridPickFocus.Wire 统一处理，不再重复
         }
 
         /// <summary>是否已关闭（供命令层判断是否复用实例，避免对已关闭窗体再次 Show）。</summary>
@@ -113,10 +106,9 @@ namespace TxTools.WeldSpotGrouper
                 BorderStyle = BorderStyle.FixedSingle
             };
             _scopeGrid = new TxObjGridCtrl { Dock = DockStyle.Fill, MinimumSize = new Size(0, 0), AutoSize = false };
-            try { _scopeGrid.ListenToPick = true; } catch { }
             try { _scopeGrid.EnableMultipleSelection = true; } catch { }
             try { _scopeGrid.EnableRecurringObjects = false; } catch { }
-            // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点
+            // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点（含 ListenToPick=true）
             FormUiKit.GridPickFocus.Wire(_scopeGrid);
             try { _scopeGrid.ObjectInserted += (s, a) => RefreshScopeLabel(); } catch { }
             scopeHost.Controls.Add(_scopeGrid);

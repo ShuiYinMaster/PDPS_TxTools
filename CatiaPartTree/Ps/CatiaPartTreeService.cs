@@ -22,11 +22,16 @@ namespace TxTools.CatiaPartTree.Ps
             new Dictionary<TreeEditNode, TxCompoundPart>();
         private ITxObject _lastParent;
 
+        /// <summary>归类时按 CATIA 层级现算/新建的「树节点 -> 容器」缓存（_created 之外的补充）。</summary>
+        private readonly Dictionary<TreeEditNode, TxCompoundPart> _autoCreated =
+            new Dictionary<TreeEditNode, TxCompoundPart>();
+
         public Dictionary<TreeEditNode, TxCompoundPart> Created { get { return _created; } }
 
         public void ClearMapping()
         {
             _created.Clear();
+            _autoCreated.Clear();
             _lastParent = null;
         }
 
@@ -146,16 +151,19 @@ namespace TxTools.CatiaPartTree.Ps
         // ── 3. 归类：把范围内已导入的零件/组件移入匹配的容器 ──
 
         public ClassifyResult Classify(TreeEditNode root, string scopeName,
-            bool moveUnmatched, Action<string> log)
+            bool moveUnmatched, bool autoCreateContainers, bool preferPartNumber, Action<string> log)
         {
             log = log ?? Nop;
             var doc = TxApplication.ActiveDocument;
             if (doc == null) throw new InvalidOperationException("没有打开的研究文档。");
 
-            if (_created.Count == 0)
-                log("[归类] 提示: 当前会话没有建树映射，可能找不到匹配容器。建议先执行 [创建零件树]。");
+            _autoCreated.Clear();
 
-            var scope = ResolveScope(scopeName);
+            if (_created.Count == 0 && !autoCreateContainers)
+                log("[归类] 提示: 当前会话没有建树映射，可能找不到匹配容器。"
+                    + "建议先执行 [创建零件树]，或勾选 [目标容器缺失时按 CATIA 层级自动创建]。");
+
+            var scope = ResolveScope(scopeName, log);
             var parts = EnumerateParts(scope, log);
             log("[归类] 范围内零件/组件 " + parts.Count + " 个");
 
@@ -184,13 +192,25 @@ namespace TxTools.CatiaPartTree.Ps
                         continue;
                     }
 
-                    TxCompoundPart cp = ResolveContainer(node);
+                    // 落点规则: 零件落到它在 CATIA 中「父装配节点」对应的 compound 下;
+                    // 若零件匹配到的是 CATIA 根节点(无父装配), 则落到分类范围自身。
+                    var targetNode = node.Parent ?? node;
+                    TxCompoundPart cp = null;
+                    if (autoCreateContainers)
+                        cp = EnsureTargetContainer(targetNode, root, scope, preferPartNumber, log, result);
+                    if (cp == null) cp = ResolveContainer(node);
+
                     if (cp != null)
                     {
-                        if (MoveInto(cp, part, log))
+                        if (IsDirectChild(cp, part))
+                        {
+                            result.InPlace++;
+                            log("[归类] = " + SafeName(part) + " 已在 " + SafeName(cp) + " 下，跳过");
+                        }
+                        else if (MoveInto(cp, part, log))
                         {
                             result.Matched++;
-                            log("[归类] ✓ " + SafeName(part) + " → " + node.Name);
+                            log("[归类] ✓ " + SafeName(part) + " → " + SafeName(cp));
                         }
                         else result.Failed++;
                     }
@@ -427,20 +447,120 @@ namespace TxTools.CatiaPartTree.Ps
 
         // ── 枚举范围内待归类的零件/组件 ──
 
-        private static ITxObject ResolveScope(string scopeName)
+        private ITxObject ResolveScope(string scopeName, Action<string> log)
         {
             var doc = TxApplication.ActiveDocument;
             if (doc == null) throw new InvalidOperationException("没有打开的研究文档。");
-            if (scopeName == "PhysicalRoot") return doc.PhysicalRoot;
-            if (scopeName == "当前选中")
+            if (scopeName != null && scopeName.IndexOf("PhysicalRoot", StringComparison.Ordinal) >= 0)
+                return doc.PhysicalRoot;
+
+            // 主用法: 用户选中的 Compound -> 只遍历它下面的零件；
+            // 未选中任何对象时才回退为遍历零件树下的全部零件。
+            if (scopeName != null && scopeName.IndexOf("选中", StringComparison.Ordinal) >= 0)
             {
                 var sel = TxApplication.ActiveSelection;
-                if (sel == null || sel.GetItems().Count == 0)
-                    throw new InvalidOperationException("当前没有选中对象。");
-                return sel.GetItems()[0];
+                if (sel != null && sel.GetItems().Count > 0) return sel.GetItems()[0];
+                log("[归类] 未选择范围 → 回退为遍历零件树下全部零件。");
             }
             // 默认：零件树（PrLine / 第一个支持 ITxCompoundPartCreation 的对象）
             return PsCompoundHelper.ResolveParent(null, typeof(ITxCompoundPartCreation));
+        }
+
+        // ── 按 CATIA 层级补齐/复用目标容器 ──
+        // 约定: CATIA 根节点 ↔ 分类范围自身(范围为 CompoundPart 时), 其下各级装配节点各建一个同名
+        // CompoundPart, 逐级嵌套在范围下。零件最终落到其「父装配节点」对应的那个容器里。
+
+        private TxCompoundPart EnsureTargetContainer(TreeEditNode target, TreeEditNode root, ITxObject scope,
+            bool preferPartNumber, Action<string> log, ClassifyResult result)
+        {
+            if (target == null) return null;
+
+            // 从 root 到 target 的节点链（自顶向下）
+            var chain = new List<TreeEditNode>();
+            for (var cur = target; cur != null; cur = cur.Parent) chain.Add(cur);
+            chain.Reverse();
+
+            ITxObject parent = scope;
+            TxCompoundPart current = null;
+            int start = 0;
+            if (chain[0] == root && scope is TxCompoundPart)
+            {
+                current = (TxCompoundPart)scope;   // 根节点不再另建一层
+                start = 1;
+            }
+
+            if (parent == null)
+            {
+                log("[归类] ! 分类范围为空，无法定位/创建目标容器。");
+                return null;
+            }
+
+            for (int i = start; i < chain.Count; i++)
+            {
+                var node = chain[i];
+                string desired = DesiredNameFor(node, preferPartNumber);
+                TxCompoundPart found = null;
+
+                // 1) 本会话已解析过的
+                TxCompoundPart cached;
+                if (_autoCreated.TryGetValue(node, out cached) && cached != null
+                    && cached.IsValid() && IsDirectChild(parent, cached))
+                    found = cached;
+
+                // 2) 建树时已创建的容器（避免重复建）
+                if (found == null)
+                {
+                    TxCompoundPart built;
+                    if (_created.TryGetValue(node, out built) && built != null
+                        && built.IsValid() && IsDirectChild(parent, built))
+                        found = built;
+                }
+
+                // 3) 按名字复用已有容器
+                if (found == null) found = FindChildContainer(parent, desired);
+
+                // 4) 都没有 → 新建
+                if (found == null)
+                {
+                    try
+                    {
+                        found = PsCompoundHelper.CreatePart(parent, TypeNameFor(node), desired,
+                            setTypeName: false);
+                        result.CreatedContainers++;
+                        log("[归类] + 创建容器 " + desired);
+                    }
+                    catch (Exception ex)
+                    {
+                        log("[归类] ! 创建容器失败 " + desired + ": " + ex.Message);
+                        return null;
+                    }
+                }
+
+                _autoCreated[node] = found;
+                current = found;
+                parent = found;
+            }
+
+            return current;
+        }
+
+        /// <summary>child 是否是 parent 的直接子对象（用 SDK 唯一 Id 比对，避免同名误判）。</summary>
+        private static bool IsDirectChild(ITxObject parent, ITxObject child)
+        {
+            if (parent == null || child == null) return false;
+            var kids = DirectChildren(parent);
+            if (kids == null) return false;
+            string cid;
+            try { cid = child.Id; } catch { return false; }
+            if (cid == null) return false;
+            foreach (var k in kids)
+            {
+                var o = k as ITxObject;
+                if (o == null) continue;
+                try { if (string.Equals(o.Id, cid, StringComparison.Ordinal)) return true; }
+                catch { }
+            }
+            return false;
         }
 
         private static List<ITxObject> EnumerateParts(ITxObject scope, Action<string> log)
@@ -564,5 +684,9 @@ namespace TxTools.CatiaPartTree.Ps
         public int MovedUnmatched;
         public int NoContainer;
         public int Failed;
+        /// <summary>按 CATIA 层级自动新建的容器数量。</summary>
+        public int CreatedContainers;
+        /// <summary>已经就在目标容器下、无需移动的零件数量。</summary>
+        public int InPlace;
     }
 }

@@ -172,6 +172,13 @@ namespace TxTools.AutoPathPlanner
             // ---- 4. 读枪轴限位 + 探测开口符号约定 ----
             if (_gunAxisIndex >= 0)
             {
+                var joint = _axes[_gunAxisIndex].Joint;
+                if (joint == null || joint.Type != TxJoint.TxJointType.Prismatic)
+                {
+                    _log("  [外部轴] 枪轴非直线轴，不能将毫米开口直接当作角度写入；需建立开口/角度标定");
+                    _gunAxisIndex = -1;
+                    return false;
+                }
                 ReadGunLimits();
                 ProbeSignConvention();   // v6.2: 必须在限位之后
             }
@@ -286,7 +293,7 @@ namespace TxTools.AutoPathPlanner
             if (dev == null) return result;
             try
             {
-                var joints = ((dynamic)dev).Joints as IEnumerable;
+                var joints = dev.DrivingJoints as IEnumerable;
                 if (joints == null) return result;
                 foreach (object o in joints)
                 {
@@ -488,8 +495,11 @@ namespace TxTools.AutoPathPlanner
             if (OpenDirectionOverride != 0)
             {
                 OpenDirection = OpenDirectionOverride > 0 ? 1 : -1;
-                ClosedValue = 0;
-                double mag = MaxOpeningOverride > 0 ? MaxOpeningOverride : DefaultGunMaxOpening;
+                double closed;
+                ClosedValue = TryReadPoseJointValue(a.Device, a.Joint, CloseNames, out closed)
+                    ? closed : (_limitsUnknown ? 0 : (OpenDirection > 0 ? GunMin : GunMax));
+                double mag = MaxOpeningOverride > 0 ? MaxOpeningOverride :
+                    (_limitsUnknown ? DefaultGunMaxOpening : Math.Abs((OpenDirection > 0 ? GunMax : GunMin) - ClosedValue));
                 FullOpenValue = ClosedValue + OpenDirection * mag;
                 _signSource = "手动指定";
                 return;
@@ -547,13 +557,13 @@ namespace TxTools.AutoPathPlanner
         private static readonly string[] OpenNames =
         {
             "OPEN", "Open", "open", "OPENED", "OPEN_POS", "OPENPOS",
-            "SEMIOPEN", "SEMI_OPEN", "HALFOPEN", "开", "张开"
+            "开", "张开"
         };
 
         private static readonly string[] CloseNames =
         {
             "CLOSE", "Close", "close", "CLOSED", "CLOSE_POS", "CLOSEPOS",
-            "SHUT", "HOME", "关", "闭合"
+            "SHUT", "关", "闭合"
         };
 
         /// <summary>
@@ -829,7 +839,8 @@ namespace TxTools.AutoPathPlanner
                 for (int i = 0; i < _axes.Count; i++)
                 {
                     var a = _axes[i];
-                    if (a.Device == null || a.Joint == null) continue;
+                    if (a.Device == null || a.Joint == null)
+                        throw new InvalidOperationException("外部轴设备/关节缺失，拒绝写入不完整数组");
 
                     double v;
                     if (i == _gunAxisIndex)
@@ -866,7 +877,17 @@ namespace TxTools.AutoPathPlanner
                 if (alsoDeparture)
                 {
                     try { loc.RobotDepartureExternalAxesData = list.ToArray(); }
-                    catch { }
+                    catch (Exception ex) { throw new InvalidOperationException("离开外部轴写入失败", ex); }
+                }
+                var readBack = loc.RobotExternalAxesData;
+                foreach (var expected in list)
+                {
+                    bool found = false;
+                    foreach (var actual in readBack ?? new TxRobotExternalAxisData[0])
+                        if (actual != null && Equals(actual.Joint, expected.Joint) &&
+                            Equals(actual.Device, expected.Device) && Math.Abs(actual.JointValue - expected.JointValue) < 1e-4)
+                        { found = true; break; }
+                    if (!found) throw new InvalidOperationException("外部轴写入后读回不一致");
                 }
                 return true;
             }
@@ -915,8 +936,8 @@ namespace TxTools.AutoPathPlanner
         private static string AxisKeyOf(ITxDevice dev, TxJoint joint)
         {
             string d = "?", j = "?";
-            try { if (dev != null) d = ((ITxObject)dev).Name; } catch { }
-            try { if (joint != null) j = joint.Name; } catch { }
+            try { if (dev != null) d = ((ITxObject)dev).Id; } catch { }
+            try { if (joint != null) j = joint.Id; } catch { }
             if (d == "?" && j == "?") return null;
             return d + "|" + j;
         }
@@ -949,7 +970,7 @@ namespace TxTools.AutoPathPlanner
         /// 返回: 找到的最小安全开口; 全部失败返回 double.NaN
         /// </summary>
         public double FindMinSafeOpening(
-            Action<double> applyOpening,
+            Func<double, bool> applyOpening,
             Func<bool> isFree,
             double[] ladder)
         {
@@ -961,7 +982,7 @@ namespace TxTools.AutoPathPlanner
                 double c = ClampOpening(o);
                 try
                 {
-                    applyOpening(c);
+                    if (!applyOpening(c)) continue;
                     if (isFree()) return c;
                 }
                 catch { }
@@ -1003,6 +1024,10 @@ namespace TxTools.AutoPathPlanner
                 var pd = new TxPoseData();
                 pd.JointValues = newJv;
                 a.Device.CurrentPose = pd;
+                var actual = a.Device.CurrentPose.JointValues;
+                if (actual == null || idx >= actual.Count ||
+                    Math.Abs(Convert.ToDouble(actual[idx]) - Convert.ToDouble(newJv[idx])) > 1e-4)
+                    return false;
 
                 // v6.3: 开口变了 = 枪的碰撞包络变了 → 位姿缓存必须失效
                 if (OnGeometryChanged != null) OnGeometryChanged();

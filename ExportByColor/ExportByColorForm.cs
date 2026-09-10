@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -24,15 +24,18 @@ namespace TxTools.ExportByColor
         private TxObjGridCtrl _objGrid;
         private TxObjEditBoxCtrl _objOrigin;
         private CheckBox _chkAllVisible;
-        private CheckBox _chkCgrTest;
-        private CheckBox _chkNoColorSplit;
-        private CheckBox _chkByStation;
+        private TabControl _exportTabs;
+        private ComboBox _meshFormat;
+        private CheckBox _mergeMeshes;
+        private CheckBox _mergeCgr;
+        private CheckBox _showCgrEdges;
         private RichTextBox _rtbLog;
         private Button _btnRun;
+        private Button _btnStop;
         private ProgressBar _progress;
 
         private bool _scaled;
-        private readonly Size _designSize = new Size(860, 620);
+        private readonly Size _designSize = new Size(960, 740);
         private readonly Size _minSize = new Size(740, 540);
 
         public ExportByColorForm(SynchronizationContext psCtx)
@@ -41,11 +44,11 @@ namespace TxTools.ExportByColor
             SemiModal = false;
             _svc = new ExportByColorService(psCtx);
             FormUiKit.InitStandardForm(this,
-                "按颜色导出 STL → 导入 CATIA 上色",
+                "导出 CGR / 通用网格",
                 _designSize, _minSize);
             BuildUi();
             Log("插件已启动：在 PS 中拾取对象加入列表，或勾选【导出所有可见资源】");
-            Log("流程：按(设备×颜色)分组导出 STL(临时) → 每个设备一个 Product → 自动上色 → 清理临时 STL");
+            Log("默认 CGR：每设备 1 个文件，内含几何与颜色并添加到 CATIA；通用网格单独保存。编码器 " + CgrWriter.Version);
         }
 
         public override void OnInitTxForm()
@@ -64,6 +67,7 @@ namespace TxTools.ExportByColor
         {
             var root = FormUiKit.BuildRoot(null, BuildBody(), BuildBottom());
             Controls.Add(root);
+            FormClosing += (sender, args) => { if (_svc != null) _svc.RequestStop(); };
         }
 
         // ── 主体：顶部两卡(资源/参数) + 底部日志 ────────────────────────
@@ -100,7 +104,7 @@ namespace TxTools.ExportByColor
                 Font = new Font("Consolas", 9F),
                 WordWrap = false,
                 BorderStyle = BorderStyle.FixedSingle,
-                Margin = new Padding(6, 2, 6, 4)
+                Margin = new Padding(0)
             };
             body.Controls.Add(_rtbLog, 0, 1);
 
@@ -133,8 +137,8 @@ namespace TxTools.ExportByColor
                 Dock = DockStyle.Top,
                 Height = 170,
                 BackColor = SystemColors.Window,
-                Padding = new Padding(1),
-                Margin = new Padding(0, 2, 0, 4),
+                Padding = new Padding(0),
+                Margin = new Padding(0),
                 BorderStyle = BorderStyle.FixedSingle
             };
             gridPanel.Controls.Add(_objGrid);
@@ -181,43 +185,26 @@ namespace TxTools.ExportByColor
             rowOrigin.Controls.Add(_objOrigin);
             content.Controls.Add(rowOrigin);
 
-            var rowCgr = FormUiKit.MkRowFlow();
-            _chkCgrTest = new CheckBox
-            {
-                Text = "测试：导出 CGR 再导回（测速）",
-                AutoSize = true,
-                Font = FormUiKit.BaseFont,
-                Checked = false
-            };
-            rowCgr.Controls.Add(_chkCgrTest);
-            content.Controls.Add(rowCgr);
-
-            // 导出模式（二选一，均默认不选 = 按 设备×颜色 拆分）
-            var rowNoSplit = FormUiKit.MkRowFlow();
-            _chkNoColorSplit = new CheckBox
-            {
-                Text = "不按颜色拆分：每设备输出 1 个独立 STL",
-                AutoSize = true,
-                Font = FormUiKit.BaseFont,
-                Checked = false
-            };
-            rowNoSplit.Controls.Add(_chkNoColorSplit);
-            content.Controls.Add(rowNoSplit);
-
-            var rowStation = FormUiKit.MkRowFlow();
-            _chkByStation = new CheckBox
-            {
-                Text = "按工位颜色拆分：同工位同色合并为 1 个 STL",
-                AutoSize = true,
-                Font = FormUiKit.BaseFont,
-                Checked = false
-            };
-            rowStation.Controls.Add(_chkByStation);
-            content.Controls.Add(rowStation);
-
-            var tip = FormUiKit.MkLabel("说明：默认按(设备×颜色)拆分；上两勾选项二选一，用于减少 STL 数量。留空原点=世界坐标，导入后自动清理临时 STL。", false);
-            FormUiKit.WrapLabelInFlow(content, tip);
-            content.Controls.Add(tip);
+            _exportTabs = new TabControl { Width = 340, Height = 190, Font = FormUiKit.BaseFont };
+            var cgrTab = new TabPage("CGR → CATIA");
+            _mergeCgr = new CheckBox { Text = "所有所选设备合并为一个 CGR", AutoSize = true, Left = 12, Top = 14, Font = FormUiKit.BaseFont };
+            cgrTab.Controls.Add(_mergeCgr);
+            _showCgrEdges = new CheckBox { Text = "显示边线", AutoSize = true, Left = 12, Top = 40, Font = FormUiKit.BaseFont, Checked = false };
+            cgrTab.Controls.Add(_showCgrEdges);
+            cgrTab.Controls.Add(new Label { Text = "每设备一个 CGR，包含几何与颜色；勾选后输出单一 CGR。", Left = 12, Top = 70, Width = 300, Height = 40, Padding = new Padding(0), AutoSize = false });
+            var meshTab = new TabPage("STL / OBJ / PLY / FBX");
+            _meshFormat = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Left = 12, Top = 12, Width = 260 };
+            _meshFormat.Items.AddRange(new object[] { "STL + RGB 清单", "OBJ + MTL 材质", "PLY（面颜色）", "FBX 二进制（Blender）", "FBX ASCII（兼容工具）" });
+            _meshFormat.SelectedIndex = 0;
+            meshTab.Controls.Add(_meshFormat);
+            _mergeMeshes = new CheckBox { Text = "所有设备合并为一个网格文件", AutoSize = true, Left = 12, Top = 45, Font = FormUiKit.BaseFont };
+            meshTab.Controls.Add(_mergeMeshes);
+            meshTab.Controls.Add(new Label { Text = "按设备名称保存到同一目录，同名追加流水号。STL 配套 RGB 清单；Blender 请选择二进制 FBX。", Dock = DockStyle.Bottom, Padding = new Padding(12, 0, 12, 0), Height = 60 });
+            _exportTabs.TabPages.Add(cgrTab);
+            _exportTabs.TabPages.Add(meshTab);
+            _exportTabs.SelectedIndex = 0;
+            content.Controls.Add(_exportTabs);
+            FormUiKit.FillWidthInFlow(content, _exportTabs);
 
             return card;
         }
@@ -244,7 +231,17 @@ namespace TxTools.ExportByColor
 
             _btnRun = FormUiKit.MkButton("开始导出", true, 130, 34);
             _btnRun.Click += (s, e) => RunExport();
+            bottom.ColumnCount = 3;
+            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
             bottom.Controls.Add(_btnRun, 1, 0);
+            _btnStop = FormUiKit.MkButton("停止", false, 90, 34);
+            _btnStop.Enabled = false;
+            _btnStop.Click += (sender, args) => {
+                _svc.RequestStop();
+                _btnStop.Enabled = false;
+                Log("[停止] 已请求停止，等待当前 PS 调用或编码结束。");
+            };
+            bottom.Controls.Add(_btnStop, 2, 0);
 
             return bottom;
         }
@@ -353,24 +350,26 @@ namespace TxTools.ExportByColor
                 }
             }
             string origin = GetOriginName();
-            bool cgrTest = _chkCgrTest != null && _chkCgrTest.Checked;
-            bool noColorSplit = _chkNoColorSplit != null && _chkNoColorSplit.Checked;
-            bool byStation = _chkByStation != null && _chkByStation.Checked;
-            if (noColorSplit && byStation)
+            string format = _exportTabs.SelectedIndex == 0 ? "CGR" : new[] { "STL", "OBJ", "PLY", "FBX_BINARY", "FBX_ASCII" }[_meshFormat.SelectedIndex];
+            if (format == "CGR")
             {
-                MessageBox.Show(this, "「不按颜色拆分」与「按工位颜色拆分」只能二选一。", "提示",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                Log("[CGR] 边线=" + (_showCgrEdges != null && _showCgrEdges.Checked ? "开启" : "关闭"));
             }
-
+            string output = null;
+            if (format != "CGR")
+            {
+                using (var dialog = new FolderBrowserDialog { Description = "选择网格输出目录（将在其中创建本次导出文件夹）" })
+                {
+                    if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                    output = dialog.SelectedPath;
+                }
+            }
             _btnRun.Enabled = false;
+            _btnStop.Enabled = true;
             _progress.Value = 0;
-            Log("=== 开始导出 ===");
-            Log("资源: " + picked.Count + " 个, 原点: " + (origin.Length > 0 ? origin : "世界坐标")
-                + (noColorSplit ? ", 模式: 每设备1STL" : byStation ? ", 模式: 按工位颜色拆分" : ", 模式: 设备×颜色")
-                + (cgrTest ? ", CGR测试: 开" : ""));
-
-            _svc.RunAsync(picked, origin, cgrTest, noColorSplit, byStation, Log, (ok, msg) =>
+            Log("=== 开始导出 " + format + " ===");
+            Log("资源: " + picked.Count + " 个, 原点: " + (origin.Length > 0 ? origin : "世界坐标"));
+            _svc.RunAsync(picked, origin, format, output, format == "CGR" ? (_mergeCgr != null && _mergeCgr.Checked) : _mergeMeshes.Checked, Log, (ok, msg) =>
             {
                 try
                 {
@@ -378,6 +377,7 @@ namespace TxTools.ExportByColor
                     BeginInvoke(new Action(delegate ()
                     {
                         _btnRun.Enabled = true;
+                        _btnStop.Enabled = false;
                         _progress.Value = ok ? 100 : 0;
                         if (ok) Log("[完成] " + msg);
                         else Log("[错误] " + msg);
@@ -387,7 +387,7 @@ namespace TxTools.ExportByColor
                     }));
                 }
                 catch { }
-            });
+            }, _showCgrEdges.Checked);
         }
 
         private void Log(string msg)
@@ -400,6 +400,11 @@ namespace TxTools.ExportByColor
             }
             string line = "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + msg + "\n";
             _rtbLog.AppendText(line);
+            if (_rtbLog.TextLength > 100000)
+            {
+                _rtbLog.Select(0, _rtbLog.TextLength - 80000);
+                _rtbLog.SelectedText = "";
+            }
             _rtbLog.SelectionStart = _rtbLog.TextLength;
             _rtbLog.ScrollToCaret();
         }

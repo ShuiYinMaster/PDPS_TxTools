@@ -164,7 +164,7 @@ namespace TxTools.LineToSolid
             };
 
             _featureGrid = new TxObjGridCtrl { Dock = DockStyle.Fill };
-            try { _featureGrid.ListenToPick = true; } catch { }
+            // TxObjGridCtrl 拾取焦点统一管理见 OnLoad（FormUiKit.GridPickFocus.Wire）
             try { _featureGrid.EnableMultipleSelection = true; } catch { }
             try { _featureGrid.EnableRecurringObjects = false; } catch { }
             try { _featureGrid.ObjectInserted += (s, e) => RefreshSegmentInfo(); } catch { }

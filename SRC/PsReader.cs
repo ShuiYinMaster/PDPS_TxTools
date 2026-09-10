@@ -2096,6 +2096,8 @@ namespace TxTools.ExportGun
         public class CgrLookupResult
         {
             public string ToolName;                  // 解析到的工具名（可能为空）
+            // 仅在 PS 主线程内使用；供缺少 CGR 时从当前工具几何直接生成。
+            public ITxObject ToolObject;
             public string SameDir;                   // 同级目录（可能为 null）
             public List<CgrMatch> Candidates;        // 相似度降序排列
             public string Reason;                    // 诊断信息（查不到时的说明）
@@ -2146,6 +2148,8 @@ namespace TxTools.ExportGun
             catch (Exception ex) { log("[CGR] 解析工具对象异常：" + ex.Message); }
 
             if (toolObj == null) { result.Reason = "未找到绑定工具"; return result; }
+
+            result.ToolObject = toolObj as ITxObject;
 
             // 2) 工具名
             try { dynamic dt = toolObj; result.ToolName = (dt.Name as string) ?? null; } catch { }

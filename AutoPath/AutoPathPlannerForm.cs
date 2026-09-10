@@ -960,7 +960,9 @@ namespace TxTools.AutoPathPlanner
             Log(string.Format(
                 "\n完成: {0} 个操作 / {1} 个焊点 / 插入 {2} 个Via / 耗时 {3:F1}s / 碰撞查询 {4} 次",
                 report.OperationCount, report.WeldCount, report.InsertedViaCount,
-                report.Elapsed.TotalSeconds, report.CollisionQueries), LogLevel.Ok);
+                report.Elapsed.TotalSeconds, report.CollisionQueries), report.Warnings.Count == 0 ? LogLevel.Ok : LogLevel.Warn);
+            if (report.Warnings.Count > 0)
+                Log("规划存在未通过或未完成验证的项目，请按警告复核。", LogLevel.Warn);
             if (report.FailedSegments > 0)
                 Log(string.Format("失败段: {0} (需人工处理)", report.FailedSegments), LogLevel.Warn);
             if (report.ClearanceSegments > 0)
@@ -1147,14 +1149,16 @@ namespace TxTools.AutoPathPlanner
                 if (res == DialogResult.No)
                 {
                     Log(string.Format("  复用已有干涉集: {0}", existingName), LogLevel.Info);
-                    return CreateOutcome.Reused;
+                    using (var existing = CollisionSetService.CreateRobotVsWorld(robot, null,
+                        CollisionSetService.CollectOperationAppearances(ReadGrid(_gridOps)), s => Log(s, LogLevel.Info)))
+                        return existing.IsReady ? CreateOutcome.Reused : CreateOutcome.Failed;
                 }
                 forceNew = true;
                 Log("  用户确认新建 — 强制创建 (与已有并存)", LogLevel.Info);
             }
 
             using (var cs = CollisionSetService.CreateRobotVsWorld(
-                robot, null, null, s => Log(s, LogLevel.Info), forceNew))
+                robot, null, CollisionSetService.CollectOperationAppearances(ReadGrid(_gridOps)), s => Log(s, LogLevel.Info), forceNew))
             {
                 cs.KeepPairOnDispose = true;
                 if (cs.IsReady)

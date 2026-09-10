@@ -1209,6 +1209,71 @@ namespace TxTools.AutoPathPlanner
         /// </summary>
         public string CheckJointMotion(TxPoseData a, TxPoseData b, out double violationT)
         {
+            TxPoseData saved = _robot.CurrentPose;
+            try { return CheckJointMotionCore(a, b, out violationT); }
+            finally { _robot.CurrentPose = saved; }
+        }
+
+        private Func<double, bool> _applyExternalAt;
+        private int _externalSteps;
+
+        public string CheckWrittenMotion(ITxRoboticLocationOperation from, ITxRoboticLocationOperation to)
+        {
+            var saved = new Dictionary<TxJoint, double>();
+            TxPoseData robotSaved = _robot.CurrentPose;
+            try
+            {
+                using (var service = new TxPathPlanningRCSService())
+                    if (service.GetLocationMotionType((ITxRoboticOperation)to) != TxMotionType.Joint)
+                        return "非Joint运动，关节插值不能作为实际轨迹终验";
+                var start = from.RobotDepartureExternalAxesData;
+                if (start == null || start.Length == 0) start = from.RobotExternalAxesData;
+                var end = to.RobotExternalAxesData;
+                var av = new Dictionary<TxJoint, double>();
+                var bv = new Dictionary<TxJoint, double>();
+                foreach (var item in start ?? new TxRobotExternalAxisData[0])
+                    if (item.Joint != null) av[item.Joint] = item.JointValue;
+                foreach (var item in end ?? new TxRobotExternalAxisData[0])
+                    if (item.Joint != null) bv[item.Joint] = item.JointValue;
+                foreach (var joint in av.Keys)
+                    if (!bv.ContainsKey(joint)) return "离开/到达外部轴不完整(未验证)";
+                foreach (var joint in bv.Keys)
+                {
+                    if (!av.ContainsKey(joint)) return "离开/到达外部轴不完整(未验证)";
+                    saved[joint] = joint.CurrentValue;
+                    _externalSteps = Math.Max(_externalSteps,
+                        (int)Math.Ceiling(Math.Abs(bv[joint] - av[joint]) / 1.0));
+                }
+                _applyExternalAt = t =>
+                {
+                    foreach (var joint in av.Keys)
+                    {
+                        double value = av[joint] + (bv[joint] - av[joint]) * t;
+                        joint.CurrentValue = value;
+                        if (Math.Abs(joint.CurrentValue - value) > 1e-4) return false;
+                    }
+                    return true;
+                };
+                if (!_applyExternalAt(0)) return "外部轴起点设置失败";
+                var a = _robot.GetPoseAtLocation(from);
+                if (!_applyExternalAt(1)) return "外部轴终点设置失败";
+                var b = _robot.GetPoseAtLocation(to);
+                double violation;
+                return CheckJointMotion(a, b, out violation);
+            }
+            catch (Exception ex) { return "写入路径终验失败: " + ex.Message; }
+            finally
+            {
+                _applyExternalAt = null;
+                _externalSteps = 0;
+                foreach (var pair in saved) pair.Key.CurrentValue = pair.Value;
+                _robot.CurrentPose = robotSaved;
+                InvalidateCache();
+            }
+        }
+
+        private string CheckJointMotionCore(TxPoseData a, TxPoseData b, out double violationT)
+        {
             violationT = -1;
             if (!DynamicCheckEnabled) return null;
 
@@ -1222,7 +1287,8 @@ namespace TxTools.AutoPathPlanner
                 return "关节不可读(未验证)";
             }
 
-            int n = Math.Min(ja.Length, jb.Length);
+            if (ja.Length != jb.Length || ja.Length == 0) return "关节维度不一致(未验证)";
+            int n = ja.Length;
             double maxDelta = 0;
             for (int i = 0; i < n; i++)
                 maxDelta = Math.Max(maxDelta, Math.Abs(jb[i] - ja[i]));
@@ -1242,7 +1308,9 @@ namespace TxTools.AutoPathPlanner
             if (cartDist > 0)
                 stepsCart = (int)Math.Ceiling(cartDist / Math.Max(1.0, DynamicCartesianQuantum));
 
-            int steps = Math.Max(6, Math.Min(MaxSweepSteps, Math.Max(stepsJoint, stepsCart)));
+            // 不以采样上限降低精度；超预算明确标记未验证。
+            int steps = Math.Max(6, Math.Max(_externalSteps, Math.Max(stepsJoint, stepsCart)));
+            if (steps > Math.Max(MaxSweepSteps, 4096)) return "扫掠采样预算不足(未验证)";
 
             if (_dynCalibBudget > 0)
             {
@@ -1253,7 +1321,7 @@ namespace TxTools.AutoPathPlanner
             }
 
             var interp = new double[n];
-            for (int s = 1; s < steps; s++)
+            for (int s = 0; s <= steps; s++)
             {
                 double t = (double)s / steps;
                 for (int i = 0; i < n; i++)
@@ -1265,6 +1333,8 @@ namespace TxTools.AutoPathPlanner
                     violationT = t;
                     return "关节写入失败(未验证)";
                 }
+                if (_applyExternalAt != null && !_applyExternalAt(t))
+                    return "外部轴写入失败(未验证)";
                 QueryCount++;
                 if (_collisionSet.QueryColliding())
                 {

@@ -842,7 +842,7 @@ namespace TxTools.WeldGunDefiner.UI
                 else
                 {
                     // 取消：焦点返回本grid
-                    try { BeginInvoke((Action)(() => { leftGrid.Focus(); ActivateGridPick(leftGrid); })); } catch { }
+                    try { BeginInvoke((Action)(() => ActivateGridPick(leftGrid))); } catch { }
                 }
             }
             finally { _crossCheckActive = false; }
