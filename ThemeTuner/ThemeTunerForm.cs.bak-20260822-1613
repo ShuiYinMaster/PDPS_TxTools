@@ -37,9 +37,6 @@ namespace TxTools.ThemeTuner
         private FlatColorButton _previewSecondary;
         private RichTextBox _previewLog;
         private RichTextBox _rtbStatus;
-        private FlatColorButton _btnFlat;
-        private FlatColorButton _btnApply;
-        private FlatColorButton _btnReset;
 
         // 可自定义的关键色槽位（字段名 → 中文名）
         private static readonly string[][] Slots =
@@ -72,9 +69,7 @@ namespace TxTools.ThemeTuner
 
             RefreshSwatches();
             RefreshPreview();
-            Log(FormUiKit.FlatStyleEnabled
-                ? "已载入主题（扁平风格开启，颜色设置不生效，仅保留开关）。"
-                : "已载入当前主题。选预设或点色块自定义后，点 [应用并保存] 生效。");
+            Log("已载入当前主题。选预设或点色块自定义后，点 [应用并保存] 生效。");
         }
 
         protected override void OnLoad(EventArgs e)
@@ -290,21 +285,14 @@ namespace TxTools.ThemeTuner
             };
             var btnApply = FormUiKit.MkFuncButton("应用并保存", Theme.BtnPrimary);
             btnApply.Click += (s, e) => ApplyAndSave();
-            _btnApply = (FlatColorButton)btnApply;
-            var btnFlat = FormUiKit.MkFuncButton(FlatText(), Theme.BtnMuted);
-            btnFlat.Click += (s, e) => ToggleFlatStyle();
-            _btnFlat = (FlatColorButton)btnFlat;
             var btnReset = FormUiKit.MkFuncButton("恢复默认", Theme.BtnMuted);
             btnReset.Click += (s, e) => ResetToDefault();
-            _btnReset = (FlatColorButton)btnReset;
             var btnClose = FormUiKit.MkFuncButton("关闭", Theme.BtnDanger);
             btnClose.Click += (s, e) => Close();
             bar.Controls.Add(btnApply);
-            bar.Controls.Add(btnFlat);
             bar.Controls.Add(btnReset);
             bar.Controls.Add(btnClose);
             this.Controls.Add(bar);
-            SyncColorUiState();
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -369,85 +357,9 @@ namespace TxTools.ThemeTuner
             ApplyAndSave();
         }
 
-        // ── 扁平风格开关 ──────────────────────────────────────────────────
-        // false：自定义配色生效，但 AFW 不擦窗体背景 → 边缘残留灰边
-        // true ：Siemens 扁平风格接管，无灰边，但自定义配色不生效
-        private string FlatText()
-        {
-            return FormUiKit.FlatStyleEnabled ? "扁平风格: 开" : "扁平风格: 关";
-        }
-
-        private void ToggleFlatStyle()
-        {
-            FormUiKit.FlatStyleEnabled = !FormUiKit.FlatStyleEnabled;
-            ApplyFlatStyleToOpenForms();
-            Theme.SaveConfig(_palette);
-            RefreshFlatButton();
-            SyncColorUiState();
-            Log(FormUiKit.FlatStyleEnabled
-                ? "扁平风格: 开（无灰边，Siemens 皮肤接管配色，颜色设置已禁用）"
-                : "扁平风格: 关（自定义配色生效，窗体边缘可能残留灰边）", LogLevel.Ok);
-        }
-
-        /// <summary>
-        /// 同步颜色设置 UI 的可用状态：扁平风格开启时配色不生效，
-        /// 禁用预设下拉、色块、预览与应用/重置按钮，避免误操作。
-        /// </summary>
-        private void SyncColorUiState()
-        {
-            bool flat = FormUiKit.FlatStyleEnabled;
-            try { if (_cmbPreset != null) _cmbPreset.Enabled = !flat; } catch { }
-            try
-            {
-                foreach (var sw in _swatches.Values)
-                {
-                    sw.Enabled = !flat;
-                    sw.Text = flat ? "（扁平风格下不生效）" : sw.Text;
-                }
-            }
-            catch { }
-            try { if (_previewHost != null) _previewHost.Enabled = !flat; } catch { }
-            try { if (_btnApply != null) _btnApply.Enabled = !flat; } catch { }
-            try { if (_btnReset != null) _btnReset.Enabled = !flat; } catch { }
-        }
-
-        private void RefreshFlatButton()
-        {
-            if (_btnFlat == null) return;
-            _btnFlat.Text = FlatText();
-            Color bg = FormUiKit.FlatStyleEnabled ? Theme.BtnPrimary : Theme.BtnMuted;
-            _btnFlat.BgColor = bg;
-            _btnFlat.BorderColor = bg;
-            _btnFlat.ForeColor = bg.GetBrightness() > 0.62f ? Color.Black : Color.White;
-        }
-
-        private static void ApplyFlatStyleToOpenForms()
-        {
-            try
-            {
-                foreach (Form f in Application.OpenForms)
-                {
-                    if (!FormUiKit.IsTxToolsForm(f)) continue;
-                    if (f is TxForm tx)
-                    {
-                        // 反射设置：旧版 PS 的 TxForm 无 FlatStyleEnabled 时静默跳过
-                        FormUiKit.TrySetFlatStyle(tx, FormUiKit.FlatStyleEnabled);
-                    }
-                    // 扁平开启：子容器默认灰底(240,240,240)统一刷白
-                    if (FormUiKit.FlatStyleEnabled)
-                    {
-                        FormUiKit.FlattenGrayBackgrounds(f);
-                    }
-                    try { f.Invalidate(true); f.Refresh(); } catch { }
-                }
-            }
-            catch { }
-        }
-
         // ── 刷色 ─────────────────────────────────────────────────────────
         private void RefreshSwatches()
         {
-            bool flat = FormUiKit.FlatStyleEnabled;
             foreach (var kv in _swatches)
             {
                 if (!_palette.TryGetValue(kv.Key, out string v)
@@ -456,9 +368,7 @@ namespace TxTools.ThemeTuner
                 b.BgColor = c;
                 b.BorderColor = c;
                 b.ForeColor = c.GetBrightness() > 0.62f ? Color.Black : Color.White;
-                b.Enabled = !flat;
-                b.Text = flat ? "（扁平风格下不生效）"
-                              : "#" + c.R.ToString("X2") + c.G.ToString("X2") + c.B.ToString("X2");
+                b.Text = "#" + c.R.ToString("X2") + c.G.ToString("X2") + c.B.ToString("X2");
             }
         }
 

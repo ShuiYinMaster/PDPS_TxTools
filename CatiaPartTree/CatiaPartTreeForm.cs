@@ -41,6 +41,7 @@ namespace TxTools.CatiaPartTree
         // ── 右侧：创建 / 归类 ────────────────────────────────────────────
         private ComboBox _cmbScope;
         private CheckBox _chkUnmatched;
+        private CheckBox _chkAutoCreate;
         private CheckBox _chkReload;
 
         // ── 日志 ─────────────────────────────────────────────────────────
@@ -291,7 +292,7 @@ namespace TxTools.CatiaPartTree
 
         private Control BuildActionCard()
         {
-            var card = FormUiKit.MkCard("创建 / 归类", 330, 200, out var content);
+            var card = FormUiKit.MkCard("创建 / 归类", 330, 228, out var content);
 
             var btnBuild = FormUiKit.MkFuncButton("创建零件树", Theme.BtnPrimary);
             btnBuild.Click += (s, e) => OnBuildTree();
@@ -308,15 +309,19 @@ namespace TxTools.CatiaPartTree
                 Width = 200,
                 Font = FormUiKit.BaseFont
             };
+            _cmbScope.Items.Add("选中Compound(未选=全部)");
             _cmbScope.Items.Add("零件树(PrLine)");
             _cmbScope.Items.Add("PhysicalRoot");
-            _cmbScope.Items.Add("当前选中");
             _cmbScope.SelectedIndex = 0;
             rowScope.Controls.Add(_cmbScope);
             content.Controls.Add(rowScope);
 
             _chkUnmatched = new CheckBox { Text = "未匹配零件移入『未分类』容器", AutoSize = true, Font = FormUiKit.BaseFont };
             content.Controls.Add(_chkUnmatched);
+
+            _chkAutoCreate = new CheckBox { Text = "目标容器缺失时按 CATIA 层级自动创建", AutoSize = true, Checked = true, Font = FormUiKit.BaseFont };
+            _chkAutoCreate.Name = "_chkAutoCreate";
+            content.Controls.Add(_chkAutoCreate);
 
             var btnClassify = FormUiKit.MkFuncButton("归类已导入零件", Theme.BtnSecondary);
             btnClassify.Click += (s, e) => OnClassify();
@@ -405,8 +410,11 @@ namespace TxTools.CatiaPartTree
             if (_model == null) { Log("请先读取 CATIA 树（用于匹配规则）。", LogLevel.Warn); return; }
             try
             {
-                var r = _svc.Classify(_model, _cmbScope.Text, _chkUnmatched.Checked, Log);
+                var r = _svc.Classify(_model, _cmbScope.Text, _chkUnmatched.Checked,
+                    _chkAutoCreate.Checked, _chkPreferPn.Checked, Log);
                 var msg = "归类完成: 已归类 " + r.Matched + " / 未匹配 " + r.Unmatched
+                        + (r.InPlace > 0 ? " / 已在位 " + r.InPlace : "")
+                        + (r.CreatedContainers > 0 ? " / 新建容器 " + r.CreatedContainers : "")
                         + (r.MovedUnmatched > 0 ? " / 移入未分类 " + r.MovedUnmatched : "")
                         + " / 无容器跳过 " + r.NoContainer + " / 失败 " + r.Failed;
                 Log(msg, (r.Failed == 0 && r.Matched > 0) ? LogLevel.Ok : LogLevel.Info);

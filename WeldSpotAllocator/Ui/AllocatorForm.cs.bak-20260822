@@ -1,5 +1,4 @@
 // AllocatorForm.cs  —  C# 7.3
-// 标准 WinForms 设计器骨架：InitializeComponent() + 命名事件处理器(Load/FormClosed) + Dispose(components)。
 // 布局：外层 AutoScroll Panel + 垂直 stack(TableLayoutPanel Dock=Top AutoSize)，内容超出滚动不裁切。
 // 卡片 MkCard(GroupBox Dock=Top AutoSize)；网格/预览/日志用固定高卡。
 // 操作选择：强类型 TxObjGridCtrl(OpGridHost)，ObjectInserted 实时剔除非焊接操作。
@@ -41,8 +40,6 @@ namespace TxTools.WeldSpotAllocator
         private readonly OpGridHost _refHost = new OpGridHost();
         private readonly OpGridHost _tgtHost = new OpGridHost();
         private Panel _refHostPanel, _tgtHostPanel;
-        private Panel _scrollPanel;
-        private TableLayoutPanel _stackPanel;
 
         private RadioButton _rbA, _rbB, _rbC;
         private ComboBox _cboFlip;
@@ -73,35 +70,18 @@ namespace TxTools.WeldSpotAllocator
 
         public AllocatorForm()
         {
-            InitializeComponent();
-
-            // ⚠ 注意：本窗体 UI 为手写代码，请勿再用 VS 窗体设计器修改此文件，
-            //   否则 VS 会重写 InitializeComponent()，导致界面空白/空引用。
-            //   关键初始化放构造函数，InitializeComponent 仅保留最小存根。
-            this.Load += new System.EventHandler(this.AllocatorForm_Load);
-            this.FormClosed += new System.Windows.Forms.FormClosedEventHandler(this.AllocatorForm_Closed);
-
             FormUiKit.InitStandardForm(this, "焊点分配 / 更新", _design,
                 new Size(700, 500), sizable: true);
             try { SemiModal = false; } catch { }
-
             BuildUi();
+            FormClosed += (s, e) => _inst = null;
         }
 
-        // PS host 早期钩子（早于 WinForms Load）：UI 已在构造函数建好，此处只做网格初始化。
-        public override void OnInitTxForm()
-        {
-            try { base.OnInitTxForm(); }
-            catch (Exception ex) { Log("OnInitTxForm 基类异常：" + ex.Message); }
-            EnsureInit();
-        }
-
+        public override void OnInitTxForm() { try { base.OnInitTxForm(); } catch { } EnsureInit(); }
+        protected override void OnLoad(EventArgs e) { base.OnLoad(e); EnsureInit(); FormUiKit.ApplyDpiScaling(this, ref _scaled, _design); }
         private void EnsureInit()
         {
-            if (_inited) return;
-            // 防御：控件尚未创建时延后到 Load 事件（避免设计器覆盖后空引用）
-            if (_refHostPanel == null || _tgtHostPanel == null || _log == null) return;
-            _inited = true;
+            if (_inited) return; _inited = true;
             try
             {
                 _refHost.Init(_refHostPanel, IsWeldOp, DropLog, () => { _lblRef.Text = RefText(); }, Log);
@@ -110,59 +90,24 @@ namespace TxTools.WeldSpotAllocator
             catch (Exception ex) { Log("网格初始化异常：" + ex.Message); }
         }
 
-        // ── Windows Form Designer 最小存根（单文件形态）─────────────────────
-        // VS 若重写此方法，仅影响以下空壳；真正 UI 在构造函数 BuildUi() 中构建。
-        private System.ComponentModel.IContainer components = null;
-
-        private void InitializeComponent()
-        {
-            this.components = new System.ComponentModel.Container();
-            this.SuspendLayout();
-            //
-            // AllocatorForm
-            //
-            this.Name = "AllocatorForm";
-            this.ResumeLayout(false);
-        }
-
-        private void AllocatorForm_Load(object sender, EventArgs e)
-        {
-            EnsureInit();
-            FormUiKit.ApplyDpiScaling(this, ref _scaled, _design);
-        }
-
-        private void AllocatorForm_Closed(object sender, FormClosedEventArgs e)
-        {
-            _inst = null;
-        }
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing && (components != null))
-            {
-                components.Dispose();
-            }
-            base.Dispose(disposing);
-        }
-
         // ── 整体：可滚动垂直 stack ─────────────────────────────────────────
         private void BuildUi()
         {
-            _scrollPanel = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(10), BackColor = FormUiKit.WinBg };
-            _stackPanel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 7, BackColor = FormUiKit.WinBg };
-            _stackPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            for (int i = 0; i < 7; i++) _stackPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(10) };
+            var stack = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 7 };
+            stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            for (int i = 0; i < 7; i++) stack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-            _stackPanel.Controls.Add(BuildModeCard(), 0, 0);
-            _stackPanel.Controls.Add(BuildHint(), 0, 1);
-            _stackPanel.Controls.Add(BuildDataCard(), 0, 2);
-            _stackPanel.Controls.Add(BuildOptionCard(), 0, 3);
-            _stackPanel.Controls.Add(BuildActionRow(), 0, 4);
-            _stackPanel.Controls.Add(BuildPreviewCard(), 0, 5);
-            _stackPanel.Controls.Add(BuildLogCard(), 0, 6);
+            stack.Controls.Add(BuildModeCard(), 0, 0);
+            stack.Controls.Add(BuildHint(), 0, 1);
+            stack.Controls.Add(BuildDataCard(), 0, 2);
+            stack.Controls.Add(BuildOptionCard(), 0, 3);
+            stack.Controls.Add(BuildActionRow(), 0, 4);
+            stack.Controls.Add(BuildPreviewCard(), 0, 5);
+            stack.Controls.Add(BuildLogCard(), 0, 6);
 
-            _scrollPanel.Controls.Add(_stackPanel);
-            Controls.Add(_scrollPanel);
+            scroll.Controls.Add(stack);
+            Controls.Add(scroll);
             SyncModeUi();
         }
 
@@ -221,20 +166,20 @@ namespace TxTools.WeldSpotAllocator
 
         private Control BuildHint()
         {
-            _lblHint = new Label { Dock = DockStyle.Top, AutoSize = true, MaximumSize = new Size(800, 0), ForeColor = Theme.TextFaint, Font = FormUiKit.BaseFont, Margin = new Padding(3, 0, 3, 6), BackColor = Color.Transparent };
+            _lblHint = new Label { Dock = DockStyle.Top, AutoSize = true, MaximumSize = new Size(800, 0), ForeColor = Theme.TextFaint, Font = FormUiKit.BaseFont, Margin = new Padding(3, 0, 3, 6) };
             return _lblHint;
         }
 
         private Control BuildDataCard()
         {
-            var two = new TableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 2, RowCount = 1, BackColor = FormUiKit.WinBg };
+            var two = new TableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 2, RowCount = 1 };
             two.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             two.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
 
             _refHostPanel = new Panel { Dock = DockStyle.Fill, BackColor = SystemColors.Window, BorderStyle = BorderStyle.FixedSingle };
             _tgtHostPanel = new Panel { Dock = DockStyle.Fill, BackColor = SystemColors.Window, BorderStyle = BorderStyle.FixedSingle };
-            _lblRef = new Label { Text = RefText(), AutoSize = true, Font = FormUiKit.BaseFont, Margin = new Padding(3, 4, 3, 2), BackColor = Color.Transparent };
-            _lblTarget = new Label { Text = TgtText(), AutoSize = true, Font = FormUiKit.BaseFont, Margin = new Padding(3, 4, 3, 2), BackColor = Color.Transparent };
+            _lblRef = new Label { Text = RefText(), AutoSize = true, Font = FormUiKit.BaseFont, Margin = new Padding(3, 4, 3, 2) };
+            _lblTarget = new Label { Text = TgtText(), AutoSize = true, Font = FormUiKit.BaseFont, Margin = new Padding(3, 4, 3, 2) };
 
             two.Controls.Add(BuildSide("参考集", _refHostPanel, _lblRef), 0, 0);
             two.Controls.Add(BuildSide("目标集", _tgtHostPanel, _lblTarget), 1, 0);
@@ -249,7 +194,7 @@ namespace TxTools.WeldSpotAllocator
             t.RowStyles.Add(new RowStyle(SizeType.Absolute, 200));   // 网格固定高
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-            t.Controls.Add(new Label { Text = title, AutoSize = true, Font = FormUiKit.BoldFont, Margin = new Padding(3, 2, 3, 2), BackColor = Color.Transparent }, 0, 0);
+            t.Controls.Add(new Label { Text = title, AutoSize = true, Font = FormUiKit.BoldFont, Margin = new Padding(3, 2, 3, 2) }, 0, 0);
             t.Controls.Add(hostPanel, 0, 1);
             t.Controls.Add(info, 0, 2);
             return t;

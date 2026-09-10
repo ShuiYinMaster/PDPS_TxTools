@@ -234,6 +234,28 @@ namespace TxTools.AutoPathPlanner
                         skippedInternal, skippedRobotOrGun, skippedEquipment));
             }
 
+            // 以资源原点筛选，法兰使用 Toolframe（不是焊枪 TCP）。
+            double bx, by, bz, fx, fy, fz;
+            if (!TryGetPos(robot, out bx, out by, out bz))
+                throw new InvalidOperationException("无法读取机器人原点，不能建立 5 米干涉范围");
+            bool hasFlange = TryGetPos(robot.Toolframe, out fx, out fy, out fz);
+            Func<ITxObject, bool> nearMount = o =>
+            {
+                double x, y, z;
+                if (!TryGetPos(o, out x, out y, out z)) return false;
+                return SquaredDistance(x, y, z, bx, by, bz) <= 100.0 ||
+                    (hasFlange && SquaredDistance(x, y, z, fx, fy, fz) <= 100.0);
+            };
+            // 保留机器人/焊枪本体，只排除安装资源。
+            check.RemoveAll(o => !(o is TxRobot) && !GunAxisService.IsGunObject(o) && nearMount(o));
+            obstacles.RemoveAll(o =>
+            {
+                double x, y, z;
+                return nearMount(o) || (TryGetPos(o, out x, out y, out z) &&
+                    SquaredDistance(x, y, z, bx, by, bz) > 25000000.0);
+            });
+            lg("  范围筛选: 机器人周边5000mm，基座/法兰原点10mm安装资源排除");
+
             // ---- 最终安全网: 校验 obstacles 与 check 无交集 ----
             // 双保险 —— 即使上游有疏漏, 这里也保证绑定资源绝不进 SecondList。
             int removed = SanitizeObstacles(check, obstacles);
@@ -254,6 +276,28 @@ namespace TxTools.AutoPathPlanner
         /// 最终安全网: 从 obstacles 中移除任何出现在 check 中的对象 (引用级)。
         /// 返回移除数量。保证 FirstList ∩ SecondList = ∅。
         /// </summary>
+        private static double SquaredDistance(double x, double y, double z, double a, double b, double c)
+        {
+            return (x-a)*(x-a) + (y-b)*(y-b) + (z-c)*(z-c);
+        }
+
+        public static List<ITxObject> CollectOperationAppearances(IEnumerable<ITxObject> operations)
+        {
+            var ops = operations.Where(o => o != null).ToList();
+            var result = new List<ITxObject>();
+            var all = TxApplication.ActiveDocument.PhysicalRoot.GetAllDescendants(
+                new TxTypeFilter(typeof(ITxPartAppearance)));
+            foreach (ITxObject obj in all)
+            {
+                var appearance = obj as ITxPartAppearance;
+                if (appearance == null) continue;
+                foreach (ITxObject assigned in appearance.OperationsToWhichAssigned)
+                    if (ops.Any(op => op.Equals(assigned) || IsDescendantOf(assigned, op) || IsDescendantOf(op, assigned)))
+                    { AddUnique(result, obj); break; }
+            }
+            return result;
+        }
+
         private static int SanitizeObstacles(List<ITxObject> check, List<ITxObject> obstacles)
         {
             if (check == null || obstacles == null) return 0;
@@ -961,6 +1005,10 @@ namespace TxTools.AutoPathPlanner
                 if (existingPair != null)
                 {
                     _pair = existingPair;
+                    _pair.FirstList = checkList;
+                    _pair.SecondList = obstacleList;
+                    _pair.Active = true;
+                    TxApplication.ActiveDocument.CollisionRoot.CheckCollisions = true;
                     _ownedPair = false;
                     _log(string.Format("  干涉集复用: 已有碰撞对 '{0}', 不再新建",
                         TryGetName(existingPair)));
@@ -1068,7 +1116,7 @@ namespace TxTools.AutoPathPlanner
         public bool QueryColliding()
         {
             if (_pair == null && _fromLists == -1)
-                return false; // 碰撞对与 FromLists 均不可用 → 退化为纯可达性
+                return true; // 查询不可用时拒绝放行。
             try
             {
                 if (_queryMode == 0) DetermineQueryMode();
@@ -1078,7 +1126,7 @@ namespace TxTools.AutoPathPlanner
                     case 1:
                     {
                         var sigs = QueryOurCollisionSignatures();
-                        if (sigs == null) return false;
+                        if (sigs == null) return true;
                         bool colliding;
                         if (BaselineExemption && _baseline != null && _baseline.Count > 0)
                         {
@@ -1116,7 +1164,7 @@ namespace TxTools.AutoPathPlanner
                         catch { return (bool)root3.HasCollidingObjects(); }
                     }
                     default:
-                        return false;
+                        return true;
                 }
             }
             catch (Exception ex)
@@ -1126,7 +1174,7 @@ namespace TxTools.AutoPathPlanner
                     _sampleLogBudget--;
                     _log("    [干涉查询异常] " + ex.GetType().Name + ": " + ex.Message);
                 }
-                return false;
+                return true;
             }
         }
 
@@ -1242,7 +1290,7 @@ namespace TxTools.AutoPathPlanner
                         : (object)root.GetCollidingObjects();
                 }
                 var sigs = new HashSet<string>();
-                if (results == null) return sigs;
+                if (results == null) return null;
 
                 IEnumerable states = null;
                 try { states = ((dynamic)results).States as IEnumerable; } catch { }
@@ -1266,7 +1314,7 @@ namespace TxTools.AutoPathPlanner
                     if (typeVal >= 0 && typeVal < 3) continue;
 
                     var objs = ExtractStateObjects(state);
-                    if (objs.Count == 0) continue;
+                    if (objs.Count == 0) return null;
                     if (!InvolvesCheckSet(objs)) continue;
                     if (InvolvesOnlyExcludedObstacles(objs)) continue; // v6.7 焊枪贴工件允许
                     sigs.Add(Signature(objs));

@@ -144,6 +144,7 @@ namespace TxTools.AutoPathPlanner
         public double SampleBoundsInflateZDown = 100.0;
 
         private readonly Action<string> _log;
+        private PlanningReport _activeReport;
         private CollisionWorld _world;
         private RrtPlanner _rrt;
         private CycleCost _cost;        // v6.0 关节节拍代价
@@ -182,6 +183,7 @@ namespace TxTools.AutoPathPlanner
             List<ITxObject> selectedOps)
         {
             var report = new PlanningReport { OperationCount = selectedOps.Count };
+            _activeReport = report;
             var sw = System.Diagnostics.Stopwatch.StartNew();
 
             _log("========== RRT 自动路径规划 (操作内模式) ==========");
@@ -237,7 +239,7 @@ namespace TxTools.AutoPathPlanner
                         // v4.10: 纯附着模式 —— 只复用用户已建好的干涉集, 绝不新建。
                         // 找不到就跳过本操作 (不偷偷新建, 避免堆积)。
                         var cs = CollisionSetService.CreateRobotVsWorld(
-                            robot, null, null, _log, forceNew: false, attachOnly: true);
+                            robot, null, CollisionSetService.CollectOperationAppearances(selectedOps), _log, forceNew: false, attachOnly: true);
 
                         if (!cs.IsReady)
                         {
@@ -269,7 +271,7 @@ namespace TxTools.AutoPathPlanner
 
                         // v6.7: 被焊工件移出障碍方 + 常驻接触豁免开关
                         cs.BaselineExemption = BaselineExemptionEnabled;
-                        cs.ExcludeObstacles(CollectWeldPartsOf(op));
+                        // 操作绑定外观必须参与碰撞，不再全局豁免被焊工件。
                         worldCache[robot] = w;
 
                         // v6.0: 关节节拍代价模型 (每台机器人一份)
@@ -563,9 +565,9 @@ namespace TxTools.AutoPathPlanner
                     Kind = PlanPointKind.Transit, Source = "home", CustomName = "home",
                     Verified = true
                 };
-                if (!home.ReuseFirst) homeFirst = CreateViaAppended(op, hp);
+                if (!home.ReuseFirst) homeFirst = CreateViaAppended(op, hp, weldObjs[0]);
                 else homeFirst = home.ExistingFirst;
-                if (!home.ReuseLast) homeLast = CreateViaAppended(op, hp);
+                if (!home.ReuseLast) homeLast = CreateViaAppended(op, hp, weldObjs[weldObjs.Count - 1]);
                 else homeLast = home.ExistingLast;
 
                 // ② 点序: homeFirst → 操作最前, homeLast → 操作最末
@@ -599,7 +601,7 @@ namespace TxTools.AutoPathPlanner
                         Verified = offsetFree[i]
                     };
                     // 进枪: 移到焊点之前
-                    approachVia[i] = CreateViaAppended(op, ap);
+                    approachVia[i] = CreateViaAppended(op, ap, weldObjs[i]);
                     if (approachVia[i] != null)
                     {
                         MoveChildBefore(op, approachVia[i], weldObjs[i]);
@@ -696,7 +698,22 @@ namespace TxTools.AutoPathPlanner
                 if (anchor == null) continue; // 链首过渡点无锚(理论上前面有home): 跳过
                 ThrowIfCancelled();
                 ITxObject via = InsertViaAfter(op, n.Point, anchor);
-                if (via != null) { anchor = via; report.InsertedViaCount++; }
+                if (via != null) { anchor = via; n.WeldObj = via; report.InsertedViaCount++; }
+            }
+            if (DynamicCheckEnabled)
+            {
+                _log("  == 写入后终验：实际点位 + 离开/到达外部轴同步扫掠 ==");
+                for (int i = 1; i < chain.Count; i++)
+                {
+                    ThrowIfCancelled();
+                    var a = chain[i - 1].WeldObj as ITxRoboticLocationOperation;
+                    var b = chain[i].WeldObj as ITxRoboticLocationOperation;
+                    string failure = a == null || b == null ? "点位缺失(未验证)" : _world.CheckWrittenMotion(a, b);
+                    if (failure == null) continue;
+                    report.DynamicViolations++;
+                    report.Warnings.Add("写入后终验 " + chain[i - 1].Point.Source + " → " +
+                        chain[i].Point.Source + ": " + failure);
+                }
             }
         }
 
@@ -1039,21 +1056,27 @@ namespace TxTools.AutoPathPlanner
             {
                 try
                 {
-                    dynamic v = via;
-                    var mp = new TxRoboticLocationOperationMotionParameters();
-                    mp.MotionType = TxMotionType.Joint;
-                    v.MotionParameters = mp;
+                    using (var service = new TxPathPlanningRCSService())
+                    {
+                        service.SetLocationMotionType((ITxRoboticOperation)via, TxMotionType.Joint);
+                        if (service.GetLocationMotionType((ITxRoboticOperation)via) != TxMotionType.Joint)
+                            throw new InvalidOperationException("Joint 运动类型读回不一致");
+                    }
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // 备用: 直接属性
-                    try { ((dynamic)via).MotionType = TxMotionType.Joint; }
-                    catch { }
+                    _log("  [警告] 运动类型设置失败: " + ex.Message);
+                    _activeReport.Warnings.Add("运动类型设置失败: " + p.Source + " / " + ex.Message);
                 }
             }
 
             // ---- ② 焊钳开口 (外部轴) ----
-            if (_gunAxis == null || !_gunAxis.HasGunAxis) return;
+            if (_gunAxis == null || !_gunAxis.HasGunAxis)
+            {
+                if (GunAxisWriteEnabled)
+                    _activeReport.Warnings.Add("开口未写入，活动焊钳外部轴不可用: " + p.Source);
+                return;
+            }
 
             double opening;
             if (p.Kind == PlanPointKind.Approach || p.Kind == PlanPointKind.Retract)
@@ -1063,7 +1086,11 @@ namespace TxTools.AutoPathPlanner
             else if (AdaptiveGunOpening)
             {
                 opening = FindMinOpeningAt(p);
-                if (double.IsNaN(opening)) opening = TransitGunOpening;  // 全试不通 → 用默认
+                if (double.IsNaN(opening))
+                {
+                    _activeReport.Warnings.Add("未找到安全开口，保留配置开口并标记需复核: " + p.Source);
+                    opening = TransitGunOpening;
+                }
             }
             else
             {
@@ -1072,6 +1099,8 @@ namespace TxTools.AutoPathPlanner
 
             if (_gunAxis.WriteOpening(via, opening, inheritFrom))
                 _viaOpeningCount++;
+            else
+                _activeReport.Warnings.Add("开口写入/读回失败: " + p.Source);
         }
 
         /// <summary>
@@ -1095,12 +1124,22 @@ namespace TxTools.AutoPathPlanner
             }
             ladder.Sort();   // 小 → 大, 第一个安全的即返回
 
-            _world.SetOrientation(null, p.RpyZyx);
+            _world.SetOrientation(p.AbsTransform, p.RpyZyx);
 
-            return _gunAxis.FindMinSafeOpening(
-                delegate (double o) { _gunAxis.ApplyOpeningToDevice(o); },
-                delegate { return _world.IsPositionFree(p.Position); },
-                ladder.ToArray());
+            var device = _gunAxis.ActiveGun as ITxDevice;
+            var saved = device != null ? device.CurrentPose : null;
+            try
+            {
+                return _gunAxis.FindMinSafeOpening(
+                    delegate (double o) { return _gunAxis.ApplyOpeningToDevice(o); },
+                    delegate { return _world.ClassifyStrict(p.Position) == CollisionWorld.PositionState.Free; },
+                    ladder.ToArray());
+            }
+            finally
+            {
+                if (device != null && saved != null) device.CurrentPose = saved;
+                _world.InvalidateCache();
+            }
         }
 
         private sealed class HomeInfo
@@ -1931,7 +1970,7 @@ namespace TxTools.AutoPathPlanner
         }
 
         /// <summary>创建 Via 并写入位姿, 追加到操作末尾 (不排序)</summary>
-        private ITxObject CreateViaAppended(ITxObject op, PlanPoint p)
+        private ITxObject CreateViaAppended(ITxObject op, PlanPoint p, ITxObject inheritFrom = null)
         {
             string viaName = !string.IsNullOrEmpty(p.CustomName)
                 ? p.CustomName
@@ -1950,6 +1989,7 @@ namespace TxTools.AutoPathPlanner
                 t.Translation = new TxVector(p.Position.X, p.Position.Y, p.Position.Z);
                 if (p.RpyZyx != null) t.RotationRPY_ZYX = p.RpyZyx;
                 ((ITxLocatableObject)via).AbsoluteLocation = t;
+                ApplyViaMotionAndGun(via, p, inheritFrom);
                 return via;
             }
             catch (Exception ex)

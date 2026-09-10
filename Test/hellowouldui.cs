@@ -38,5 +38,18 @@ namespace TxTools.HelloMulti
             Controls.Add(lbl);
             Controls.Add(btn);
         }
+
+        private void InitializeComponent()
+        {
+            this.SuspendLayout();
+            // 
+            // HelloTxForm
+            // 
+            this.AutoScaleDimensions = new System.Drawing.SizeF(11F, 21F);
+            this.ClientSize = new System.Drawing.Size(1271, 313);
+            this.Name = "HelloTxForm";
+            this.ResumeLayout(false);
+
+        }
     }
 }

@@ -55,6 +55,7 @@ using Tecnomatix.Engineering.Ui;
 
 // 配色/控件统一收编到 TxTools.Common.FormUiKit（套件统一 GUI 规范）
 using TxTools.Common;
+using TxTools.ExportByColor;
 using Theme = TxTools.Common.FormUiKit.Theme;
 using ColoredGroupBox = TxTools.Common.FormUiKit.ColoredGroupBox;
 using FlatColorButton = TxTools.Common.FormUiKit.FlatColorButton;
@@ -75,6 +76,8 @@ namespace TxTools.ExportGun
         // ════════════════════════════════════════════════════════════
         #region State
         private ExportService _svc;
+        private ExportByColorService _cgrGenerator;
+        private readonly SynchronizationContext _psCtx;
         private List<OperationInfo> _ops = new List<OperationInfo>();
         private string _refFrameName = "世界坐标系";
         private double[] _refFrameMatrix;
@@ -171,6 +174,7 @@ namespace TxTools.ExportGun
         {
 
             SemiModal = false;
+            _psCtx = psCtx;
 
             InitializeComponent();
             BuildUI();
@@ -2211,7 +2215,7 @@ namespace TxTools.ExportGun
 
                     // 弹出可交互对话框：允许用户直接打开 JT 所在位置（同级目录），
                     // 或手动浏览选择一个 CGR/CATPart/CATProduct，或中止。
-                    string manualPath = PromptCgrNotFound(op.Name, toolName, dir, reason);
+                    string manualPath = PromptCgrNotFound(op.Name, toolName, lookup != null ? lookup.ToolObject : null, dir, reason);
                     if (string.IsNullOrEmpty(manualPath))
                     {
                         Log("[CGR] 已中止：" + reason, LogLevel.Warn);
@@ -2449,12 +2453,12 @@ namespace TxTools.ExportGun
         //  CGR 未找到对话框 — 提供"打开 JT 所在位置 / 手动浏览 / 取消"
         //  返回：用户手动选定的 CGR 路径；取消返回 null。
         // ════════════════════════════════════════════════════════════
-        private string PromptCgrNotFound(string opName, string toolName, string sameDir, string reason)
+        private string PromptCgrNotFound(string opName, string toolName, ITxObject toolObject, string sameDir, string reason)
         {
             using (var dlg = new Form())
             {
                 dlg.Text = "未找到 CGR — " + opName;
-                dlg.Size = new Size(560, 260);
+                dlg.Size = new Size(560, 285);
                 dlg.StartPosition = FormStartPosition.CenterParent;
                 dlg.FormBorderStyle = FormBorderStyle.FixedDialog;
                 dlg.MaximizeBox = false;
@@ -2469,6 +2473,7 @@ namespace TxTools.ExportGun
                         + "\n原因：" + (reason ?? "未知原因")
                         + "\n\n你可以：\n"
                         + "  · 打开 JT 所在位置，确认目录下是否存在 CGR 文件；\n"
+                        + "  · 直接从当前工具生成一个 CGR 到该 JT 目录；\n"
                         + "  · 手动浏览选择一个 CGR / CATPart / CATProduct；\n"
                         + "  · 取消本次导出。",
                     Dock = DockStyle.Fill,
@@ -2487,7 +2492,9 @@ namespace TxTools.ExportGun
                 };
 
                 bool browse = false;
+                bool generate = false;
                 var btnBrowse = MkFuncButton("手动浏览...", Theme.BtnPrimary);
+                var btnGenerate = MkFuncButton("生成 CGR", Theme.BtnPrimary);
                 var btnOpenDir = MkFuncButton("打开 JT 所在位置", Theme.BtnSecondary);
                 var btnCancel = MkFuncButton("取消", Theme.BtnDanger);
                 btnCancel.DialogResult = DialogResult.Cancel;
@@ -2498,11 +2505,19 @@ namespace TxTools.ExportGun
                     dlg.DialogResult = DialogResult.OK;
                     dlg.Close();
                 };
+                btnGenerate.Enabled = toolObject != null && !string.IsNullOrEmpty(sameDir) && Directory.Exists(sameDir);
+                btnGenerate.Click += delegate
+                {
+                    generate = true;
+                    dlg.DialogResult = DialogResult.OK;
+                    dlg.Close();
+                };
                 btnOpenDir.Enabled = !string.IsNullOrEmpty(sameDir) && Directory.Exists(sameDir);
                 btnOpenDir.Click += delegate { OpenJtLocation(sameDir); };
 
                 pnlBtns.Controls.Add(btnCancel);
                 pnlBtns.Controls.Add(btnOpenDir);
+                pnlBtns.Controls.Add(btnGenerate);
                 pnlBtns.Controls.Add(btnBrowse);
 
                 dlg.Controls.Add(body);
@@ -2511,6 +2526,26 @@ namespace TxTools.ExportGun
                 dlg.CancelButton = btnCancel;
 
                 if (dlg.ShowDialog(this) != DialogResult.OK) return null;
+                if (generate)
+                {
+                    try
+                    {
+                        string output = Path.Combine(sameDir, SafeCgrFileName(toolName) + ".cgr");
+                        Log("[CGR] 正在从当前工具几何生成：" + output, LogLevel.Info);
+                        if (_cgrGenerator == null) _cgrGenerator = new ExportByColorService(_psCtx);
+                        string generated = _cgrGenerator.GenerateCgrForObject(toolObject, output,
+                            delegate (string message) { UI(delegate () { Log(message); }); });
+                        Log("[CGR] 已生成：" + generated, LogLevel.Ok);
+                        return generated;
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(this, "生成 CGR 失败：" + ex.Message, "生成失败",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        Log("[CGR] 生成失败：" + ex.Message, LogLevel.Error);
+                        return null;
+                    }
+                }
                 if (!browse) return null;
 
                 using (var ofd = new OpenFileDialog())
@@ -2523,6 +2558,13 @@ namespace TxTools.ExportGun
                     return ofd.FileName;
                 }
             }
+        }
+
+        private static string SafeCgrFileName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return "Gun";
+            foreach (char c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
+            return string.IsNullOrWhiteSpace(name) ? "Gun" : name.Trim();
         }
 
         // ════════════════════════════════════════════════════════════

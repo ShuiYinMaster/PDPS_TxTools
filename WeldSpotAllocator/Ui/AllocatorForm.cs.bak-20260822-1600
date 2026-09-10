@@ -129,6 +129,29 @@ namespace TxTools.WeldSpotAllocator
         {
             EnsureInit();
             FormUiKit.ApplyDpiScaling(this, ref _scaled, _design);
+
+            // TxForm(Siemens 皮肤)可能给客户区设置非对称 Padding(左/下/右 10px, 上 0)，
+            // 露出窗体背景灰边。延迟到消息队列，确保在基类初始化完成后再压回。
+            this.BeginInvoke((Action)delegate
+            {
+                // ── 诊断：打印容器布局真实值，确认灰边来源后移除 ──
+                try
+                {
+                    Log("诊断F: Client=" + ClientSize + " Pad=" + Padding);
+                    Log("诊断S: Bounds=" + _scrollPanel.Bounds +
+                        " Back=" + _scrollPanel.BackColor.ToArgb().ToString("X8") +
+                        " Pad=" + _scrollPanel.Padding +
+                        " VS=" + _scrollPanel.VerticalScroll.Visible +
+                        " HS=" + _scrollPanel.HorizontalScroll.Visible);
+                    Log("诊断T: Bounds=" + _stackPanel.Bounds +
+                        " Back=" + _stackPanel.BackColor.ToArgb().ToString("X8") +
+                        " CardBorder=" + FormUiKit.CardBorder.ToArgb().ToString("X8"));
+                }
+                catch { }
+
+                try { this.Padding = Padding.Empty; } catch { }
+                this.BackColor = FormUiKit.WinBg;
+            });
         }
 
         private void AllocatorForm_Closed(object sender, FormClosedEventArgs e)

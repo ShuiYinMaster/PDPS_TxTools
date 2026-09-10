@@ -66,13 +66,6 @@ namespace TxTools.Common
         public static Color PrimaryBack = Color.White;               // 主按钮底纯白
         public static Color PrimaryFore = Color.Black;               // 主按钮字纯黑
 
-        // ── Siemens 扁平风格全局开关 ────────────────────────────────────────
-        // false（默认）：InitStandardForm 关闭 FlatStyleEnabled → 自定义配色生效，
-        //               但 AFW 不再擦窗体背景，边缘残留系统灰（左/下/右 10px 灰边）。
-        // true：        保持 Siemens 扁平风格 → 无灰边，但自定义配色被皮肤覆盖。
-        // 持久化到 theme.cfg（键 FlatStyleEnabled），ThemeTuner 可运行时切换。
-        public static bool FlatStyleEnabled = false;
-
         // ====================================================================
         // Theme —— 套件唯一配色来源（ExportGun / AutoPath / ReachabilityChecker 合并）
         // ====================================================================
@@ -485,17 +478,9 @@ namespace TxTools.Common
                 {
                     var cfg = LoadConfig();
                     if (cfg != null && cfg.Count > 0) SetFrom(cfg);
-                    if (cfg != null && cfg.TryGetValue(CfgKeyFlatStyle, out string fs)
-                        && bool.TryParse(fs, out bool b))
-                    {
-                        FlatStyleEnabled = b;
-                    }
                 }
                 catch { }
             }
-
-            /// <summary>theme.cfg 中扁平风格开关的键（非颜色字段）。</summary>
-            public const string CfgKeyFlatStyle = "FlatStyleEnabled";
 
             private static bool _cfgLoaded;
 
@@ -537,11 +522,7 @@ namespace TxTools.Common
                     Directory.CreateDirectory(Path.GetDirectoryName(path));
                     var sb = new System.Text.StringBuilder();
                     foreach (var kv in palette)
-                    {
-                        if (kv.Key == CfgKeyFlatStyle) continue;   // 防冲突
                         sb.AppendLine(kv.Key + "=" + kv.Value);
-                    }
-                    sb.AppendLine(CfgKeyFlatStyle + "=" + (FlatStyleEnabled ? "True" : "False"));
                     File.WriteAllText(path, sb.ToString());
                     return path;
                 }
@@ -584,16 +565,9 @@ namespace TxTools.Common
             try
             {
                 foreach (Form f in Application.OpenForms)
-                    if (IsTxToolsForm(f)) RecolorControl(f, oldPalette, newPalette);
+                    RecolorControl(f, oldPalette, newPalette);
             }
             catch { }
-        }
-
-        // Application.OpenForms also contains Process Simulate's own dialogs.
-        // Theme changes must not modify host or third-party windows.
-        public static bool IsTxToolsForm(Form form)
-        {
-            return form != null && form.GetType().Assembly == typeof(FormUiKit).Assembly;
         }
 
         private static void RecolorControl(Control c, Dictionary<string, string> oldPalette,
@@ -702,15 +676,7 @@ namespace TxTools.Common
             form.MinimumSize = minSize;     // 必须先设 MinimumSize
             form.Size = size;        // 再设 Size，否则被 MinimumSize 钳制
 
-            // 扁平风格开关：false → 关闭 Siemens 扁平风格让自定义配色生效
-            // （代价：AFW 不擦窗体背景，边缘残留灰色，见 TxForm.WndProc/WM_ERASEBKGND）；
-            // true → 保持扁平风格（无灰边，自定义配色不生效）。ThemeTuner 可运行时切换。
-            if (!FlatStyleEnabled) TrySetFlatStyleDisabled(form);
-            // 扁平风格下子容器默认灰底(240,240,240)刷白：Load 时控件树已建好
-            if (FlatStyleEnabled)
-            {
-                form.Load += (s, e) => FlattenGrayBackgrounds(form);
-            }
+            TrySetFlatStyleDisabled(form);   // 让自定义配色生效
             // Tecnomatix TxForm 基类默认在客户区四周预留主题内边距(Siemens 皮肤),
             // 会让内容区四周露出一圈灰色"画框"。对绝大多数满窗体布局的插件这是多余的,
             // 统一置 0 让控件铺到真实客户区边缘。确需留边距的窗体可在本方法之后自行设 Padding。
@@ -719,55 +685,17 @@ namespace TxTools.Common
         }
 
         /// <summary>
-        /// 反射设置 TxForm.FlatStyleEnabled（Siemens 扁平风格开关）。
-        /// 用反射兼容旧版 PS：旧版 TxForm 没有该属性时 GetProperty 返回 null，静默跳过。
+        /// 关闭 Siemens flat style 皮肤，否则它会重绘子控件、吃掉自定义配色。
+        /// 用反射兼容不同 PS/SDK 版本（属性可能不存在）。
         /// </summary>
-        public static void TrySetFlatStyle(TxForm form, bool enabled)
+        public static void TrySetFlatStyleDisabled(TxForm form)
         {
             try
             {
                 var p = form.GetType().GetProperty("FlatStyleEnabled");
-                if (p != null && p.CanWrite) p.SetValue(form, enabled, null);
+                if (p != null && p.CanWrite) p.SetValue(form, false, null);
             }
             catch { /* 静默忽略，确保插件继续运行 */ }
-        }
-
-        public static void TrySetFlatStyleDisabled(TxForm form)
-        {
-            TrySetFlatStyle(form, false);
-        }
-
-        // ====================================================================
-        // 扁平风格：默认灰底刷白
-        // ====================================================================
-
-        /// <summary>
-        /// 遍历控件树，把「未显式设色的容器默认灰底」刷成白色。
-        /// 背景：Siemens 扁平风格只负责窗体级背景擦除，子容器(Panel/GroupBox/Label 等)
-        /// 仍按 WinForms 默认 BackColor=SystemColors.Control(240,240,240) 绘制，
-        /// 与白底窗体冲突。仅处理容器类控件，不碰 Button/TextBox 等交互控件
-        /// （它们的灰底是 WinForms 控件绘制的一部分）。
-        /// </summary>
-        public static void FlattenGrayBackgrounds(Control root)
-        {
-            try { FlattenGrayRecursive(root); } catch { }
-        }
-
-        private static void FlattenGrayRecursive(Control c)
-        {
-            if (c == null) return;
-            try
-            {
-                Color bc = c.BackColor;
-                bool gray = bc == SystemColors.Control || bc == Color.FromArgb(240, 240, 240);
-                if (gray && (c is Panel || c is GroupBox || c is Label || c is UserControl))
-                {
-                    c.BackColor = WinBg;
-                }
-            }
-            catch { }
-            for (int i = 0; i < c.Controls.Count; i++)
-                FlattenGrayRecursive(c.Controls[i]);
         }
 
         // ====================================================================
@@ -817,17 +745,17 @@ namespace TxTools.Common
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = header == null ? 2 : 3,
+                RowCount = 3,
                 Margin = Padding.Empty,
-                Padding = Padding.Empty,
+                Padding = new Padding(6, 4, 6, 4),
                 BackColor = CardBack
             };
-            if (header != null) root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));   // 标题栏
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));   // 主体
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46F));   // 底栏
             if (header != null) root.Controls.Add(header, 0, 0);
-            if (body != null) { body.Margin = Padding.Empty; body.Padding = Padding.Empty; root.Controls.Add(body, 0, header == null ? 0 : 1); }
-            if (bottom != null) { bottom.Margin = Padding.Empty; root.Controls.Add(bottom, 0, header == null ? 1 : 2); }
+            if (body != null) root.Controls.Add(body, 0, 1);
+            if (bottom != null) root.Controls.Add(bottom, 0, 2);
             return root;
         }
 
