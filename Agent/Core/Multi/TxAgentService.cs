@@ -66,6 +66,7 @@ namespace TxTools.Agent.Core
                 // 幂等设置：点按钮的路径（TxAgentCommand.Execute）重复设置无副作用。
                 try
                 {
+                    PsContext.CaptureFromMainThread();   // 刷新可靠主线程上下文缓存
                     if (PsContext.Current == null)
                         PsContext.Current = new PsContext(SynchronizationContext.Current);
                 }

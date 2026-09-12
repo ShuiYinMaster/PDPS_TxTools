@@ -85,6 +85,8 @@ namespace TxTools.Agent.Scripting
         /// <summary>当前 PS 版本是否支持程序化回滚。2402 下为 false。</summary>
         public bool CanRollback;
         public bool TimedOut;
+        /// <summary>stdout/stderr 捕获达到上限被截断，输出不完整。</summary>
+        public bool OutputTruncated;
         public long DurationMs;
         public List<PythonLintIssue> LintIssues = new List<PythonLintIssue>();
         /// <summary>经过 sanitize 后实际送去执行的代码（不含 __future__ 前缀），供排查用。</summary>
@@ -107,6 +109,9 @@ namespace TxTools.Agent.Scripting
                 "模式: {0} | 耗时: {1} ms | {2}",
                 Mode == PythonRunMode.Probe ? "probe(只读探测)" : "execute(提交变更)",
                 DurationMs, undoState));
+
+            if (OutputTruncated)
+                sb.AppendLine("警告: 脚本输出量过大，超出 8MB 捕获上限，已被截断（输出不完整）。");
 
             if (LintIssues.Count > 0)
             {
@@ -195,8 +200,21 @@ namespace TxTools.Agent.Scripting
 
     internal sealed class CaptureStream : Stream
     {
+        /// <summary>
+        /// 缓冲上限,防止脚本无限 print 把 PS 进程内存拖垮(OOM)。
+        /// 超过后丢弃后续输出(截断),避免无界增长。8MB 对返回给模型的文本足够富余,
+        /// 且 ToAgentText 本来就只截取前 ~8k 字符。
+        /// </summary>
+        public const long MaxBytes = 8L * 1024 * 1024;
+
         private readonly MemoryStream _buf = new MemoryStream();
         private readonly object _gate = new object();
+        private bool _truncated;
+
+        public bool Truncated
+        {
+            get { lock (_gate) return _truncated; }
+        }
 
         public override bool CanRead { get { return false; } }
         public override bool CanSeek { get { return false; } }
@@ -215,12 +233,23 @@ namespace TxTools.Agent.Scripting
 
         public override void Write(byte[] buffer, int offset, int count)
         {
-            lock (_gate) _buf.Write(buffer, offset, count);
+            lock (_gate)
+            {
+                if (_buf.Length >= MaxBytes)
+                {
+                    _truncated = true;
+                    return;
+                }
+                long room = MaxBytes - _buf.Length;
+                int toWrite = (int)Math.Min(count, room);
+                if (toWrite > 0) _buf.Write(buffer, offset, toWrite);
+                if (toWrite < count) _truncated = true;
+            }
         }
 
         public void Reset()
         {
-            lock (_gate) { _buf.SetLength(0); _buf.Position = 0; }
+            lock (_gate) { _buf.SetLength(0); _buf.Position = 0; _truncated = false; }
         }
 
         /// <summary>取出内容并清空。UTF-8 解码（引擎输出编码已设为 UTF-8）。</summary>
@@ -232,6 +261,7 @@ namespace TxTools.Agent.Scripting
                 string s = new UTF8Encoding(false).GetString(_buf.ToArray());
                 _buf.SetLength(0);
                 _buf.Position = 0;
+                _truncated = false;
                 return s.Replace("\r\n", "\n");
             }
         }
@@ -1372,6 +1402,7 @@ def tx_sig(o, name):
                 res.Success = ok;
                 res.Output = _stdout.Drain();
                 res.ErrorOutput = _stderr.Drain();
+                res.OutputTruncated = _stdout.Truncated || _stderr.Truncated;
                 sw.Stop();
                 res.DurationMs = sw.ElapsedMilliseconds;
                 return res;

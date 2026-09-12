@@ -66,7 +66,7 @@
     border-radius: 8px 0 0 8px;
     background: var(--rcp-bg-2);
     color: var(--rcp-dim);
-    box-shadow: -2px 0 5px rgba(0, 0, 0, 0.06);
+    box-shadow: none;
     cursor: pointer;
     font-size: 11px;
     line-height: 1;

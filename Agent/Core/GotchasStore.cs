@@ -237,16 +237,20 @@ namespace TxTools.Agent.Core
         }
 
         /// <summary>
-        /// 取"最值得注入 prompt"的 Top-N：
-        /// HitCount 高 → 常踩，必须记住；有 Correction → 能给出正解，价值 +5；
+        /// 取"最值得注入 prompt"的 Top-N。
+        /// 有正解 → 压倒性优先(50 分,盖过 HitCount*3 的常见区间):
+        ///   没有正解的坑注入后只剩"(暂无正解)"占位,对模型没有行动价值,
+        ///   旧权重(仅 +5)下高频无正解的坑会长期霸榜,把有用的挤出去;
+        /// HitCount 高 → 常踩，同类坑里先注入踩得多的；
         /// 最近 30 天有被踩过 → 仍活跃 +2。
         /// </summary>
         public static List<Gotcha> TopN(int n)
         {
             return All()
+                .Where(g => !string.IsNullOrWhiteSpace(g.Correction))
                 .OrderByDescending(g =>
-                    g.HitCount * 3.0
-                    + (!string.IsNullOrEmpty(g.Correction) ? 5.0 : 0.0)
+                    (!string.IsNullOrEmpty(g.Correction) ? 50.0 : 0.0)
+                    + g.HitCount * 3.0
                     + ((DateTime.UtcNow - g.LastHitUtc).TotalDays < 30 ? 2.0 : 0.0))
                 .Take(n)
                 .ToList();

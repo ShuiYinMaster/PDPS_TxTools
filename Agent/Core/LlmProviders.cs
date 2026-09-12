@@ -7,6 +7,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace TxTools.Agent.Core
 {
@@ -24,12 +25,18 @@ namespace TxTools.Agent.Core
         public string KeyPageUrl { get; set; }
         /// <summary>是否本地服务(如 Ollama), true 表示 key 可以留空/占位。</summary>
         public bool IsLocal { get; set; }
+        /// <summary>用户自定义添加的 OpenAI 兼容 provider。</summary>
+        public bool IsCustom { get; set; }
     }
 
     public static class LlmProviders
     {
         /// <summary>默认 provider id。用户没做过任何设置时的初始选择。</summary>
         public const string DefaultProviderId = "deepseek";
+
+        /// <summary>内置 provider 的固定前缀, 用于给自定义 provider 分配不冲突的 id。</summary>
+        private static readonly string[] _builtinIds =
+            { "deepseek", "kimi", "qwen", "openai", "ollama" };
 
         /// <summary>所有内置 provider, 顺序 = UI 里 optgroup 顺序。</summary>
         public static readonly LlmProvider[] All = new[]
@@ -39,7 +46,7 @@ namespace TxTools.Agent.Core
                 Id = "deepseek",
                 DisplayName = "DeepSeek",
                 BaseUrl = "https://api.deepseek.com",
-                Models = new[] { "deepseek-v4-pro", "deepseek-v4-flash"},
+                Models = new[] { "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"},
                 KeyPageUrl = "https://platform.deepseek.com"
             },
             new LlmProvider
@@ -71,7 +78,8 @@ namespace TxTools.Agent.Core
                 Id = "ollama",
                 DisplayName = "Ollama (\u672c\u5730)",
                 BaseUrl = "http://localhost:11434",
-                Models = new[] { "qwen2.5:14b", "qwen2.5-coder:14b", "llama3.1:8b", "deepseek-coder-v2:16b" },
+                // 硬编码仅是兜底默认:连接上后会被 /v1/models 拉取的真实列表覆盖。
+                Models = new[] { "qwen2.5-coder:7b", "qwen2.5:7b", "qwen2.5-coder:14b", "llama3.1:8b" },
                 KeyPageUrl = "https://ollama.com/library",
                 IsLocal = true
             }
@@ -81,6 +89,9 @@ namespace TxTools.Agent.Core
         {
             if (string.IsNullOrEmpty(id)) return All[0];
             foreach (var p in All)
+                if (string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase)) return p;
+            // 自定义 provider: 从持久化 prefs 里找
+            foreach (var p in Custom())
                 if (string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase)) return p;
             return All[0];
         }
@@ -93,7 +104,102 @@ namespace TxTools.Agent.Core
                 foreach (var m in p.Models)
                     if (string.Equals(m, modelId, StringComparison.OrdinalIgnoreCase))
                         return p;
+            foreach (var p in Custom())
+                if (p.Models != null)
+                    foreach (var m in p.Models)
+                        if (string.Equals(m, modelId, StringComparison.OrdinalIgnoreCase))
+                            return p;
             return All[0];
+        }
+
+        // ── 自定义 provider (OpenAI 兼容) ──
+
+        /// <summary>读取持久化的自定义 provider 列表。</summary>
+        public static List<LlmProvider> Custom()
+        {
+            try
+            {
+                var prefs = UserPrefsStore.Load();
+                return prefs.CustomProviders ?? new List<LlmProvider>();
+            }
+            catch { return new List<LlmProvider>(); }
+        }
+
+        /// <summary>全部 provider = 内置 + 自定义(自定义追加在末尾)。</summary>
+        public static List<LlmProvider> GetAll()
+        {
+            var list = new List<LlmProvider>(All);
+            list.AddRange(Custom());
+            return list;
+        }
+
+        /// <summary>
+        /// 新增或更新一个自定义 provider。id 冲突时按 displayName 自动分配一个不冲突的。
+        /// 保存成功后返回最终生效的 provider。
+        /// </summary>
+        public static LlmProvider AddOrUpdateCustom(LlmProvider provider)
+        {
+            var prefs = UserPrefsStore.Load();
+            if (prefs.CustomProviders == null)
+                prefs.CustomProviders = new List<LlmProvider>();
+
+            if (string.IsNullOrWhiteSpace(provider.Id) || IsBuiltinId(provider.Id))
+                provider.Id = MakeUniqueCustomId(prefs.CustomProviders, provider.DisplayName);
+
+            var idx = prefs.CustomProviders.FindIndex(
+                p => string.Equals(p.Id, provider.Id, StringComparison.OrdinalIgnoreCase));
+            if (idx >= 0) prefs.CustomProviders[idx] = provider;
+            else prefs.CustomProviders.Add(provider);
+
+            UserPrefsStore.Save(prefs);
+            return provider;
+        }
+
+        public static void RemoveCustom(string id)
+        {
+            if (string.IsNullOrWhiteSpace(id) || IsBuiltinId(id)) return;
+            var prefs = UserPrefsStore.Load();
+            if (prefs.CustomProviders == null) return;
+            prefs.CustomProviders.RemoveAll(
+                p => string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase));
+            UserPrefsStore.Save(prefs);
+        }
+
+        private static bool IsBuiltinId(string id)
+        {
+            foreach (var b in _builtinIds)
+                if (string.Equals(b, id, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        private static string MakeUniqueCustomId(List<LlmProvider> existing, string displayName)
+        {
+            var baseId = SanitizeId(displayName);
+            var id = baseId;
+            int n = 2;
+            while (IsBuiltinId(id)
+                   || existing.Exists(p => string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase)))
+            {
+                id = baseId + "-" + n;
+                n++;
+            }
+            return id;
+        }
+
+        /// <summary>把显示名转成安全 id (小写字母数字、下划线、连字符)。</summary>
+        private static string SanitizeId(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return "custom";
+            var sb = new System.Text.StringBuilder();
+            foreach (var c in name.ToLowerInvariant())
+            {
+                if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-')
+                    sb.Append(c);
+                else if (sb.Length > 0 && sb[sb.Length - 1] != '-')
+                    sb.Append('-');
+            }
+            var s = sb.ToString().Trim('-');
+            return string.IsNullOrEmpty(s) ? "custom" : s;
         }
     }
 }

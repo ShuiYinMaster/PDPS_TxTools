@@ -1,4 +1,4 @@
-// TxTools.Agent / Core / DeepSeekClient.cs
+﻿// TxTools.Agent / Core / DeepSeekClient.cs
 // 直连 OpenAI 兼容 /v1/chat/completions 的薄客户端 (baseUrl 可配置)。
 // 类名沿用历史命名,内部完全 provider 中立 —— 换用 DeepSeek / Kimi / Qwen / OpenAI / Ollama 
 // 只需构造时传对应 baseUrl。网络要求: 目标 host 出站 HTTPS(Ollama 是本地 HTTP)可达。
@@ -56,6 +56,11 @@ namespace TxTools.Agent.Core
         private readonly string _endpoint;
         /// <summary>模型列表 endpoint,如 https://api.deepseek.com/v1/models</summary>
         private readonly string _modelsEndpoint;
+
+        public bool IsOfficialDeepSeek
+        {
+            get { return string.Equals(new Uri(_endpoint).Host, "api.deepseek.com", StringComparison.OrdinalIgnoreCase); }
+        }
 
         static DeepSeekClient()
         {
@@ -177,7 +182,8 @@ namespace TxTools.Agent.Core
         public Action<string> OnRepetitionDetected;
 
         public async Task<ChatMessage> SendStreamAsync(ChatRequest request, Action<string> onTextDelta,
-            CancellationToken ct, Action<TokenUsage> onUsage = null, Action<string> onReasoningDelta = null)
+            CancellationToken ct, Action<TokenUsage> onUsage = null, Action<string> onReasoningDelta = null,
+            Action<string> onRepetition = null)
         {
             if (request == null) throw new ArgumentNullException(nameof(request));
 
@@ -187,7 +193,7 @@ namespace TxTools.Agent.Core
 
             try
             {
-                return await SendStreamOnceAsync(request, onTextDelta, ct, onUsage, onReasoningDelta);
+                return await SendStreamOnceAsync(request, onTextDelta, ct, onUsage, onReasoningDelta, onRepetition);
             }
             catch (LlmApiException ex) when (ShouldRetryWithout(ex, "enable_thinking")
                                               && request.EnableThinking.HasValue)
@@ -195,26 +201,26 @@ namespace TxTools.Agent.Core
                 System.Diagnostics.Debug.WriteLine(
                     "[DeepSeekClient] 该端点不支持 enable_thinking,去掉后重试。");
                 request.EnableThinking = null;
-                return await SendStreamOnceAsync(request, onTextDelta, ct, onUsage, onReasoningDelta);
+                return await SendStreamOnceAsync(request, onTextDelta, ct, onUsage, onReasoningDelta, onRepetition);
             }
             catch (LlmApiException ex) when (ShouldRetryWithoutStreamOptions(ex, request))
             {
                 System.Diagnostics.Debug.WriteLine(
                     "[DeepSeekClient] 400 stream_options 不支持,自动去掉后重试: " + ex.Message);
                 request.StreamOptions = null;
-                return await SendStreamOnceAsync(request, onTextDelta, ct, onUsage, onReasoningDelta);
+                return await SendStreamOnceAsync(request, onTextDelta, ct, onUsage, onReasoningDelta, onRepetition);
             }
             catch (LlmApiException ex) when (ShouldRetryWithoutTemperature(ex, request))
             {
                 System.Diagnostics.Debug.WriteLine(
                     "[DeepSeekClient] 400 temperature 不支持,自动去掉 temperature 重试: " + ex.Message);
                 request.Temperature = null;
-                return await SendStreamOnceAsync(request, onTextDelta, ct, onUsage, onReasoningDelta);
+                return await SendStreamOnceAsync(request, onTextDelta, ct, onUsage, onReasoningDelta, onRepetition);
             }
         }
 
         private async Task<ChatMessage> SendStreamOnceAsync(ChatRequest request, Action<string> onTextDelta,
-            CancellationToken ct, Action<TokenUsage> onUsage, Action<string> onReasoningDelta)
+            CancellationToken ct, Action<TokenUsage> onUsage, Action<string> onReasoningDelta, Action<string> onRepetition)
         {
             request.Stream = true;
             var json = JsonConvert.SerializeObject(request, JsonSettings);
@@ -362,7 +368,7 @@ namespace TxTools.Agent.Core
                         }
                         catch { }
 
-                        var h = OnRepetitionDetected;
+                        var h = onRepetition ?? OnRepetitionDetected;
                         if (h != null) { try { h(guard.BuildHint()); } catch { } }
                     }
 

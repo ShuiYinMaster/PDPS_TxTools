@@ -2,7 +2,7 @@
 //
 // 按【任务需要什么能力】而不是【我习惯用哪个模型】来选模型。
 //
-// 触发这套东西的直接需求是图像识别:DeepSeek 系列不支持视觉,
+// 视觉能力按具体模型区分，DeepSeek V4 的 vision-exp 与普通文本型号不同。
 // 遇到图片必须换到 Kimi 或千问。但一旦要跨 provider 调度,
 // 就该顺手把"便宜活别用贵模型"这件事也一起做了 —— 萃取、摘要、分类这类任务
 // 用 flash 档就够,没必要走主模型。
@@ -89,13 +89,20 @@ namespace TxTools.Agent.Core
 
         private static readonly List<ModelSpec> Catalog = new List<ModelSpec>
         {
-            // ── DeepSeek 官方 ── 主力对话,1M 上下文,【不支持视觉】
+            // 普通 V4 是文本模型；视觉必须使用明确的 vision-exp 型号。
             new ModelSpec { Provider = "deepseek", ModelId = "deepseek-v4-flash",
+                            SupportsVision = false, SupportsTools = true,
+                            ContextWindow = 1000000, CostTier = 1 },
+            // DeepSeek 控制台/兼容端点常用的短名称，实际对应 V4.1 Flash。
+            new ModelSpec { Provider = "deepseek", ModelId = "deepseek-flash",
                             SupportsVision = false, SupportsTools = true,
                             ContextWindow = 1000000, CostTier = 1 },
             new ModelSpec { Provider = "deepseek", ModelId = "deepseek-v4-pro",
                             SupportsVision = false, SupportsTools = true,
                             ContextWindow = 1000000, CostTier = 3 },
+            new ModelSpec { Provider = "deepseek", ModelId = "deepseek-v4-flash-vision-exp",
+                            SupportsVision = true, SupportsTools = true,
+                            ContextWindow = 1000000, CostTier = 1 }, // DeepSeek V4 family window
 
             // ── Kimi(Moonshot) 官方 ──
             // k3 原生支持视觉 + 1M 上下文 + Agent 能力,是目前视觉任务的首选:
@@ -155,16 +162,14 @@ namespace TxTools.Agent.Core
         /// <summary>
         /// 视觉任务默认走哪个 provider。
         ///
-        /// 默认 qwen(百炼千问):识图约 1 分/张，是目前性价比最高的。
-        /// 主对话继续用 DeepSeek(1M 上下文、缓存命中 0.02元/M)，看图才委托出去 ——
-        /// 这个组合比把主模型整体换成视觉模型便宜一个量级。
-        /// 置空则按 CostTier 自动挑；UI 可做成下拉:自动 / 千问 / Kimi。
+        /// 默认空。仅在当前模型/当前 provider 没有可用视觉候选时作为回退偏好。
+        /// 显式 provider 参数是硬约束，不修改这个共享属性。
         /// </summary>
         public static string PreferredVisionProvider { get; set; }
 
         static ModelRouter()
         {
-            PreferredVisionProvider = "qwen";
+            PreferredVisionProvider = null;
         }
 
         /// <summary>
@@ -177,6 +182,7 @@ namespace TxTools.Agent.Core
         /// 所以任何"由模型名推断规格"的地方都要带上 provider 一起定位。
         /// </summary>
         public static string CurrentProviderId { get; set; }
+        public static string CurrentModelId { get; set; }
 
         // ── 取 key ──
 
@@ -214,7 +220,7 @@ namespace TxTools.Agent.Core
             switch (scene)
             {
                 case TaskScene.Vision:
-                    return SelectVision();
+                    return SelectVisionFor(currentModel ?? CurrentModelId, CurrentProviderId, null, HasKey);
 
                 case TaskScene.Cheap:
                     return Candidates(m => m.SupportsTools == false || true)
@@ -235,21 +241,24 @@ namespace TxTools.Agent.Core
             }
         }
 
-        private static ModelSpec SelectVision()
+        public static ModelSpec SelectVisionFor(string currentModel, string currentProvider,
+            string requestedProvider, Func<string, bool> isAvailable)
         {
-            var vision = Candidates(m => m.SupportsVision).ToList();
-            if (vision.Count == 0) return null;
-
-            if (!string.IsNullOrWhiteSpace(PreferredVisionProvider))
-            {
-                var pref = vision
-                    .Where(m => string.Equals(m.Provider, PreferredVisionProvider, StringComparison.OrdinalIgnoreCase))
-                    .OrderBy(m => m.CostTier)
-                    .FirstOrDefault();
-                if (pref != null) return pref;
-            }
-
-            return vision.OrderBy(m => m.CostTier).ThenBy(m => m.ModelId, StringComparer.Ordinal).First();
+            if (isAvailable == null) throw new ArgumentNullException(nameof(isAvailable));
+            requestedProvider = requestedProvider == null ? null : requestedProvider.Trim();
+            var current = FindByModelId(currentModel, currentProvider);
+            var vision = Catalog.Where(m => m.SupportsVision).ToList();
+            if (current != null && current.SupportsVision) vision.Insert(0, current);
+            return vision.Where(m => isAvailable(m.Provider)
+                    && (string.IsNullOrWhiteSpace(requestedProvider)
+                        || string.Equals(m.Provider, requestedProvider, StringComparison.OrdinalIgnoreCase)))
+                .OrderBy(m => current != null && string.Equals(m.Provider, current.Provider, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(m.ModelId, current.ModelId, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenBy(m => string.Equals(m.Provider, currentProvider, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenBy(m => string.Equals(m.Provider, PreferredVisionProvider, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenBy(m => m.CostTier)
+                .ThenBy(m => m.ModelId, StringComparer.Ordinal)
+                .FirstOrDefault();
         }
 
         private static IEnumerable<ModelSpec> Candidates(Func<ModelSpec, bool> filter)

@@ -103,6 +103,9 @@ namespace TxTools.Agent.Core
                 if (!ConnSlots.Wait(TimeSpan.FromSeconds(30)))
                 {
                     try { AuditLog.Write("[warn] [PsRpc] 并发连接过多，丢弃一个请求"); } catch { }
+                    // 必须释放管道句柄 —— 否则 native 句柄只能等 GC 终结器回收,
+                    // 客户端也会一直等一个永远不会来的响应。
+                    try { pipe.Dispose(); } catch { }
                     return;
                 }
                 try

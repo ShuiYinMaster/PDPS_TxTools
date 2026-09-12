@@ -266,12 +266,7 @@ namespace TxTools.Agent.Core
             IAgentLoop loop = null;
             try
             {
-                loop = AgentLoop.Current;
-                if (loop == null || loop.AskUserRequest == null)
-                {
-                    var harness = TxTools.Agent.Harness.HarnessAgentLoop.Current;
-                    if (harness != null && harness.AskUserRequest != null) loop = harness;
-                }
+                loop = TxTools.Agent.Harness.HarnessAgentLoop.Current;
             }
             catch { loop = null; }
 

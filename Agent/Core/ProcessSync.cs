@@ -60,6 +60,14 @@ namespace TxTools.Agent.Core
                 try { held = mutex.WaitOne(timeoutMs); }
                 catch (AbandonedMutexException) { held = true; }   // 上一个持有者挂了，锁归我们
 
+                if (!held)
+                {
+                    // 关键修复:拿不到锁绝不能继续跑临界区 —— 那会让两个进程并发整份重写
+                    // 同一文件(互相覆盖/截断)。抛异常交给调用方决定(通常是被 catch 吞掉、跳过本次写)。
+                    throw new TimeoutException(
+                        "未能获取跨进程写锁 " + name + "(超过 " + timeoutMs + "ms)，已跳过本次写以避免并发损坏。");
+                }
+
                 return action();
             }
             finally

@@ -46,6 +46,10 @@ namespace TxTools.Agent.Core
         private readonly bool _needsTokenType;
         private int _dim;
 
+        // ONNX InferenceSession 与 tokenizer 均非线程安全。KnowledgeIndex 的 BuildAsync 与
+        // SearchAsync 可能并发调用 Embed,必须在推理入口串行化,否则会崩溃或返回损坏结果。
+        private readonly object _gate = new object();
+
         public string Id { get { return "onnx:" + _name + ":" + _dim; } }
         public int Dimension { get { return _dim; } }
 
@@ -143,44 +147,48 @@ namespace TxTools.Agent.Core
 
         private List<float[]> RunBatch(List<string> texts)
         {
-            long[,] ids, mask;
-            int seq;
-            _tok.EncodeBatch(texts, out ids, out mask, out seq);
-
-            int batch = texts.Count;
-
-            var idsT = new DenseTensor<long>(Flatten(ids, batch, seq), new[] { batch, seq });
-            var maskT = new DenseTensor<long>(Flatten(mask, batch, seq), new[] { batch, seq });
-
-            var inputs = new List<NamedOnnxValue>
+            // 串行化共享的非线程安全资源(InferenceSession + tokenizer + _dim 写入)
+            lock (_gate)
             {
-                NamedOnnxValue.CreateFromTensor("input_ids", idsT),
-                NamedOnnxValue.CreateFromTensor("attention_mask", maskT)
-            };
+                long[,] ids, mask;
+                int seq;
+                _tok.EncodeBatch(texts, out ids, out mask, out seq);
 
-            if (_needsTokenType)
-            {
-                var zeros = new long[batch * seq];
-                inputs.Add(NamedOnnxValue.CreateFromTensor("token_type_ids",
-                    new DenseTensor<long>(zeros, new[] { batch, seq })));
-            }
+                int batch = texts.Count;
 
-            using (var results = _session.Run(inputs))
-            {
-                // 输出名各家不一(last_hidden_state / sentence_embedding / output_0),取第一个
-                var first = results.First();
-                var tensor = first.AsTensor<float>();
-                var dims = tensor.Dimensions.ToArray();
+                var idsT = new DenseTensor<long>(Flatten(ids, batch, seq), new[] { batch, seq });
+                var maskT = new DenseTensor<long>(Flatten(mask, batch, seq), new[] { batch, seq });
 
-                // 已经是句向量 [batch, dim]
-                if (dims.Length == 2)
-                    return Slice2D(tensor, dims[0], dims[1]);
+                var inputs = new List<NamedOnnxValue>
+                {
+                    NamedOnnxValue.CreateFromTensor("input_ids", idsT),
+                    NamedOnnxValue.CreateFromTensor("attention_mask", maskT)
+                };
 
-                // token 级 [batch, seq, hidden] → 池化
-                if (dims.Length == 3)
-                    return Pool(tensor, dims[0], dims[1], dims[2], mask);
+                if (_needsTokenType)
+                {
+                    var zeros = new long[batch * seq];
+                    inputs.Add(NamedOnnxValue.CreateFromTensor("token_type_ids",
+                        new DenseTensor<long>(zeros, new[] { batch, seq })));
+                }
 
-                throw new Exception("无法识别的输出形状:" + string.Join("x", dims));
+                using (var results = _session.Run(inputs))
+                {
+                    // 输出名各家不一(last_hidden_state / sentence_embedding / output_0),取第一个
+                    var first = results.First();
+                    var tensor = first.AsTensor<float>();
+                    var dims = tensor.Dimensions.ToArray();
+
+                    // 已经是句向量 [batch, dim]
+                    if (dims.Length == 2)
+                        return Slice2D(tensor, dims[0], dims[1]);
+
+                    // token 级 [batch, seq, hidden] → 池化
+                    if (dims.Length == 3)
+                        return Pool(tensor, dims[0], dims[1], dims[2], mask);
+
+                    throw new Exception("无法识别的输出形状:" + string.Join("x", dims));
+                }
             }
         }
 

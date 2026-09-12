@@ -174,6 +174,9 @@ namespace TxTools.Agent.Core
         public static List<Fact> TopN(int n)
         {
             return All()
+                .Where(f => f.Category == "preference" || f.Category == "api_fact")
+                .GroupBy(f => (f.Content ?? "").Trim(), StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.OrderByDescending(f => Score(f)).First())
                 .OrderByDescending(f => Score(f))
                 .Take(n)
                 .ToList();

@@ -97,6 +97,7 @@ namespace TxAgent.Core
         /// 否则用户点停止后重开对话，会发现刚才明明显示了内容却没保存。
         /// </summary>
         private readonly StringBuilder _partial = new StringBuilder();
+        private readonly StringBuilder _partialReasoning = new StringBuilder();
 
         /// <summary>本次运行累计触发重复循环的次数。</summary>
         private int _repetitionStrikes;
@@ -176,9 +177,16 @@ namespace TxAgent.Core
         {
             var result = new AgentRunResult();
             _partial.Length = 0;
+            _partialReasoning.Length = 0;
             _repetitionStrikes = 0;
             var failureCounter = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             RestorePoint restorePoint = null;
+            string lastToolName = null;
+            int consecSameTool = 0;
+            // 相同参数跨轮重复调用的"连续"计数:换一个 dedupKey 就重置,
+            // 避免把整个运行期不同时点的同参调用累加成一串,误杀合法复核。
+            string lastDedupKey = null;
+            int consecRepeat = 0;
 
             var tools = _registry.ExportSchemas(_options.ReadOnlyPhase);
 
@@ -193,6 +201,7 @@ namespace TxAgent.Core
 
                 if (response.IsError)
                 {
+                    FlushPartial(session, "[模型调用失败，以下为未完成内容]");
                     result.Completed = false;
                     result.StopReason = "LLM 调用失败: " + response.ErrorMessage;
                     result.RestorePoint = restorePoint;
@@ -228,12 +237,20 @@ namespace TxAgent.Core
                 bool hasPayload = !string.IsNullOrWhiteSpace(response.Content) || response.HasToolCalls;
                 if (hasPayload)
                 {
-                    session.Add(ChatMessage.CreateAssistant(
+                    var assistantMessage = ChatMessage.CreateAssistant(
                         response.Content,
-                        response.ToolCalls == null ? null : new List<ToolCall>(response.ToolCalls)));
+                        response.ToolCalls == null ? null : new List<ToolCall>(response.ToolCalls));
+                    assistantMessage.ReasoningContent = response.ReasoningContent;
+                    session.Add(assistantMessage);
                 }
                 else
                 {
+                    if (!string.IsNullOrWhiteSpace(response.ReasoningContent))
+                    {
+                        var unfinished = ChatMessage.CreateAssistant("[模型仅返回思考，未完成回答]", null);
+                        unfinished.ReasoningContent = response.ReasoningContent;
+                        session.Add(unfinished);
+                    }
                     _host.Log("warn", "模型返回空内容且无工具调用，已丢弃该轮消息以免污染历史");
                 }
 
@@ -303,6 +320,49 @@ namespace TxAgent.Core
                         session.Add(ChatMessage.CreateToolResult(call.Id,
                             "跳过:本轮已经用完全相同的参数调用过 " + call.Name + "，"
                             + "结果见上一条。不要重复发同一个调用。"));
+                        continue;
+                    }
+
+                    // 【重复调用守卫】同一工具+同一参数【连续】重复调用 —— 典型的"瞎调/空转"。
+                    // 轮内去重挡不住跨轮循环(模型每轮改一点点参数又发一遍)。
+                    // 只算"连续"：换参数或中间夹了别的调用就重置计数，避免把整个运行期
+                    // 不同时点的同参调用(合法复核)累加成一串误杀。
+                    if (string.Equals(lastDedupKey, dedupKey, StringComparison.Ordinal))
+                        consecRepeat++;
+                    else
+                    {
+                        lastDedupKey = dedupKey;
+                        consecRepeat = 1;
+                    }
+                    if (consecRepeat >= 3)
+                    {
+                        _host.Log("warn", "工具 " + call.Name + " 已连续第 " + consecRepeat + " 次以相同参数调用，判定为重复空转，已拦截");
+                        session.Add(ChatMessage.CreateToolResult(call.Id,
+                            "拦截:你已连续 " + consecRepeat + " 次用完全相同的参数调用 " + call.Name + "，"
+                            + "这看起来是在重复空转。请先看看上一条工具结果是不是已经回答了你的问题，"
+                            + "若结果已得到就停止调用并直接总结;若确实需要不同的结果，请换参数或换工具，"
+                            + "不要原样重发。"));
+                        continue;
+                    }
+
+                    // 同一工具【连续】被调用多次(参数可不同)—— 改参数重发也是循环的一种。
+                    // 中间夹了别的工具就重置计数,所以只拦"紧挨着的一连串同工具调用"。
+                    // 同工具调用【成功后】也重置 —— 合法的多步操作(连续几次 run_csharp 递进)
+                    // 不应被当成空转拦截,空转的特征是同工具反复失败/无进展。
+                    if (string.Equals(lastToolName, call.Name, StringComparison.OrdinalIgnoreCase))
+                        consecSameTool++;
+                    else
+                    {
+                        lastToolName = call.Name;
+                        consecSameTool = 1;
+                    }
+                    if (consecSameTool >= 4)
+                    {
+                        _host.Log("warn", "工具 " + call.Name + " 已连续第 " + consecSameTool + " 次被调用(参数不同)，判定为改参数空转，已拦截");
+                        session.Add(ChatMessage.CreateToolResult(call.Id,
+                            "拦截:你已连续 " + consecSameTool + " 次调用 " + call.Name + "(每次参数略有变化)。"
+                            + "这说明你在重复试错而不是解决问题。请停下，先仔细看前面的工具结果，"
+                            + "确认信息缺口到底在哪;不确定怎么用就换工具或直接向用户说明，不要再调 " + call.Name + "。"));
                         continue;
                     }
 
@@ -381,8 +441,6 @@ namespace TxAgent.Core
 
                     ToolResult toolResult = SafeExecute(tool, call.ArgumentsJson);
 
-                    RaiseToolFinished(call, toolResult);
-
                     if (toolResult.MutatedScene) result.SceneMutated = true;
 
                     // 注:片段观察(Observe)放在工具层(RunCSharpTool/RunPythonTool)做 ——
@@ -395,6 +453,8 @@ namespace TxAgent.Core
                     if (toolResult.Success)
                     {
                         failureCounter[tool.Name] = 0;
+                        // 同工具成功后重置"改参数空转"计数 —— 合法的多步递进操作不受影响
+                        consecSameTool = 1;
                     }
                     else
                     {
@@ -408,6 +468,8 @@ namespace TxAgent.Core
 
                     session.Add(ChatMessage.CreateToolResult(call.Id,
                         FormatForModel(tool, toolResult, consecutive)));
+                    // Persistence subscribers must see the result, not an unmatched tool call.
+                    RaiseToolFinished(call, toolResult);
 
                     if (!toolResult.Success && consecutive >= _options.MaxConsecutiveToolFailures)
                     {
@@ -437,7 +499,7 @@ namespace TxAgent.Core
 
             var handlers = new LlmStreamHandlers
             {
-                OnReasoningDelta = text => { emitted = true; RaiseReasoningDelta(text); },
+                OnReasoningDelta = text => { emitted = true; _partialReasoning.Append(text); RaiseReasoningDelta(text); },
                 OnContentDelta = text =>
                 {
                     emitted = true;
@@ -454,6 +516,7 @@ namespace TxAgent.Core
                     {
                         RaiseContentReset();
                         _partial.Length = 0;     // 这半截已作废，别再落库
+                        _partialReasoning.Length = 0;
                         emitted = false;
                     }
                     _host.Log("warn", "LLM 重试第 " + attempt + " 次");
@@ -474,7 +537,11 @@ namespace TxAgent.Core
                         ? await _streamLlm.CompleteStreamAsync(request, handlers, ct).ConfigureAwait(false)
                         : await _llm.CompleteAsync(request, ct).ConfigureAwait(false);
 
-                    if (last != null && !last.IsError) return last;
+                    if (last != null && !last.IsError)
+                    {
+                        _partialReasoning.Length = 0;
+                        return last;
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -491,20 +558,24 @@ namespace TxAgent.Core
         }
 
         /// <summary>把中断时的半截正文补进会话。无内容则什么都不做。</summary>
-        private void FlushPartial(AgentSession session)
+        private void FlushPartial(AgentSession session, string status = "[本轮被用户中断]")
         {
             try
             {
                 if (session == null) return;
                 var text = _partial.ToString();
+                var reasoning = _partialReasoning.ToString();
                 _partial.Length = 0;
+                _partialReasoning.Length = 0;
 
                 // 【必须判空】空 assistant 消息(既无 content 又无 tool_calls)
                 // 一旦进历史，下一轮原样发回去就是 400 Invalid assistant message，
                 // 而且之后每一轮都会 400。
-                if (string.IsNullOrWhiteSpace(text)) return;
+                if (string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(reasoning)) return;
 
-                session.Add(ChatMessage.CreateAssistant(text + "\n\n[本轮被用户中断]", null));
+                var interrupted = ChatMessage.CreateAssistant(text + "\n\n" + status, null);
+                interrupted.ReasoningContent = reasoning;
+                session.Add(interrupted);
                 _host.Log("info", "已保存中断前的半截回复(" + text.Length + " 字符)");
             }
             catch { }

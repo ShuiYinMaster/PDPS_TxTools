@@ -37,7 +37,7 @@ namespace TxTools.Agent.Harness
         private readonly TxTools.Agent.Core.ToolRegistry _tools;
         private readonly AgentOptions _options;
         private readonly PsAgentHost _host;
-        private readonly TxAgent.Core.ToolRegistry _harnessReg;
+        private TxAgent.Core.ToolRegistry _harnessReg;
         private readonly DeepSeekLlmClient _llm;
 
         private List<ChatMessage> _fullHistory = new List<ChatMessage>();
@@ -111,6 +111,8 @@ namespace TxTools.Agent.Harness
                 _host.AutoApproveTools.UnionWith(_options.AutoApproveTools); // setter 私有,拷贝条目而非替换引用
 
             _llm = new DeepSeekLlmClient(_client, _options.Model);
+            ModelRouter.CurrentModelId = _options.Model;
+            _llm.ReasoningEffort = UserPrefsStore.Load().ReasoningEffort;
 
             // 诊断 Newtonsoft.Json 版本冲突:PS 宿主 bin 自带一份,强名称绑定会顶掉插件引用的 13.x。
             try
@@ -125,9 +127,26 @@ namespace TxTools.Agent.Harness
             // 从持久化设置恢复工具组开关(没有保存过则用 ToolGate 代码默认值)
             TxTools.Agent.Core.ToolGate.RestoreFromPrefs();
 
-            // 把所有现有工具包成 ITool(事件由 Core 直接抛,不需要 Tracing 装饰器)
-            // 按 ToolGate 组过滤:未启用组的工具不注册,模型看不到、也不占 prompt 前缀。
-            _harnessReg = new TxAgent.Core.ToolRegistry();
+            RebuildHarnessRegistry();
+
+            Reset();
+
+            // [P2] 注册静态入口,供 AskUserTool / 记忆工具获取 convId/AskUserRequest
+            Current = this;
+        }
+
+        // ── 生命周期 ──
+
+        /// <summary>
+        /// 从旧注册表重建 harness 适配器表(按 ToolGate 组过滤)。
+        /// 【每次 SendAsync 前都要重建】save_recipe / delete_recipe 只改旧注册表,
+        /// 这里的快照若不刷新,会话内新保存的配方模型永远看不到、删除的删不掉 ——
+        /// BuildLoop 只在填 Key/切模型时才重跑,不能指望它。
+        /// 两次重建之间工具集没变时,生成的 ToolDefs 完全一致,prompt 前缀缓存不受影响。
+        /// </summary>
+        private void RebuildHarnessRegistry()
+        {
+            var reg = new TxAgent.Core.ToolRegistry();
             foreach (var t in _tools.Tools)
             {
                 if (t == null) continue;
@@ -138,21 +157,15 @@ namespace TxTools.Agent.Harness
                     continue;
                 }
                 var adapter = new TxAgentToolAdapter(t, _host, () => _currentConvId); // [P3] 传入 convId 供 AutoGotcha
-                try { _harnessReg.Register(adapter); }
+                try { reg.Register(adapter); }
                 catch (Exception ex)
                 {
                     System.Diagnostics.Debug.WriteLine(
                         "[TxAgent.Harness] 注册工具失败,跳过: " + (t.Name ?? "?") + " -> " + ex.Message);
                 }
             }
-
-            Reset();
-
-            // [P2] 注册静态入口,供 AskUserTool / 记忆工具获取 convId/AskUserRequest
-            Current = this;
+            _harnessReg = reg;
         }
-
-        // ── 生命周期 ──
 
         public void SetConvId(string convId)
         {
@@ -163,10 +176,10 @@ namespace TxTools.Agent.Harness
         {
             _fullHistory = new List<ChatMessage>();
             _workingMemory = new List<ChatMessage>();
-            // [P1] 注入 Facts + Gotchas 到系统提示(复用旧引擎的 BuildSystemPromptWithMemory)
+            // [P1] 注入 Facts + Gotchas 到系统提示(复用 SystemPromptBuilder)
             // 换对话 → 让系统提示词重新拉一次记忆(会话内则固定,保住前缀缓存)
-            TxTools.Agent.Core.AgentLoop.InvalidateSystemPromptCache();
-            var sysPrompt = TxTools.Agent.Core.AgentLoop.BuildSystemPromptWithMemory();
+            TxTools.Agent.Core.SystemPromptBuilder.InvalidateCache();
+            var sysPrompt = TxTools.Agent.Core.SystemPromptBuilder.BuildWithMemory();
 
             // 工具组开关说明:告诉模型哪些能力当前被禁用,避免它反复尝试不可用工具
             var gateNote = TxTools.Agent.Core.ToolGate.DescribeDisabled();
@@ -194,7 +207,7 @@ namespace TxTools.Agent.Harness
             // [P1] 加载历史后,若首条是 system 消息,替换为含 Facts+Gotchas 的最新版本
             if (_workingMemory.Count > 0 && _workingMemory[0].Role == "system")
             {
-                _workingMemory[0] = new ChatMessage("system", TxTools.Agent.Core.AgentLoop.BuildSystemPromptWithMemory());
+                _workingMemory[0] = new ChatMessage("system", TxTools.Agent.Core.SystemPromptBuilder.BuildWithMemory());
                 _fullHistory[0] = _workingMemory[0];
             }
             // 旧版本残留在归档里的临时片段块,载入时一并清掉(单条可达 6KB)
@@ -227,6 +240,9 @@ namespace TxTools.Agent.Harness
 
             try
             {
+                // 会话中途 save/delete 的配方在这里生效(见方法注释)
+                RebuildHarnessRegistry();
+
                 // [P5] 历史压缩:超轮数时把旧消息压缩为摘要
                 CompressHistory();
 
@@ -263,6 +279,7 @@ namespace TxTools.Agent.Harness
                 loop.TurnCompleted += OnTurnCompleted;
                 loop.ToolStarting += OnToolStarting;
                 loop.ToolFinished += OnToolFinished;
+                loop.ToolFinished += (call, r) => SyncIncrementalFromSession(session, baseCount);
                 loop.Usage += OnUsage;
 
                 AgentRunResult result;
@@ -406,7 +423,9 @@ namespace TxTools.Agent.Harness
         public async Task<LessonExtractor.ExtractResult> ExtractLessonsAsync(CancellationToken ct)
         {
             // [P6] 复用旧引擎的 LessonExtractor 做经验萃取
-            var extractor = new LessonExtractor(_client, "deepseek-v4-flash");
+            // 模型跟随当前会话选择 —— 之前硬编码 deepseek-v4-flash,
+            // 用户切到其它 provider 后萃取会带着错误的模型名打过去。
+            var extractor = new LessonExtractor(_client, _options.Model);
             return await extractor.ExtractAsync(_currentConvId, _fullHistory, ct);
         }
 
@@ -424,6 +443,15 @@ namespace TxTools.Agent.Harness
             catch { return null; }
 
             if (snippets == null || snippets.Count == 0) return null;
+
+            // 【归因闭环】被动注入与 get_snippet 是同等的"取用",必须同样登记进
+            // 待判定池 —— 否则模型照抄注入代码执行成功也不会回填 SuccessCount,
+            // 而检索排序 / 固化候选门槛 / 可靠性判定全建立在这份计数上。
+            foreach (var s in snippets)
+            {
+                try { TxTools.Agent.Core.SnippetUsageLedger.Register(s.Name, s.Code, s.Lang); }
+                catch { }
+            }
 
             var sb = new System.Text.StringBuilder();
             sb.AppendLine(SNIPPET_PREFIX + "以下是与用户当前问题匹配的已验证 run_csharp 代码。" +
@@ -623,11 +651,18 @@ namespace TxTools.Agent.Harness
 
         // ── 会话 <-> 历史 互转 ──
 
+        private readonly HashSet<TxAgent.Core.ChatMessage> _archivedSessionMessages = new HashSet<TxAgent.Core.ChatMessage>();
+
         private AgentSession BuildSessionFromHistory()
         {
+            _archivedSessionMessages.Clear();
             var session = new AgentSession(null);
             foreach (var m in _workingMemory)
-                session.Add(TranslateToHarness(m));
+            {
+                var hm = TranslateToHarness(m);
+                session.Add(hm);
+                _archivedSessionMessages.Add(hm);
+            }
             return session;
         }
 
@@ -652,17 +687,33 @@ namespace TxTools.Agent.Harness
             _workingMemory = new List<ChatMessage>(all);
             PurgeEphemeral(_workingMemory);
 
-            // 归档:只追加本轮新产生的消息(assistant / tool),
-            // 基线之前的是压缩产物,不能进归档
-            if (baseCount < 0) baseCount = 0;
-            for (int i = baseCount; i < all.Count; i++)
+            // 归档:只追加本次调用前尚未同步过的消息(assistant / tool)。
+            // 用消息对象身份去重，避免工作上下文裁剪后索引错位导致归档漏消息。
+            // Message identity survives prefix trimming; a numeric index does not.
+            for (int i = 0; i < all.Count; i++)
             {
+                if (!_archivedSessionMessages.Add(session.Messages[i])) continue;
                 var m = all[i];
                 if (IsEphemeral(m)) continue;
                 _fullHistory.Add(m);
             }
 
             RaiseHistoryChanged();
+        }
+
+        /// <summary>
+        /// 崩溃兜底增量同步:本轮运行中途(每个工具完成后)调用一次,
+        /// 把 session 里已产生但还没归档的消息同步进 _fullHistory 并触发 HistoryChanged,
+        /// 让 UI 的 SaveCurrent 及时落盘。PS 中途崩溃时最多丢"当前正在跑的那一步"。
+        /// </summary>
+        private void SyncIncrementalFromSession(AgentSession session, int baseCount)
+        {
+            if (session == null) return;
+            try { SyncHistoryFromSession(session, baseCount); }
+            catch (Exception ex)
+            {
+                try { AuditLog.Write("[warn] [Harness] 增量归档失败: " + ex.Message); } catch { }
+            }
         }
 
         /// <summary>本轮临时注入、不该进归档也不该跨轮残留的消息。</summary>
@@ -687,6 +738,7 @@ namespace TxTools.Agent.Harness
             {
                 Role = ToHarnessRole(m.Role),
                 Content = m.Content,
+                ReasoningContent = m.ReasoningContent,
                 ToolCallId = m.ToolCallId,
                 Pinned = m.Role == "system"
             };
@@ -709,6 +761,7 @@ namespace TxTools.Agent.Harness
         private static ChatMessage TranslateBack(TxAgent.Core.ChatMessage hm)
         {
             var m = new ChatMessage(ToOldRole(hm.Role), hm.Content);
+            m.ReasoningContent = hm.ReasoningContent;
             m.ToolCallId = hm.ToolCallId;
             if (hm.ToolCalls != null && hm.ToolCalls.Count > 0)
             {

@@ -50,7 +50,7 @@ namespace TxTools.Agent.Core
                 // 视图与截图
                 { "view", new[] {
                     "capture_viewer_image", "screenshot_window", "set_camera_view",
-                    "set_view_to_object", "analyze_viewport" } },
+                    "set_view_to_object", "analyze_viewport", "analyze_image" } },
 
                 // CATIA 集成
                 { "catia", new[] { "catia_read_tree", "import_catia_tree_to_parts" } },
@@ -76,6 +76,21 @@ namespace TxTools.Agent.Core
         public static List<string> AllGroups()
         {
             return Groups.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        /// <summary>组的显示名(设置面板用)。未知组返回原 id。</summary>
+        public static string GroupDisplayName(string group)
+        {
+            switch (group ?? "")
+            {
+                case "code": return "改源码 (code)";
+                case "cee": return "CEE 逻辑/信号 (cee)";
+                case "doc": return "文档生成 (doc)";
+                case "view": return "视图/截图 (view)";
+                case "catia": return "CATIA 集成 (catia)";
+                case "knowledge": return "本地知识库 (knowledge)";
+                default: return group ?? "";
+            }
         }
 
         public static List<string> EnabledGroups()

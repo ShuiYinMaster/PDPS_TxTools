@@ -48,6 +48,8 @@ namespace TxTools.Agent.Core
         /// 2 次太松（连着调两遍很常见），4 次太严（等不到）。3 次是实用折中。
         /// </summary>
         public static int PromoteThreshold = 3;
+        // Repetition may be probing or caught failures. Promotion requires explicit review.
+        public static bool EnableAutoPromotion = false;
 
         /// <summary>待定项的保留天数。太久没再出现说明是一次性的，清掉。</summary>
         public static int ExpireDays = 30;
@@ -125,7 +127,7 @@ namespace TxTools.Agent.Core
             hit.LastSeenUtc = DateTime.UtcNow;
             hit.ConvId = convId;
 
-            if (hit.SeenCount < PromoteThreshold) { Save(hit); return null; }
+            if (!EnableAutoPromotion || hit.SeenCount < PromoteThreshold) { Save(hit); return null; }
 
             // ── 升格 ──
             var name = SnippetStore.AutoName(hit.LastCode);
@@ -225,7 +227,7 @@ namespace TxTools.Agent.Core
                 // 过期的顺手清掉,避免待定池无限增长
                 if (last != default(DateTime) && last < cutoff)
                 {
-                    MdStore.Delete(Folder, SlugOf(fp));
+                    // Read-only filtering; maintenance archives expired files recoverably.
                     continue;
                 }
 
@@ -258,8 +260,7 @@ namespace TxTools.Agent.Core
                      ? "python" : "csharp";
 
             var sb = new StringBuilder();
-            sb.AppendLine("待定片段（" + lang + "）：同类操作再出现 "
-                + Math.Max(0, PromoteThreshold - p.SeenCount) + " 次即自动固化。");
+            sb.AppendLine("待定片段（" + lang + "）：出现 " + p.SeenCount + " 次；需验证结果并人工确认后固化，重复不代表成功。");
             sb.AppendLine();
             sb.AppendLine("```" + lang);
             sb.AppendLine((p.LastCode ?? "").TrimEnd());
@@ -306,7 +307,7 @@ namespace TxTools.Agent.Core
             if (all.Count == 0) return "待定池为空。";
 
             var sb = new StringBuilder();
-            sb.AppendLine("待定池 " + all.Count + " 条（重复 " + PromoteThreshold + " 次自动固化）:");
+            sb.AppendLine("待定池 " + all.Count + " 条（默认关闭自动固化，需确认可复用且结果正确）:");
             foreach (var p in all.Take(20))
                 sb.Append("  ").Append(p.SeenCount).Append("/").Append(PromoteThreshold)
                   .Append("  ").AppendLine(p.Fingerprint.Length > 90

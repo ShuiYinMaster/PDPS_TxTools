@@ -28,9 +28,13 @@ namespace TxTools.Agent.Core
     {
         public string ProviderId { get; set; }
         public string Model { get; set; }
+        /// <summary>Official DeepSeek V4: low / high / max. Other providers keep their defaults.</summary>
+        public string ReasoningEffort { get; set; } = "low";
         public string ApprovalMode { get; set; }
         /// <summary>启用的工具组(ToolGate)。null/空 = 用代码默认值。</summary>
         public List<string> EnabledToolGroups { get; set; }
+        /// <summary>用户自定义的 OpenAI 兼容 provider(动态增删)。</summary>
+        public List<LlmProvider> CustomProviders { get; set; }
         public Dictionary<string, ProviderModelsCache> Models { get; set; }
             = new Dictionary<string, ProviderModelsCache>(StringComparer.Ordinal);
     }

@@ -526,10 +526,6 @@
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
       <DependentUpon>Settings.settings</DependentUpon>
     </Compile>
-    <Compile Include="Test\helloworldcom.cs" />
-    <Compile Include="Test\hellowouldui.cs">
-      <SubType>Form</SubType>
-    </Compile>
     <Compile Include="WeldSpotAllocator\Ui\OpGridHost.cs" />
     <Compile Include="WeldSpotGrouper\Core\GroupModels.cs" />
     <Compile Include="WeldSpotGrouper\Ps\GroupWriter.cs" />
@@ -565,9 +561,6 @@
     <EmbeddedResource Include="Properties\Resources.resx">
       <Generator>ResXFileCodeGenerator</Generator>
       <LastGenOutput>Resources.Designer.cs</LastGenOutput>
-    </EmbeddedResource>
-    <EmbeddedResource Include="Test\hellowouldui.resx">
-      <DependentUpon>hellowouldui.cs</DependentUpon>
     </EmbeddedResource>
     <EmbeddedResource Include="WeldSpotAllocator\Ui\AllocatorForm.resx">
       <DependentUpon>AllocatorForm.cs</DependentUpon>
