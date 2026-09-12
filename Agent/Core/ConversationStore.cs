@@ -11,6 +11,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Serialization;
 
 namespace TxTools.Agent.Core
 {
@@ -26,6 +27,7 @@ namespace TxTools.Agent.Core
 
     public sealed class Conversation
     {
+        public int SchemaVersion { get; set; } = 2;
         public string Id { get; set; }
         public string Title { get; set; }
         public DateTime CreatedUtc { get; set; }
@@ -48,6 +50,59 @@ namespace TxTools.Agent.Core
     {
         private const string FolderName = "conversations";
         private const string LegacyFile = "conversation.json";
+        private sealed class ArchiveResolver : DefaultContractResolver
+        {
+            protected override JsonProperty CreateProperty(MemberInfo member, MemberSerialization serialization)
+            {
+                var property = base.CreateProperty(member, serialization);
+                if (member.DeclaringType == typeof(ChatMessage) && member.Name == "ReasoningContent")
+                    property.ShouldSerialize = value => true;
+                return property;
+            }
+        }
+        private static readonly JsonSerializerSettings ArchiveSettings = new JsonSerializerSettings
+        {
+            ContractResolver = new ArchiveResolver(), NullValueHandling = NullValueHandling.Ignore
+        };
+
+        // Temp file + atomic replace: a crash cannot truncate the only good archive.
+        // Keep exactly one previous version, with a non-json suffix so it isn't listed twice.
+        private static void AtomicWrite(string path, string json)
+        {
+            var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+                {
+                    writer.Write(json);
+                    writer.Flush();
+                    stream.Flush(true);
+                }
+                if (File.Exists(path)) File.Replace(temp, path, path + ".bak");
+                else File.Move(temp, path);
+            }
+            finally { if (File.Exists(temp)) File.Delete(temp); }
+        }
+
+        private static ConversationMeta ReadMeta(string path)
+        {
+            var meta = new ConversationMeta();
+            using (var reader = new JsonTextReader(File.OpenText(path)))
+                while (reader.Read())
+                {
+                    if (reader.TokenType != JsonToken.PropertyName || reader.Depth != 1) continue;
+                    var name = (string)reader.Value;
+                    if (!reader.Read()) break;
+                    if (name == "Id") meta.Id = Convert.ToString(reader.Value);
+                    else if (name == "Title") meta.Title = Convert.ToString(reader.Value);
+                    else if (name == "UpdatedUtc") meta.UpdatedUtc = Convert.ToDateTime(reader.Value);
+                    else reader.Skip();
+                    // Our schema writes metadata before Messages: no need to load the transcript.
+                    if (!string.IsNullOrEmpty(meta.Id) && meta.Title != null && meta.UpdatedUtc != default(DateTime)) break;
+                }
+            return meta;
+        }
 
         public static string NewId()
         {
@@ -70,7 +125,9 @@ namespace TxTools.Agent.Core
                     {
                         try
                         {
-                            var c = JsonConvert.DeserializeObject<Conversation>(File.ReadAllText(f, Encoding.UTF8));
+                            ConversationMeta c;
+                            try { c = ReadMeta(f); }
+                            catch { c = ReadMeta(f + ".bak"); }
                             if (c != null && !string.IsNullOrEmpty(c.Id))
                                 metas.Add(new ConversationMeta
                                 {
@@ -93,8 +150,16 @@ namespace TxTools.Agent.Core
             try
             {
                 var path = Path.Combine(FolderPath(), Safe(id) + ".json");
-                if (File.Exists(path))
-                    return JsonConvert.DeserializeObject<Conversation>(File.ReadAllText(path, Encoding.UTF8));
+                foreach (var candidate in new[] { path, path + ".bak" })
+                    try
+                    {
+                        if (File.Exists(candidate))
+                        {
+                            var loaded = JsonConvert.DeserializeObject<Conversation>(File.ReadAllText(candidate, Encoding.UTF8));
+                            if (loaded != null && loaded.Id == id) return loaded;
+                        }
+                    }
+                    catch { }
             }
             catch { }
             return null;
@@ -115,13 +180,18 @@ namespace TxTools.Agent.Core
                 // 加一道互斥保证文件不会写到一半被另一个进程截断
                 ProcessSync.WithFileLock("conv_" + Safe(conv.Id), delegate
                 {
-                    File.WriteAllText(Path.Combine(dir, Safe(conv.Id) + ".json"),
-                        JsonConvert.SerializeObject(conv, Formatting.Indented), Encoding.UTF8);
+                    conv.SchemaVersion = 2;
+                    AtomicWrite(Path.Combine(dir, Safe(conv.Id) + ".json"),
+                        JsonConvert.SerializeObject(conv, Formatting.None, ArchiveSettings));
                 });
 
                 ProcessSync.RenewConversation(dir, conv.Id);   // 保存即心跳
             }
-            catch { /* 持久化失败不影响对话本身 */ }
+            catch (Exception ex)
+            {
+                try { AuditLog.Write("[error] Conversation save failed: " + ex.Message); } catch { }
+                return; // Do not publish an index for an archive that failed to save.
+            }
 
             // JSON 是给 API 无损重放用的;MD 摘要是给检索用的。两者一起更新。
             // 索引失败不抛 —— 它只是加速层。

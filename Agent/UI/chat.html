@@ -50,7 +50,7 @@ button { font-family: inherit; }
 #topbar {
     flex: 0 0 auto;
     height: 44px;
-    padding: 0 12px;
+    padding: 0 8px;
     border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
@@ -143,7 +143,7 @@ button { font-family: inherit; }
 #chat-container {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: 16px 12px;
+    padding: 8px 8px;
     scroll-behavior: smooth;
 }
 #chat {
@@ -182,6 +182,34 @@ button { font-family: inherit; }
     line-height: 1.7;
 }
 .msg-content.empty { display: none; }         /* 无文本时不显空气泡,只留下方工具卡片 */
+
+/* 消息操作按钮(复制/撤销)。
+   AI 回复的复制按钮常驻气泡底部,用户侧保持悬停显现(撤销按钮),
+   避免内容一多就找不到复制入口。 */
+.msg-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-start;
+    opacity: 0;
+    transition: opacity 0.15s;
+    margin-top: 2px;
+}
+.msg.assistant .msg-actions { opacity: 1; }
+.msg:hover .msg-actions { opacity: 1; }
+.msg.user .msg-actions { justify-content: flex-end; }
+.msg-action-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text-muted);
+    font-size: 11px;
+    padding: 1px 8px;
+    cursor: pointer;
+    line-height: 1.6;
+}
+.msg-action-btn:hover { border-color: var(--primary); color: var(--primary); }
+.msg-action-btn.undo:hover { border-color: var(--danger); color: var(--danger); }
+.msg-action-btn:disabled { opacity: 0.4; cursor: default; }
 
 /* ═════════════════════════════════════════════════════════════════
    思考过程 (推理模型的 reasoning_content)
@@ -277,6 +305,44 @@ button { font-family: inherit; }
     line-height: 1.5;
     white-space: pre;
 }
+
+/* 代码块容器 + 顶部复制条 */
+.msg-content .code-block {
+    margin: 6px 0 8px 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--code-bg);
+}
+.msg-content .code-block pre {
+    margin: 0;
+    border: none;
+    border-radius: 0;
+}
+.code-block-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 10px;
+    background: rgba(0, 0, 0, 0.35);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.code-block-lang {
+    font-size: 11px;
+    color: var(--text-muted);
+    letter-spacing: 0.3px;
+}
+.code-copy-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text-muted);
+    font-size: 11px;
+    padding: 1px 10px;
+    cursor: pointer;
+    line-height: 1.6;
+}
+.code-copy-btn:hover { border-color: var(--primary); color: var(--primary); }
 .msg-content a { color: var(--primary); text-decoration: none; }
 .msg-content a:hover { text-decoration: underline; }
 .msg-content strong { font-weight: 600; }
@@ -375,12 +441,27 @@ button { font-family: inherit; }
     font-size: 11px;
     line-height: 1.5;
     color: var(--text-muted);
-    white-space: pre-wrap;
-    word-break: break-word;
     max-height: 240px;
     overflow-y: auto;
     background: #fff;
 }
+.tool-body-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.tool-copy-btn {
+    display: block;
+    margin-bottom: 6px;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text-muted);
+    font-size: 11px;
+    padding: 1px 10px;
+    cursor: pointer;
+    line-height: 1.6;
+}
+.tool-copy-btn:hover { border-color: var(--primary); color: var(--primary); }
 .tool-body.err { color: var(--danger); background: #fef2f2; }
 /* 强化优先级:collapsed 一律隐藏 body,不管 done 与否 */
 .tool-block.collapsed > .tool-body { display: none !important; }
@@ -416,7 +497,7 @@ button { font-family: inherit; }
 #composer {
     flex: 0 0 auto;
     border-top: 1px solid var(--border);
-    padding: 10px 12px 12px;
+    padding: 8px 8px 10px;
     background: var(--footer-bg);
 }
 /* 输入区做成一张卡片:附件、文本框、权限、上传、token、发送全部收在同一个边框里 */
@@ -827,8 +908,8 @@ button { font-family: inherit; }
 #tools-drawer-mask {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.25);
-    display: none;
+    background: rgba(0, 0, 0, 0.0);
+    display: none !important;
     z-index: 1500;
 }
 #tools-drawer-mask.show { display: block; }
@@ -840,7 +921,7 @@ button { font-family: inherit; }
     width: 420px;
     max-width: 92vw;
     background: #fff;
-    box-shadow: -4px 0 12px rgba(0, 0, 0, 0.1);
+    box-shadow: none;
     transform: translateX(100%);
     transition: transform 0.22s ease;
     z-index: 1600;
@@ -981,6 +1062,63 @@ button { font-family: inherit; }
     flex: 0 0 60px;
     color: var(--text-muted);
     padding-top: 2px;
+}
+
+/* 模型/工具设置 modal */
+.modal.settings-modal {
+    padding: 0;
+    width: 560px;
+    max-width: 92vw;
+    max-height: 82vh;
+    display: flex;
+    flex-direction: column;
+}
+.settings-modal .sm-head {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.settings-modal .sm-head h3 { flex: 1 1 auto; font-size: 14px; margin: 0; }
+.settings-modal .sm-close {
+    background: none; border: none; cursor: pointer;
+    color: var(--text-muted); font-size: 14px; padding: 2px 6px;
+}
+.settings-modal .sm-body { flex: 1 1 auto; overflow-y: auto; padding: 12px 16px; }
+.settings-modal .sm-section { margin-bottom: 18px; }
+.settings-modal .sm-section h4 {
+    font-size: 13px; margin: 0 0 8px; color: var(--text);
+    border-bottom: 1px dashed var(--border); padding-bottom: 4px;
+}
+.settings-modal .sm-hint { font-size: 11px; color: var(--text-faint); font-weight: 400; }
+.settings-modal .sm-body input[type="text"] {
+    width: 100%; box-sizing: border-box;
+    padding: 7px 9px; margin-bottom: 8px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--input-bg, #fff); color: var(--text);
+    font-size: 12px;
+}
+.settings-modal .sm-body input[type="text"]:focus { border-color: var(--primary); outline: none; }
+.settings-modal .sm-body .row { margin-top: 4px; }
+.sm-tg-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; border-radius: 6px; cursor: pointer;
+    font-size: 12px; user-select: none;
+}
+.sm-tg-item:hover { background: var(--border-light, #f3f4f6); }
+.sm-tg-item input { margin: 0; }
+.sm-provider-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; border-radius: 6px; font-size: 12px;
+    justify-content: space-between;
+}
+.sm-provider-row:hover { background: var(--border-light, #f3f4f6); }
+.sm-provider-row .sm-pv-name { font-weight: 600; }
+.sm-provider-row .sm-pv-meta { color: var(--text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-provider-row .sm-pv-del {
+    background: none; border: 1px solid var(--border); border-radius: 5px;
+    color: var(--danger); font-size: 11px; padding: 2px 8px; cursor: pointer; flex: 0 0 auto;
 }
 .approval-modal .ap-generic-value {
     flex: 1 1 auto;
@@ -1190,7 +1328,7 @@ button { font-family: inherit; }
     height: 100%;
     width: 340px;
     background: #fff;
-    box-shadow: -4px 0 12px rgba(0, 0, 0, 0.1);
+    box-shadow: none !important;
     transform: translateX(100%);
     transition: transform 0.22s ease;
     z-index: 1600;
@@ -1300,6 +1438,11 @@ button { font-family: inherit; }
         <span class="menu-icon">🔑</span>
         <span>设置 API Key</span>
     </div>
+    <div class="menu-sep"></div>
+    <div class="menu-item" data-action="settings">
+        <span class="menu-icon">⚙</span>
+        <span>模型 / 工具设置</span>
+    </div>
 </div>
 
 <div id="chat-container">
@@ -1391,6 +1534,38 @@ button { font-family: inherit; }
         <div class="row">
             <button id="key-cancel">取消</button>
             <button id="key-ok" class="primary">确定</button>
+        </div>
+    </div>
+</div>
+
+<!-- 模型 / 工具设置 modal -->
+<div class="modal-mask" id="settings-modal">
+    <div class="modal settings-modal">
+        <div class="sm-head">
+            <h3>模型 / 工具设置</h3>
+            <button class="sm-close" id="sm-close">✕</button>
+        </div>
+        <div class="sm-body">
+            <div class="sm-section">
+                <h4>工具组开关 <span class="sm-hint">(下次新建对话生效)</span></h4>
+                <div id="sm-toolgroups"></div>
+            </div>
+            <div class="sm-section">
+                <h4>自定义模型提供商 <span class="sm-hint">(任意 OpenAI 兼容接口)</span></h4>
+                <div id="sm-providers"></div>
+            </div>
+            <div class="sm-section">
+                <h4>添加提供商</h4>
+                <input type="text" id="sm-name" placeholder="显示名, 如 MyGPT" />
+                <input type="text" id="sm-baseurl" placeholder="Base URL, 如 https://api.example.com/v1" />
+                <input type="text" id="sm-models" placeholder="模型名, 逗号分隔 (可留空, 连接后自动拉取)" />
+                <label class="show-toggle">
+                    <input type="checkbox" id="sm-local" /> 本地服务(无需真实 key)
+                </label>
+                <div class="row">
+                    <button id="sm-add" class="primary">添加</button>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -1496,7 +1671,11 @@ window.dispatchMessage = function (json) {
     catch (e) { console.error("dispatchMessage parse:", e); return; }
 
     switch (msg.type) {
-        case "modelList":      onModelList(msg.items, msg.current, msg.providers, msg.currentProvider); break;
+        case "modelList":
+            onModelList(msg.items, msg.current, msg.providers, msg.currentProvider);
+            if (document.getElementById("settings-modal").classList.contains("show"))
+                onProviders(msg.providers);
+            break;
         case "keyReady":       onKeyReady(); break;
         case "askApiKey":      onAskApiKey(msg.reason); break;
         case "convList":       onConvList(msg.items); break;
@@ -1520,6 +1699,12 @@ window.dispatchMessage = function (json) {
         case "askUser":        onAskUser(msg); break;
         case "approvalMode":
             if (msg.value) setPermMode(msg.value, false);
+            break;
+        case "toolGroups":
+            onToolGroups(msg.groups);
+            break;
+        case "restoreInput":
+            onRestoreInput(msg.text, msg.attachments);
             break;
     }
 };
@@ -1745,6 +1930,9 @@ function handleMenuAction(action) {
                 prov && prov.isLocal);
             break;
         }
+        case "settings":
+            openSettingsModal();
+            break;
     }
 }
 
@@ -1838,6 +2026,12 @@ function onRestore(messages) {
             appendMessage("user", m.text);
             bubble = null;
         } else if (m.role === "assistant") {
+            // 思考属于该 assistant 段的前置内容，先创建气泡/思考块，再追加正文。
+            if (!bubble) bubble = appendMessage("assistant", "");
+            if (m.reasoning) {
+                const block = createThinkBlock(m.reasoning, false);
+                bubble.appendChild(block);
+            }
             if (!bubble) {
                 // 新一轮 —— 建大气泡,text 作为首段
                 bubble = appendMessage("assistant", m.text);
@@ -1865,6 +2059,21 @@ function onRestore(messages) {
     state.currentAssistantContent = null;
     state.currentAssistantBuffer = "";
     scrollToBottom();
+}
+
+function createThinkBlock(text, live) {
+    const block = document.createElement("div");
+    block.className = "think-block" + (live ? " expanded live" : "");
+    const head = document.createElement("div"); head.className = "think-head";
+    const icon = document.createElement("span"); icon.className = "th-icon"; icon.textContent = "💭";
+    const title = document.createElement("span"); title.className = "th-title";
+    title.textContent = live ? "思考中…" : "思考过程 (" + (text || "").length + " 字)";
+    const hint = document.createElement("span"); hint.className = "th-hint"; hint.textContent = live ? "▾" : "▸";
+    head.append(icon, title, hint);
+    const body = document.createElement("div"); body.className = "think-body"; body.textContent = text || "";
+    head.addEventListener("click", () => { const on = block.classList.toggle("expanded"); hint.textContent = on ? "▾" : "▸"; });
+    block.append(head, body);
+    return block;
 }
 
 /// 在已存在的 assistant 大气泡里追加一段新的 msg-content (文字段)
@@ -1923,8 +2132,8 @@ function onDelta(text) {
 //  只有推理模型(DeepSeek reasoner 系列)会返回 reasoning_content,
 //  普通模型这三个事件根本不会触发,不影响任何现有行为。
 //
-//  注意:思考内容【不进历史】—— API 明确禁止把 reasoning_content 回传下一轮,
-//  所以它也不落盘,重开对话看不到。它是本轮的过程性信息。
+//  思考内容独立存档并可在历史中展开；API 是否回传由后端按 provider/model 决定。
+//  历史思考默认折叠，避免占据阅读空间；不把它当作已验证结论。
 // ═════════════════════════════════════════════════════════════════
 
 function ensureAssistantBubble() {
@@ -2304,9 +2513,54 @@ function appendMessage(uiRole, text) {
     }
     msg.appendChild(content);
 
+    // 操作按钮:复制(所有消息) + 撤销(仅用户消息)
+    const actions = document.createElement("div");
+    actions.className = "msg-actions";
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "msg-action-btn";
+    copyBtn.textContent = "复制";
+    copyBtn.title = "复制本条消息内容";
+    copyBtn.addEventListener("click", () => {
+        const t = content.innerText || text || "";
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(t).then(() => {
+                copyBtn.textContent = "已复制";
+                setTimeout(() => { copyBtn.textContent = "复制"; }, 1200);
+            }).catch(() => fallbackCopy(t, copyBtn));
+        } else {
+            fallbackCopy(t, copyBtn);
+        }
+    });
+    actions.appendChild(copyBtn);
+
+    if (uiRole === "user") {
+        const undoBtn = document.createElement("button");
+        undoBtn.className = "msg-action-btn undo";
+        undoBtn.textContent = "撤销";
+        undoBtn.title = "撤销最后一条发送(连同它的回复一起移除)";
+        undoBtn.addEventListener("click", () => {
+            postToHost({ type: "undoLastUser" });
+        });
+        actions.appendChild(undoBtn);
+    }
+    msg.appendChild(actions);
+
     document.getElementById("chat").appendChild(msg);
     if (uiRole === "assistant") state.lastAssistantMsg = msg;
     return msg;
+}
+
+function fallbackCopy(text, btn) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); btn.textContent = "已复制"; }
+    catch (e) { btn.textContent = "复制失败"; }
+    setTimeout(() => { btn.textContent = "复制"; }, 1200);
+    document.body.removeChild(ta);
 }
 
 function addToolCallToMessage(msgEl, name, input) {
@@ -2361,7 +2615,12 @@ function addToolResultToMessage(msgEl, name, result, isErr, toolCallId) {
     // 保持折叠 —— 用户想看结果自行点开
     target.classList.add("collapsed");
     const body = target.querySelector(".tool-body");
-    body.textContent = result || "(无输出)";
+    // 工具结果含代码/坐标表,给一个复制按钮(通过委托处理点击)
+    body.innerHTML =
+        '<button class="tool-copy-btn" type="button">复制结果</button>' +
+        '<div class="tool-body-text"></div>';
+    const bodyText = body.querySelector(".tool-body-text");
+    bodyText.textContent = result || "(无输出)";
     if (isErr) {
         body.classList.add("err");
         target.classList.add("err");
@@ -2435,6 +2694,52 @@ function onAttachmentInfo(info) {
 
 function firstUploadingCard() {
     return document.querySelector(".att-card.uploading");
+}
+
+function onRestoreInput(text, attachments) {
+    // 1) 文本放回输入框
+    const input = document.getElementById("input-box");
+    if (input) {
+        input.value = text || "";
+        input.dispatchEvent(new Event("input"));
+        autoGrow();
+        input.focus();
+    }
+
+    // 2) 附件重建到输入区
+    const box = document.getElementById("attachments");
+    if (attachments && attachments.length > 0) {
+        // 撤销后重新引用这些附件 —— 但 state.attachments 记录的是当前待发送附件,
+        // 直接重建卡片 + 注册 id,这样发送时 C# 能按 id 从 UploadStore 取回内容。
+        for (const a of attachments) {
+            if (state.attachments.some(x => x.id === a.id)) continue;
+            state.attachments.push({ id: a.id, name: a.name });
+        }
+        // 重建卡片 UI
+        box.innerHTML = "";
+        for (const a of attachments) {
+            const card = createAttachmentCard();
+            card.classList.remove("uploading");
+            card.dataset.id = a.id;
+            card.querySelector(".att-name").textContent = a.name || "文件";
+            const parts = [];
+            if (a.sizeText) parts.push(a.sizeText);
+            if (a.rowCount) parts.push(a.rowCount + "行" + (a.colCount ? "×" + a.colCount + "列" : ""));
+            if (a.sheetCount) parts.push(a.sheetCount + " sheet");
+            card.querySelector(".att-info").textContent = parts.join(" · ");
+            const sum = card.querySelector(".att-summary");
+            if (a.summary) {
+                sum.textContent = a.summary;
+                const hint = document.createElement("span");
+                hint.className = "att-toggle-hint";
+                hint.textContent = "▾";
+                card.querySelector(".att-head").insertBefore(hint,
+                    card.querySelector(".att-remove"));
+            }
+            box.appendChild(card);
+        }
+    }
+    updateSendState();
 }
 
 function createAttachmentCard() {
@@ -2765,6 +3070,99 @@ function closeKeyModal() {
     document.getElementById("key-input").value = "";
     state.keyModalProviderId = null;
 }
+
+// ═════════════════════════════════════════════════════════════════
+//  模型 / 工具设置 Modal
+// ═════════════════════════════════════════════════════════════════
+let _toolGroups = [];   // [{id, name, enabled}]
+
+function openSettingsModal() {
+    const modal = document.getElementById("settings-modal");
+    modal.classList.add("show");
+    // 每次打开都向宿主要最新工具组状态 + provider 列表
+    postToHost({ type: "listToolGroups" });
+    postToHost({ type: "listProviders" });
+    document.getElementById("sm-name").value = "";
+    document.getElementById("sm-baseurl").value = "";
+    document.getElementById("sm-models").value = "";
+    document.getElementById("sm-local").checked = false;
+}
+
+function closeSettingsModal() {
+    document.getElementById("settings-modal").classList.remove("show");
+}
+
+function onToolGroups(groups) {
+    _toolGroups = groups || [];
+    const box = document.getElementById("sm-toolgroups");
+    box.innerHTML = "";
+    for (const g of _toolGroups) {
+        const item = document.createElement("label");
+        item.className = "sm-tg-item";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = !!g.enabled;
+        cb.addEventListener("change", () => {
+            postToHost({ type: "setToolGroup", group: g.id, enabled: cb.checked });
+        });
+        const span = document.createElement("span");
+        span.textContent = g.name || g.id;
+        item.appendChild(cb);
+        item.appendChild(span);
+        box.appendChild(item);
+    }
+}
+
+function onProviders(providers) {
+    const box = document.getElementById("sm-providers");
+    box.innerHTML = "";
+    const list = (providers || []).filter(p => !!p.isCustom);
+    if (list.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "sm-tg-item";
+        empty.style.color = "var(--text-faint)";
+        empty.textContent = "尚未添加自定义提供商。可在下方添加任意 OpenAI 兼容接口。";
+        box.appendChild(empty);
+        return;
+    }
+    for (const p of list) {
+        const row = document.createElement("div");
+        row.className = "sm-provider-row";
+        const info = document.createElement("div");
+        info.style.flex = "1 1 auto";
+        info.style.minWidth = "0";
+        const name = document.createElement("div");
+        name.className = "sm-pv-name";
+        name.textContent = p.displayName + (p.isLocal ? " (本地)" : "");
+        const meta = document.createElement("div");
+        meta.className = "sm-pv-meta";
+        meta.textContent = (p.baseUrl || "") + ((p.models && p.models.length) ? "  ·  " + p.models.join(", ") : "");
+        info.appendChild(name);
+        info.appendChild(meta);
+        const del = document.createElement("button");
+        del.className = "sm-pv-del";
+        del.textContent = "删除";
+        del.addEventListener("click", () => {
+            postToHost({ type: "removeProvider", providerId: p.id });
+        });
+        row.appendChild(info);
+        row.appendChild(del);
+        box.appendChild(row);
+    }
+}
+
+document.getElementById("sm-close").addEventListener("click", closeSettingsModal);
+document.getElementById("sm-add").addEventListener("click", () => {
+    const name = document.getElementById("sm-name").value.trim();
+    const baseUrl = document.getElementById("sm-baseurl").value.trim();
+    const models = document.getElementById("sm-models").value.trim();
+    const isLocal = document.getElementById("sm-local").checked;
+    if (!name || !baseUrl) {
+        alert("显示名和 Base URL 不能为空");
+        return;
+    }
+    postToHost({ type: "addProvider", displayName: name, baseUrl: baseUrl, models: models, isLocal: isLocal });
+});
 
 // ═════════════════════════════════════════════════════════════════
 //  Tools Modal
@@ -3263,7 +3661,16 @@ function renderMarkdown(text) {
     // 1) 代码块 ```lang\ncode``` 先取出保护,避免其内容被后续规则误解
     const codeBlocks = [];
     text = text.replace(/```([\w-]*)\n?([\s\S]*?)```/g, (m, lang, code) => {
-        codeBlocks.push('<pre><code>' + code.replace(/\n$/, "") + '</code></pre>');
+        const body = code.replace(/\n$/, "");
+        codeBlocks.push(
+            '<div class="code-block">' +
+                '<div class="code-block-head">' +
+                    '<span class="code-block-lang">' + (lang || "code") + '</span>' +
+                    '<button class="code-copy-btn" type="button">复制</button>' +
+                '</div>' +
+                '<pre><code>' + body + '</code></pre>' +
+            '</div>'
+        );
         return "\u0001CB" + (codeBlocks.length - 1) + "\u0001";
     });
 
@@ -3439,6 +3846,65 @@ document.addEventListener("click", (e) => {
 });
 
 // ═════════════════════════════════════════════════════════════════
+//  统一复制工具 + 动态复制按钮委托
+//  (renderMarkdown 生成的是 innerHTML 字符串,按钮没有绑定监听器,
+//   统一走 document 级事件委托,点击时从 DOM 里取对应文本复制)
+// ═════════════════════════════════════════════════════════════════
+
+/** 复制文本到剪贴板。成功返回 true。失败降级 execCommand。 */
+function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text).then(function () { return true; })
+            .catch(function () {
+                try { execCopyFallback(text); return true; } catch (e) { return false; }
+            });
+    }
+    try { execCopyFallback(text); return true; } catch (e) { return false; }
+}
+
+function execCopyFallback(text) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+}
+
+/** 按钮临时变"已复制",1.2s 后还原。 */
+function flashCopied(btn, ok) {
+    const orig = btn.textContent;
+    btn.textContent = ok ? "已复制" : "复制失败";
+    setTimeout(function () { btn.textContent = orig; }, 1200);
+}
+
+document.addEventListener("click", function (e) {
+    const btn = e.target && e.target.closest ? e.target.closest(".code-copy-btn") : null;
+    if (btn) {
+        const block = btn.closest(".code-block");
+        const pre = block && block.querySelector("pre");
+        const text = pre ? pre.innerText : "";
+        copyText(text).then(function (ok) { flashCopied(btn, ok); });
+        return;
+    }
+
+    // 工具结果体复制(复用 flashCopied 需要按钮,这里做自己的小按钮)
+    const tb = e.target && e.target.closest ? e.target.closest(".tool-copy-btn") : null;
+    if (tb) {
+        const body = tb.closest(".tool-block") && tb.closest(".tool-block").querySelector(".tool-body");
+        const text = body ? body.innerText : "";
+        copyText(text).then(function (ok) {
+            const orig = tb.textContent;
+            tb.textContent = ok ? "已复制" : "复制失败";
+            setTimeout(function () { tb.textContent = orig; }, 1200);
+        });
+        return;
+    }
+});
+
+// ═════════════════════════════════════════════════════════════════
 //  启动
 // ═════════════════════════════════════════════════════════════════
 
@@ -3499,6 +3965,12 @@ if (window.chrome && window.chrome.webview) {
             var msg = (typeof e.data === "string") ? JSON.parse(e.data) : e.data;
             if (msg && msg.type && msg.type.indexOf("recipe.") === 0) {
                 if (window.txRecipes) { window.txRecipes.onHostMessage(msg); }
+                return;
+            }
+            // 兜底:回包只带 seq 不带 type 的(宿主旧版),也交给侧边栏按 seq 配对。
+            // 没有这条,执行/取选择的回包会被这里静默吞掉,前端只能等到超时。
+            if (msg && !msg.type && msg.seq && window.txRecipes) {
+                window.txRecipes.onHostMessage(msg);
                 return;
             }
         } catch (err) { console.error("recipe message parse:", err); }

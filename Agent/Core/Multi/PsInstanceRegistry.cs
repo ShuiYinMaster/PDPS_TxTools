@@ -46,6 +46,9 @@ namespace TxTools.Agent.Core
         /// <summary>是否为主控(脑)。全局应只有一个 true。</summary>
         public bool IsBrain { get; set; }
 
+        /// <summary>本实例是否已打开 Agent 窗口。全局应至多一个 true —— 避免两窗口各自写会话互相覆盖。</summary>
+        public bool HasWindow { get; set; }
+
         public DateTime HeartbeatUtc { get; set; }
 
         [JsonIgnore]
@@ -158,6 +161,67 @@ namespace TxTools.Agent.Core
             }
             catch { }
             return me;
+        }
+
+        // ── Agent 窗口独占 ──
+        // 目的:同时开两个 PDPS 时，Agent 窗口全局至多开一个。
+        // 晚打开的那个显示提示信息，不进入对话界面 —— 避免两个窗口
+        // 各自加载同一会话、SaveCurrent 整份覆盖互相抹掉。
+        //
+        // 用与 RegMutex 同款的跨进程命名互斥体串行化"查-置"，
+        // 避免两个进程同时点开都各自抢到窗口。
+
+        private static readonly System.Threading.Mutex WindowMutex =
+            new System.Threading.Mutex(false, @"Local\TxAgent_Window_Mutex");
+
+        /// <summary>
+        /// 尝试独占 Agent 窗口。成功返回 true（本进程是唯一窗口）；
+        /// 失败返回 false（已有其它活进程开着窗口）。
+        /// </summary>
+        public static bool TryAcquireWindow()
+        {
+            bool gotLock = false;
+            try
+            {
+                try { gotLock = WindowMutex.WaitOne(5000); }
+                catch (System.Threading.AbandonedMutexException) { gotLock = true; }
+                if (!gotLock) return true;   // 拿不到锁：不阻断，允许打开（宁可不误伤）
+
+                try
+                {
+                    var live = Live();
+                    foreach (var i in live)
+                    {
+                        if (i.HasWindow && i.IsAlive && !i.IsSelf)
+                            return false;
+                    }
+
+                    var me = Self() ?? new PsInstanceInfo { Pid = SelfPid };
+                    me.HasWindow = true;
+                    me.HeartbeatUtc = DateTime.UtcNow;
+                    if (string.IsNullOrWhiteSpace(me.Name))
+                        me.Name = MakeName(me.Study, All());
+                    File.WriteAllText(PathFor(SelfPid),
+                        JsonConvert.SerializeObject(me, Formatting.Indented), Encoding.UTF8);
+                    return true;
+                }
+                finally { WindowMutex.ReleaseMutex(); }
+            }
+            catch { return true; }   // 锁机制失效时不阻断正常使用
+        }
+
+        /// <summary>释放窗口独占（窗口关闭时调用）。</summary>
+        public static void ReleaseWindow()
+        {
+            try
+            {
+                var me = Self();
+                if (me == null) return;
+                me.HasWindow = false;
+                File.WriteAllText(PathFor(SelfPid),
+                    JsonConvert.SerializeObject(me, Formatting.Indented), Encoding.UTF8);
+            }
+            catch { }
         }
 
         /// <summary>心跳。定期调用，否则别的实例会认为本进程已死。</summary>

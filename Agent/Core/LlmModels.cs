@@ -42,6 +42,9 @@ namespace TxTools.Agent.Core
         [JsonProperty("enable_thinking", NullValueHandling = NullValueHandling.Ignore)]
         public bool? EnableThinking { get; set; }
 
+        [JsonProperty("reasoning_effort", NullValueHandling = NullValueHandling.Ignore)]
+        public string ReasoningEffort { get; set; }
+
         /// <summary>
         /// 是否允许一轮里并行发多个工具调用。null = 用服务端默认(通常是允许)。
         ///
@@ -109,10 +112,12 @@ namespace TxTools.Agent.Core
             set
             {
                 // 反序列化:API 返回的 content 一律是字符串;若是数组则把文本块拼起来
-                if (value == null) { Content = null; return; }
+                if (value == null) { Content = null; ContentParts = null; return; }
 
                 var jarr = value as Newtonsoft.Json.Linq.JArray;
-                if (jarr == null) { Content = value.ToString(); return; }
+                if (jarr == null) { Content = value.ToString(); ContentParts = null; return; }
+
+                ContentParts = jarr.ToObject<List<ContentPart>>();
 
                 var sb = new System.Text.StringBuilder();
                 foreach (var it in jarr)
@@ -145,13 +150,15 @@ namespace TxTools.Agent.Core
 
         /// <summary>
         /// 推理模型返回的思考内容(DeepSeek reasoner 系列的 reasoning_content)。普通模型为 null。
-        /// 只读不写:API 明确要求不能把 reasoning_content 回传到下一轮请求里,
-        /// 故用 ShouldSerialize 恒 false 屏蔽序列化 —— 反序列化仍正常填充。
+        /// 存储由 ConversationStore 的独立 resolver 保留；网络请求默认排除，
+        /// 官方 DeepSeek V4 携带 tools 时显式允许回传，其余端点保持兼容。
         /// </summary>
         [JsonProperty("reasoning_content", NullValueHandling = NullValueHandling.Ignore)]
         public string ReasoningContent { get; set; }
 
-        public bool ShouldSerializeReasoningContent() { return false; }
+        // Archive serialization has its own resolver. Only compatible API requests opt in.
+        [JsonIgnore] public bool SendReasoningContent { get; set; }
+        public bool ShouldSerializeReasoningContent() { return SendReasoningContent; }
 
         /// <summary>
         /// 对话前缀续写(Beta):置于 messages 末尾的 assistant 消息标记 prefix=true,

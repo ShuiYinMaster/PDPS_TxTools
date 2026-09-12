@@ -13,21 +13,28 @@ namespace TxTools.Agent.Core
     {
         private const string FileName = "audit.log";
 
+        // 日志可能被多个后台线程(LLM 流式、工具线程)同时写,不加锁会互相撞文件,
+        // 抛 "file in use" IOException 导致条目静默丢失,或写入交叉错乱。
+        private static readonly object _sync = new object();
+
         public static void Write(string line)
         {
             try
             {
                 var entry = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + line + Environment.NewLine;
-                foreach (var path in CandidatePaths())
+                lock (_sync)
                 {
-                    try
+                    foreach (var path in CandidatePaths())
                     {
-                        var dir = Path.GetDirectoryName(path);
-                        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                        File.AppendAllText(path, entry, Encoding.UTF8);
-                        return;
+                        try
+                        {
+                            var dir = Path.GetDirectoryName(path);
+                            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                            File.AppendAllText(path, entry, Encoding.UTF8);
+                            return;
+                        }
+                        catch { /* 下一个候选 */ }
                     }
-                    catch { /* 下一个候选 */ }
                 }
             }
             catch { /* 审计失败不影响主流程 */ }

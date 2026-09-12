@@ -115,6 +115,7 @@ namespace TxAgent.Core
         {
             int len = 0;
             if (!string.IsNullOrEmpty(m.Content)) len += m.Content.Length;
+            if (!string.IsNullOrEmpty(m.ReasoningContent)) len += m.ReasoningContent.Length;
             if (m.ToolCalls != null)
             {
                 foreach (var tc in m.ToolCalls)

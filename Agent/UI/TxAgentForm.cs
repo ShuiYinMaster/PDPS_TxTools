@@ -42,13 +42,11 @@ namespace TxTools.Agent.UI
         private DeepSeekClient _client;
         private IAgentLoop _loop;
 
-        /// <summary>
-        /// 是否启用新 harness(TxAgent.Core)引擎。默认 false,保持原有 AgentLoop 行为不变。
-        /// 改为 true 即切换到 HarnessAgentLoop(用新 harness 的 AgentLoop 驱动现有 26 个工具)。
-        /// 见 Agent/Core/Harness/README_Harness接入.md。
-        /// </summary>
-        private const bool UseNewHarness = true;
         private CancellationTokenSource _cts;
+
+        /// <summary>是否正在处理一轮发送。防止用户连续点发送导致两个循环并发跑、
+        /// _cts 被后一个覆盖、前一个 finally 误 Dispose 后一个的令牌。</summary>
+        private bool _isSending;
         private Conversation _current;
 
         // ── LLM Provider / Model 状态 ──
@@ -89,6 +87,16 @@ namespace TxTools.Agent.UI
         private System.Windows.Forms.Timer _loadingTimer;
         private int _loadingDotCount;
 
+        // 配方侧边栏的 study 轮询:前端靠 recipe.studyChanged 推送作废跨 study 绑定,
+        // 宿主此前从未发过这个事件,过期检测形同虚设。轮询是唯一可靠的检测点 ——
+        // study 切换发生在 PS 主界面,宿主没有任何回调可挂。
+        private System.Windows.Forms.Timer _studyTimer;
+        private string _lastStudyKey;
+        private bool _studyPollPrimed;
+
+        // 配方执行在飞标志(0=空闲,1=执行中)。见 HandleRecipeRun 里的防重入说明。
+        private int _recipeRunInFlight;
+
         public TxAgentForm(SynchronizationContext psCtx, ToolRegistry tools)
         {
             _tools = tools;
@@ -96,6 +104,12 @@ namespace TxTools.Agent.UI
             FormUiKit.InitStandardForm(this,
                 "TxTools.Agent \u2014 PDPS AI \u52a9\u624b (DeepSeek)",
                 DesignSize, new System.Drawing.Size(420, 480), sizable: true);
+
+            // InitStandardForm 会关掉 FlatStyleEnabled(Siemens AFW 扁平风格)，
+            // 导致 AFW 不再擦除窗体背景、客户区边缘残留系统灰色(左/下/右 10px 灰边)。
+            // TxAgent 是 WebView2 全 HTML UI,原生配色依赖少,恢复扁平风格消除灰边。
+            // 反射设置：旧版 PS 的 TxForm 无此属性时静默跳过。
+            FormUiKit.TrySetFlatStyle(this, true);
 
             // 崩溃兜底 —— PS 进程内出现 unhandled exception 时,先把当前对话强制落盘
             // 应对 AI 长任务跑到一半 PS 突然崩溃的场景;不是所有崩溃都能抓到(native 崩溃抓不到),
@@ -107,13 +121,6 @@ namespace TxTools.Agent.UI
 
             // TxForm 默认半模态,会挡住其它窗口;关掉才是真正的非模态
             try { SemiModal = false; } catch { }
-            try
-            {
-                var flatStyleProp = this.GetType().GetProperty("FlatStyleEnabled");
-                if (flatStyleProp != null && flatStyleProp.CanWrite)
-                    flatStyleProp.SetValue(this, false, null);
-            }
-            catch { }
 
             _webView = new WebView2 { Dock = DockStyle.Fill };
             Controls.Add(_webView);
@@ -152,6 +159,9 @@ namespace TxTools.Agent.UI
         {
             base.OnInitTxForm();
             try { SemiModal = false; } catch { }
+            // 窗体必在 PS 主线程创建，此刻消息循环在跑 —— 最可靠的主线程上下文来源。
+            // 刷新 PsContext 缓存，保证 RPC 后台线程也能封送回主线程（被控端免窗体场景尤其关键）。
+            try { TxTools.Agent.Core.PsContext.CaptureFromMainThread(); } catch { }
         }
 
         protected override void OnLoad(EventArgs e)
@@ -159,6 +169,15 @@ namespace TxTools.Agent.UI
             base.OnLoad(e);
             FormUiKit.ApplyDpiScaling(this, ref _dpiApplied, DesignSize);
             _loadingTimer.Start();
+
+            // 配方变更 → 推 recipe.changed 刷新侧边栏(聊天里 save/delete 后不用手点刷新)
+            TxTools.Agent.Core.RecipeStore.RecipesChanged += OnRecipesChanged;
+
+            // study 轮询:轻量 dynamic 调用,UI 线程即 PS 主线程,2.5s 一次可忽略
+            _studyTimer = new System.Windows.Forms.Timer { Interval = 2500 };
+            _studyTimer.Tick += (s, ev) => PollStudyChange();
+            _studyTimer.Start();
+
             InitWebViewAsync();
         }
 
@@ -168,8 +187,9 @@ namespace TxTools.Agent.UI
             ReleasePendingApproval(false);
             FireExtractLessons();                // 关窗前对当前对话跑一次经验萃取
             try { UploadStore.ClearAll(); } catch { }
+            if (_studyTimer != null) { _studyTimer.Stop(); _studyTimer.Dispose(); _studyTimer = null; }
+            try { TxTools.Agent.Core.RecipeStore.RecipesChanged -= OnRecipesChanged; } catch { }
             CleanupWebViewProfile();
-            AgentLoop.Current = null;
             base.OnFormClosed(e);
         }
 
@@ -454,6 +474,81 @@ namespace TxTools.Agent.UI
                             break;
                         }
 
+                    case "setToolGroup":
+                        {
+                            var g = (string)msg["group"];
+                            bool on = msg["enabled"] != null && (bool)msg["enabled"];
+                            if (!string.IsNullOrWhiteSpace(g) && ToolGate.SetEnabled(g, on))
+                            {
+                                try { UserPrefsStore.UpdateToolGroups(ToolGate.SnapshotEnabled()); } catch { }
+                                PostToolGroups();
+                                PostStatus("\u5df2\u5173\u542f\u5de5\u5177\u7ec4: " + ToolGate.GroupDisplayName(g)
+                                    + " (\u4e0b\u6b21\u65b0\u5efa\u5bf9\u8bdd\u751f\u6548)\u3002");
+                            }
+                            break;
+                        }
+
+                    case "addProvider":
+                        {
+                            var name = (string)msg["displayName"];
+                            var baseUrl = (string)msg["baseUrl"];
+                            bool isLocal = msg["isLocal"] != null && (bool)msg["isLocal"];
+                            string modelsCsv = msg["models"] != null ? (string)msg["models"] : null;
+
+                            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(baseUrl))
+                            {
+                                PostStatus("\u6dfb\u52a0\u5931\u8d25: \u540d\u79f0\u548c Base URL \u4e0d\u80fd\u4e3a\u7a7a\u3002");
+                                break;
+                            }
+
+                            var models = new List<string>();
+                            if (!string.IsNullOrWhiteSpace(modelsCsv))
+                                foreach (var m in modelsCsv.Split(new[] { ',', ';', '\n', '\r', ' ' },
+                                         StringSplitOptions.RemoveEmptyEntries))
+                                    if (!string.IsNullOrWhiteSpace(m)) models.Add(m.Trim());
+
+                            var prov = LlmProviders.AddOrUpdateCustom(new LlmProvider
+                            {
+                                Id = null,
+                                DisplayName = name.Trim(),
+                                BaseUrl = baseUrl.Trim().TrimEnd('/'),
+                                Models = models.Count > 0 ? models.ToArray() : new string[0],
+                                IsLocal = isLocal,
+                                IsCustom = true
+                            });
+
+                            PostStatus("\u5df2\u6dfb\u52a0\u6a21\u578b\u63d0\u4f9b\u5546: " + prov.DisplayName);
+                            PostProviderAndModelList();
+                            PostToolGroups();
+                            break;
+                        }
+
+                    case "removeProvider":
+                        {
+                            var pid = (string)msg["providerId"];
+                            var prov = LlmProviders.ById(pid);
+                            if (!string.IsNullOrWhiteSpace(pid) && prov != null && prov.IsCustom)
+                            {
+                                LlmProviders.RemoveCustom(pid);
+                                KeyStore.Clear(pid);
+                                PostStatus("\u5df2\u5220\u9664\u6a21\u578b\u63d0\u4f9b\u5546: " + prov.DisplayName);
+                                PostProviderAndModelList();
+                            }
+                            break;
+                        }
+
+                    case "listToolGroups":
+                        PostToolGroups();
+                        break;
+
+                    case "listProviders":
+                        PostProviderAndModelList();
+                        break;
+
+                    case "undoLastUser":
+                        UndoLastUserSend();
+                        break;
+
                     case "userSend":
                         _ = HandleUserSendAsync((string)msg["text"], msg["attachments"] as JArray);
                         break;
@@ -567,7 +662,49 @@ namespace TxTools.Agent.UI
                 BeginInvoke((Action)(() => ReplyToWeb(seq, payload)));
                 return;
             }
-            _webView.CoreWebView2.PostWebMessageAsJson(JsonConvert.SerializeObject(payload));
+            try
+            {
+                _webView.CoreWebView2.PostWebMessageAsJson(JsonConvert.SerializeObject(payload));
+            }
+            catch (Exception ex)
+            {
+                // 窗体正在关闭时 WebView 可能已释放 —— 配方后台线程跑到一半才回包是常态,
+                // 不能让回包异常炸掉线程池
+                try { AuditLog.Write("[warn] [Recipe] 回包失败(窗体可能已关闭): " + ex.Message); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// 宿主主动推送(无 seq,前端按 type 分派)。配方变更与 study 切换都走这里。
+        /// </summary>
+        private void PostRecipePush(JObject payload)
+        {
+            // WebView 可能还没就绪(窗体刚开)或已在关闭 —— 推送是尽力而为,不抛
+            try
+            {
+                if (_webView == null || _webView.CoreWebView2 == null) return;
+                if (InvokeRequired) { BeginInvoke((Action)(() => PostRecipePush(payload))); return; }
+                _webView.CoreWebView2.PostWebMessageAsJson(JsonConvert.SerializeObject(payload));
+            }
+            catch { }
+        }
+
+        private void OnRecipesChanged()
+        {
+            PostRecipePush(new JObject { ["type"] = "recipe.changed" });
+        }
+
+        private void PollStudyChange()
+        {
+            var k = CurrentStudyKey();
+            if (_studyPollPrimed && string.Equals(k, _lastStudyKey, StringComparison.Ordinal)) return;
+
+            _lastStudyKey = k;
+            if (!_studyPollPrimed) { _studyPollPrimed = true; return; }   // 首轮只建基线不推送
+
+            // 前端收到后作废全部绑定并刷新 —— 绑定只在同一 study 内有效,
+            // 不作废的话会拿 A study 的对象 Id 去 B study 执行,还不报错
+            PostRecipePush(new JObject { ["type"] = "recipe.studyChanged", ["study"] = k ?? "" });
         }
 
         private void HandleRecipeList(int seq)
@@ -596,11 +733,14 @@ namespace TxTools.Agent.UI
             foreach (var s in RecipeStore.PromotionCandidates())
                 cands.Add(new JObject { ["name"] = s.Name, ["successCount"] = s.SuccessCount });
 
+            var studyKey = CurrentStudyKey();
+            _lastStudyKey = studyKey;              // 与轮询共用基线,避免列表刷新触发假推送
+
             ReplyToWeb(seq, new JObject
             {
                 ["type"] = "recipe.list.result", ["ok"] = true,
                 ["recipes"] = recipes, ["candidates"] = cands,
-                ["study"] = CurrentStudyKey()
+                ["study"] = studyKey
             });
         }
 
@@ -624,13 +764,16 @@ namespace TxTools.Agent.UI
 
         private void HandlePickSelection(int seq, JObject msg)
         {
+            // 【所有回包必须带 type】chat.html 的转发门只把 type 以 "recipe." 开头的
+            // 消息交给侧边栏;此前 pick/run/promote 的回包没有 type,在页面侧被静默丢弃,
+            // 前端只能等到超时 —— 表现为"执行/取选择永远超时",而宿主侧其实已经跑完。
             bool multi = msg["multi"] != null && (bool)msg["multi"];
             try
             {
                 var sel = TxApplication.ActiveSelection.GetItems();
                 if (sel == null || sel.Count == 0)
                 {
-                    ReplyToWeb(seq, new JObject { ["ok"] = false,
+                    ReplyToWeb(seq, new JObject { ["type"] = "recipe.pick.result", ["ok"] = false,
                         ["error"] = "PS 里当前没有选中任何对象。" });
                     return;
                 }
@@ -638,7 +781,7 @@ namespace TxTools.Agent.UI
                 if (!multi && sel.Count > 1)
                 {
                     // 【不要替它选第一个】这正是踩过四次的那个模式。
-                    ReplyToWeb(seq, new JObject { ["ok"] = false,
+                    ReplyToWeb(seq, new JObject { ["type"] = "recipe.pick.result", ["ok"] = false,
                         ["error"] = "当前选中了 " + sel.Count + " 个对象，而这个参数只要一个。请只选一个再点。" });
                     return;
                 }
@@ -647,20 +790,20 @@ namespace TxTools.Agent.UI
                 {
                     // ITxObject.Id 里本身含逗号("3,57,2,1"),所以多选用 | 分隔
                     var ids = string.Join("|", sel.Select(o => o.Id));
-                    ReplyToWeb(seq, new JObject { ["ok"] = true, ["id"] = ids,
+                    ReplyToWeb(seq, new JObject { ["type"] = "recipe.pick.result", ["ok"] = true, ["id"] = ids,
                         ["name"] = sel[0].Name, ["count"] = sel.Count,
                         ["type"] = sel[0].GetType().Name });
                 }
                 else
                 {
                     var o = sel[0];
-                    ReplyToWeb(seq, new JObject { ["ok"] = true, ["id"] = o.Id,
+                    ReplyToWeb(seq, new JObject { ["type"] = "recipe.pick.result", ["ok"] = true, ["id"] = o.Id,
                         ["name"] = o.Name, ["count"] = 1, ["type"] = o.GetType().Name });
                 }
             }
             catch (Exception ex)
             {
-                ReplyToWeb(seq, new JObject { ["ok"] = false, ["error"] = "取选择失败: " + ex.Message });
+                ReplyToWeb(seq, new JObject { ["type"] = "recipe.pick.result", ["ok"] = false, ["error"] = "取选择失败: " + ex.Message });
             }
         }
 
@@ -670,7 +813,8 @@ namespace TxTools.Agent.UI
             var r = RecipeStore.Get(id);
             if (r == null)
             {
-                ReplyToWeb(seq, new JObject { ["ok"] = false, ["error"] = "配方不存在，可能已被删除。" });
+                ReplyToWeb(seq, new JObject { ["type"] = "recipe.run.result", ["ok"] = false,
+                    ["recipeId"] = id ?? "", ["error"] = "配方不存在，可能已被删除。" });
                 return;
             }
 
@@ -683,7 +827,17 @@ namespace TxTools.Agent.UI
             var full = RecipeRunner.BuildCode(r, args, out err);
             if (full == null)
             {
-                ReplyToWeb(seq, new JObject { ["ok"] = false, ["error"] = err });
+                ReplyToWeb(seq, new JObject { ["type"] = "recipe.run.result", ["ok"] = false,
+                    ["recipeId"] = r.Id, ["error"] = err });
+                return;
+            }
+
+            // 【宿主侧防重入】前端超时后会重新解锁按钮,用户可能对仍在执行的配方再点一次 ——
+            // 两次执行会在 PS 主线程队列里串行,表现为"点了一次跑了两遍"。
+            if (Interlocked.CompareExchange(ref _recipeRunInFlight, 1, 0) != 0)
+            {
+                ReplyToWeb(seq, new JObject { ["type"] = "recipe.run.result", ["ok"] = false,
+                    ["recipeId"] = r.Id, ["error"] = "已有配方正在执行中（可能已超时但仍在跑）。请等它结束或在 PS 里确认状态后再试。" });
                 return;
             }
 
@@ -732,6 +886,10 @@ namespace TxTools.Agent.UI
                     ok = false;
                     text = "执行异常: " + ex.Message;
                 }
+                finally
+                {
+                    Interlocked.Exchange(ref _recipeRunInFlight, 0);
+                }
 
                 RecipeStore.RecordRun(runId, ok);
                 try
@@ -742,7 +900,13 @@ namespace TxTools.Agent.UI
                 }
                 catch { }
 
-                ReplyToWeb(seq, new JObject { ["ok"] = ok, ["text"] = text ?? "" });
+                // 【type + recipeId 必须带】前端超时后 pending 可能已清,
+                // 靠 type 才能把迟到的结果兜底投递回卡片
+                ReplyToWeb(seq, new JObject
+                {
+                    ["type"] = "recipe.run.result", ["ok"] = ok,
+                    ["recipeId"] = runId, ["text"] = text ?? ""
+                });
             });
         }
 
@@ -753,7 +917,7 @@ namespace TxTools.Agent.UI
             var r = RecipeStore.Get(id);
             if (r == null)
             {
-                ReplyToWeb(seq, new JObject { ["ok"] = false, ["error"] = "配方不存在。" });
+                ReplyToWeb(seq, new JObject { ["type"] = "recipe.reveal.result", ["ok"] = false, ["error"] = "配方不存在。" });
                 return;
             }
 
@@ -778,7 +942,7 @@ namespace TxTools.Agent.UI
             sb.AppendLine("```");
 
             PostJs(new { type = "message", role = "assistant", text = sb.ToString() });
-            ReplyToWeb(seq, new JObject { ["ok"] = true });
+            ReplyToWeb(seq, new JObject { ["type"] = "recipe.reveal.result", ["ok"] = true });
         }
 
         /// <summary>
@@ -787,17 +951,18 @@ namespace TxTools.Agent.UI
         /// </summary>
         private void HandleRecipePromote(int seq, JObject msg)
         {
-            var name = (string)msg["snippetName"];
+            // 兼容 "snippet" 旧字段名 —— 前后端曾各叫各的导致固化按钮永远报缺参
+            var name = (string)msg["snippetName"] ?? (string)msg["snippet"];
             if (string.IsNullOrWhiteSpace(name))
             {
-                ReplyToWeb(seq, new JObject { ["ok"] = false, ["error"] = "缺少 snippetName。" });
+                ReplyToWeb(seq, new JObject { ["type"] = "recipe.promote.result", ["ok"] = false, ["error"] = "缺少 snippetName。" });
                 return;
             }
 
             var hint = "把片段 \"" + name + "\" 固化成配方：判断其中哪些部分应该做成参数（对象/数字/文本），"
                      + "给每个参数起合法的英文变量名和中文标签，然后调用 save_recipe。";
             PostJs(new { type = "userTextPrefill", text = hint });
-            ReplyToWeb(seq, new JObject { ["ok"] = true });
+            ReplyToWeb(seq, new JObject { ["type"] = "recipe.promote.result", ["ok"] = true });
         }
 
         /// <summary>JS 侧完成初始化后调用。发初始化数据、恢复上次对话或触发 API Key 输入。</summary>
@@ -845,6 +1010,9 @@ namespace TxTools.Agent.UI
             // 1) 全部提供商 + 模型列表 (分组显示,已含缓存)
             PostProviderAndModelList();
 
+            // 2) 工具组开关状态(设置面板)
+            PostToolGroups();
+
             // 2) 推审批模式让前端 select 恢复选中
             PostJs(new { type = "approvalMode", value = _approvalMode });
 
@@ -869,7 +1037,7 @@ namespace TxTools.Agent.UI
         private void PostProviderAndModelList()
         {
             var providers = new List<object>();
-            foreach (var p in LlmProviders.All)
+            foreach (var p in LlmProviders.GetAll())
             {
                 providers.Add(new
                 {
@@ -877,8 +1045,9 @@ namespace TxTools.Agent.UI
                     displayName = p.DisplayName,
                     baseUrl = p.BaseUrl,
                     isLocal = p.IsLocal,
+                    isCustom = p.IsCustom,
                     keyPageUrl = p.KeyPageUrl,
-                    models = p.Models
+                    models = p.Models ?? new string[0]
                 });
             }
             PostJs(new
@@ -888,6 +1057,22 @@ namespace TxTools.Agent.UI
                 currentProvider = _currentProviderId,
                 current = _currentModel
             });
+        }
+
+        /// <summary>发送工具组开关状态(前端设置面板用)。</summary>
+        private void PostToolGroups()
+        {
+            var groups = new List<object>();
+            foreach (var g in ToolGate.AllGroups())
+            {
+                groups.Add(new
+                {
+                    id = g,
+                    name = ToolGate.GroupDisplayName(g),
+                    enabled = ToolGate.IsEnabled(g)
+                });
+            }
+            PostJs(new { type = "toolGroups", groups });
         }
 
         /// <summary>发 askApiKey 消息给 JS,附带当前 provider 的元数据方便 modal 展示。</summary>
@@ -1197,6 +1382,12 @@ namespace TxTools.Agent.UI
 
         private async Task HandleUserSendAsync(string text, JArray attachments)
         {
+            if (_isSending)
+            {
+                PostStatus("\u6b63\u5728\u5904\u7406\u4e0a\u4e00\u6761\u8bf7\u6c42\uff0c\u8bf7\u7a0d\u5019\u3002");
+                return;
+            }
+
             if (_loop == null)
             {
                 PostStatus("\u8bf7\u5148\u8bbe\u7f6e API Key\u3002");
@@ -1210,6 +1401,7 @@ namespace TxTools.Agent.UI
             if (string.IsNullOrWhiteSpace(finalText)) return;
 
             PostBusy(true);
+            _isSending = true;
             _cts = new CancellationTokenSource();
             try
             {
@@ -1238,6 +1430,7 @@ namespace TxTools.Agent.UI
                 PostBusy(false);
                 try { if (_cts != null) _cts.Dispose(); } catch { }
                 _cts = null;
+                _isSending = false;
             }
         }
 
@@ -1432,6 +1625,9 @@ namespace TxTools.Agent.UI
             _loop.LoadHistory(_current != null ? _current.Messages : new List<ChatMessage>());
             if (_current != null) RestoreTranscriptToJs(_current.Messages);
             try { UserPrefsStore.UpdateChoice(_currentProviderId, _currentModel); } catch { }
+            // 切换/选择模型后异步拉取该 provider 的真实模型列表(本地 Ollama 也适用),
+            // 5 分钟内已拉过则跳过 —— 这样每次切到 Ollama 都能拿到最新已安装的模型。
+            FetchProviderModelsAsync(targetProv);
             PostStatus("\u5df2\u5207\u6362\u6a21\u578b\u4e3a " + targetProv.DisplayName + " / " + model + "\uff0c\u8bb0\u5fc6\u4fdd\u7559\u3002");
         }
 
@@ -1530,6 +1726,92 @@ namespace TxTools.Agent.UI
             PostJs(new { type = "message", role = "\u7cfb\u7edf", text = "\u5df2\u5c31\u7eea\uff0c\u53ef\u4ee5\u5f00\u59cb\u5bf9\u8bdd\u3002" });
         }
 
+        /// <summary>
+        /// 撤销最后一条【用户】消息:连同它之后的一切(助手回复、工具结果)一起从历史里去掉。
+        /// 撤销后把该消息的正文与附件信息回传前端,塞回输入框,便于重新编辑。
+        /// </summary>
+        private void UndoLastUserSend()
+        {
+            if (_loop == null || _current == null) return;
+            var hist = _loop.FullHistory;
+            if (hist == null || hist.Count == 0) return;
+
+            // 从尾部往前找最后一条 user 消息
+            int lastUser = -1;
+            for (int i = hist.Count - 1; i >= 0; i--)
+                if (hist[i] != null && hist[i].Role == "user")
+                {
+                    lastUser = i;
+                    break;
+                }
+            if (lastUser < 0)
+            {
+                PostStatus("没有可撤销的用户消息。");
+                return;
+            }
+
+            // 取出被撤销消息的原始内容,解析出附件列表 + 正文
+            var undone = hist[lastUser].Content ?? "";
+            var attachments = new List<object>();
+            var body = undone;
+            var prefix = ExtractAttachmentPrefix(undone);
+            if (prefix != null)
+            {
+                foreach (var id in prefix.FileIds)
+                {
+                    var uf = UploadStore.Get(id);
+                    if (uf == null) continue;
+                    attachments.Add(new
+                    {
+                        id = uf.Id,
+                        name = uf.OriginalName,
+                        sizeText = FileParserService.FormatBytes(uf.Size),
+                        sheetCount = uf.SheetCount,
+                        rowCount = uf.RowCount,
+                        colCount = uf.ColCount,
+                        summary = uf.ParsedSummary ?? ""
+                    });
+                }
+                body = prefix.Body;
+            }
+
+            var kept = hist.Take(lastUser).ToList();
+            _loop.LoadHistory(kept);
+            SaveCurrent();
+            RestoreTranscriptToJs(kept);
+            PostStatus("已撤销,内容已放回输入框。");
+
+            PostJs(new { type = "restoreInput", text = body ?? "", attachments });
+        }
+
+        private sealed class AttachmentPrefixInfo
+        {
+            public List<string> FileIds { get; set; }
+            public string Body { get; set; }
+        }
+
+        /// <summary>从用户消息文本里解析出 [已附加文件] 前缀块,返回附件 id 列表 + 纯正文。没有前缀返回 null。</summary>
+        private static AttachmentPrefixInfo ExtractAttachmentPrefix(string text)
+        {
+            const string marker = "[\u5df2\u9644\u52a0\u6587\u4ef6]";
+            const string footer = "[\u5982\u9700\u7cbe\u8bfb\u5b8c\u6574\u5185\u5bb9,\u8c03\u7528 read_uploaded_file(file_id=...)]";
+            if (string.IsNullOrEmpty(text) || !text.StartsWith(marker, StringComparison.Ordinal)) return null;
+            var footIdx = text.IndexOf(footer, StringComparison.Ordinal);
+            if (footIdx < 0) return null;
+
+            var head = text.Substring(marker.Length, footIdx - marker.Length);
+            var body = text.Substring(footIdx + footer.Length).TrimStart('\r', '\n', ' ');
+
+            var ids = new List<string>();
+            foreach (var line in head.Split('\n'))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(line, @"id=([A-Za-z0-9_]+)");
+                if (m.Success && !ids.Contains(m.Groups[1].Value))
+                    ids.Add(m.Groups[1].Value);
+            }
+            return new AttachmentPrefixInfo { FileIds = ids, Body = body };
+        }
+
         private void LoadConversation(string id)
         {
             var conv = ConversationStore.Load(id);
@@ -1623,6 +1905,7 @@ namespace TxTools.Agent.UI
                     {
                         role = "assistant",
                         text = m.Content ?? "",
+                        reasoning = m.ReasoningContent,
                         toolCalls = tcList.Count > 0 ? tcList : null
                     });
                 }
@@ -1656,11 +1939,8 @@ namespace TxTools.Agent.UI
             options.AutoApproveTools.Add("add_fact");
             options.AutoApproveTools.Add("add_gotcha_correction");
 
-            IAgentLoop loop;
-            if (UseNewHarness)
-                loop = new HarnessAgentLoop(client, _tools, options);
-            else
-                loop = new AgentLoop(client, _tools, options);
+            // 统一走 harness(新 AgentLoop)驱动现有工具;旧引擎已删除。
+            IAgentLoop loop = new HarnessAgentLoop(client, _tools, options);
 
             if (_current != null && !string.IsNullOrEmpty(_current.Id))
                 loop.SetConvId(_current.Id);
@@ -1695,8 +1975,7 @@ namespace TxTools.Agent.UI
             {
                 // 思考过程(推理模型的 reasoning_content)。
                 // 普通模型不返回该字段,这三个事件根本不会触发,不影响现有行为。
-                // 注意思考内容不进历史 —— API 禁止把 reasoning_content 回传下一轮,
-                // 所以它也不落盘,重开对话看不到。
+                // 思考经独立归档保存，历史默认折叠；网络回传由端点兼容策略控制。
                 streaming.ReasoningStarted += () => PostJs(new { type = "reasoningStart" });
                 streaming.ReasoningDelta += t => PostJs(new { type = "reasoningDelta", text = t });
                 streaming.ReasoningEnded += () => PostJs(new { type = "reasoningEnd" });
@@ -1710,10 +1989,6 @@ namespace TxTools.Agent.UI
             loop.HistoryChanged += () => PostTokenUsage(
                 loop.TotalPromptTokens, loop.TotalCompletionTokens, loop.TotalTokens);
             loop.TokenUsed += (p, c, t) => PostTokenUsage(loop.TotalPromptTokens, loop.TotalCompletionTokens, loop.TotalTokens);
-
-            // 旧 AgentLoop 的静态入口(记忆工具用它取 convId);新 harness 模式下不设置(记忆工具优雅降级)。
-            var oldLoop = loop as AgentLoop;
-            if (oldLoop != null) AgentLoop.Current = oldLoop;
 
             return loop;
         }

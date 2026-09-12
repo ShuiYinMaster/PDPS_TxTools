@@ -234,31 +234,50 @@ namespace TxTools.Agent.Core
             if (string.IsNullOrWhiteSpace(query)) return all.OrderByDescending(s => s.SuccessCount).ToList();
 
             var keywords = query.ToLowerInvariant()
-                .Split(new[] { ' ', ',', '|', '/' }, StringSplitOptions.RemoveEmptyEntries);
+                .Split(new[] { ' ', ',', '|', '/', '，', '。', '？', '！', '?', '!', ';', '；', ':', '：' },
+                       StringSplitOptions.RemoveEmptyEntries)
+                .Select(k => k.Trim())
+                .Where(k => k.Length >= 2)
+                .Distinct()
+                .ToList();
 
-            // 计分：每个匹配的 tag +3，匹配的 name/description 关键字 +1
-            var scored = all.Select(s =>
+            // 【必须有关键词命中才入选】
+            // 旧版 score += SuccessCount 且只过滤 Score>0,结果只要成功过一次的片段
+            // 无论与查询相不相干都会进 Top-N —— 每轮被动的注入变成"永远注那三条",
+            // 白吃上下文还稀释注意力。现在成功率只在有关键词命中后做有上限的加成。
+            var scored = new List<KeyValuePair<Snippet, int>>();
+            foreach (var s in all)
             {
                 int score = 0;
                 foreach (var kw in keywords)
                 {
-                    if (s.Tags != null && s.Tags.Any(t => t.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0))
-                        score += 3;
-                    if (s.Name != null && s.Name.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0)
-                        score += 1;
-                    if (s.Description != null && s.Description.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0)
-                        score += 1;
+                    if (s.Tags != null && s.Tags.Any(t => FieldHits(t, kw))) score += 3;
+                    if (FieldHits(s.Name, kw)) score += 1;
+                    if (FieldHits(s.Description, kw)) score += 1;
                 }
-                // 基础分 = 复用次数权重（被用过多次的更可信）
-                score += s.SuccessCount;
-                return new { Snippet = s, Score = score };
-            })
-            .Where(x => x.Score > 0)
-            .OrderByDescending(x => x.Score)
-            .Select(x => x.Snippet)
-            .ToList();
+                if (score == 0) continue;   // 一个关键词都没碰到 → 不做候选
 
-            return scored;
+                score += Math.Min(s.SuccessCount, 10);   // 复用次数:同分加成,封顶防独大
+                scored.Add(new KeyValuePair<Snippet, int>(s, score));
+            }
+
+            return scored.OrderByDescending(x => x.Value)
+                         .Select(x => x.Key)
+                         .ToList();
+        }
+
+        /// <summary>
+        /// 字段与关键词双向包含都算命中:
+        /// 正向(字段包含关键词)覆盖英文;反向(短字段被整句包含)覆盖中文 ——
+        /// 中文没有分词,整句"把所有机器人对齐"切出来是一个长 token,
+        /// 只有允许 tag="机器人" 反向被它包含才匹配得上。
+        /// </summary>
+        private static bool FieldHits(string field, string keyword)
+        {
+            if (string.IsNullOrWhiteSpace(field) || field.Length < 2) return false;
+            if (field.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            // 反向只对短字段做:长描述被整句包含是巧合不是相关
+            return field.Length <= 20 && keyword.IndexOf(field, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         /// <summary>按名新增或覆盖一条片段。</summary>

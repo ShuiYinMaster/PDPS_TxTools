@@ -61,6 +61,23 @@
             cb(msg);
             return;
         }
+        // 迟到的执行结果:超时兜底已把界面解锁,但宿主可能还在跑、结果刚到。
+        // 靠 type 兜底投递,把真实结果补写到卡片上 —— 不能让"执行超时"冤枉宿主。
+        if (msg.type === 'recipe.run.result' && msg.recipeId) {
+            var rid = msg.recipeId;
+            state.running[rid] = false;
+            flash(rid, !!msg.ok, msg.text || msg.error || (msg.ok ? '执行完成。' : '执行失败。'));
+            state.open[rid] = true;
+            render();
+            send('recipe.list', {}, function (r2) {
+                if (r2 && r2.ok !== false) {
+                    state.recipes = r2.recipes || state.recipes;
+                    state.candidates = r2.candidates || state.candidates;
+                    render();
+                }
+            });
+            return;
+        }
         // 无 seq 的是宿主主动推送
         if (msg.type === 'recipe.changed') refresh();
         else if (msg.type === 'recipe.studyChanged') {
@@ -312,7 +329,7 @@
         btn.title = '让 AI 把这段片段整理成带参数的配方';
         btn.onclick = function () {
             btn.disabled = true;
-            send('recipe.promote', { snippet: c.name }, function (r) {
+            send('recipe.promote', { snippetName: c.name }, function (r) {
                 btn.disabled = false;
                 if (r && r.ok === false) alert(r.error || '固化失败。');
                 // 固化走的是一轮对话（AI 要给参数命名、写说明），
@@ -326,6 +343,8 @@
     // ── 执行 ──
 
     function run(rec) {
+        if (state.running[rec.id]) return;   // 防双击/超时后重复执行(宿主侧另有在飞标志兜底)
+
         var args = {};
         var b = state.bindings[rec.id] || {};
         (rec.params || []).forEach(function (p) {
@@ -360,15 +379,17 @@
 
         // 超时兜底：正常执行完宿主必回消息；若一直没回（宿主崩溃/PS 卡死），
         // 至少要恢复按钮，不能永远停在“执行中”。
+        // 【10 分钟】重配方(STL→CATIA→cscript 染色)跑 3 分钟以上是常态,180 秒会误报超时。
+        // 超时不清 pending:迟到的 recipe.run.result 仍会经 seq 配对回填真实结果。
         _runTimers[rec.id] = setTimeout(function () {
             if (state.running[rec.id]) {
                 delete _runTimers[rec.id];
                 state.running[rec.id] = false;
-                flash(rec.id, false, '执行超时：宿主未响应（可能仍在执行）。请检查 Process Simulate 后再操作。');
+                flash(rec.id, false, '已等待 10 分钟仍未返回。执行可能仍在后台进行，完成后结果会自动补显在这里；重复点击执行会被拒绝。');
                 state.open[rec.id] = true;
                 render();
             }
-        }, 180000);
+        }, 600000);
     }
 
     function beginPick(rec, p) {

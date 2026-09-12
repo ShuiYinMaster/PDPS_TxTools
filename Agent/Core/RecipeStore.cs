@@ -152,6 +152,7 @@ namespace TxTools.Agent.Core
             r.Lang = SnippetStore.NormalizeLang(r.Lang);
 
             MdStore.Write(Folder, r.Id, ToDoc(r));
+            RaiseChanged();
             return "已保存配方: " + r.Name;
         }
 
@@ -160,7 +161,30 @@ namespace TxTools.Agent.Core
             var r = Get(id);
             if (r == null) return false;
             MdStore.Delete(Folder, r.Id);
+            RaiseChanged();
             return true;
+        }
+
+        // ── 变更通知 ──
+        //  侧边栏前端等 recipe.changed 推送来刷新列表,宿主此前从未发过 ——
+        //  聊天里 save/delete 之后侧边栏一直显示旧数据,只能手点刷新。
+        //  RecordRun 只动计数不触发:执行完前端自己会刷一次列表,再推就重复。
+
+        /// <summary>配方新增/更新/删除后触发。订阅方(UI 推送、工具表同步)各自兜异常。</summary>
+        public static event Action RecipesChanged;
+
+        private static void RaiseChanged()
+        {
+            var h = RecipesChanged;
+            if (h == null) return;
+            foreach (Action d in h.GetInvocationList())
+            {
+                try { d(); }
+                catch (Exception ex)
+                {
+                    try { AuditLog.Write("[warn] [Recipe] RecipesChanged 订阅者异常: " + ex.Message); } catch { }
+                }
+            }
         }
 
         /// <summary>记录一次执行结果。成败都记 —— 只记成功等于不记。</summary>

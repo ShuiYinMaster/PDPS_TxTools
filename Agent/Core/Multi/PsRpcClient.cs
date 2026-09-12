@@ -54,6 +54,45 @@ namespace TxTools.Agent.Core
             return Send(target, new JObject { ["op"] = "ping" });
         }
 
+        /// <summary>
+        /// 快速 ping：给环境枚举/库根识别用 —— 短连接+短读超时，
+        /// 目标没响应也尽快返回，不让 UI 卡住。
+        /// </summary>
+        public static Result PingFast(PsInstanceInfo target, int timeoutMs = 5000)
+        {
+            if (target == null) return Fail("目标环境不存在。");
+            try
+            {
+                using (var pipe = new NamedPipeClientStream(
+                    ".", target.PipeName, PipeDirection.InOut, PipeOptions.None))
+                {
+                    try { pipe.Connect(Math.Min(ConnectTimeoutMs, 1500)); }
+                    catch (TimeoutException)
+                    {
+                        return Fail("连不上环境 \"" + target.Name + "\"(pid " + target.Pid + ")。");
+                    }
+
+                    pipe.ReadMode = PipeTransmissionMode.Message;
+                    PsRpcServer.WriteMessage(pipe, "{\"op\":\"ping\"}");
+
+                    var raw = ReadMessageTimed(pipe, timeoutMs, target.Name);
+                    if (raw == null)
+                        return Fail("环境 \"" + target.Name + "\" 无返回(超时或断连)。");
+
+                    var resp = JObject.Parse(raw);
+                    if (resp["ok"] != null && (bool)resp["ok"])
+                        return new Result { Ok = true, Output = raw };
+
+                    return Fail((string)resp["error"] ?? "未知错误");
+                }
+            }
+            catch (Exception ex)
+            {
+                return Fail("环境 \"" + target.Name + "\" ping 失败 - "
+                          + ex.GetType().Name + ": " + ex.Message);
+            }
+        }
+
         private static Result InvokeLocal(string tool, JObject input)
         {
             try
@@ -92,14 +131,13 @@ namespace TxTools.Agent.Core
                     }
 
                     pipe.ReadMode = PipeTransmissionMode.Message;
-                    // 读响应也要超时:服务端工具可能执行很久(场景遍历/仿真阻塞)，
-                    // 但不该让主控侧无限挂死。超时后 ReadMessage 抛 IOException，走下方统一处理。
-                    pipe.ReadTimeout = TimeoutMs;
+                    // 注意：NamedPipe 不支持 ReadTimeout（CanTimeout 恒为 False，设了必抛）。
+                    // 读响应超时用 BeginRead + Wait 手动实现。
                     PsRpcServer.WriteMessage(pipe, JsonConvert.SerializeObject(request));
 
-                    var raw = PsRpcServer.ReadMessage(pipe);
-                    if (string.IsNullOrEmpty(raw))
-                        return Fail("环境 \"" + target.Name + "\" 没有返回内容(连接被中断)。");
+                    var raw = ReadMessageTimed(pipe, TimeoutMs, target.Name);
+                    if (raw == null)
+                        return Fail("环境 \"" + target.Name + "\" 没有返回内容(连接被中断或响应超时)。");
 
                     var resp = JObject.Parse(raw);
                     if (resp["ok"] != null && (bool)resp["ok"])
@@ -110,7 +148,7 @@ namespace TxTools.Agent.Core
             }
             catch (Exception ex)
             {
-                // 响应超时(ReadTimeout 超时抛 IOException)要单独说清楚,别和连接失败混在一起
+                // 响应超时(BeginRead Wait 超时)要单独说清楚,别和连接失败混在一起
                 if (ex is System.IO.IOException || ex is TimeoutException)
                     return Fail("环境 \"" + target.Name + "\" 响应超时(超过 " + (TimeoutMs / 1000)
                               + " 秒)。该 PDPS 可能正忙于阻塞操作(仿真/大批量遍历)，稍后重试，"
@@ -119,6 +157,48 @@ namespace TxTools.Agent.Core
                 return Fail("与环境 \"" + target.Name + "\" 通信失败 - "
                           + ex.GetType().Name + ": " + ex.Message);
             }
+        }
+
+        /// <summary>
+        /// 带超时读取一帧(4 字节长度前缀 + 正文)。NamedPipe 不支持 ReadTimeout，
+        /// 用 BeginRead 异步 + Wait 实现。返回 null 表示超时/断连。
+        /// </summary>
+        private static string ReadMessageTimed(PipeStream pipe, int timeoutMs, string envName)
+        {
+            var lenBuf = new byte[4];
+            if (!ReadExactTimed(pipe, lenBuf, 4, timeoutMs)) return null;
+            int len = BitConverter.ToInt32(lenBuf, 0);
+            if (len <= 0 || len > 64 * 1024 * 1024) return null;
+            var buf = new byte[len];
+            if (!ReadExactTimed(pipe, buf, len, timeoutMs)) return null;
+            return Encoding.UTF8.GetString(buf);
+        }
+
+        private static bool ReadExactTimed(PipeStream pipe, byte[] buf, int count, int timeoutMs)
+        {
+            int read = 0;
+            while (read < count)
+            {
+                int n;
+                var done = new System.Threading.ManualResetEvent(false);
+                IAsyncResult ar = null;
+                try { ar = pipe.BeginRead(buf, read, count - read, delegate { try { done.Set(); } catch { } }, null); }
+                catch { return false; }
+                bool completed = ar != null && done.WaitOne(timeoutMs);
+                if (!completed)
+                {
+                    // 关键修复:超时后不能调用 EndRead —— 它在读取未完成时会阻塞到读完成,
+                    // 让"超时"形同虚设(对端活着但不回数据时永久挂起)。
+                    // 改为关闭管道,让挂起的 BeginRead 以异常结束,立刻返回超时。
+                    try { pipe.Close(); } catch { }
+                    return false;
+                }
+                try { n = pipe.EndRead(ar); }
+                catch { return false; }
+                if (n <= 0) return false;
+                read += n;
+            }
+            return true;
         }
 
         private static Result Fail(string msg)
@@ -172,7 +252,7 @@ namespace TxTools.Agent.Core
             if (live.Count == 1)
                 sb.Append("只有一个环境，跨环境工具用不上。");
             else
-                sb.Append("跨环境调用默认只放行只读工具 —— 改场景请在目标环境自己的窗口里操作。");
+                sb.Append("主被控可互访 —— 写工具也能跨环境执行（在目标进程内运行，可 Ctrl+Z 撤销）。");
 
             return sb.ToString();
         }
@@ -191,8 +271,7 @@ namespace TxTools.Agent.Core
                 return "在【指定的另一个 PDPS 环境】里执行一个工具，返回它的输出。"
                      + "先用 list_environments 拿到环境名。"
                      + "tool 传工具名，input 传该工具的参数对象(和直接调用时一样)。"
-                     + "【只能调只读工具】跨环境改场景已被拒绝 —— "
-                     + "用户看不见那个窗口，在那里改东西太危险。";
+                     + "【主被控互访】写工具也能跨环境执行 —— 在目标进程内运行，可 Ctrl+Z 撤销。";
             }
         }
 
@@ -242,7 +321,7 @@ namespace TxTools.Agent.Core
         {
             get
             {
-                return "在两个 PDPS 环境里执行【同一个只读工具、同一套参数】，把两边输出并排返回，"
+                return "在两个 PDPS 环境里执行【同一个工具、同一套参数】，把两边输出并排返回，"
                      + "并标出逐行差异。"
                      + "典型用途:同一套夹具在两个工作站各建了一版，确认它们是否一致 —— "
                      + "比如比 TCP、关节值、焊枪定义、资源树结构。"

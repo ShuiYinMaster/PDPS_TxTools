@@ -37,6 +37,11 @@ namespace TxTools.Agent
                     try { return TxApplication.ActiveDocument.CurrentStudy.Name; }
                     catch { return null; }
                 };
+                PsRpcServer.SystemRootGetter = () =>
+                {
+                    try { return TxApplication.SystemRootDirectory; }
+                    catch { return null; }
+                };
                 TxAgentService.Start(BuildToolRegistry());
             }
             catch { /* 服务起不来不影响窗口本身 */ }
@@ -52,11 +57,12 @@ namespace TxTools.Agent
             // 在 PS 主线程捕获 SynchronizationContext，供所有工具把 PS 调用路由回主线程
             // (对齐 ExportGunCmd/ExportService 的做法)。
             var psCtx = SynchronizationContext.Current ?? new SynchronizationContext();
+            PsContext.CaptureFromMainThread();
             PsContext.Current = new PsContext(psCtx);
 
+            // 本进程已开着窗口 → 前置激活，不重复创建。
             if (_form != null && !_form.IsDisposed)
             {
-                // 已打开就前置激活、并从最小化还原，不重复创建。
                 if (_form.WindowState == FormWindowState.Minimized)
                     _form.WindowState = FormWindowState.Normal;
                 _form.BringToFront();
@@ -65,16 +71,63 @@ namespace TxTools.Agent
                 return;
             }
 
+            // 【Agent 窗口全局唯一】已有其它 PDPS 进程开着窗口时，
+            // 本进程不进入对话界面，只显示提示信息 —— 避免两窗口写同一份会话互相覆盖。
+            if (!PsInstanceRegistry.TryAcquireWindow())
+            {
+                ShowOccupiedHint();
+                return;
+            }
+
             var tools = BuildToolRegistry();
             _form = new TxAgentForm(psCtx, tools);
             _form.Name = _form.GetType().FullName;   // 跨插件窗口尺寸串扰修复(双保险)
-            _form.FormClosed += (s, e) => _form = null;
+            _form.FormClosed += (s, e) =>
+            {
+                _form = null;
+                try { PsInstanceRegistry.ReleaseWindow(); } catch { }
+            };
 
             IWin32Window owner = TryGetPsMainWindow();
             if (owner != null) _form.Show(owner);
             else _form.Show();
 
             try { TxApplication.StatusBarMessage = "TxTools.Agent 已启动"; } catch { }
+        }
+
+        /// <summary>Agent 窗口已被其它实例打开时的提示窗口（不进入对话，避免会话覆盖）。</summary>
+        private void ShowOccupiedHint()
+        {
+            try
+            {
+                var owner = TryGetPsMainWindow();
+                var live = PsInstanceRegistry.Live();
+                string who = "另一个 PDPS 实例";
+                foreach (var i in live)
+                    if (i.HasWindow && i.IsAlive && !i.IsSelf)
+                    { who = "「" + (string.IsNullOrEmpty(i.Name) ? "?" : i.Name) + "」"; break; }
+
+                string msg = "TxAgent 窗口已在 " + who + " 中打开。\n\n"
+                           + "为避免两窗口写同一份会话互相覆盖，本实例不进入对话界面，"
+                           + "仅作为跨环境执行器运行。\n\n"
+                           + "如需在此环境对话，请先关闭另一实例中的 Agent 窗口。";
+                if (owner != null)
+                    System.Windows.Forms.MessageBox.Show(owner, msg, "TxAgent — 窗口已被占用",
+                        System.Windows.Forms.MessageBoxButtons.OK,
+                        System.Windows.Forms.MessageBoxIcon.Information);
+                else
+                    System.Windows.Forms.MessageBox.Show(msg, "TxAgent — 窗口已被占用",
+                        System.Windows.Forms.MessageBoxButtons.OK,
+                        System.Windows.Forms.MessageBoxIcon.Information);
+            }
+            catch
+            {
+                System.Windows.Forms.MessageBox.Show(
+                    "TxAgent 窗口已在其它实例中打开。为避免会话覆盖，本实例不进入对话界面。",
+                    "TxAgent — 窗口已被占用",
+                    System.Windows.Forms.MessageBoxButtons.OK,
+                    System.Windows.Forms.MessageBoxIcon.Information);
+            }
         }
 
         /// <summary>注册全部工具：原子工具 + 记忆系统 + 配方机制 + 已保存的配方。</summary>
@@ -126,10 +179,10 @@ namespace TxTools.Agent
             reg.Register(new DeleteRecipeTool(reg));
 
             // 3) 记忆系统工具 (v2) —— 跨对话记忆的读写入口
-            //    convId 通过 AgentLoop.Current / HarnessAgentLoop.Current 静态入口获取。
+            //    convId 通过 HarnessAgentLoop.Current 静态入口获取。
             //    form 构造 loop 后写入 Current,lambda 每次调用时读取,即使 Current 为 null 也返回 null 不崩。
             var getConvId = new Func<string>(() =>
-                AgentLoop.Current?.CurrentConvId ?? TxTools.Agent.Harness.HarnessAgentLoop.Current?.CurrentConvId);
+                TxTools.Agent.Harness.HarnessAgentLoop.Current?.CurrentConvId);
 
             // 片段固化/归因需要 convId:统一注入 AgentContext,工具层挂钩共用同一个来源
             AgentContext.ConvIdProvider = getConvId;

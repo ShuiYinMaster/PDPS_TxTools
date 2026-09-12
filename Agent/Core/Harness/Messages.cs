@@ -36,6 +36,8 @@ namespace TxAgent.Core
         public MessageRole Role { get; set; }
 
         public string Content { get; set; }
+        /// <summary>Provider-returned reasoning, retained for archive and compatible replay.</summary>
+        public string ReasoningContent { get; set; }
 
         /// <summary>Role==Assistant 时可能携带工具调用。</summary>
         public List<ToolCall> ToolCalls { get; set; }

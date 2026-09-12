@@ -23,73 +23,108 @@ namespace TxTools.Agent.Core
         private static readonly Dictionary<string, List<TaskItem>> _byConv =
             new Dictionary<string, List<TaskItem>>(StringComparer.Ordinal);
 
+        // UI 线程与工具线程(harness 后台线程)都可能访问 _byConv / _activeConvId,
+        // 不加锁的 Dictionary 并发读写可能抛 InvalidOperationException 或损坏内部状态。
+        private static readonly object _sync = new object();
+
         private const string DefaultKey = "_default";
         private static string _activeConvId = DefaultKey;
 
         /// <summary>切换当前活动对话。AgentLoop 在切换对话或加载历史时调用。</summary>
         public static void SetActiveConversation(string convId)
         {
-            _activeConvId = string.IsNullOrWhiteSpace(convId) ? DefaultKey : convId;
+            lock (_sync)
+                _activeConvId = string.IsNullOrWhiteSpace(convId) ? DefaultKey : convId;
         }
 
         /// <summary>当前活动对话 id (用于 UI 展示或调试)。</summary>
-        public static string ActiveConversationId { get { return _activeConvId; } }
+        public static string ActiveConversationId { get { lock (_sync) return _activeConvId; } }
 
         /// <summary>清空指定对话的清单。传 null 清全部对话的清单。</summary>
         public static void Clear(string convId = null)
         {
-            if (convId == null) { _byConv.Clear(); return; }
-            _byConv.Remove(convId);
+            lock (_sync)
+            {
+                if (convId == null) { _byConv.Clear(); return; }
+                _byConv.Remove(convId);
+            }
         }
 
         /// <summary>update_plan 工具入口：覆盖当前活动对话的清单并返回渲染文本。</summary>
         public static string Update(IEnumerable<TaskItem> items)
         {
-            var list = GetOrCreate(_activeConvId);
-            list.Clear();
-            if (items != null)
-                foreach (var it in items)
-                    if (it != null && !string.IsNullOrWhiteSpace(it.Text))
+            lock (_sync)
+            {
+                var list = GetOrCreate(_activeConvId);
+                list.Clear();
+                if (items != null)
+                {
+                    int n = 0;
+                    foreach (var it in items)
+                    {
+                        if (it == null || string.IsNullOrWhiteSpace(it.Text)) continue;
+                        // 计划条数设上限,避免模型一次塞几百条把上下文撑爆
+                        if (n >= MaxPlanItems) break;
                         list.Add(new TaskItem { Text = it.Text.Trim(), Done = it.Done });
-            return Render();
+                        n++;
+                    }
+                }
+                return Render();
+            }
         }
 
         /// <summary>渲染当前活动对话的清单。</summary>
         public static string Render()
         {
-            var list = GetOrCreate(_activeConvId);
-            if (list.Count == 0) return "（当前无计划）";
-            var sb = new StringBuilder();
-            sb.AppendLine("当前计划：");
-            int done = 0;
-            for (int i = 0; i < list.Count; i++)
+            lock (_sync)
             {
-                var it = list[i];
-                if (it.Done) done++;
-                sb.AppendLine((i + 1) + ". [" + (it.Done ? "x" : " ") + "] " + it.Text);
+                var list = GetOrCreate(_activeConvId);
+                if (list.Count == 0) return "（当前无计划）";
+                var sb = new StringBuilder();
+                sb.AppendLine("当前计划：");
+                int done = 0;
+                for (int i = 0; i < list.Count; i++)
+                {
+                    var it = list[i];
+                    if (it.Done) done++;
+                    sb.AppendLine((i + 1) + ". [" + (it.Done ? "x" : " ") + "] " + it.Text);
+                }
+                sb.Append("进度: " + done + "/" + list.Count);
+                return sb.ToString();
             }
-            sb.Append("进度: " + done + "/" + list.Count);
-            return sb.ToString();
         }
 
         /// <summary>导出当前对话的清单副本（供持久化到 Conversation 元数据）。</summary>
         public static List<TaskItem> Export()
         {
-            var list = GetOrCreate(_activeConvId);
-            var copy = new List<TaskItem>(list.Count);
-            foreach (var it in list) copy.Add(new TaskItem { Text = it.Text, Done = it.Done });
-            return copy;
+            lock (_sync)
+            {
+                var list = GetOrCreate(_activeConvId);
+                var copy = new List<TaskItem>(list.Count);
+                foreach (var it in list) copy.Add(new TaskItem { Text = it.Text, Done = it.Done });
+                return copy;
+            }
         }
 
         /// <summary>从持久化数据恢复当前对话的清单。</summary>
         public static void Import(IEnumerable<TaskItem> items)
         {
-            var list = GetOrCreate(_activeConvId);
-            list.Clear();
-            if (items != null)
-                foreach (var it in items)
-                    if (it != null && !string.IsNullOrWhiteSpace(it.Text))
+            lock (_sync)
+            {
+                var list = GetOrCreate(_activeConvId);
+                list.Clear();
+                if (items != null)
+                {
+                    int n = 0;
+                    foreach (var it in items)
+                    {
+                        if (it == null || string.IsNullOrWhiteSpace(it.Text)) continue;
+                        if (n >= MaxPlanItems) break;
                         list.Add(new TaskItem { Text = it.Text.Trim(), Done = it.Done });
+                        n++;
+                    }
+                }
+            }
         }
 
         private static List<TaskItem> GetOrCreate(string convId)
@@ -102,5 +137,8 @@ namespace TxTools.Agent.Core
             }
             return list;
         }
+
+        /// <summary>单对话计划条数上限，防止无界增长把上下文撑爆。</summary>
+        public const int MaxPlanItems = 30;
     }
 }

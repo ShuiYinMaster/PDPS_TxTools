@@ -27,6 +27,7 @@ namespace TxTools.Agent.Harness
         private readonly DeepSeekClient _client;
 
         public string ModelId { get; private set; }
+        public string ReasoningEffort { get; set; } = "low";
 
         /// <summary>
         /// 是否启用流式。默认 true;若某个 provider 的流式有问题,把它置 false 即可
@@ -93,15 +94,15 @@ namespace TxTools.Agent.Harness
                 TokenUsage usage = null;
                 string repetitionHint = null;
 
-                // 检测到退化循环时客户端已主动截断，这里把纠正提示带回给 AgentLoop
-                _client.OnRepetitionDetected = h => { repetitionHint = h; };
-
                 ChatMessage msg = await _client.SendStreamAsync(
                     req,
                     text => { if (handlers != null) handlers.Content(text); },
                     ct,
                     u => { usage = u; },
-                    text => { if (handlers != null) handlers.Reasoning(text); }
+                    text => { if (handlers != null) handlers.Reasoning(text); },
+                    // 检测到退化循环时客户端已主动截断，这里把纠正提示带回给 AgentLoop。
+                    // 走调用参数而非共享字段 —— 共享 client 跨对话并发时字段会互相覆盖。
+                    h => { repetitionHint = h; }
                 ).ConfigureAwait(false);
 
                 if (msg == null)
@@ -175,6 +176,22 @@ namespace TxTools.Agent.Harness
                 Messages = TranslateMessages(request.Messages),
                 Tools = tools
             };
+
+            // DeepSeek V4 documents low/high/max and requires reasoning replay with tools.
+            // Do not send provider-specific fields to proxies or unrelated models.
+            if (_client.IsOfficialDeepSeek && ModelId.StartsWith("deepseek-v4", StringComparison.OrdinalIgnoreCase))
+            {
+                req.ReasoningEffort = ReasoningEffort == "high" || ReasoningEffort == "max" ? ReasoningEffort : "low";
+                if (tools != null && tools.Count > 0)
+                    for (int i = 0; i < req.Messages.Count; i++)
+                    {
+                        var message = req.Messages[i];
+                        if (message.Role != "assistant") continue;
+                        message.SendReasoningContent = true;
+                        // Legacy archives contain no reasoning; never fabricate it.
+                        if (message.ReasoningContent == null) message.ReasoningContent = "";
+                    }
+            }
 
             // 只在真的带工具时关思考:纯对话轮次让模型正常思考,质量更好
             if (DisableThinkingWithTools && tools != null && tools.Count > 0)
@@ -270,8 +287,9 @@ namespace TxTools.Agent.Harness
                     default: cm.Role = "user"; break;
                 }
                 cm.Content = m.Content;
+                cm.ReasoningContent = m.ReasoningContent;
                 cm.ToolCallId = m.ToolCallId;
-                // 注意:不回填 ReasoningContent —— API 不接受把思考内容传回下一轮。
+                // The wire flag remains off here; BuildRequest enables it only for compatible tool requests.
                 if (m.ToolCalls != null && m.ToolCalls.Count > 0)
                 {
                     cm.ToolCalls = new List<TxTools.Agent.Core.ToolCall>(m.ToolCalls.Count);

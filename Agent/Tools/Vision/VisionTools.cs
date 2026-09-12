@@ -3,7 +3,7 @@
 // 图像识别工具。
 //
 // 为什么单独走一个模型:
-//   DeepSeek 系列不支持视觉,主对话模型直接看不了图。
+//   按具体模型识别视觉能力；支持 DeepSeek V4 vision-exp。
 //   与其让用户手动切模型(切了之后工具调用等能力又可能受影响),
 //   不如让主模型把图【委托】给视觉模型,拿回一段文字描述继续干活 ——
 //   主对话上下文里留下的是描述文本,不是几十万 token 的图片。
@@ -31,7 +31,7 @@ namespace TxTools.Agent.Core
             get
             {
                 return "看图。把已上传的图片交给视觉模型识别，返回文字描述。"
-                     + "【当前主对话模型不支持视觉，看图必须用本工具】。"
+                     + "优先使用当前视觉模型或同 provider 的视觉型号；普通文本模型不会直接接收图片。"
                      + "适用：用户上传的截图/照片/图纸/报错框，需要知道图里有什么、写了什么字、"
                      + "布局是怎样的。question 写清你要从图里得到什么，问得越具体回答越有用——"
                      + "「这张图里有几台机器人，分别叫什么」远好于「描述这张图」。"
@@ -53,7 +53,7 @@ namespace TxTools.Agent.Core
                         'path':     { 'type': 'string', 'description': '本地图片绝对路径。与 file_id 二选一' },
                         'question': { 'type': 'string', 'description': '你想从图里得到什么信息，尽量具体' },
                         'detail':   { 'type': 'string', 'description': 'low(默认，省钱，判断有无/是什么/大致布局够用) | high(要读小字、看细节时才用)' },
-                        'provider': { 'type': 'string', 'description': '可选，指定 kimi 或 qwen。留空自动选' }
+                        'provider': { 'type': 'string', 'description': '可选，指定 deepseek/kimi/qwen 等 provider；严格限定该 provider，留空按当前模型能力自动选' }
                     }
                 }");
             }
@@ -112,7 +112,7 @@ namespace TxTools.Agent.Core
                         'width':    { 'type': 'integer', 'description': '截图宽度，默认 1024。看整体布局够用，要看细节再调大' },
                         'height':   { 'type': 'integer', 'description': '截图高度，默认 576' },
                         'detail':   { 'type': 'string', 'description': 'low(默认) | high(要看细节时才用)' },
-                        'provider': { 'type': 'string', 'description': '可选，kimi 或 qwen' }
+                        'provider': { 'type': 'string', 'description': '可选，指定 deepseek/kimi/qwen 等 provider；不会静默跨 provider 回退' }
                     }
                 }");
             }
@@ -207,7 +207,21 @@ namespace TxTools.Agent.Core
                 if (mime == null)
                     return "不是支持的图片格式(需 png/jpg/jpeg/gif/webp/bmp): " + Path.GetExtension(path);
 
+                if (new FileInfo(path).Length > MaxBase64Chars * 3L / 4L)
+                    return "图片过大，请先压缩或截取局部后重试。";
                 var bytes = File.ReadAllBytes(path);
+                // DeepSeek does not accept BMP. Convert its actual signature to PNG once.
+                if (bytes.Length > 2 && bytes[0] == (byte)'B' && bytes[1] == (byte)'M')
+                {
+                    using (var input = new MemoryStream(bytes))
+                    using (var bitmap = System.Drawing.Image.FromStream(input))
+                    using (var output = new MemoryStream())
+                    {
+                        bitmap.Save(output, System.Drawing.Imaging.ImageFormat.Png);
+                        bytes = output.ToArray();
+                        mime = "image/png";
+                    }
+                }
                 base64 = Convert.ToBase64String(bytes);
 
                 if (base64.Length > MaxBase64Chars)
@@ -226,18 +240,20 @@ namespace TxTools.Agent.Core
         public static string Ask(string question, string base64, string mime,
             string detail, string provider, string source)
         {
+            if (detail != null && detail != "low" && detail != "high" && detail != "auto" && detail != "original")
+                return "Error: detail 必须为 low/high/auto/original。";
             var spec = PickModel(provider);
             if (spec == null)
             {
                 var have = ModelRouter.AvailableProviders();
-                return "没有可用的视觉模型。当前主模型不支持看图，需要在设置里配置 "
-                     + "Kimi 或 千问(阿里百炼) 的 API key。"
+                return "Error: 没有可用的视觉模型" + (string.IsNullOrWhiteSpace(provider) ? "" : "（限定 provider=" + provider + "）")
+                     + "。请配置 DeepSeek vision-exp、Kimi 或千问的可用账号；显式 provider 不会跨平台回退。"
                      + (have.Count > 0 ? "已配置的 provider: " + string.Join(", ", have) : "当前未配置任何其它 provider。");
             }
 
             var client = ModelRouter.GetClient(spec);
             if (client == null)
-                return "取不到 " + spec.Provider + " 的客户端，请检查 API key 配置。";
+                return "Error: 取不到 " + spec.Provider + " 的客户端，请检查 API key 配置。";
 
             var img = ContentPart.FromImageBase64(base64, mime);
             if (!string.IsNullOrEmpty(detail)) img.ImageUrl.Detail = detail;
@@ -256,7 +272,8 @@ namespace TxTools.Agent.Core
             var req = new ChatRequest
             {
                 Model = spec.ModelId,
-                MaxTokens = 2048,
+                MaxTokens = 8192,
+                ReasoningEffort = client.IsOfficialDeepSeek && spec.ModelId.StartsWith("deepseek-v4", StringComparison.OrdinalIgnoreCase) ? "low" : null,
                 Temperature = 0.2,
                 Stream = false,
                 Messages = new List<ChatMessage>
@@ -274,11 +291,14 @@ namespace TxTools.Agent.Core
                                  .GetAwaiter().GetResult();
 
                 if (resp == null || resp.Choices == null || resp.Choices.Count == 0)
-                    return "视觉模型返回空响应。";
+                    return "Error: 视觉模型返回空响应。";
+
+                if (resp.Choices[0].FinishReason == "length")
+                    return "Error: 视觉模型输出被截断，请缩小问题范围或拆分图片后重试。";
 
                 var text = resp.Choices[0].Message != null ? resp.Choices[0].Message.Content : null;
                 if (string.IsNullOrWhiteSpace(text))
-                    return "视觉模型没有返回内容。";
+                    return "Error: 视觉模型没有返回内容。";
 
                 var sb = new StringBuilder();
                 sb.Append("【").Append(spec.ToString()).Append(" 看图结果");
@@ -293,27 +313,19 @@ namespace TxTools.Agent.Core
             }
             catch (LlmApiException ex)
             {
-                return "视觉模型 API 错误 [" + spec + "]: " + ex.Message;
+                return "Error: 视觉模型 API 错误 [" + spec + "]: " + ex.Message
+                    + "。未自动切换 provider；请区分模型/图像兼容错误与鉴权、限流、网络错误后处理。";
             }
             catch (Exception ex)
             {
-                return "调用视觉模型失败 [" + spec + "]: " + ex.GetType().Name + ": " + ex.Message;
+                return "Error: 调用视觉模型失败 [" + spec + "]: " + ex.GetType().Name + ": " + ex.Message;
             }
         }
 
         private static ModelSpec PickModel(string provider)
         {
-            if (!string.IsNullOrWhiteSpace(provider))
-            {
-                var saved = ModelRouter.PreferredVisionProvider;
-                try
-                {
-                    ModelRouter.PreferredVisionProvider = provider;
-                    return ModelRouter.Select(TaskScene.Vision, null);
-                }
-                finally { ModelRouter.PreferredVisionProvider = saved; }
-            }
-            return ModelRouter.Select(TaskScene.Vision, null);
+            return ModelRouter.SelectVisionFor(ModelRouter.CurrentModelId,
+                ModelRouter.CurrentProviderId, provider, ModelRouter.HasKey);
         }
 
         private static string MimeOf(string path)
