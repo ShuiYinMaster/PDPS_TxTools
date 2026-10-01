@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Text;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.DataTypes;
+using TxTools.Agent.Core;
 
 namespace TxTools.MechArena
 {
@@ -334,7 +335,7 @@ namespace TxTools.MechArena
     //    pair.FirstList/SecondList.Add/Remove、pair.Delete() 强类型直接可用
     //    root.CheckCollisions 手动置 true，清理时恢复原值
     //  查询路径（GetCollidingObjects / QueryParams / States）签名未验证过，
-    //  用反射自适应；失败时 dump 成员清单到 %TEMP%\MechArena_CollisionDump.txt
+    //  用反射自适应；失败时 dump 成员清单到统一临时根目录下的 MechArena\CollisionDump.txt
     //  并置 QueryUsable=false，引擎自动退回 AABB 数学检测。
     // =========================================================================
     public class MechArenaCollisionService : IDisposable
@@ -663,7 +664,7 @@ namespace TxTools.MechArena
                 }
                 catch { }
 
-                path = Path.Combine(Path.GetTempPath(), "MechArena_CollisionDump.txt");
+                path = TxToolsTemp.FileFor("MechArena", "CollisionDump.txt");
                 File.WriteAllText(path, sb.ToString());
             }
             catch { }

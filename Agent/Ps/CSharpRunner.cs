@@ -98,7 +98,7 @@ namespace TxTools.Agent.Ps
             catch (TargetInvocationException tie)
             {
                 var inner = tie.InnerException ?? tie;
-                return "运行时异常: " + inner.GetType().Name + " - " + inner.Message;
+                throw new InvalidOperationException("运行时异常: " + inner.GetType().Name + " - " + inner.Message, inner);
             }
             return ret == null ? "(无返回值)" : Convert.ToString(ret);
         }

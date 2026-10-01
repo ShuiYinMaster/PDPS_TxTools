@@ -122,6 +122,7 @@ namespace TxTools.WeldAnnotator
         {
             base.OnLoad(e);
             FormUiKit.ApplyDpiScaling(this, ref _dpiApplied, _myDefaultSize);
+            PlaceTopRight();
         }
 
         public override void OnInitTxForm()
@@ -134,10 +135,10 @@ namespace TxTools.WeldAnnotator
             try
             {
                 StartPosition = FormStartPosition.Manual;
-                var scr = Screen.PrimaryScreen.WorkingArea;
+                var scr = Screen.FromControl(this).WorkingArea;
                 Location = new D.Point(
                     Math.Max(scr.Left, scr.Right - Width - 20),
-                    Math.Max(scr.Top, scr.Top + 60));
+                    Math.Max(scr.Top, Math.Min(scr.Top + 60, scr.Bottom - Height)));
             }
             catch { }
         }

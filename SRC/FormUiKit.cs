@@ -12,9 +12,9 @@
 //   进程内"第一个显示的窗口"握柄创建时锁定。若各窗体 AutoScaleMode/字体不一致，
 //   或在 WinForms 自动缩放之外再手动乘系数，先后打开的窗体就会互相影响尺寸。
 //   统一做法：
-//     · 所有窗体都用 AutoScaleMode.None + OnLoad 手动 Scale（ExportGun 同款）
+//     · 所有窗体都用 AutoScaleMode.None + OnLoad 手动 Scale
 //     · 字体统一用 SystemFonts.MessageBoxFont（ExportGun 基准）
-//     · 代码里一律写 96-DPI 裸像素，OnLoad 时按 DPI 系数一次性放大
+//     · 代码里一律写 96-DPI 设计像素，OnLoad 时按统一布局系数缩放
 //     · 严禁任何 ×_dpiScale / ApplyDpiFix / ScaleControlsRecursive 二次缩放
 // ============================================================================
 using System;
@@ -682,11 +682,11 @@ namespace TxTools.Common
             // 用类型全名而非短名，避免不同命名空间下出现重名窗体时再次撞键。
             form.Name = form.GetType().FullName;
 
-            // —— 缩放：AutoScale 关掉，由 OnLoad 手动 DPI 放大（ExportGun 同款）——
+            // —— 缩放：AutoScale 关掉，由 OnLoad 统一处理 DPI 与工作区 ——
             // PS 宿主不会触发 WinForms 的 PerMonitorV2 缩放，AutoScaleMode.Dpi
             // 在进程内第一个窗体句柄创建时就被锁死，后续打开其他窗体不再生效。
-            // 方案：设 None，在 OnLoad 中用 Graphics.DpiX / 96f 手动 Scale 一次，
-            // 每次打开都是确定性放大，不与持久化尺寸耦合。
+            // 方案：设 None，在 OnLoad 中从设计尺寸做一次确定性缩放，
+            // 并将可见窗口限制在工作区内，不与持久化尺寸耦合。
             form.AutoScaleDimensions = new SizeF(96F, 96F);
             form.AutoScaleMode = AutoScaleMode.None;
             form.Font = BaseFont;
@@ -771,7 +771,7 @@ namespace TxTools.Common
         }
 
         // ====================================================================
-        // DPI 缩放（ExportGun 同款：AutoScaleMode.None + OnLoad 手动 Scale）
+        // DPI 与窗口缩放（AutoScaleMode.None + OnLoad 手动 Scale）
         // ====================================================================
 
         /// <summary>当前 DPI 相对 96 的缩放系数。在 OnLoad 中调用一次，用于确定性缩放。</summary>
@@ -781,8 +781,17 @@ namespace TxTools.Common
             catch { return 1f; }
         }
 
+        // 设计稿原按较大的窗口绘制。在 100% 缩放下收紧到 85%，高 DPI 下仍按
+        // 设备 DPI 等比放大；字体使用系统 DPI 字体，保持文字可读。
+        private const float CompactScale = 0.85f;
+
+        public static float GetLayoutScale(Control c)
+        {
+            return Math.Max(0.5f, GetDpiScale(c) * CompactScale);
+        }
+
         /// <summary>
-        /// 在 OnLoad 中调用一次，完成 DPI 放大。已应用过则跳过（幂等）。
+        /// 在 OnLoad 中调用一次，完成布局缩放。已应用过则跳过（幂等）。
         ///
         /// 【防反复放大】base.OnLoad 会从 PS 持久化配置恢复上次的窗口尺寸，
         /// 若上次已是 DPI 放大后的尺寸，再次 Scale 会导致逐次变大。
@@ -798,11 +807,37 @@ namespace TxTools.Common
             applied = true;
             try
             {
-                // 重置为设计尺寸，防止 TxForm 持久化尺寸叠加放大
+                // MinimumSize 可能与设计尺寸相同；先解除限制，才能在 100% 下缩小。
+                Size designMinimum = form.MinimumSize;
+                form.MinimumSize = Size.Empty;
+                // 重置为设计尺寸，防止 TxForm 持久化尺寸叠加放大。
                 form.Size = designSize;
-                float sc = GetDpiScale(form);
-                if (sc < 1f) sc = 1f;
-                if (sc > 1.01f) form.Scale(new SizeF(sc, sc));
+                float sc = GetLayoutScale(form);
+                if (Math.Abs(sc - 1f) > 0.01f)
+                    form.Scale(new SizeF(sc, sc));
+
+                // 缩放后的完整内容保持原尺寸；屏幕较小时只缩小可见窗口并提供滚动。
+                // 这样 175% 及以上的小屏仍使用适合 DPI 的控件和文字尺寸。
+                Size fullClient = form.ClientSize;
+                Size fullWindow = form.Size;
+                Rectangle work = Screen.FromControl(form).WorkingArea;
+                int maxWidth = Math.Max(1, work.Width - Math.Max(32, work.Width / 12));
+                int maxHeight = Math.Max(1, work.Height - Math.Max(32, work.Height / 12));
+                int width = Math.Min(fullWindow.Width, maxWidth);
+                int height = Math.Min(fullWindow.Height, maxHeight);
+                bool clipped = width < fullWindow.Width || height < fullWindow.Height;
+                if (clipped)
+                {
+                    form.AutoScroll = true;
+                    form.AutoScrollMinSize = fullClient;
+                }
+                form.MinimumSize = new Size(
+                    Math.Min(width, (int)Math.Round(designMinimum.Width * sc)),
+                    Math.Min(height, (int)Math.Round(designMinimum.Height * sc)));
+                form.Size = new Size(width, height);
+                form.Location = new Point(
+                    Math.Max(work.Left, Math.Min(form.Left, work.Right - form.Width)),
+                    Math.Max(work.Top, Math.Min(form.Top, work.Bottom - form.Height)));
                 onScaled?.Invoke(sc);
             }
             catch { }

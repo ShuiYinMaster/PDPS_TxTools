@@ -42,6 +42,9 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="..\Agent\Core\TxToolsTemp.cs">
+      <Link>TxToolsTemp.cs</Link>
+    </Compile>
     <Compile Include="InstanceDiscovery.cs" />
     <Compile Include="PipeClient.cs" />
     <Compile Include="McpServer.cs" />

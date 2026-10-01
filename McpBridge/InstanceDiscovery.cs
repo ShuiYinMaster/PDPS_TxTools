@@ -1,6 +1,6 @@
 // TxToolsMcpBridge / InstanceDiscovery.cs
 //
-// 读取 PS 进程内 PsInstanceRegistry 写入的实例注册文件(%TEMP%\TxAgent.Instances\<pid>.json),
+// 读取 PS 进程内 PsInstanceRegistry 写入的实例注册文件(%TEMP%\TxTools\Instances\<pid>.json),
 // 枚举存活实例并选择一个目标。与 Agent/Core/Multi/PsInstanceRegistry.cs 的格式保持一致。
 
 using System;
@@ -40,9 +40,8 @@ namespace TxToolsMcpBridge
 
         private static string Dir()
         {
-            var d = Path.Combine(Path.GetTempPath(), "TxAgent.Instances");
-            try { Directory.CreateDirectory(d); } catch { }
-            return d;
+            try { return TxTools.Agent.Core.TxToolsTemp.DirectoryFor("Instances"); }
+            catch { return Path.Combine(TxTools.Agent.Core.TxToolsTemp.RootPath, "Instances"); }
         }
 
         public static List<InstanceInfo> All()

@@ -151,9 +151,87 @@ namespace TxTools.Agent.Core
             if (r.CreatedUtc == default(DateTime)) r.CreatedUtc = DateTime.UtcNow;
             r.Lang = SnippetStore.NormalizeLang(r.Lang);
 
-            MdStore.Write(Folder, r.Id, ToDoc(r));
+            if (!MdStore.Write(Folder, r.Id, ToDoc(r)))
+                return "保存配方失败，请检查配方目录的写入权限。";
             RaiseChanged();
             return "已保存配方: " + r.Name;
+        }
+
+        /// <summary>分享文件沿用本地 Markdown 格式，只携带定义，不携带本机运行记录。</summary>
+        public static string ExportMarkdown(Recipe r)
+        {
+            if (r == null) throw new ArgumentNullException("r");
+            var doc = ToDoc(r);
+            doc.Set("recipe_format", "1");
+            doc.Set("source_snippet", "");
+            doc.Set("run_count", 0);
+            doc.Set("fail_count", 0);
+            doc.Set("last_run", default(DateTime));
+            return doc.ToString();
+        }
+
+        /// <summary>校验后导入为新副本。外部 key 不参与文件路径，同名配方不会被覆盖。</summary>
+        public static bool TryImportMarkdown(string text, out Recipe imported, out string error)
+        {
+            imported = null;
+            error = null;
+            var doc = MarkdownDoc.Parse((text ?? "").TrimStart('\uFEFF'));
+            var version = doc.Get("recipe_format", "1");
+            if (version != "1") { error = "不支持的配方文件版本: " + version; return false; }
+            var name = doc.Get("name", "").Trim();
+            var lang = doc.Get("lang", "csharp").Trim().ToLowerInvariant();
+            if (name.Length == 0) { error = "文件缺少配方名称（name）。"; return false; }
+            if (lang != "csharp" && lang != "python")
+            { error = "配方语言只能是 csharp 或 python。"; return false; }
+
+            var json = FencedAfter(doc.Body, ParamHeader);
+            var code = FencedAfter(doc.Body, CodeHeader);
+            if (string.IsNullOrWhiteSpace(json) || string.IsNullOrWhiteSpace(code))
+            { error = "文件须包含“## 参数”下的 JSON 数组和“## 代码”下的完整代码块。"; return false; }
+            List<RecipeParam> ps;
+            try
+            {
+                ps = JsonConvert.DeserializeObject<List<RecipeParam>>(json);
+                if (ps == null) throw new FormatException("参数须为 JSON 数组，无参数时请使用 []。");
+            }
+            catch (Exception ex) { error = "参数区不是合法 JSON 数组: " + ex.Message; return false; }
+            error = ValidateParams(ps);
+            if (error != null) return false;
+
+            var existing = All();
+            var displayName = name;
+            int copy = 2;
+            while (existing.Any(r => string.Equals(r.Name, displayName, StringComparison.OrdinalIgnoreCase)))
+                displayName = name + "（导入 " + copy++ + "）";
+            var rnew = new Recipe
+            {
+                Id = "import_" + Guid.NewGuid().ToString("N"), Name = displayName,
+                Description = SectionBefore(doc.Body, ParamHeader).Trim(),
+                Lang = lang, Code = code, Params = ps, CreatedUtc = DateTime.UtcNow
+            };
+            var saved = Upsert(rnew);
+            if (!saved.StartsWith("已保存配方: ", StringComparison.Ordinal))
+            { error = saved; return false; }
+            imported = rnew;
+            return true;
+        }
+
+        /// <summary>聊天详情省略 frontmatter，避免元数据被当作 Markdown 正文。</summary>
+        public static string DisplayMarkdown(Recipe r)
+        {
+            return "## 配方：" + (r.Name ?? "").Replace("\r", " ").Replace("\n", " ")
+                + "\n\n语言：" + SnippetStore.NormalizeLang(r.Lang) + "\n\n" + ToDoc(r).Body;
+        }
+
+        public static string CodeFence(string code)
+        {
+            int longest = 2, current = 0;
+            foreach (char c in code ?? "")
+            {
+                current = c == '`' ? current + 1 : 0;
+                longest = Math.Max(longest, current);
+            }
+            return new string('`', longest + 1);
         }
 
         public static bool Delete(string id)
@@ -282,9 +360,10 @@ namespace TxTools.Agent.Core
 
             sb.AppendLine(CodeHeader);
             sb.AppendLine();
-            sb.AppendLine("```" + SnippetStore.NormalizeLang(r.Lang));
+            var fence = CodeFence(r.Code);
+            sb.AppendLine(fence + SnippetStore.NormalizeLang(r.Lang));
             sb.AppendLine((r.Code ?? "").TrimEnd());
-            sb.AppendLine("```");
+            sb.AppendLine(fence);
 
             doc.Body = sb.ToString();
             return doc;
@@ -342,7 +421,7 @@ namespace TxTools.Agent.Core
         private static string SectionBefore(string body, string header)
         {
             if (string.IsNullOrEmpty(body)) return "";
-            int i = body.IndexOf(header, StringComparison.Ordinal);
+            int i = FindHeader(body, header);
             return i < 0 ? body : body.Substring(0, i);
         }
 
@@ -350,17 +429,47 @@ namespace TxTools.Agent.Core
         private static string FencedAfter(string body, string header)
         {
             if (string.IsNullOrEmpty(body)) return "";
-            int h = body.IndexOf(header, StringComparison.Ordinal);
+            int h = FindHeader(body, header);
             if (h < 0) return "";
-
-            int open = body.IndexOf("```", h, StringComparison.Ordinal);
-            if (open < 0) return "";
-            int lineEnd = body.IndexOf('\n', open);
+            int lineEnd = body.IndexOf('\n', h);
             if (lineEnd < 0) return "";
-            int close = body.IndexOf("```", lineEnd, StringComparison.Ordinal);
-            if (close < 0) close = body.Length;
+            var tail = body.Substring(lineEnd + 1).Replace("\r\n", "\n").Replace('\r', '\n');
+            var lines = tail.Split('\n');
+            int open = 0;
+            while (open < lines.Length && string.IsNullOrWhiteSpace(lines[open])) open++;
+            if (open >= lines.Length) return "";
+            var match = System.Text.RegularExpressions.Regex.Match(lines[open].Trim(), @"^(`{3,}|~{3,})[^`~]*$");
+            if (!match.Success) return "";
+            var fence = match.Groups[1].Value;
+            for (int close = open + 1; close < lines.Length; close++)
+            {
+                var line = lines[close].Trim();
+                if (line.Length >= fence.Length && line.All(c => c == fence[0]))
+                    return string.Join("\n", lines.Skip(open + 1).Take(close - open - 1)).TrimEnd();
+            }
+            return ""; // 未闭合的代码块不能作为可执行配方导入。
+        }
 
-            return body.Substring(lineEnd + 1, close - lineEnd - 1).TrimEnd();
+        private static int FindHeader(string body, string header)
+        {
+            string fence = null;
+            int offset = 0;
+            foreach (var raw in body.Split('\n'))
+            {
+                var line = raw.Trim();
+                if (fence != null)
+                {
+                    if (line.Length >= fence.Length && line.All(c => c == fence[0])) fence = null;
+                }
+                else
+                {
+                    if (line == header) return offset;
+                    var m = System.Text.RegularExpressions.Regex.Match(line, @"^(`{3,}|~{3,})[^`~]*$");
+                    if (m.Success) fence = m.Groups[1].Value;
+                }
+                offset += raw.Length + 1;
+            }
+            return -1;
         }
 
         private static string Slug(string name)
@@ -379,6 +488,25 @@ namespace TxTools.Agent.Core
         }
 
         // ── 候选 ──
+
+        /// <summary>自动片段的旧说明常常只是代码前两行，优先展示代码中已有的中文用途注释。</summary>
+        public static string CandidateDescription(Snippet s)
+        {
+            if (!string.IsNullOrWhiteSpace(s.Description)
+                && !string.Equals(s.Origin, "auto", StringComparison.OrdinalIgnoreCase))
+                return s.Description;
+            foreach (var raw in (s.Code ?? "").Split('\n').Take(20))
+            {
+                var line = raw.Trim();
+                if (line.StartsWith("//", StringComparison.Ordinal)) line = line.Substring(2).Trim();
+                else if (line.StartsWith("#", StringComparison.Ordinal)) line = line.Substring(1).Trim();
+                else continue;
+                if (line.Length >= 6 && line.Any(c => c >= '\u4e00' && c <= '\u9fff'))
+                    return line;
+            }
+            return string.IsNullOrWhiteSpace(s.Description)
+                ? "未记录用途说明，请查看代码确认功能。" : s.Description;
+        }
 
         /// <summary>
         /// 够格固化为配方的片段:确实跑成功过、且没被标为不可靠、且还没做成配方。

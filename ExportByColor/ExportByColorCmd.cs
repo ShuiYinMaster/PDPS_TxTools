@@ -6,10 +6,10 @@ namespace TxTools.ExportByColor
 {
     public class ExportByColorCmd : TxButtonCommand
     {
-        public override string Name { get { return ".布局/资源导出至CATIA"; } }
+        public override string Name { get { return ".直出3DXML / CGR / 网格"; } }
         public override string Category { get { return "TxTools"; } }
-        public override string Tooltip { get { return "将资源导出为CGR并导入Catia，可导出STL，OBJ，FBX等网格资源"; } }
-        public override string Description { get { return "将资源导出为CGR并导入Catia，可导出STL，OBJ，FBX等网格资源"; } }
+        public override string Tooltip { get { return "从 Process Simulate 直出保留装配层级的 3DXML，也可使用 CGR→CATIA 或通用网格兼容模式"; } }
+        public override string Description { get { return "选中设备或组合，直接生成包含独立 CFV3 3DRep 与 PS 装配层级的 3DXML，无需 CATIA 中转"; } }
 
         public override void Execute(object cmdParams)
         {

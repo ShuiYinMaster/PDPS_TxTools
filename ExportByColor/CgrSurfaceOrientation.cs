@@ -24,7 +24,7 @@ namespace TxTools.ExportByColor
         private sealed class SurfaceEdge { public List<int> Faces=new List<int>();public List<bool> Directions=new List<bool>(); }
         // PS triangle primitives do not guarantee consistent winding. Solve adjacency first;
         // choose outward winding by signed volume only for closed connected components.
-        private static void PrepareSurfaces(ref List<float[]> vertices,ref List<Face> faces,Action<string> progress)
+        private static void PrepareSurfaces(ref List<float[]> vertices,ref List<Face> faces,Action<string> progress,bool preserveSurfaces=true)
         {
             vertices=new List<float[]>(vertices);faces=new List<Face>(faces);
             var positions=new Dictionary<Tuple<float,float,float>,int>();var canonical=new int[vertices.Count];
@@ -36,7 +36,6 @@ namespace TxTools.ExportByColor
             }
             var edges=new Dictionary<long,SurfaceEdge>(EdgeKeyComparer.Instance);var faceEdges=new long[faces.Count][];
             var surfaceVertices=new Dictionary<Tuple<int,int>,int>();
-            bool preserveSurfaces=Environment.GetEnvironmentVariable("TXTOOLS_CGR_BACKEND")!="legacy";
             for(int i=0;i<faces.Count;i++)
             {
                 var ids=faces[i].Idx;if(ids==null||ids.Length!=3) throw new ArgumentException("Expected triangle");

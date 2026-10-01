@@ -17,24 +17,18 @@ namespace TxTools.ExportByColor
         internal static bool CurvatureContinues95(double[] previous,double[] current,double[] next)
         {
             // Equal unsigned angles elsewhere on a planar patch do not prove
-            // a curved continuation (e.g. the opposite chamfer of a plate).
-            // Require consecutive normal rotations about the same signed axis.
+            // a curved continuation (for example, an opposing chamfer).
             var a=new[]{previous[1]*current[2]-previous[2]*current[1],previous[2]*current[0]-previous[0]*current[2],previous[0]*current[1]-previous[1]*current[0]};
             var b=new[]{current[1]*next[2]-current[2]*next[1],current[2]*next[0]-current[0]*next[2],current[0]*next[1]-current[1]*next[0]};
             double length=Math.Sqrt(Dot95(a,a)*Dot95(b,b));
             return length>1e-20 && Dot95(a,b)/length>=Math.Cos(Math.PI/180*15);
         }
-        // Angles are radians. No geometry or normals are changed by classification.
+        // Angles are radians. Classification only; geometry and source normals stay intact.
         internal static bool SmoothAdaptive95(double angle,double continuationA,double continuationB)
         {
-            // Fine tessellations on cylinders commonly have 5–15 degree
-            // normal changes. Always join this low-curvature range; otherwise
-            // a cylindrical surface becomes visibly banded.
+            // Fine cylinder tessellation normally changes by 5-15 degrees per face.
             if(angle<=Math.PI/180*18)return true;
-            // Repeated equal-angle turns also describe a chamfered prism.
-            // Neither their magnitude nor their signed rotation proves a
-            // smooth CAD surface. Preserve these ambiguous edges instead of
-            // bending planar faces. Coarse curves need source normal evidence.
+            // Coarser, ambiguous turns stay hard unless source normal evidence exists.
             return false;
         }
         private static double[] Normal95(float[] a,float[] b,float[] c)
@@ -80,11 +74,11 @@ namespace TxTools.ExportByColor
             }
             if(progress!=null)progress("[CGR95] "+groups.Count+" 个源几何/颜色组，"+leaves.Count+" 块，"+vertexCount+" 顶点；平滑角点 "+changed+"；文件 "+new FileInfo(path).Length+" 字节");
         }
-        private static void CompactGroup95(List<float[]> source,List<Face> faces,List<byte[]> leaves,MemoryStream picks,ref long changed,ref int vertexCount)
+        private static void CompactGroup95(List<float[]> source,List<Face> faces,List<byte[]> leaves,MemoryStream picks,ref long changed,ref int vertexCount,
+            Action<List<float[]>,List<float[]>,List<int[]>,List<int[]>,Face> featureWriter=null,int featureFaceLimit=int.MaxValue,int featureVertexLimit=MaxVertsPerChunk)
         {
             int count=faces.Count;var positions=new List<float[]>();var map=new Dictionary<Tuple<float,float,float>,int>();
-            var ids=new int[count][];var normals=new double[count][];var angles=new double[count][];
-            var areas=new double[count];
+            var ids=new int[count][];var normals=new double[count][];var angles=new double[count][];var areas=new double[count];
             var edges=new Dictionary<long,List<int>>(EdgeKeyComparer.Instance);var parent=new int[checked(count*3)];
             for(int i=0;i<parent.Length;i++)parent[i]=i;
             for(int i=0;i<count;i++)
@@ -111,8 +105,8 @@ namespace TxTools.ExportByColor
                     if(!edges.TryGetValue(key,out edge)){edge=new List<int>();edges.Add(key,edge);}edge.Add(i*3+k);
                 }
             }
-            // Collapse coplanar triangles before estimating curvature, so an
-            // arbitrary triangulation diagonal does not count as a continuation.
+            // Collapse coplanar triangles before estimating curvature so a
+            // triangulation diagonal cannot impersonate a surface transition.
             var patches=new int[count];for(int f=0;f<count;f++)patches[f]=f;
             foreach(var edge in edges.Values)for(int a=0;a<edge.Count;a++)for(int b=a+1;b<edge.Count;b++)
             {
@@ -170,9 +164,17 @@ namespace TxTools.ExportByColor
             }
             foreach(var sum in sums.Values){double length=Math.Sqrt(Dot95(sum,sum));if(length>0)for(int j=0;j<3;j++)sum[j]/=length;}
             var vs=new List<float[]>();var ns=new List<float[]>();var triangles=new List<int[]>();var local=new Dictionary<Tuple<int,int>,int>();
+            var topology=featureWriter==null?null:new List<int[]>();
             for(int i=0;i<count;i++)
             {
-                if(vs.Count+3>MaxVertsPerChunk){WriteLeaf95(vs,ns,triangles,faces[0],leaves,picks);vertexCount+=vs.Count;vs.Clear();ns.Clear();triangles.Clear();local.Clear();}
+                int vertexLimit=featureWriter==null?MaxVertsPerChunk:featureVertexLimit;
+                if(vs.Count+3>vertexLimit||triangles.Count>=featureFaceLimit)
+                {
+                    if(featureWriter==null)WriteLeaf95(vs,ns,triangles,faces[0],leaves,picks);
+                    else featureWriter(vs,ns,triangles,topology,faces[0]);
+                    vertexCount+=vs.Count;vs.Clear();ns.Clear();triangles.Clear();local.Clear();
+                    if(topology!=null)topology.Clear();
+                }
                 var tri=new int[3];
                 for(int k=0;k<3;k++)
                 {
@@ -186,8 +188,14 @@ namespace TxTools.ExportByColor
                     tri[k]=index;
                 }
                 triangles.Add(tri);
+                if(topology!=null)topology.Add(faces[i].Idx);
             }
-            if(triangles.Count>0){WriteLeaf95(vs,ns,triangles,faces[0],leaves,picks);vertexCount+=vs.Count;}
+            if(triangles.Count>0)
+            {
+                if(featureWriter==null)WriteLeaf95(vs,ns,triangles,faces[0],leaves,picks);
+                else featureWriter(vs,ns,triangles,topology,faces[0]);
+                vertexCount+=vs.Count;
+            }
         }
         private static void WriteLeaf95(List<float[]> vs,List<float[]> ns,List<int[]> faces,Face color,List<byte[]> leaves,MemoryStream picks)
         {
@@ -212,9 +220,8 @@ namespace TxTools.ExportByColor
                 for(int i=0;i<order.Count;i++)
                 {
                     var n=ns[order[i]];
-                    // Store the two minor unit components. A fixed Z omission
-                    // amplifies quantization near horizontal normals and can
-                    // even make the reconstructed squared Z negative.
+                    // Store the two minor components.  Fixed-Z encoding makes
+                    // horizontal normals quantize poorly and visibly bands curves.
                     int axis=0;
                     for(int k=1;k<3;k++)if(Math.Abs(n[k])>Math.Abs(n[axis]))axis=k;
                     double length=Math.Sqrt((double)n[0]*n[0]+(double)n[1]*n[1]+(double)n[2]*n[2]);

@@ -30,9 +30,9 @@ namespace TxTools.Agent.Core
         // 默认关闭:报文里含完整对话内容,不该常态落盘。
         public static bool DumpRawTraffic = false;
 
-        /// <summary>抓取文件目录。默认 %TEMP%\TxAgent.Raw</summary>
+        /// <summary>抓取文件目录。统一放在 TxTools 临时根目录下。</summary>
         public static string DumpDir =
-            Path.Combine(Path.GetTempPath(), "TxAgent.Raw");
+            TxToolsTemp.DirectoryFor("Agent", "Raw");
 
         private static void Dump(string tag, string content)
         {

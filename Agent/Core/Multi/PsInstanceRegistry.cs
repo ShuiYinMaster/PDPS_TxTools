@@ -86,9 +86,7 @@ namespace TxTools.Agent.Core
 
         private static string Dir()
         {
-            var d = Path.Combine(Path.GetTempPath(), "TxAgent.Instances");
-            Directory.CreateDirectory(d);
-            return d;
+            return TxToolsTemp.DirectoryFor("Instances");
         }
 
         private static string PathFor(int pid)

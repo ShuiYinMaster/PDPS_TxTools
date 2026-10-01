@@ -13,6 +13,7 @@
     <LangVersion>8.0</LangVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
+    <ProcessSimulateDllDir>E:\ProcessSimulatePlugin\Process Simulate\2402dll</ProcessSimulateDllDir>
     <NuGetPackageImportStamp>
     </NuGetPackageImportStamp>
   </PropertyGroup>
@@ -20,7 +21,7 @@
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
-    <OutputPath>D:\Program Files\Tecnomatix_2402\eMPower\DotNetCommands\TxTools\</OutputPath>
+    <OutputPath>E:\ProcessSimulatePlugin\Process Simulate\bin\</OutputPath>
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
@@ -32,94 +33,95 @@
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
-    <OutputPath>bin\Release\</OutputPath>
+    <OutputPath>E:\ProcessSimulatePlugin\Process Simulate\bin\</OutputPath>
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="C1.Win.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.Win.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.4.5.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.4.5.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.Win.4.5.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.Bitmap.4.5.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.Bitmap.4.5.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.Win.Bitmap.4.5.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.C1Command.4.5.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1Command.4.5.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.Win.C1Command.4.5.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.C1DX.4.5.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1DX.4.5.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.Win.C1DX.4.5.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.C1FlexGrid.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1FlexGrid.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.Win.C1FlexGrid.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.C1FlexGrid.ImportExport.4.5.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1FlexGrid.ImportExport.4.5.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.Win.C1FlexGrid.ImportExport.4.5.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.C1Input.4">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1Input.4.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.Win.C1Input.4.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.C1Input.4.5.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1Input.4.5.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.Win.C1Input.4.5.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.C1SplitContainer.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1SplitContainer.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.Win.C1SplitContainer.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.C1SplitContainer.4">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1SplitContainer.4.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.Win.C1SplitContainer.4.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.C1SplitContainer.4.5.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1SplitContainer.4.5.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.Win.C1SplitContainer.4.5.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.C1Themes.4">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1Themes.4.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.Win.C1Themes.4.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.Win.C1Themes.4.5.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.Win.C1Themes.4.5.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.Win.C1Themes.4.5.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.WPF.4.5.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.WPF.4.5.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.WPF.4.5.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.WPF.DateTimeEditors.4">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.WPF.DateTimeEditors.4.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.WPF.DateTimeEditors.4.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.WPF.DateTimeEditors.4.5.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.WPF.DateTimeEditors.4.5.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.WPF.DateTimeEditors.4.5.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.WPF.FlexChart.4.5.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.WPF.FlexChart.4.5.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.WPF.FlexChart.4.5.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.WPF.FlexGrid.4">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.WPF.FlexGrid.4.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.WPF.FlexGrid.4.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.WPF.FlexGrid.4.5.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.WPF.FlexGrid.4.5.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.WPF.FlexGrid.4.5.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="C1.WPF.Input.4.5.2">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\C1.WPF.Input.4.5.2.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\C1.WPF.Input.4.5.2.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="DocumentFormat.OpenXml, Version=3.5.1.0, Culture=neutral, PublicKeyToken=8fb06cb64d019a17, processorArchitecture=MSIL">
@@ -188,35 +190,35 @@
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Xml" />
     <Reference Include="Tecnomatix.Engineering">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\Tecnomatix.Engineering.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\Tecnomatix.Engineering.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Tecnomatix.Engineering.ExternalConnections.Interfaces">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\Tecnomatix.Engineering.ExternalConnections.Interfaces.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\Tecnomatix.Engineering.ExternalConnections.Interfaces.dll</HintPath>
       <EmbedInteropTypes>True</EmbedInteropTypes>
     </Reference>
     <Reference Include="Tecnomatix.Engineering.ExternalConnections.Runtime">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\Tecnomatix.Engineering.ExternalConnections.Runtime.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\Tecnomatix.Engineering.ExternalConnections.Runtime.dll</HintPath>
       <EmbedInteropTypes>True</EmbedInteropTypes>
     </Reference>
     <Reference Include="Tecnomatix.Engineering.Olp">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\Tecnomatix.Engineering.Olp.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\Tecnomatix.Engineering.Olp.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Tecnomatix.Engineering.Scripting.Fanuc.TP">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\Tecnomatix.Engineering.Scripting.Fanuc.TP.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\Tecnomatix.Engineering.Scripting.Fanuc.TP.dll</HintPath>
       <EmbedInteropTypes>True</EmbedInteropTypes>
     </Reference>
     <Reference Include="Tecnomatix.Engineering.Scripting.Host">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\Tecnomatix.Engineering.Scripting.Host.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\Tecnomatix.Engineering.Scripting.Host.dll</HintPath>
       <EmbedInteropTypes>True</EmbedInteropTypes>
     </Reference>
     <Reference Include="Tecnomatix.Engineering.Scripting.SCL">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\Tecnomatix.Engineering.Scripting.SCL.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\Tecnomatix.Engineering.Scripting.SCL.dll</HintPath>
       <EmbedInteropTypes>True</EmbedInteropTypes>
     </Reference>
     <Reference Include="Tecnomatix.Engineering.Ui">
-      <HintPath>D:\Program Files\Tecnomatix_2402\eMPower\Tecnomatix.Engineering.Ui.dll</HintPath>
+      <HintPath>$(ProcessSimulateDllDir)\Tecnomatix.Engineering.Ui.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="WindowsBase" />
@@ -266,6 +268,7 @@
     <Compile Include="Agent\Core\SnippetUsageLedger.cs" />
     <Compile Include="Agent\Core\ToolGate.cs" />
     <Compile Include="Agent\Core\ToolInputHelpers.cs" />
+    <Compile Include="Agent\Core\TxToolsTemp.cs" />
     <Compile Include="Agent\Core\UploadStore.cs" />
     <Compile Include="Agent\Core\UploadTools.cs" />
     <Compile Include="Agent\Core\UserPrefsStore.cs" />
@@ -478,8 +481,14 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="ExportByColor\ExportByColorService.cs" />
+    <Compile Include="ExportByColor\JtResourceResolver.cs" />
     <Compile Include="ExportByColor\CgrWriter.cs" />
     <Compile Include="ExportByColor\CgrCompact95.cs" />
+    <Compile Include="ExportByColor\CgrLineFace95.cs" />
+    <Compile Include="ExportByColor\CgrFeatureCompression.cs" />
+    <Compile Include="ExportByColor\CgrFeatureCfv3Adapter.cs" />
+    <Compile Include="ExportByColor\Cfv3Encoder.cs" />
+    <Compile Include="ExportByColor\ThreeDXmlWriter.cs" />
     <Compile Include="ExportByColor\CgrTemplate.cs" />
     <Compile Include="ExportByColor\CgrSurfaceOrientation.cs" />
     <Compile Include="ExportByColor\CgrTestData.cs" />
@@ -527,6 +536,11 @@
       <DependentUpon>Settings.settings</DependentUpon>
     </Compile>
     <Compile Include="WeldSpotAllocator\Ui\OpGridHost.cs" />
+    <Compile Include="WeldPointMatrix\WeldPointMatrixCommand.cs" />
+    <Compile Include="WeldPointMatrix\WeldPointMatrixForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="WeldPointMatrix\PointService.cs" />
     <Compile Include="WeldSpotGrouper\Core\GroupModels.cs" />
     <Compile Include="WeldSpotGrouper\Ps\GroupWriter.cs" />
     <Compile Include="WeldSpotGrouper\Ps\SpotGrouper.cs" />
@@ -1456,4 +1470,5 @@
   <Target Name="BuildMcpBridge" AfterTargets="Build" Condition="Exists('McpBridge\McpBridge.csproj')">
     <MSBuild Projects="McpBridge\McpBridge.csproj" Properties="Configuration=$(Configuration);OutDir=$(OutDir)" Targets="Build" />
   </Target>
+  <Import Project="Agent\maintenance\DshPet.Build.targets" />
 </Project>

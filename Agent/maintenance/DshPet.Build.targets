@@ -1,0 +1,9 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Runtime files are sidecars: keep video decoding out of the Process Simulate process. -->
+  <ItemGroup>
+    <Content Include="$(MSBuildThisFileDirectory)..\UI\pet\dsh-pet\**\*">
+      <Link>Agent\UI\pet\dsh-pet\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+</Project>

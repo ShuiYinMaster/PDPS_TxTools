@@ -26,6 +26,11 @@ namespace TxTools.AutoPathPlanner
         private readonly CollisionSetService _collisionSet;
         private readonly Action<string> _log;
         private TxPoseData _savedPose;
+        // TxPoseData stores revolute joint values in radians (and prismatic
+        // values in length units).  Keep the joint kind so UI thresholds,
+        // which are expressed in degrees for revolute joints, can be applied
+        // without silently under-sampling wrist rotations.
+        private bool[] _jointIsRevolute = new bool[0];
         private int _diagBudget = 4;
         private PoseBackend _backend = PoseBackend.Inverse;
 
@@ -49,8 +54,45 @@ namespace TxTools.AutoPathPlanner
             _collisionSet = collisionSet;
             _log = log ?? delegate { };
 
+            ReadJointKinds();
+
             try { _savedPose = _robot.CurrentPose; }
             catch (Exception ex) { _log("  [警告] 保存机器人当前姿态失败: " + ex.Message); }
+        }
+
+        private void ReadJointKinds()
+        {
+            try
+            {
+                var joints = ((dynamic)_robot).Joints as IEnumerable;
+                if (joints == null) return;
+                var kinds = new List<bool>();
+                foreach (object joint in joints)
+                {
+                    bool revolute = true; // robot axes are normally revolute;
+                                         // fail closed if the SDK omits Type.
+                    try
+                    {
+                        var typedJoint = joint as TxJoint;
+                        if (typedJoint != null)
+                            revolute = typedJoint.Type == TxJoint.TxJointType.Revolute;
+                        else
+                        {
+                            object type = ((dynamic)joint).Type;
+                            if (type != null)
+                            {
+                                string name = type.ToString();
+                                revolute = name.EndsWith("Revolute",
+                                    StringComparison.OrdinalIgnoreCase);
+                            }
+                        }
+                    }
+                    catch { }
+                    kinds.Add(revolute);
+                }
+                _jointIsRevolute = kinds.ToArray();
+            }
+            catch { _jointIsRevolute = new bool[0]; }
         }
 
         /// <summary>设置后续检测所用姿态: 整矩阵优先, RPY 兜底 (单姿态模式)</summary>
@@ -1020,7 +1062,7 @@ namespace TxTools.AutoPathPlanner
         /// <summary>动态检查开关</summary>
         public bool DynamicCheckEnabled = true;
 
-        /// <summary>关节步进量子: 扫掠步数 = 关节最大跨度/此值</summary>
+        /// <summary>关节步进量子(旋转轴为度, 移动轴为mm): 扫掠步数 = 关节最大跨度/此值</summary>
         public double DynamicJointQuantum = 4.0;
 
         /// <summary>
@@ -1034,7 +1076,7 @@ namespace TxTools.AutoPathPlanner
 
         private int _dynCalibBudget = 2;
 
-        /// <summary>构型突变阈值: 相邻点关节最大跨度超此值判定构型翻转</summary>
+        /// <summary>构型突变阈值(旋转轴为度, 移动轴为mm): 相邻点跨度超此值判定构型翻转</summary>
         public double ConfigJumpThreshold = 120.0;
 
         private double[] _lastPoseJoints;
@@ -1291,7 +1333,14 @@ namespace TxTools.AutoPathPlanner
             int n = ja.Length;
             double maxDelta = 0;
             for (int i = 0; i < n; i++)
-                maxDelta = Math.Max(maxDelta, Math.Abs(jb[i] - ja[i]));
+            {
+                double delta = Math.Abs(jb[i] - ja[i]);
+                // If the SDK does not expose the joint table, conservatively
+                // assume a rotational robot axis so we do not under-sample.
+                if (i >= _jointIsRevolute.Length || _jointIsRevolute[i])
+                    delta *= 180.0 / Math.PI; // SDK rotational values are radians
+                maxDelta = Math.Max(maxDelta, delta);
+            }
 
             if (maxDelta > ConfigJumpThreshold)
                 return string.Format("构型突变(关节最大跨度 {0:F0})", maxDelta);
@@ -1301,7 +1350,15 @@ namespace TxTools.AutoPathPlanner
             // 枪尖可能扫过 100mm —— 5° 一步足以让枪尖穿过一整块夹具板而不被采样到。
             // 现在同时按 TCP 笛卡尔位移算一遍 (每 DynamicCartesianQuantum mm 一步),
             // 取两者较大值, 上限从 24 放宽到 64。
-            int stepsJoint = (int)Math.Ceiling(maxDelta / Math.Max(0.01, DynamicJointQuantum));
+            int stepsJoint = 0;
+            for (int i = 0; i < n; i++)
+            {
+                double delta = Math.Abs(jb[i] - ja[i]);
+                if (i >= _jointIsRevolute.Length || _jointIsRevolute[i])
+                    delta *= 180.0 / Math.PI;
+                stepsJoint = Math.Max(stepsJoint,
+                    (int)Math.Ceiling(delta / Math.Max(0.01, DynamicJointQuantum)));
+            }
 
             int stepsCart = 0;
             double cartDist = TcpDistanceBetweenPoses(ja, jb, n);

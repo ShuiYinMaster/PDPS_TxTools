@@ -16,6 +16,8 @@
     --rcp-accent:  var(--accent-color, #3b82f6);
     --rcp-ok:      var(--ok-color,     #10b981);
     --rcp-bad:     var(--err-color,    #ef4444);
+    --rcp-ready:   #0f766e;
+    --rcp-pending: #b45309;
 
     position: relative;
     flex: 0 0 auto;
@@ -40,7 +42,20 @@
     border-left: none;
     background: transparent;
 }
+
+/* 无法扩展窗体时侧栏覆盖在聊天区右侧，避免将聊天内容压成窄列。 */
+.rcp-root.rcp-overlay {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 100;
+}
+.rcp-root.rcp-overlay:not(.rcp-collapsed) { box-shadow: -6px 0 18px rgba(0,0,0,.12); }
 .rcp-root.rcp-collapsed .rcp-body,
+.rcp-root.rcp-collapsed .rcp-head,
+.rcp-root.rcp-collapsed .rcp-tabs,
+.rcp-root.rcp-collapsed .rcp-notice,
 .rcp-root.rcp-collapsed .rcp-title,
 .rcp-root.rcp-collapsed .rcp-reload { display: none; }
 
@@ -51,7 +66,14 @@
    它是 #shell 的子元素(在 .rcp-root 之后),absolute 定位,
    用 right: var(--rcp-w) 贴着聊天区右侧;收起态(宽度 0)right 归零。
    ═════════════════════════════════════════════════════════════════ */
-#shell { position: relative; --rcp-w: 300px; }
+#shell {
+    position: relative;
+    --rcp-w: 300px;
+    --rcp-line: var(--panel-border, #e5e7eb);
+    --rcp-bg-2: var(--panel-bg-2, #f9fafb);
+    --rcp-dim: var(--text-dim, #6b7280);
+    --rcp-fg: var(--text-color, #374151);
+}
 
 .rcp-toggle {
     position: absolute;
@@ -113,6 +135,22 @@
 }
 .rcp-iconbtn:hover { background: rgba(0,0,0,0.05); color: var(--rcp-fg); }
 
+/* 两类内容独立展示，标签和操作文字与颜色一起表达状态。 */
+.rcp-tabs { display: flex; flex: 0 0 auto; gap: 4px; padding: 6px 6px 0; border-bottom: 1px solid var(--rcp-line); }
+.rcp-tab {
+    flex: 1; min-width: 0; padding: 8px 3px;
+    border: none; border-bottom: 2px solid transparent; border-radius: 4px 4px 0 0;
+    background: transparent; color: var(--rcp-dim); cursor: pointer; font-size: 12px;
+    white-space: nowrap;
+}
+.rcp-tab:hover { background: var(--rcp-bg-2); color: var(--rcp-fg); }
+.rcp-tab-active { font-weight: 600; }
+.rcp-tab-recipes.rcp-tab-active { color: var(--rcp-ready); border-bottom-color: var(--rcp-ready); background: rgba(15,118,110,.07); }
+.rcp-tab-candidates.rcp-tab-active { color: var(--rcp-pending); border-bottom-color: var(--rcp-pending); background: rgba(180,83,9,.07); }
+.rcp-tab:focus-visible { outline: 2px solid var(--rcp-accent); outline-offset: -2px; }
+.rcp-candidate-note { margin: 2px 0 10px; padding: 8px; line-height: 1.6; font-size: 12px; color: var(--rcp-pending); background: rgba(180,83,9,.07); border-radius: 5px; }
+.rcp-empty-action { margin-top: 12px; }
+
 /* ── 主体 ── */
 
 .rcp-body {
@@ -133,9 +171,10 @@
 
 .rcp-card {
     border: 1px solid var(--rcp-line);
+    border-left: 3px solid var(--rcp-ready);
     border-radius: 6px;
     margin-bottom: 6px;
-    background: var(--rcp-bg-2);
+    background: var(--rcp-bg);
     overflow: hidden;
 }
 
@@ -148,6 +187,10 @@
     user-select: none;
 }
 .rcp-card-head:hover { background: rgba(0,0,0,0.03); }
+.rcp-card-meta { display: flex; align-items: center; gap: 6px; padding: 0 8px 8px; }
+.rcp-status { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; line-height: 1.5; }
+.rcp-status-ready { color: var(--rcp-ready); background: rgba(15,118,110,.1); }
+.rcp-status-pending { color: var(--rcp-pending); background: rgba(180,83,9,.1); margin-top: 7px; }
 
 .rcp-name {
     flex: 1 1 auto;
@@ -176,6 +219,28 @@
     line-height: 1.5;
     margin: 0 0 8px;
 }
+
+/* 共享聊天 Markdown 样式，使用说明采用适合侧边栏宽度的间距。 */
+.rcp-root .rcp-markdown {
+    padding: 0;
+    border-radius: 0;
+    line-height: 1.6;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    min-width: 0;
+}
+.rcp-root .rcp-markdown-fallback { white-space: pre-wrap; }
+.rcp-markdown > :first-child { margin-top: 0; }
+.rcp-markdown h1 { font-size: 1.2em; }
+.rcp-markdown h2 { font-size: 1.15em; }
+.rcp-markdown h3, .rcp-markdown h4,
+.rcp-markdown h5, .rcp-markdown h6 { font-size: 1.05em; }
+.rcp-root .rcp-markdown ul, .rcp-root .rcp-markdown ol {
+    margin: 6px 0 8px;
+    padding-left: 20px;
+}
+.rcp-root .rcp-markdown pre { padding: 8px; max-width: 100%; }
+.rcp-root .rcp-markdown .code-block-head { padding: 4px 6px; }
 
 /* ── 参数行 ── */
 
@@ -317,12 +382,25 @@
 }
 
 .rcp-cand {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 8px;
+    padding: 9px 8px;
     margin-bottom: 4px;
-    border: 1px dashed var(--rcp-line);
+    border: 1px dashed rgba(180,83,9,.45);
     border-radius: 6px;
+    background: rgba(180,83,9,.035);
 }
-.rcp-cand .rcp-name { font-weight: 500; }
+.rcp-cand .rcp-name { font-weight: 600; line-height: 1.5; }
+.rcp-source-name { margin-top: 4px; color: var(--rcp-dim); font-size: 11px; overflow-wrap: anywhere; }
+.rcp-cand-head, .rcp-cand-actions { display: flex; align-items: center; gap: 6px; }
+.rcp-cand .rcp-name { white-space: normal; overflow-wrap: anywhere; }
+.rcp-cand-desc { margin-top: 7px; line-height: 1.6; overflow-wrap: anywhere; }
+.rcp-cand-actions { margin-top: 8px; flex-wrap: wrap; }
+.rcp-cand-actions .rcp-stat { flex: 1 1 100%; }
+.rcp-promote { flex: 1; background: var(--rcp-pending); color: #fff; border-color: var(--rcp-pending); font-weight: 600; }
+.rcp-promote:hover { background: var(--rcp-pending); color: #fff; border-color: var(--rcp-pending); filter: brightness(1.08); }
+.rcp-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+.rcp-tag { padding: 2px 5px; border-radius: 3px; background: var(--rcp-line); font-size: 11px; color: var(--rcp-dim); }
+.rcp-preview { margin-top: 7px; font-size: 12px; color: var(--rcp-dim); }
+.rcp-preview summary { cursor: pointer; }
+.rcp-preview pre { margin: 6px 0 0; padding: 6px; max-height: 180px; overflow: auto; background: var(--rcp-bg); color: var(--rcp-fg); font-size: 11px; }
+.rcp-notice { margin: 6px; flex: 0 0 auto; overflow-wrap: anywhere; }
+.rcp-notice[hidden] { display: none; }

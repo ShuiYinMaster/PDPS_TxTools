@@ -1,7 +1,7 @@
 // TxTools.Agent / Core / UploadStore.cs
 // 用户上传文件的存储与元数据管理。
 // 存储策略:
-//   - 每个文件写到 %TEMP%\TxTools.Agent\uploads\{convId}\{fileId}_{safeName}
+//   - 每个文件写到 %TEMP%\TxTools\Agent\uploads\{convId}\{fileId}_{safeName}
 //   - 内存维护 fileId → UploadedFile 的字典(所有元数据)
 //   - 切对话时不删旧对话的文件(可能用户还想切回来引用),关窗时统一清理
 //   - 同一对话内文件累积,可以在多轮对话中重复引用
@@ -47,7 +47,6 @@ namespace TxTools.Agent.Core
 
     public static class UploadStore
     {
-        private const string RootFolderName = "TxTools.Agent";
         private const string UploadsSubfolder = "uploads";
 
         private static readonly Dictionary<string, UploadedFile> _byId
@@ -178,7 +177,7 @@ namespace TxTools.Agent.Core
 
         private static string UploadsRoot()
         {
-            return Path.Combine(Path.GetTempPath(), RootFolderName, UploadsSubfolder);
+            return TxToolsTemp.DirectoryFor("Agent", UploadsSubfolder);
         }
 
         private static string ConversationDir(string convId)
