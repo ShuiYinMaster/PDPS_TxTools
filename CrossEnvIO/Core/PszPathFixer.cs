@@ -58,14 +58,20 @@ namespace TxTools.CrossEnvIO
             catch (Exception ex) { log("[Psz] 备份失败: " + ex.Message); }
 
             string content = null;
+            Encoding stateEncoding = null;
+            byte[] statePreamble = null;
             try
             {
                 using (var zip = ZipFile.Open(pszPath, ZipArchiveMode.Read))
                 {
                     var entry = zip.GetEntry(StateFile);
                     if (entry == null) { log("[Psz] 未找到 " + StateFile); return 0; }
-                    using (var reader = new StreamReader(entry.Open(), Encoding.UTF8))
-                        content = reader.ReadToEnd();
+                    var bytes = ReadEntryBytes(entry);
+                    if (!TryDecodeStateXml(bytes, out content, out stateEncoding, out statePreamble))
+                    {
+                        log("[Psz] 无法识别 " + StateFile + " 的原始编码，为避免转换编码已跳过");
+                        return 0;
+                    }
                 }
             }
             catch (Exception ex)
@@ -131,6 +137,20 @@ namespace TxTools.CrossEnvIO
             if (string.Equals(newContent, content, StringComparison.Ordinal))
             { log("[Psz] 替换后无变化"); return 0; }
 
+            // 必须在删除 ZIP 条目前先完成编码。若新路径含有当前编码不能表示的字符，
+            // 直接放弃本次修改，绝不能借机把 GBK 等旧项目转换成 UTF-8。
+            byte[] newContentBytes;
+            try
+            {
+                newContentBytes = stateEncoding.GetBytes(newContent);
+            }
+            catch (EncoderFallbackException ex)
+            {
+                log("[Psz] 新内容无法用原始 " + stateEncoding.WebName
+                    + " 编码表示，为保留 psz 编码已跳过: " + ex.Message);
+                return 0;
+            }
+
             // 写回 zip
             try
             {
@@ -139,8 +159,12 @@ namespace TxTools.CrossEnvIO
                     var entry = zip.GetEntry(StateFile);
                     if (entry != null) entry.Delete();
                     var ne = zip.CreateEntry(StateFile);
-                    using (var writer = new StreamWriter(ne.Open(), Encoding.UTF8))
-                        writer.Write(newContent);
+                    using (var stream = ne.Open())
+                    {
+                        if (statePreamble != null && statePreamble.Length > 0)
+                            stream.Write(statePreamble, 0, statePreamble.Length);
+                        stream.Write(newContentBytes, 0, newContentBytes.Length);
+                    }
                 }
                 foreach (var kv in replacements)
                     log("[Psz] ✓ " + kv.Key + " → " + kv.Value);
@@ -152,6 +176,153 @@ namespace TxTools.CrossEnvIO
                 log("[Psz] 写回失败: " + ex.Message);
                 return 0;
             }
+        }
+
+        /// <summary>
+        /// 从 ZIP 条目读取字节并按其自身编码解码。写回时配合同一 Encoding 和原始 BOM，
+        /// 避免把 GBK/UTF-16 等旧 psz 强制转换为 UTF-8。
+        /// </summary>
+        private static bool TryDecodeStateXml(byte[] bytes, out string content,
+                                              out Encoding encoding, out byte[] preamble)
+        {
+            content = null;
+            encoding = null;
+            preamble = null;
+            if (bytes == null || bytes.Length == 0) return false;
+
+            int preambleLength = 0;
+            if (!TryGetBomEncoding(bytes, out encoding, out preambleLength))
+            {
+                string declaredEncoding;
+                if (TryGetXmlDeclaredEncoding(bytes, out declaredEncoding))
+                {
+                    try { encoding = CreateStrictEncoding(declaredEncoding); }
+                    catch { return false; }
+                }
+                else
+                {
+                    // 未带 BOM 或 XML 声明时，先识别无 BOM UTF-8；否则按 psz 的历史
+                    // ANSI/GBK 格式处理。两种分支都会把同一编码用于写回。
+                    var utf8 = new UTF8Encoding(false, true);
+                    try
+                    {
+                        utf8.GetString(bytes);
+                        encoding = utf8;
+                    }
+                    catch (DecoderFallbackException)
+                    {
+                        try { encoding = CreateStrictEncoding(936); } // GBK
+                        catch { return false; }
+                    }
+                }
+            }
+
+            try
+            {
+                content = encoding.GetString(bytes, preambleLength, bytes.Length - preambleLength);
+                preamble = new byte[preambleLength];
+                if (preambleLength > 0)
+                    Buffer.BlockCopy(bytes, 0, preamble, 0, preambleLength);
+                return true;
+            }
+            catch (DecoderFallbackException) { return false; }
+        }
+
+        /// <summary>读取压缩条目的原始字节，避免 StreamReader 默认 UTF-8 解码造成损坏。</summary>
+        private static byte[] ReadEntryBytes(ZipArchiveEntry entry)
+        {
+            using (var input = entry.Open())
+            using (var output = new MemoryStream())
+            {
+                input.CopyTo(output);
+                return output.ToArray();
+            }
+        }
+
+        /// <summary>优先通过 BOM 识别 Unicode 编码，并原样保留 BOM 字节。</summary>
+        private static bool TryGetBomEncoding(byte[] bytes, out Encoding encoding, out int preambleLength)
+        {
+            encoding = null;
+            preambleLength = 0;
+            if (bytes.Length >= 4 && bytes[0] == 0x00 && bytes[1] == 0x00
+                && bytes[2] == 0xFE && bytes[3] == 0xFF)
+            {
+                encoding = new UTF32Encoding(true, false, true);
+                preambleLength = 4;
+                return true;
+            }
+            if (bytes.Length >= 4 && bytes[0] == 0xFF && bytes[1] == 0xFE
+                && bytes[2] == 0x00 && bytes[3] == 0x00)
+            {
+                encoding = new UTF32Encoding(false, false, true);
+                preambleLength = 4;
+                return true;
+            }
+            if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+            {
+                encoding = new UTF8Encoding(false, true);
+                preambleLength = 3;
+                return true;
+            }
+            if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+            {
+                encoding = new UnicodeEncoding(true, false, true);
+                preambleLength = 2;
+                return true;
+            }
+            if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
+            {
+                encoding = new UnicodeEncoding(false, false, true);
+                preambleLength = 2;
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>从 ASCII 兼容 XML 头提取 encoding 声明（GBK、UTF-8 等）。</summary>
+        private static bool TryGetXmlDeclaredEncoding(byte[] bytes, out string declaredEncoding)
+        {
+            declaredEncoding = null;
+            int length = Math.Min(bytes.Length, 1024);
+            string head = Encoding.ASCII.GetString(bytes, 0, length);
+            int xmlStart = head.IndexOf("<?xml", StringComparison.OrdinalIgnoreCase);
+            if (xmlStart < 0) return false;
+            int xmlEnd = head.IndexOf("?>", xmlStart, StringComparison.Ordinal);
+            if (xmlEnd < 0) return false;
+
+            string declaration = head.Substring(xmlStart, xmlEnd - xmlStart);
+            int encodingStart = declaration.IndexOf("encoding", StringComparison.OrdinalIgnoreCase);
+            if (encodingStart < 0) return false;
+            int valueStart = encodingStart + "encoding".Length;
+            while (valueStart < declaration.Length && char.IsWhiteSpace(declaration[valueStart])) valueStart++;
+            if (valueStart >= declaration.Length || declaration[valueStart] != '=') return false;
+            valueStart++;
+            while (valueStart < declaration.Length && char.IsWhiteSpace(declaration[valueStart])) valueStart++;
+            if (valueStart >= declaration.Length) return false;
+
+            char quote = declaration[valueStart];
+            if (quote != '\'' && quote != '"') return false;
+            int valueEnd = declaration.IndexOf(quote, valueStart + 1);
+            if (valueEnd <= valueStart + 1) return false;
+            declaredEncoding = declaration.Substring(valueStart + 1, valueEnd - valueStart - 1);
+            return true;
+        }
+
+        /// <summary>创建在遇到无法表示的字符时会失败的编码，避免静默替换字节。</summary>
+        private static Encoding CreateStrictEncoding(string name)
+        {
+            var baseEncoding = Encoding.GetEncoding(name);
+            return Encoding.GetEncoding(baseEncoding.CodePage,
+                                        EncoderFallback.ExceptionFallback,
+                                        DecoderFallback.ExceptionFallback);
+        }
+
+        /// <summary>创建在遇到无法表示的字符时会失败的编码，避免静默替换字节。</summary>
+        private static Encoding CreateStrictEncoding(int codePage)
+        {
+            return Encoding.GetEncoding(codePage,
+                                        EncoderFallback.ExceptionFallback,
+                                        DecoderFallback.ExceptionFallback);
         }
 
         /// <summary>路径是否含 junction 残留段（#\ANV_Link\... 等）。</summary>

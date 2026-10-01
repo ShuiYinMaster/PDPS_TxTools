@@ -79,6 +79,7 @@ namespace TxTools.Agent.UI
         // ── WebView2 ──
         private WebView2 _webView;
         private bool _webViewReady;
+        private string _petStartupError;
         private bool _dpiApplied;
 
         // ── 加载覆盖 (WebView 初始化期间遮盖空白,防止用户以为界面卡死) ──
@@ -96,6 +97,18 @@ namespace TxTools.Agent.UI
 
         // 配方执行在飞标志(0=空闲,1=执行中)。见 HandleRecipeRun 里的防重入说明。
         private int _recipeRunInFlight;
+
+        // 侧栏展开时只增加一次宽度；收起时扣回实际增加量，保留用户后续的手动缩放。
+        private bool _recipeSidebarOpen;
+        private bool _recipeSidebarApplied;
+        private bool _recipeSidebarOverlay;
+        private bool _recipeSidebarResizing;
+        private int _recipeSidebarWidth;
+        private int _recipeSidebarAddedWidth;
+        private System.Drawing.Rectangle _recipeSidebarCollapsedBounds;
+        private System.Drawing.Rectangle _recipeSidebarExpandedBounds;
+        private System.Drawing.Size _recipeSidebarCollapsedMinimum;
+        private FormWindowState _recipeSidebarWindowState;
 
         public TxAgentForm(SynchronizationContext psCtx, ToolRegistry tools)
         {
@@ -181,6 +194,18 @@ namespace TxTools.Agent.UI
             InitWebViewAsync();
         }
 
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            var previous = _recipeSidebarWindowState;
+            _recipeSidebarWindowState = WindowState;
+            if (_recipeSidebarResizing || previous == WindowState
+                || (!_recipeSidebarOpen && !_recipeSidebarApplied)) return;
+            // 最大化时不改窗体尺寸。开关操作在恢复普通窗口后再补齐，避免恢复尺寸漂移。
+            ApplyRecipeSidebarLayout();
+            PostRecipePush(new JObject { ["type"] = "recipe.sidebar.layout", ["overlay"] = _recipeSidebarOverlay });
+        }
+
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             // 若正等审批,视为拒绝解除阻塞,让后台线程能退出
@@ -206,12 +231,9 @@ namespace TxTools.Agent.UI
         {
             try
             {
-                var dir = System.IO.Path.Combine(
-                    System.IO.Path.GetTempPath(),
-                    "TxAgent.WebView",
+                var dir = TxToolsTemp.DirectoryFor(
+                    "Agent", "WebView",
                     System.Diagnostics.Process.GetCurrentProcess().Id.ToString());
-
-                System.IO.Directory.CreateDirectory(dir);
 
                 return await Microsoft.Web.WebView2.Core.CoreWebView2Environment
                     .CreateAsync(null, dir, null);
@@ -228,8 +250,8 @@ namespace TxTools.Agent.UI
         {
             try
             {
-                var dir = System.IO.Path.Combine(
-                    System.IO.Path.GetTempPath(), "TxAgent.WebView",
+                var dir = TxToolsTemp.DirectoryFor(
+                    "Agent", "WebView",
                     System.Diagnostics.Process.GetCurrentProcess().Id.ToString());
 
                 // 进程还没退出，WebView2 可能仍占着文件，删不掉就算了 ——
@@ -426,6 +448,11 @@ namespace TxTools.Agent.UI
                 catch (Exception ex)
                 {
                     try { AuditLog.Write("[warn] [Recipe] 处理侧边栏消息失败: " + ex.Message); } catch { }
+                    ReplyToWeb((int?)msg["seq"] ?? 0, new JObject
+                    {
+                        ["type"] = type + ".result", ["ok"] = false,
+                        ["error"] = "配方操作失败: " + ex.Message
+                    });
                 }
                 return;
             }
@@ -649,7 +676,78 @@ namespace TxTools.Agent.UI
                 case "recipe.run":           HandleRecipeRun(seq, msg); break;
                 case "recipe.reveal":        HandleRecipeReveal(seq, msg); break;
                 case "recipe.promote":       HandleRecipePromote(seq, msg); break;
+                case "recipe.import":        HandleRecipeImport(seq); break;
+                case "recipe.export":        HandleRecipeExport(seq, msg); break;
+                case "recipe.sidebar":       HandleRecipeSidebar(seq, msg); break;
             }
+        }
+
+        private void HandleRecipeSidebar(int seq, JObject msg)
+        {
+            _recipeSidebarOpen = (bool?)msg["open"] ?? false;
+            double cssWidth = (double?)msg["width"] ?? 300;
+            double ratio = (double?)msg["pixelRatio"] ?? 1;
+            if (double.IsNaN(cssWidth) || double.IsInfinity(cssWidth)) cssWidth = 300;
+            if (double.IsNaN(ratio) || double.IsInfinity(ratio)) ratio = 1;
+            _recipeSidebarWidth = (int)Math.Ceiling(Math.Max(180, Math.Min(600, cssWidth))
+                * Math.Max(0.5, Math.Min(8, ratio)));
+            ApplyRecipeSidebarLayout();
+            ReplyToWeb(seq, new JObject { ["type"] = "recipe.sidebar.layout", ["ok"] = true,
+                ["overlay"] = _recipeSidebarOverlay });
+        }
+
+        private void ApplyRecipeSidebarLayout()
+        {
+            if (_recipeSidebarResizing || !IsHandleCreated) return;
+            if (WindowState != FormWindowState.Normal)
+            {
+                _recipeSidebarOverlay = _recipeSidebarOpen;
+                return;
+            }
+            if (_recipeSidebarOpen == _recipeSidebarApplied)
+            {
+                if (!_recipeSidebarOpen) _recipeSidebarOverlay = false;
+                else _recipeSidebarOverlay = _recipeSidebarAddedWidth == 0;
+                return;
+            }
+
+            _recipeSidebarResizing = true;
+            try
+            {
+                var workingArea = Screen.FromRectangle(Bounds).WorkingArea;
+                if (_recipeSidebarOpen)
+                {
+                    _recipeSidebarCollapsedBounds = Bounds;
+                    _recipeSidebarCollapsedMinimum = MinimumSize;
+                    var expanded = RecipeSidebarWindowLayout.Expand(Bounds, workingArea,
+                        _recipeSidebarWidth, MaximumSize.Width);
+                    _recipeSidebarApplied = true;
+                    _recipeSidebarOverlay = expanded.Width == Width;
+                    if (!_recipeSidebarOverlay)
+                    {
+                        MinimumSize = new System.Drawing.Size(
+                            Math.Min(expanded.Width, _recipeSidebarCollapsedMinimum.Width + _recipeSidebarWidth),
+                            _recipeSidebarCollapsedMinimum.Height);
+                        Bounds = expanded;
+                    }
+                    _recipeSidebarExpandedBounds = Bounds;
+                    _recipeSidebarAddedWidth = Math.Max(0, Width - _recipeSidebarCollapsedBounds.Width);
+                }
+                else
+                {
+                    // 没有手动移动/调整过时恢复原位置；手动调整过则沿用用户的新位置。
+                    bool restoreLeft = Bounds == _recipeSidebarExpandedBounds;
+                    MinimumSize = _recipeSidebarCollapsedMinimum;
+                    var collapsed = RecipeSidebarWindowLayout.Collapse(Bounds, workingArea,
+                        _recipeSidebarAddedWidth, MinimumSize.Width,
+                        restoreLeft ? _recipeSidebarCollapsedBounds.Left : Left);
+                    _recipeSidebarApplied = false;
+                    _recipeSidebarOverlay = false;
+                    _recipeSidebarAddedWidth = 0;
+                    Bounds = collapsed;
+                }
+            }
+            finally { _recipeSidebarResizing = false; }
         }
 
         private void ReplyToWeb(int seq, JObject payload)
@@ -731,7 +829,19 @@ namespace TxTools.Agent.UI
 
             var cands = new JArray();
             foreach (var s in RecipeStore.PromotionCandidates())
-                cands.Add(new JObject { ["name"] = s.Name, ["successCount"] = s.SuccessCount });
+            {
+                var code = s.Code ?? "";
+                var preview = string.Join("\n", code.Replace("\r\n", "\n").Split('\n').Take(24));
+                if (preview.Length > 1800) preview = preview.Substring(0, 1800);
+                cands.Add(new JObject
+                {
+                    ["name"] = s.Name, ["description"] = RecipeStore.CandidateDescription(s),
+                    ["tags"] = new JArray(s.Tags ?? new List<string>()),
+                    ["lang"] = SnippetStore.NormalizeLang(s.Lang),
+                    ["codePreview"] = preview, ["previewTruncated"] = preview.Length < code.Replace("\r\n", "\n").Length,
+                    ["successCount"] = s.SuccessCount, ["failureCount"] = s.FailureCount
+                });
+            }
 
             var studyKey = CurrentStudyKey();
             _lastStudyKey = studyKey;              // 与轮询共用基线,避免列表刷新触发假推送
@@ -792,13 +902,14 @@ namespace TxTools.Agent.UI
                     var ids = string.Join("|", sel.Select(o => o.Id));
                     ReplyToWeb(seq, new JObject { ["type"] = "recipe.pick.result", ["ok"] = true, ["id"] = ids,
                         ["name"] = sel[0].Name, ["count"] = sel.Count,
-                        ["type"] = sel[0].GetType().Name });
+                        ["objectType"] = sel[0].GetType().Name, ["study"] = CurrentStudyKey() });
                 }
                 else
                 {
                     var o = sel[0];
                     ReplyToWeb(seq, new JObject { ["type"] = "recipe.pick.result", ["ok"] = true, ["id"] = o.Id,
-                        ["name"] = o.Name, ["count"] = 1, ["type"] = o.GetType().Name });
+                        ["name"] = o.Name, ["count"] = 1,
+                        ["objectType"] = o.GetType().Name, ["study"] = CurrentStudyKey() });
                 }
             }
             catch (Exception ex)
@@ -815,6 +926,17 @@ namespace TxTools.Agent.UI
             {
                 ReplyToWeb(seq, new JObject { ["type"] = "recipe.run.result", ["ok"] = false,
                     ["recipeId"] = id ?? "", ["error"] = "配方不存在，可能已被删除。" });
+                return;
+            }
+
+            // study 可能在前端两次轮询之间切换；执行前再由宿主核对一次。
+            // 旧版页面没有 study 字段时仍允许执行，避免破坏已加载的页面。
+            JToken requestedStudy;
+            if (msg.TryGetValue("study", out requestedStudy)
+                && !string.Equals((string)requestedStudy, CurrentStudyKey(), StringComparison.Ordinal))
+            {
+                ReplyToWeb(seq, new JObject { ["type"] = "recipe.run.result", ["ok"] = false,
+                    ["recipeId"] = r.Id, ["error"] = "当前 study 已切换，请重新选取对象后执行。" });
                 return;
             }
 
@@ -891,7 +1013,11 @@ namespace TxTools.Agent.UI
                     Interlocked.Exchange(ref _recipeRunInFlight, 0);
                 }
 
-                RecipeStore.RecordRun(runId, ok);
+                try { RecipeStore.RecordRun(runId, ok); }
+                catch (Exception ex)
+                {
+                    try { AuditLog.Write("[warn] [Recipe] 记录执行结果失败: " + ex.Message); } catch { }
+                }
                 try
                 {
                     AuditLog.Write((ok ? "[info]" : "[warn]") + " [Recipe] " + runName
@@ -913,6 +1039,24 @@ namespace TxTools.Agent.UI
         /// <summary>recipe.reveal:把配方原文当作一条助手消息推进聊天区,不必走模型。</summary>
         private void HandleRecipeReveal(int seq, JObject msg)
         {
+            var snippetName = (string)msg["snippetName"];
+            if (!string.IsNullOrWhiteSpace(snippetName))
+            {
+                var s = SnippetStore.Get(snippetName);
+                if (s == null)
+                {
+                    ReplyToWeb(seq, new JObject { ["type"] = "recipe.reveal.result", ["ok"] = false, ["error"] = "片段不存在。" });
+                    return;
+                }
+                var fence = RecipeStore.CodeFence(s.Code);
+                var text = "## 待固化片段：" + s.Name.Replace("\r", " ").Replace("\n", " ") + "\n\n"
+                    + RecipeStore.CandidateDescription(s).Trim()
+                    + "\n\n语言：" + SnippetStore.NormalizeLang(s.Lang)
+                    + "\n\n" + fence + SnippetStore.NormalizeLang(s.Lang) + "\n" + (s.Code ?? "").TrimEnd() + "\n" + fence;
+                PostJs(new { type = "message", role = "assistant", text = text });
+                ReplyToWeb(seq, new JObject { ["type"] = "recipe.reveal.result", ["ok"] = true });
+                return;
+            }
             var id = (string)msg["recipeId"];
             var r = RecipeStore.Get(id);
             if (r == null)
@@ -921,28 +1065,61 @@ namespace TxTools.Agent.UI
                 return;
             }
 
-            var sb = new System.Text.StringBuilder();
-            sb.AppendLine("**【配方 ").Append(r.Name).Append("】** ");
-            if (!string.IsNullOrWhiteSpace(r.Description)) sb.AppendLine(r.Description.Trim());
-            sb.AppendLine();
-            sb.AppendLine("语言: ").Append(SnippetStore.NormalizeLang(r.Lang));
-            if (r.Params != null && r.Params.Count > 0)
-            {
-                sb.AppendLine();
-                sb.AppendLine("参数:");
-                foreach (var p in r.Params)
-                    sb.Append("- ").Append(p.Name)
-                      .Append(p.Label != null && !string.Equals(p.Label, p.Name, StringComparison.Ordinal)
-                          ? " (" + p.Label + ")" : "")
-                      .Append(" [").Append(p.Kind).AppendLine("]");
-            }
-            sb.AppendLine();
-            sb.AppendLine("```" + SnippetStore.NormalizeLang(r.Lang));
-            sb.AppendLine((r.Code ?? "").TrimEnd());
-            sb.AppendLine("```");
-
-            PostJs(new { type = "message", role = "assistant", text = sb.ToString() });
+            PostJs(new { type = "message", role = "assistant", text = RecipeStore.DisplayMarkdown(r) });
             ReplyToWeb(seq, new JObject { ["type"] = "recipe.reveal.result", ["ok"] = true });
+        }
+
+        private void HandleRecipeExport(int seq, JObject msg)
+        {
+            var r = RecipeStore.Get((string)msg["recipeId"]);
+            if (r == null)
+            {
+                ReplyToWeb(seq, new JObject { ["type"] = "recipe.export.result", ["ok"] = false, ["error"] = "配方不存在。" });
+                return;
+            }
+            using (var dialog = new SaveFileDialog
+            {
+                Title = "导出配方以分享", Filter = "配方 Markdown (*.md)|*.md",
+                FileName = MarkdownDoc.Slug(r.Name) + ".md", DefaultExt = "md", AddExtension = true,
+                OverwritePrompt = true, RestoreDirectory = true
+            })
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                {
+                    ReplyToWeb(seq, new JObject { ["type"] = "recipe.export.result", ["ok"] = true, ["cancelled"] = true });
+                    return;
+                }
+                File.WriteAllText(dialog.FileName, RecipeStore.ExportMarkdown(r), new System.Text.UTF8Encoding(false));
+                ReplyToWeb(seq, new JObject { ["type"] = "recipe.export.result", ["ok"] = true,
+                    ["text"] = "已导出配方：" + dialog.FileName });
+            }
+        }
+
+        private void HandleRecipeImport(int seq)
+        {
+            using (var dialog = new OpenFileDialog
+            {
+                Title = "导入分享的配方", Filter = "配方 Markdown (*.md)|*.md",
+                CheckFileExists = true, Multiselect = false, RestoreDirectory = true
+            })
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                {
+                    ReplyToWeb(seq, new JObject { ["type"] = "recipe.import.result", ["ok"] = true, ["cancelled"] = true });
+                    return;
+                }
+                if (new FileInfo(dialog.FileName).Length > 10 * 1024 * 1024)
+                    throw new InvalidDataException("配方文件超过 10 MB，请检查所选文件。");
+                Recipe imported;
+                string error;
+                if (!RecipeStore.TryImportMarkdown(File.ReadAllText(dialog.FileName, System.Text.Encoding.UTF8), out imported, out error))
+                {
+                    ReplyToWeb(seq, new JObject { ["type"] = "recipe.import.result", ["ok"] = false, ["error"] = error });
+                    return;
+                }
+                ReplyToWeb(seq, new JObject { ["type"] = "recipe.import.result", ["ok"] = true,
+                    ["recipeId"] = imported.Id, ["text"] = "已导入配方：" + imported.Name + "。选取本工程对象后即可执行。" });
+            }
         }
 
         /// <summary>
@@ -959,8 +1136,8 @@ namespace TxTools.Agent.UI
                 return;
             }
 
-            var hint = "把片段 \"" + name + "\" 固化成配方：判断其中哪些部分应该做成参数（对象/数字/文本），"
-                     + "给每个参数起合法的英文变量名和中文标签，然后调用 save_recipe。";
+            var hint = "把片段 \"" + name + "\" 固化成配方：先用 get_snippet 读取完整代码，判断其中哪些部分应该做成参数（对象/数字/文本），"
+                     + "给每个参数起合法的英文变量名和中文标签，用中文写清用途、输入对象和执行效果，然后调用 save_recipe。";
             PostJs(new { type = "userTextPrefill", text = hint });
             ReplyToWeb(seq, new JObject { ["type"] = "recipe.promote.result", ["ok"] = true });
         }
@@ -1031,6 +1208,7 @@ namespace TxTools.Agent.UI
                 PostStatus("\u5c1a\u672a\u8bbe\u7f6e " + prov.DisplayName + " API Key\u3002");
                 PostAskApiKey(prov, "\u9996\u6b21\u4f7f\u7528\u9700\u8981\u8bbe\u7f6e " + prov.DisplayName + " \u7684 API Key\u3002");
             }
+            if (_petStartupError != null) PostStatus(_petStartupError);
         }
 
         /// <summary>发送全部 provider 及其模型列表(前端用 optgroup 分组显示),同时告诉当前选中。</summary>
@@ -1135,6 +1313,11 @@ namespace TxTools.Agent.UI
         }
 
         private void PostStatus(string text) { PostJs(new { type = "status", text }); }
+        internal void ReportPetError(string message)
+        {
+            _petStartupError = "桌宠未能显示: " + message;
+            if (_webViewReady) PostStatus(_petStartupError);
+        }
         private void PostBusy(bool busy) { PostJs(new { type = "busy", value = busy }); }
         /// <summary>
         /// 下发 token 用量。除累计输入/输出外,还附带一份【上下文占用估算】:
@@ -1402,30 +1585,36 @@ namespace TxTools.Agent.UI
 
             PostBusy(true);
             _isSending = true;
+            TxTools.Agent.TxAgentCommand.SetPetThinking(true);
             _cts = new CancellationTokenSource();
             try
             {
                 var token = _cts.Token;
                 await Task.Run(() => _loop.SendAsync(finalText, token));
                 PostStatus("\u5c31\u7eea\u3002");
+                TxTools.Agent.TxAgentCommand.CelebratePet();
             }
             catch (OperationCanceledException)
             {
+                TxTools.Agent.TxAgentCommand.SetPetState(null);
                 PostJs(new { type = "message", role = "\u7cfb\u7edf", text = "\u5df2\u53d6\u6d88\u672c\u6b21\u8bf7\u6c42\u3002" });
                 PostStatus("\u5df2\u53d6\u6d88\u3002");
             }
             catch (LlmApiException apiEx)
             {
+                TxTools.Agent.TxAgentCommand.SetPetState("error", "API 请求失败");
                 PostJs(new { type = "message", role = "\u7cfb\u7edf", text = "API \u9519\u8bef: " + apiEx.Message });
                 PostStatus("API \u9519\u8bef\u3002");
             }
             catch (Exception ex)
             {
+                TxTools.Agent.TxAgentCommand.SetPetState("error", "任务遇到问题");
                 PostJs(new { type = "message", role = "\u7cfb\u7edf", text = "\u51fa\u9519: " + ex.Message });
                 PostStatus("\u51fa\u9519\u3002");
             }
             finally
             {
+                TxTools.Agent.TxAgentCommand.SetPetThinking(false);
                 PostJs(new { type = "closeAssistant" });
                 PostBusy(false);
                 try { if (_cts != null) _cts.Dispose(); } catch { }
@@ -1534,10 +1723,8 @@ namespace TxTools.Agent.UI
 
                     int rawCount = models.Count;
 
-                    // /v1/models 返回的是平台【全量目录】,不是"我能用的":
-                    // 百炼的业务空间白名单只管调用鉴权,不影响这里的返回内容;
-                    // 目录里还混着 embedding/rerank/tts、日期快照变体、
-                    // 以及不支持 function calling 的小参数模型。清洗一遍再进下拉。
+                    // 千问展示接口返回的完整目录，仅去掉空值和重复项；
+                    // 其他提供商仍按现有规则清洗模型名称。
                     models = ModelFilter.Clean(pid, models, _currentModel);
                     if (models.Count == 0) return;
 
@@ -1560,7 +1747,11 @@ namespace TxTools.Agent.UI
                         PostProviderAndModelList();
                         PostStatus("\u5df2\u5237\u65b0 " + target.DisplayName + " \u6a21\u578b\u5217\u8868 ("
                             + models.Count + " \u4e2a"
-                            + (rawCount > models.Count ? ", \u5df2\u8fc7\u6ee4 " + (rawCount - models.Count) : "")
+                            + (rawCount > models.Count
+                                ? (string.Equals(pid, "qwen", StringComparison.OrdinalIgnoreCase)
+                                    ? ", \u5df2\u53bb\u9664\u7a7a\u503c\u6216\u91cd\u590d "
+                                    : ", \u5df2\u8fc7\u6ee4 ") + (rawCount - models.Count)
+                                : "")
                             + ")");
                         // 落盘,下次开窗立即用缓存,不再显示硬编码默认
                         try { UserPrefsStore.UpdateModels(pid, target.Models); } catch { }
@@ -1945,7 +2136,11 @@ namespace TxTools.Agent.UI
             if (_current != null && !string.IsNullOrEmpty(_current.Id))
                 loop.SetConvId(_current.Id);
 
-            loop.AssistantDelta += frag => PostJs(new { type = "delta", text = frag });
+            loop.AssistantDelta += frag =>
+            {
+                TxTools.Agent.TxAgentCommand.SetPetState("result");
+                PostJs(new { type = "delta", text = frag });
+            };
             loop.Info += t =>
             {
                 PostJs(new { type = "closeAssistant" });
@@ -1953,21 +2148,38 @@ namespace TxTools.Agent.UI
             };
             loop.ToolCalled += (name, input) =>
             {
+                TxTools.Agent.TxAgentCommand.SetPetState("working", "正在执行：" + name);
                 PostJs(new { type = "closeAssistant" });
                 PostStatus("\u2699 " + name + "\u2026");
                 PostJs(new { type = "toolCall", name = name, input = Compact(input) });
             };
             loop.ToolCompleted += (name, result, isErr) =>
             {
+                TxTools.Agent.TxAgentCommand.SetPetState(isErr ? "error" : "result", isErr ? "工具执行失败：" + name : "正在整理工具结果");
                 PostJs(new { type = "toolResult", name = name, result = result, isErr = isErr });
                 PostStatus("\u5c31\u7eea\u3002");
             };
-            loop.ApprovalRequest = AskApproval;
-            loop.AskUserRequest = AskUser;
+            loop.ApprovalRequest = (tool, input) =>
+            {
+                TxTools.Agent.TxAgentCommand.SetPetState("waiting", "等待操作确认");
+                try { return AskApproval(tool, input); }
+                finally { TxTools.Agent.TxAgentCommand.SetPetState("thinking"); }
+            };
+            loop.AskUserRequest = (question, kind, choices) =>
+            {
+                TxTools.Agent.TxAgentCommand.SetPetState("waiting", "等待你的回答");
+                try { return AskUser(question, kind, choices); }
+                finally { TxTools.Agent.TxAgentCommand.SetPetState("thinking"); }
+            };
 
             // ask_user 富负载通道:支持 multi_choice / form / allow_custom / multiline。
             // 每次 BuildLoop 重挂一次,避免 form 重建后残留旧实例引用。
-            AskUserBridge.Handler = AskUserRich;
+            AskUserBridge.Handler = payload =>
+            {
+                TxTools.Agent.TxAgentCommand.SetPetState("waiting", "等待你的回答");
+                try { return AskUserRich(payload); }
+                finally { TxTools.Agent.TxAgentCommand.SetPetState("thinking"); }
+            };
 
             // 新 harness 独有能力(旧 AgentLoop 不实现该接口,as 得到 null 自动跳过)
             var streaming = loop as IStreamingAgentLoop;
@@ -1976,7 +2188,11 @@ namespace TxTools.Agent.UI
                 // 思考过程(推理模型的 reasoning_content)。
                 // 普通模型不返回该字段,这三个事件根本不会触发,不影响现有行为。
                 // 思考经独立归档保存，历史默认折叠；网络回传由端点兼容策略控制。
-                streaming.ReasoningStarted += () => PostJs(new { type = "reasoningStart" });
+                streaming.ReasoningStarted += () =>
+                {
+                    TxTools.Agent.TxAgentCommand.SetPetState("thinking");
+                    PostJs(new { type = "reasoningStart" });
+                };
                 streaming.ReasoningDelta += t => PostJs(new { type = "reasoningDelta", text = t });
                 streaming.ReasoningEnded += () => PostJs(new { type = "reasoningEnd" });
 
@@ -2287,5 +2503,30 @@ namespace TxTools.Agent.UI
         //    { type:"tokenUsage", prompt, completion, total }
         //    { type:"attachmentInfo", id?, name?, extension?, size?, sizeText?, rowCount?, colCount?, sheetCount?, summary?, error? }
         // </PROTOCOL>
+    }
+
+    /// <summary>窗体水平扩展与回收的纯布局计算，不访问 PS 或窗口句柄。</summary>
+    internal static class RecipeSidebarWindowLayout
+    {
+        public static System.Drawing.Rectangle Expand(System.Drawing.Rectangle bounds,
+            System.Drawing.Rectangle workingArea, int sidebarWidth, int maximumWidth)
+        {
+            long requestedWidth = (long)bounds.Width + Math.Max(0, sidebarWidth);
+            if (requestedWidth > workingArea.Width
+                || (maximumWidth > 0 && requestedWidth > maximumWidth)) return bounds;
+            int width = (int)requestedWidth;
+            int left = Math.Max(workingArea.Left, Math.Min(bounds.Left, workingArea.Right - width));
+            return new System.Drawing.Rectangle(left, bounds.Top, width, bounds.Height);
+        }
+
+        public static System.Drawing.Rectangle Collapse(System.Drawing.Rectangle bounds,
+            System.Drawing.Rectangle workingArea, int addedWidth, int minimumWidth, int preferredLeft)
+        {
+            int width = Math.Max(Math.Max(1, minimumWidth), bounds.Width - Math.Max(0, addedWidth));
+            int left = width <= workingArea.Width
+                ? Math.Max(workingArea.Left, Math.Min(preferredLeft, workingArea.Right - width))
+                : preferredLeft;
+            return new System.Drawing.Rectangle(left, bounds.Top, width, bounds.Height);
+        }
     }
 }

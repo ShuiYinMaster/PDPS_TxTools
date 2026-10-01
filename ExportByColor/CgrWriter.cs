@@ -5,11 +5,16 @@ using System.Diagnostics;
 
 namespace TxTools.ExportByColor
 {
+    public enum CgrBackend { Configured, Compact, LineFace, Legacy, LineFacePlanar }
     // Experimental R7-R12 standalone encoding. Opaque metadata/ID allocation remain experimental.
     public static partial class CgrWriter
     {
-        public const string Version="CGR-20260909-R33-compact-smooth";
+        public const string Version="CGR-20260921-R39-cfv3-feature-bridge";
+        // Compact and CFV3-compatible output retain their established chunk size.
         public const int MaxVertsPerChunk=40960;
+        // Feature CGR uses unsigned 16-bit indices and can address 65,536 vertices.
+        // The larger limit avoids artificial topology cuts in that separate backend.
+        private const int MaxFeatureVertsPerChunk=65536;
         private const int MaxFacesPerChunk=20000;
         public struct Face { public float Nx,Ny,Nz; public int[] Idx; public byte R,G,B; public int Surface; }
         private sealed class Entry
@@ -66,18 +71,44 @@ namespace TxTools.ExportByColor
             return result;
         }
         // Multiple mesh blocks remain inside ONE CGR container.
-        public static void BuildFile(List<float[]> vertices,List<Face> faces,string outPath,int maxFacesPerBlock=MaxFacesPerChunk,Action<string> progress=null,bool writeEdges=false)
+        public static void BuildFile(List<float[]> vertices,List<Face> faces,string outPath,int maxFacesPerBlock=MaxFacesPerChunk,Action<string> progress=null)
+        {
+            BuildFile(vertices,faces,outPath,CgrBackend.Configured,maxFacesPerBlock,progress);
+        }
+        public static CgrBackend ResolveBackend(CgrBackend backend)
+        {
+            if(backend==CgrBackend.Configured)
+            {
+                string value=Environment.GetEnvironmentVariable("TXTOOLS_CGR_BACKEND");
+                backend=value=="legacy"?CgrBackend.Legacy:value=="features"?CgrBackend.LineFace:value=="features-planar"?CgrBackend.LineFacePlanar:CgrBackend.Compact;
+            }
+            if(backend!=CgrBackend.Compact&&backend!=CgrBackend.LineFace&&backend!=CgrBackend.LineFacePlanar&&backend!=CgrBackend.Legacy)
+                throw new ArgumentOutOfRangeException("backend");
+            return backend;
+        }
+        public static void BuildFile(List<float[]> vertices,List<Face> faces,string outPath,CgrBackend backend,int maxFacesPerBlock=MaxFacesPerChunk,Action<string> progress=null)
         {
             if(vertices==null||faces==null||faces.Count==0||maxFacesPerBlock<1) throw new ArgumentException("Empty mesh or invalid block size");
+            backend=ResolveBackend(backend);
+            bool features=backend==CgrBackend.LineFace||backend==CgrBackend.LineFacePlanar;
             var watch=Stopwatch.StartNew();int inputFaces=faces.Count;
-            if(progress!=null) progress("[CGR] 编码器 "+Version+"；DLL="+typeof(CgrWriter).Assembly.Location+"；批量="+(Environment.GetEnvironmentVariable("TXTOOLS_CGR_BATCH_LISTS")!="0")+"；边="+writeEdges+"；背面="+(Environment.GetEnvironmentVariable("TXTOOLS_CGR_DUPLICATE_BACKFACES")!="0"));
+            if(progress!=null) progress("[CGR] 编码器 "+Version+"；方案="+backend+"；DLL="+typeof(CgrWriter).Assembly.Location+"；批量="+(Environment.GetEnvironmentVariable("TXTOOLS_CGR_BATCH_LISTS")!="0")+"；边="+(features||Environment.GetEnvironmentVariable("TXTOOLS_CGR_WRITE_EDGES")=="1")+"；背面="+(Environment.GetEnvironmentVariable("TXTOOLS_CGR_DUPLICATE_BACKFACES")!="0"));
             faces=FilterZeroArea(vertices,faces,progress);
-            PrepareSurfaces(ref vertices,ref faces,progress);
-            if(!writeEdges && Environment.GetEnvironmentVariable("TXTOOLS_CGR_BACKEND")!="legacy")
+            if(features) WeldFeatureVertices(ref vertices,ref faces);
+            PrepareSurfaces(ref vertices,ref faces,progress,backend!=CgrBackend.Legacy);
+            if(features)
+            {
+                // The historical 20,000-triangle default is unnecessary for feature
+                // topology. Split only at the 16-bit vertex boundary, otherwise
+                // a continuous surface gains artificial face and edge records. A
+                // non-default caller limit remains an explicit operational override.
+                int featureLimit=backend==CgrBackend.LineFace&&maxFacesPerBlock==MaxFacesPerChunk?int.MaxValue:maxFacesPerBlock;
+                BuildLineFace95(vertices,faces,outPath,featureLimit,progress,backend==CgrBackend.LineFace);return;
+            }
+            if(backend==CgrBackend.Compact)
             {
                 BuildCompact95(vertices,faces,outPath,progress);return;
             }
-            if(writeEdges && progress!=null) progress("[CGR] 边线使用兼容编码路径，包含三角网格边；文件会较大，当前路径不输出平滑法线");
             if(Environment.GetEnvironmentVariable("TXTOOLS_CGR_LOCALIZE")=="1")
             {
                 double[] lo={double.PositiveInfinity,double.PositiveInfinity,double.PositiveInfinity},hi={double.NegativeInfinity,double.NegativeInfinity,double.NegativeInfinity};
@@ -107,7 +138,7 @@ namespace TxTools.ExportByColor
                     }
                     f.Idx=ids;local.Add(f);i++;
                 }
-                byte[] scene,packet;BuildStreams(verts,local,nextId,out scene,out packet,out nextId,writeEdges);
+                byte[] scene,packet;BuildStreams(verts,local,nextId,out scene,out packet,out nextId);
                 scenes.Add(scene);packets.Add(packet);
             }
             byte[] combined,topology;
@@ -164,7 +195,7 @@ namespace TxTools.ExportByColor
             if(kept.Count==0) throw new ArgumentException("No nonzero-area triangles remain");
             return kept;
         }
-        private static void BuildStreams(List<float[]> vertices,List<Face> faces,uint firstId,out byte[] scene,out byte[] packet,out uint nextId,bool writeEdges=false)
+        private static void BuildStreams(List<float[]> vertices,List<Face> faces,uint firstId,out byte[] scene,out byte[] packet,out uint nextId)
         {
             if(vertices==null||vertices.Count<3||vertices.Count>MaxVertsPerChunk||faces==null||faces.Count==0)
                 throw new ArgumentException("Expected 3..65536 vertices and nonempty triangles");
@@ -192,7 +223,7 @@ namespace TxTools.ExportByColor
                 double len=Math.Sqrt(nx*nx+ny*ny+nz*nz);
                 if(len==0) throw new ArgumentException("Degenerate triangle at index "+fi);
                 normals.Add(new[]{Finite(nx/len),Finite(ny/len),Finite(nz/len)});bounds.Add(Bounds(vertices,ids));
-                if(writeEdges)
+                if(Environment.GetEnvironmentVariable("TXTOOLS_CGR_WRITE_EDGES")=="1")
                     for(int k=0;k<3;k++)
                     {
                         int x=Math.Min(ids[k],ids[(k+1)%3]),y=Math.Max(ids[k],ids[(k+1)%3]);long key=((long)x<<32)|(uint)y;
@@ -210,7 +241,7 @@ namespace TxTools.ExportByColor
                 { var boundary=new Edge{A=edge.A,B=edge.B};boundary.Faces.Add(face);encodedEdges.Add(boundary); }
             }
             edges=encodedEdges;
-            if(!writeEdges) edges=new List<Edge>();
+            if(Environment.GetEnvironmentVariable("TXTOOLS_CGR_WRITE_EDGES")!="1") edges=new List<Edge>();
             bool wide=vertices.Count>255;byte[] payload;
             var primitives=new List<Primitive>();
             var faceToPrimitive=new int[faces.Count];

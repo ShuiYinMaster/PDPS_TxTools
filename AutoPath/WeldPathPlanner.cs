@@ -453,7 +453,9 @@ namespace TxTools.AutoPathPlanner
             if (weldPoints.Count > 0)
             {
                 PlanPoint first = weldPoints[0];
-                Vec3 firstOff = first.Position + GetOffsetDir(first) * ApproachRetractDistance;
+                Vec3 firstOff = GenerateApproachRetract
+                    ? first.Position + GetOffsetDir(first) * ApproachRetractDistance
+                    : first.Position;
                 _world.SetOrientation(first.AbsTransform, first.RpyZyx);
                 ITxObject refLoc = weldObjs.Count > 0 ? (ITxObject)weldObjs[0] : null;
                 string verdict = _world.SelfTest(firstOff, first.RpyZyx, refLoc);
@@ -474,8 +476,9 @@ namespace TxTools.AutoPathPlanner
             // 标定决定 Destination 用局部坐标还是世界坐标; 标定前摆位会全部失败,
             // 关节姿态读不出来, 焊序只能退回笛卡尔距离, 关节代价模型形同虚设。
             // (v6.0 就栽在这: 日志报 "0/25 个焊点关节姿态可读")
-            if (WeldOrderOptEnabled && weldPoints.Count > 4)
-                OptimizeWeldOrder(weldPoints, weldObjs, report, op);
+            if (WeldOrderOptEnabled && weldPoints.Count > 4
+                && !OptimizeWeldOrder(weldPoints, weldObjs, report, op))
+                return;
 
             // ---- 自适应进出枪偏移解析 ----
             // 焊点坐标系Z轴方向在焊点间常不一致 (投影焊点一半朝内一半朝外),
@@ -488,6 +491,7 @@ namespace TxTools.AutoPathPlanner
             // ================================================================
             var offsets = new Vec3[weldPoints.Count];
             var offsetFree = new bool[weldPoints.Count];
+            var weldFree = new bool[weldPoints.Count];
             int freeCount = 0;
             for (int i = 0; i < weldPoints.Count; i++)
             {
@@ -496,10 +500,11 @@ namespace TxTools.AutoPathPlanner
                 if (offsetFree[i]) freeCount++;
                 else
                     report.Warnings.Add(string.Format(
-                        "焊点 {0} 的进/出枪点(严格-Z)存在干涉或不可达, 已按工艺位置强制生成, 需人工确认",
-                        weldPoints[i].Source));
+                        "焊点 {0} 的进/出枪点({1})存在干涉或不可达, 已按工艺位置强制生成, 需人工确认",
+                        weldPoints[i].Source,
+                        UseWorldZForApproach ? "世界Z" : "自动方向搜索"));
             }
-            _log(string.Format("  进出枪点生成: {0}/{1} 无干涉 ({2} 个按工艺-Z强制生成)",
+            _log(string.Format("  进出枪点生成: {0}/{1} 无干涉 ({2} 个按当前方向策略强制生成)",
                 freeCount, weldPoints.Count, weldPoints.Count - freeCount));
 
             // ================================================================
@@ -516,9 +521,12 @@ namespace TxTools.AutoPathPlanner
                 var wp = weldPoints[si];
                 _world.SetOrientation(wp.AbsTransform, wp.RpyZyx);
                 CollisionWorld.PositionState stWeld = _world.ClassifyStrict(wp.Position);
-                CollisionWorld.PositionState stOff = offsetFree[si]
+                CollisionWorld.PositionState stOff = !GenerateApproachRetract
                     ? CollisionWorld.PositionState.Free
-                    : _world.ClassifyStrict(offsets[si]);
+                    : (offsetFree[si]
+                        ? CollisionWorld.PositionState.Free
+                        : _world.ClassifyStrict(offsets[si]));
+                weldFree[si] = stWeld == CollisionWorld.PositionState.Free;
                 if (stWeld == CollisionWorld.PositionState.Free
                     && stOff == CollisionWorld.PositionState.Free)
                 {
@@ -657,8 +665,12 @@ namespace TxTools.AutoPathPlanner
                 if (i >= weldPoints.Count - 1) break;
 
                 PlanPoint a = weldPoints[i], b = weldPoints[i + 1];
-                var transitPoints = PlanTransit(a, b, offsets[i], offsets[i + 1],
-                    offsetFree[i], offsetFree[i + 1], report);
+                Vec3 transitStart = GenerateApproachRetract ? offsets[i] : weldPoints[i].Position;
+                Vec3 transitGoal = GenerateApproachRetract ? offsets[i + 1] : weldPoints[i + 1].Position;
+                bool transitStartFree = GenerateApproachRetract ? offsetFree[i] : weldFree[i];
+                bool transitGoalFree = GenerateApproachRetract ? offsetFree[i + 1] : weldFree[i + 1];
+                var transitPoints = PlanTransit(a, b, transitStart, transitGoal,
+                    transitStartFree, transitGoalFree, report);
                 if (transitPoints != null)
                     foreach (var t in transitPoints) chain.Add(new ChainNode { Point = t });
             }
@@ -703,16 +715,31 @@ namespace TxTools.AutoPathPlanner
             if (DynamicCheckEnabled)
             {
                 _log("  == 写入后终验：实际点位 + 离开/到达外部轴同步扫掠 ==");
-                for (int i = 1; i < chain.Count; i++)
+                // Re-read the operation tree after insertion.  The in-memory
+                // chain does not include pre-existing Via locations, while PS
+                // executes the tree (including those locations) in its own
+                // order.  Verifying the actual sequence prevents a false
+                // green result on repeated runs or partially reordered trees.
+                var actualLocations = CollectExecutionLocations(op);
+                if (actualLocations.Count < 2)
+                {
+                    _log("  [终验] 无法读取完整操作点序，回退检查本次规划链");
+                    actualLocations = chain
+                        .Where(n => n.WeldObj is ITxRoboticLocationOperation)
+                        .Select(n => (ITxRoboticLocationOperation)n.WeldObj)
+                        .ToList();
+                }
+
+                for (int i = 1; i < actualLocations.Count; i++)
                 {
                     ThrowIfCancelled();
-                    var a = chain[i - 1].WeldObj as ITxRoboticLocationOperation;
-                    var b = chain[i].WeldObj as ITxRoboticLocationOperation;
-                    string failure = a == null || b == null ? "点位缺失(未验证)" : _world.CheckWrittenMotion(a, b);
+                    var a = actualLocations[i - 1];
+                    var b = actualLocations[i];
+                    string failure = _world.CheckWrittenMotion(a, b);
                     if (failure == null) continue;
                     report.DynamicViolations++;
-                    report.Warnings.Add("写入后终验 " + chain[i - 1].Point.Source + " → " +
-                        chain[i].Point.Source + ": " + failure);
+                    report.Warnings.Add("写入后终验 " + GetNameSafe((ITxObject)a) + " → "
+                        + GetNameSafe((ITxObject)b) + ": " + failure);
                 }
             }
         }
@@ -893,7 +920,7 @@ namespace TxTools.AutoPathPlanner
         /// 边权用 PtpTime (关节空间), 不用笛卡尔距离 —— 见 CycleCost 的说明。
         /// 关节值拿不到时回退笛卡尔距离 (仍比不优化好)。
         /// </summary>
-        private void OptimizeWeldOrder(
+        private bool OptimizeWeldOrder(
             List<PlanPoint> weldPoints, List<TxWeldLocationOperation> weldObjs,
             PlanningReport report, ITxObject op)
         {
@@ -964,9 +991,11 @@ namespace TxTools.AutoPathPlanner
             for (int i = 0; i < n; i++)
                 if (order[i] != i) { changed = true; break; }
 
-            if (!changed) return;
-            report.ReorderedOps++;
+            if (!changed) return true;
 
+            // Keep the original lists until the PS tree confirms the move.
+            // Otherwise a partial/unsupported tree reorder makes the in-memory
+            // planning chain disagree with the operation that will execute.
             var newPts = new List<PlanPoint>(n);
             var newObjs = new List<TxWeldLocationOperation>(n);
             foreach (int idx in order)
@@ -974,13 +1003,20 @@ namespace TxTools.AutoPathPlanner
                 newPts.Add(weldPoints[idx]);
                 newObjs.Add(weldObjs[idx]);
             }
+            // ---- 按新顺序重排 PS 树里的焊点 ----
+            if (!ReorderWeldLocationsInPs(op, newObjs))
+            {
+                _log("  [焊序] 重排未确认，已停止该操作的路径规划");
+                report.Warnings.Add("焊序优化未能确认 PS 树顺序，已跳过该操作的路径规划");
+                return false;
+            }
+
             weldPoints.Clear(); weldPoints.AddRange(newPts);
             weldObjs.Clear(); weldObjs.AddRange(newObjs);
+            report.ReorderedOps++;
 
             _log("  [焊序] ⚠ 焊接顺序已改变 — 请确认工艺允许 (定位焊/防变形约束可用锁定选项)");
-
-            // ---- 按新顺序重排 PS 树里的焊点 ----
-            ReorderWeldLocationsInPs(op, newObjs);
+            return true;
         }
 
         /// <summary>
@@ -990,16 +1026,15 @@ namespace TxTools.AutoPathPlanner
         /// ITxOrderedObjectCollection")。正确做法是直接用**操作本身** (op),
         /// 它就是有序容器 (CreateViaAfter / MoveChildToFront 一直在这么用)。
         /// </summary>
-        private void ReorderWeldLocationsInPs(ITxObject op, List<TxWeldLocationOperation> ordered)
+        private bool ReorderWeldLocationsInPs(ITxObject op, List<TxWeldLocationOperation> ordered)
         {
-            if (ordered == null || ordered.Count == 0 || op == null) return;
+            if (ordered == null || ordered.Count == 0 || op == null) return false;
 
             var container = op as ITxOrderedObjectCollection;
             if (container == null)
             {
                 _log("  [焊序] 操作非 ITxOrderedObjectCollection — PS 树顺序未变更");
-                _log("         (规划路径已按新顺序生成, 但操作树里焊点仍是原序)");
-                return;
+                return false;
             }
 
             int moved = 0, failed = 0;
@@ -1022,10 +1057,16 @@ namespace TxTools.AutoPathPlanner
             }
 
             if (failed == 0)
+            {
                 _log(string.Format("  [焊序] PS 树已重排 ({0} 个焊点)", moved));
+                return moved == ordered.Count;
+            }
             else
+            {
                 _log(string.Format("  [焊序] PS 树重排: 成功 {0} / 失败 {1} — 顺序可能不完整",
                     moved, failed));
+                return false;
+            }
         }
 
         // ════════════════════════════════════════════════════════════
@@ -2132,6 +2173,35 @@ namespace TxTools.AutoPathPlanner
             return result;
         }
 
+        /// <summary>
+        /// Reads the operation's executable location order after mutations.
+        /// Prefer direct children because nested descendants can belong to a
+        /// different sub-operation and are not necessarily executed here.
+        /// </summary>
+        private List<ITxRoboticLocationOperation> CollectExecutionLocations(ITxObject op)
+        {
+            var result = new List<ITxRoboticLocationOperation>();
+            try
+            {
+                var container = op as ITxObjectCollection;
+                if (container == null) return result;
+
+                TxObjectList kids = null;
+                try { kids = ((dynamic)container).GetDirectDescendants(new TxTypeFilter(typeof(ITxObject))); }
+                catch { }
+                if (kids == null) kids = container.GetAllDescendants(new TxTypeFilter(typeof(ITxObject)));
+                if (kids == null) return result;
+
+                foreach (ITxObject child in kids)
+                {
+                    var location = child as ITxRoboticLocationOperation;
+                    if (location != null) result.Add(location);
+                }
+            }
+            catch { }
+            return result;
+        }
+
         private PlanPoint ExtractWeldPoint(TxWeldLocationOperation loc)
         {
             try
@@ -2175,7 +2245,7 @@ namespace TxTools.AutoPathPlanner
         ///   4. 焊点 ±Y (左右)
         ///   5. 世界 +Z (向上抬枪)
         /// 每个方向在 [Min, Max] 区间递减取首个无干涉。
-        /// 全方向全距离干涉则取 -Z 最大距离强制生成, 返回 false。
+        /// 全方向全距离干涉则取当前策略的主方向最大距离强制生成, 返回 false。
         /// </summary>
         private bool GenerateOffsetPoint(PlanPoint weld, out Vec3 pos)
         {
@@ -2233,8 +2303,10 @@ namespace TxTools.AutoPathPlanner
                 }
             }
 
-            // 全方向全距离失败: 取 -Z 最大距离强制生成
-            pos = weld.Position + negZ * dMax;
+            // 全方向全距离失败: 固定世界Z策略不能偷偷回退到局部枪轴。
+            // 自动策略仍以枪后退方向作为工艺兜底，并由调用方保留警告。
+            Vec3 fallbackDir = UseWorldZForApproach ? worldZ : negZ;
+            pos = weld.Position + fallbackDir * dMax;
             return false;
         }
 

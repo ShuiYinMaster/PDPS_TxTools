@@ -351,7 +351,7 @@ namespace TxTools.Agent.Core
             var img = viewer.GetImage(new System.Drawing.Size(width, height), false);
             if (img == null) return null;
 
-            var path = Path.Combine(Path.GetTempPath(),
+            var path = TxToolsTemp.FileFor("Agent", "Viewport",
                 "txagent_vp_" + DateTime.Now.ToString("yyyyMMddHHmmssfff") + ".png");
 
             using (img)

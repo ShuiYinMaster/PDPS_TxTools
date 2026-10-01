@@ -89,7 +89,8 @@ namespace TxTools.ExportGun
         private int _pointsLoadToken;          // 加载令牌，丢弃过期的异步结果
         private bool _suppressPointCheck;      // 批量勾选/重建时抑制 ItemChecked
         private int _lastSelCount;             // 最近一次导出时的勾选点数（供完成弹窗显示）
-        private bool _dpiApplied;              // OnLoad 手动 DPI 放大仅执行一次
+        private bool _dpiApplied;              // OnLoad 布局缩放仅执行一次
+        private float _layoutScale = 1f;
         #endregion
 
         // ════════════════════════════════════════════════════════════
@@ -220,27 +221,12 @@ namespace TxTools.ExportGun
         {
             base.OnLoad(e);
 
-            // DPI 放大（确定性，每次打开都执行一次）：
-            // 实测 PS 2402 宿主不会触发 WinForms 的 AutoScale，控件停在 96-DPI 设计尺寸（偏小）。
-            // 这里按设备 DPI 手动整体放大一次。先重置 Size 为设计尺寸（96-DPI 基准），
-            // 再 Scale，避免 TxForm 持久化尺寸逐次叠加放大。AutoScaleMode 已设为 None。
-            if (!_dpiApplied)
+            FormUiKit.ApplyDpiScaling(this, ref _dpiApplied, new Size(960, 800), sc =>
             {
-                _dpiApplied = true;
-                try
-                {
-                    // 重置为设计尺寸，防止 TxForm 持久化尺寸叠加放大
-                    Size = new Size(960, 800);
-                    float sc = DpiScale();
-                    if (sc < 1f) sc = 1f;
-                    if (sc > 1.01f) Scale(new SizeF(sc, sc));
-
-                    // 两侧列固定宽（按内容贴合）、中间点列表吃掉剩余宽度。
-                    // 用已缩放像素显式重设，不依赖 TableLayoutPanel 对 Absolute 列的缩放行为。
-                    ApplySideColumnWidths(sc);
-                }
-                catch { }
-            }
+                _layoutScale = sc;
+                // 两侧列按实际布局系数设置，中间点列表占据剩余宽度。
+                ApplySideColumnWidths(sc);
+            });
 
             if (_svc == null) return;
             BindFrameComboEvents();
@@ -1184,11 +1170,10 @@ namespace TxTools.ExportGun
             }
         }
 
-        /// <summary>当前 DPI 相对 96 的缩放系数（PS 宿主有时不触发 AutoScale，此处兜底计算）。</summary>
+        /// <summary>与首次布局缩放相同的系数，供日志展开时计算行高。</summary>
         private float DpiScale()
         {
-            try { using (var g = CreateGraphics()) return g.DpiX / 96f; }
-            catch { return 1f; }
+            return _layoutScale;
         }
 
         private void ToggleLog()

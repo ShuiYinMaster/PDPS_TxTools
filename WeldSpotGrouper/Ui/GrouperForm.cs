@@ -16,6 +16,7 @@ using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
 using TxTools.Common;
+using TxTools.Agent.Core;
 
 namespace TxTools.WeldSpotGrouper
 {
@@ -323,7 +324,7 @@ namespace TxTools.WeldSpotGrouper
             try { _txtLog.Text = string.Join(Environment.NewLine, _log); _txtLog.SelectionStart = _txtLog.TextLength; _txtLog.ScrollToCaret(); } catch { }
             try
             {
-                string p = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "WeldSpotGrouper.log");
+                string p = TxToolsTemp.FileFor("WeldSpotGrouper", "WeldSpotGrouper.log");
                 System.IO.File.WriteAllText(p, string.Join(Environment.NewLine, _log), System.Text.Encoding.UTF8);
             }
             catch { }

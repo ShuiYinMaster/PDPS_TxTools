@@ -41,10 +41,10 @@ namespace TxTools.Agent.Core
     public sealed class ImportComponentTool : TxAgentToolBase
     {
         /// <summary>
-        /// 中转用的临时根目录。必须【纯 ASCII】——
-        /// 不能用 %TEMP%,因为用户名含中文时它本身就带中文。
+        /// 中转用的临时根目录。由统一临时目录策略提供，并保证为纯 ASCII——
+        /// 某些 Process Simulate 原生接口遇到中文路径会失败。
         /// </summary>
-        public static string TempRoot = @"C:\TxAgentImport";
+        public static string TempRoot = TxToolsTemp.DirectoryFor("Import");
 
         public override string Name { get { return "import_component"; } }
 
@@ -286,7 +286,7 @@ namespace TxTools.Agent.Core
             var root = TempRoot;
 
             // 兜底:配置被改成含非 ASCII 的路径时，整件事就白做了
-            if (!IsAscii(root)) root = @"C:\TxAgentImport";
+            if (!IsAscii(root)) root = TxToolsTemp.DirectoryFor("Import");
 
             Directory.CreateDirectory(root);
             return root;

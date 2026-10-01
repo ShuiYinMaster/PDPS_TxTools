@@ -10,6 +10,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
+using TxTools.Agent.Core;
 using TxTools.Common;
 using Theme = TxTools.Common.FormUiKit.Theme;
 using Button = System.Windows.Forms.Button;
@@ -64,7 +65,7 @@ namespace TxTools.CrossEnvIO
         private readonly Size _designSize = new Size(500, 800);
         private readonly Size _minSize = new Size(500, 800);
 
-        private static readonly string DefaultDir = @"C:\TxAgentImport";
+        private static readonly string DefaultDir = TxToolsTemp.DirectoryFor("CrossEnvIO");
 
         public CrossEnvIOForm(SynchronizationContext psCtx)
         {

@@ -11,7 +11,8 @@
 //     而且失败方式很难看:模型会用自然语言说"我要调用 xxx 工具"而不发 tool_calls,
 //     agent 循环空转烧 token,用户还以为是插件坏了。
 //
-// 所以在客户端做一次清洗:剔除不可用的、折叠快照变体、可选按用户白名单收窄。
+// 其他提供商在客户端做一次清洗；千问按接口返回的完整目录展示，
+// 不按名称推断可用性、不折叠快照、不按数量截断。
 
 using System;
 using System.Collections.Generic;
@@ -24,8 +25,8 @@ namespace TxTools.Agent.Core
     {
         /// <summary>
         /// 用户白名单:provider id -> 允许出现的模型名(或前缀)。
-        /// 配了就只留这些,不配则只做规则清洗。
-        /// 例:Whitelist["qwen"] = new[]{ "qwen3.8-max", "qwen3.7-plus", "deepseek-v4-flash-0731" };
+        /// 配了就只留这些,不配则只做规则清洗。千问不应用此白名单。
+        /// 例:Whitelist["openai"] = new[]{ "gpt-4o", "gpt-4-turbo" };
         /// </summary>
         public static readonly Dictionary<string, string[]> Whitelist =
             new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
@@ -70,6 +71,12 @@ namespace TxTools.Agent.Core
         {
             var input = models == null ? new List<string>() : models.Where(m => !string.IsNullOrWhiteSpace(m)).ToList();
             if (input.Count == 0) return input;
+
+            // 千问展示服务端返回的所有模型名称，包括日期快照和非对话型号。
+            // 仅去除空值和重复条目，不应用名称规则、白名单或条数上限。
+            if (string.Equals(providerId, "qwen", StringComparison.OrdinalIgnoreCase))
+                return input.Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(m => m, StringComparer.OrdinalIgnoreCase).ToList();
 
             var keep = new HashSet<string>(
                 (keepAlways ?? new string[0]).Where(k => !string.IsNullOrWhiteSpace(k)),

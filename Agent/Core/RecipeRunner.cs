@@ -115,12 +115,9 @@ namespace TxTools.Agent.Core
 
         private static void AppendObjects(StringBuilder sb, string lang, RecipeParam p, string ids)
         {
-            var list = (ids ?? "").Split(new[] { ',', ';', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                                  .Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
-
             // 注意 ITxObject.Id 本身形如 "3,57,2,1"，逗号是 Id 的一部分。
             // 所以多对象绑定在宿主侧用 '|' 分隔后传过来，这里不能按逗号再切。
-            list = (ids ?? "").Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries)
+            var list = (ids ?? "").Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries)
                               .Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
 
             if (lang == "python")

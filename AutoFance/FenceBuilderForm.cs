@@ -5,6 +5,7 @@ using System.IO;
 using System.Reflection;
 using System.Windows.Forms;
 using Tecnomatix.Engineering;
+using TxTools.Agent.Core;
 using Tecnomatix.Engineering.Ui;
 using TxTools.Common;
 using TxTools.LineToSolid;
@@ -744,8 +745,8 @@ namespace TxTools.FenceBuilder
                 }
                 if (resName != null)
                 {
-                    string tempPath = Path.Combine(Path.GetTempPath(),
-                        "FenceBuilder_mesh_pattern_" + asm.GetName().Version + ".png");
+                    string tempPath = TxToolsTemp.FileFor("FenceBuilder",
+                        "mesh_pattern_" + asm.GetName().Version + ".png");
                     if (!File.Exists(tempPath))
                     {
                         using (var stream = asm.GetManifestResourceStream(resName))

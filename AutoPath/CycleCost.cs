@@ -27,18 +27,18 @@ namespace TxTools.AutoPathPlanner
     public sealed class CycleCost
     {
         private readonly Action<string> _log;
-        private double[] _jointSpeed;   // °/s (或 mm/s for prismatic)
+        private double[] _jointSpeed;   // SDK units: rad/s for revolute, mm/s for prismatic
         private int _n;
 
         /// <summary>关节速度读不到时的兜底值 (典型 6 轴点焊机器人)</summary>
         private static readonly double[] FallbackSpeed =
         {
-            120,  // J1 底座回转
-            110,  // J2 大臂
-            120,  // J3 小臂
-            190,  // J4 腕转
-            190,  // J5 腕摆
-            280   // J6 腕回转 (最快)
+            120 * Math.PI / 180.0,  // J1 底座回转 (rad/s)
+            110 * Math.PI / 180.0,  // J2 大臂
+            120 * Math.PI / 180.0,  // J3 小臂
+            190 * Math.PI / 180.0,  // J4 腕转
+            190 * Math.PI / 180.0,  // J5 腕摆
+            280 * Math.PI / 180.0   // J6 腕回转 (最快)
         };
 
         public CycleCost(TxRobot robot, Action<string> log)
@@ -136,7 +136,7 @@ namespace TxTools.AutoPathPlanner
             return t;
         }
 
-        /// <summary>关节最大跨度 (°) — 构型突变判定 / 粗略代价</summary>
+        /// <summary>关节最大跨度 (SDK单位；旋转轴为弧度) — 构型突变判定 / 粗略代价</summary>
         public static double MaxJointDelta(TxPoseData a, TxPoseData b)
         {
             double[] ja = ReadJoints(a);

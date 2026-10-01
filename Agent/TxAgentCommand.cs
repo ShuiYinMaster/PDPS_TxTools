@@ -9,8 +9,11 @@
 //   即使 Current 为 null(窗口未打开或刚关闭)也返回 null,不崩。
 
 using System;
+using System.Diagnostics;
+using System.Drawing;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 using Newtonsoft.Json.Linq;
@@ -24,6 +27,7 @@ namespace TxTools.Agent
     public sealed class TxAgentCommand : TxButtonCommand
     {
         private static TxAgentForm _form;
+        private static DshPetHost _pet;
 
         // ── 多 PDPS 无界面执行器:插件一加载就启动 ──
         // PS 反射扫描命令类注册按钮时会触发静态构造,趁这时把 RPC 执行器跑起来。
@@ -63,6 +67,7 @@ namespace TxTools.Agent
             // 本进程已开着窗口 → 前置激活，不重复创建。
             if (_form != null && !_form.IsDisposed)
             {
+                ShowPet();
                 if (_form.WindowState == FormWindowState.Minimized)
                     _form.WindowState = FormWindowState.Normal;
                 _form.BringToFront();
@@ -84,6 +89,7 @@ namespace TxTools.Agent
             _form.Name = _form.GetType().FullName;   // 跨插件窗口尺寸串扰修复(双保险)
             _form.FormClosed += (s, e) =>
             {
+                if (_pet != null) { _pet.Dispose(); _pet = null; }
                 _form = null;
                 try { PsInstanceRegistry.ReleaseWindow(); } catch { }
             };
@@ -91,8 +97,48 @@ namespace TxTools.Agent
             IWin32Window owner = TryGetPsMainWindow();
             if (owner != null) _form.Show(owner);
             else _form.Show();
+            ShowPet();
 
             try { TxApplication.StatusBarMessage = "TxTools.Agent 已启动"; } catch { }
+        }
+
+        private void ShowPet()
+        {
+            if (_pet != null && !_pet.IsDisposed) return;
+
+            try
+            {
+                var pet = new DshPetHost(_form);
+                var owner = _form;
+                pet.Failed += message => { if (!owner.IsDisposed) owner.ReportPetError(message); };
+                pet.OpenAssistantRequested += (s, e) => Execute(null);
+                pet.Closed += (s, e) => { if (ReferenceEquals(_pet, pet)) _pet = null; };
+                _pet = pet;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[TxAgent] 鲸鱼娘悬浮窗创建失败: " + ex.Message);
+                _form?.ReportPetError(ex.Message);
+                if (_pet != null) { _pet.Dispose(); _pet = null; }
+            }
+        }
+
+        internal static void SetPetThinking(bool thinking)
+        {
+            var pet = _pet;
+            if (pet != null && !pet.IsDisposed) pet.SetThinking(thinking);
+        }
+
+        internal static void CelebratePet()
+        {
+            var pet = _pet;
+            if (pet != null && !pet.IsDisposed) pet.Celebrate();
+        }
+
+        internal static void SetPetState(string state, string task = null)
+        {
+            var pet = _pet;
+            if (pet != null && !pet.IsDisposed) pet.SetState(state, task);
         }
 
         /// <summary>Agent 窗口已被其它实例打开时的提示窗口（不进入对话，避免会话覆盖）。</summary>
@@ -338,4 +384,242 @@ namespace TxTools.Agent
             public IntPtr Handle { get; private set; }
         }
     }
+
+    /// <summary>Owns dsh-pet's transparent Electron window and its local status channel.</summary>
+    internal sealed class DshPetHost : IDisposable
+    {
+        private readonly object _gate = new object();
+        private readonly Control _dispatcher;
+        private readonly string _stateFile;
+        private readonly object _logGate = new object();
+        public string LogPath { get; private set; }
+        private System.Threading.Timer _startupTimer;
+        private Process _process;
+        private long _revision;
+        private string _state;
+        private string _task;
+        private bool _closed;
+        private bool _ready;
+        private bool _shutdownRequested;
+        private bool _failureReported;
+        public event Action<string> Failed;
+        public event EventHandler OpenAssistantRequested;
+        public event EventHandler Closed;
+        public bool IsDisposed { get { lock (_gate) return _closed; } }
+        public bool IsReady { get { lock (_gate) return _ready && !_closed; } }
+
+        public DshPetHost(Control dispatcher)
+        {
+            _dispatcher = dispatcher;
+            string temp = TxToolsTemp.DirectoryFor("Agent", "DshPet", Process.GetCurrentProcess().Id.ToString());
+            _stateFile = System.IO.Path.Combine(temp, Guid.NewGuid().ToString("N") + ".json");
+            LogPath = _stateFile + ".log";
+            string assemblyDir = System.IO.Path.GetDirectoryName(typeof(TxAgentCommand).Assembly.Location);
+            string runtime = System.IO.Path.Combine(assemblyDir, "Agent", "UI", "pet", "dsh-pet");
+            // A shadow-copied assembly may not have its sidecar files next to Location.
+            Uri origin;
+            if (!System.IO.File.Exists(System.IO.Path.Combine(runtime, "entry.js")) &&
+                Uri.TryCreate(typeof(TxAgentCommand).Assembly.CodeBase, UriKind.Absolute, out origin) && origin.IsFile)
+            {
+                string originalRuntime = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(origin.LocalPath), "Agent", "UI", "pet", "dsh-pet");
+                if (System.IO.File.Exists(System.IO.Path.Combine(originalRuntime, "entry.js"))) runtime = originalRuntime;
+            }
+            Log("Assembly: " + typeof(TxAgentCommand).Assembly.Location + "\nRuntime: " + runtime);
+            string electron = System.IO.Path.Combine(runtime, "electron", "electron.exe");
+            string entry = System.IO.Path.Combine(runtime, "entry.js");
+            var missing = new[] { "entry.js", "startup-monitor.js", "host-routes.js", "config.json",
+                "electron/electron.exe", "electron/ffmpeg.dll", "electron/icudtl.dat", "electron/resources.pak",
+                "upstream/index.html", "upstream/main.js", "upstream/preload.js", "upstream/shared-core.js" }
+                .Where(name => !System.IO.File.Exists(System.IO.Path.Combine(runtime, name))).ToArray();
+            if (missing.Length != 0)
+            {
+                string error = "桌宠文件缺失: " + string.Join(", ", missing) + "\n资源目录: " + runtime;
+                Log(error);
+                throw new System.IO.FileNotFoundException(error + "\n日志: " + LogPath);
+            }
+            WriteSnapshot();
+            var start = new ProcessStartInfo(electron, "\"" + entry + "\"")
+            {
+                WorkingDirectory = runtime,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8
+            };
+            start.EnvironmentVariables.Remove("ELECTRON_RUN_AS_NODE");
+            start.EnvironmentVariables.Remove("DSH_PET_DPI_PROBE");
+            start.EnvironmentVariables.Remove("DSH_PET_SMOKE");
+            start.EnvironmentVariables["DSH_PET_HOST_PID"] = Process.GetCurrentProcess().Id.ToString();
+            start.EnvironmentVariables["TXAGENT_PET_STATE"] = _stateFile;
+            start.EnvironmentVariables["TXAGENT_PET_PROFILE"] = _stateFile + ".profile";
+            _process = new Process { StartInfo = start, EnableRaisingEvents = true };
+            _process.OutputDataReceived += (s, e) =>
+            {
+                if (e.Data != null) Log(e.Data);
+                if (e.Data != null && e.Data.StartsWith("txagent-pet:", StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        var message = JObject.Parse(e.Data.Substring("txagent-pet:".Length));
+                        if ((string)message["kind"] == "open-assistant")
+                            Dispatch(() => OpenAssistantRequested?.Invoke(this, EventArgs.Empty));
+                        else if ((string)message["kind"] == "ready")
+                        {
+                            lock (_gate) _ready = true;
+                            _startupTimer?.Dispose();
+                        }
+                        else if ((string)message["kind"] == "closed")
+                        {
+                            lock (_gate) _shutdownRequested = true;
+                        }
+                        else if ((string)message["kind"] == "failed") ReportFailure((string)message["message"]);
+                    }
+                    catch (Exception ex) { Log(ex.ToString()); }
+                }
+            };
+            _process.ErrorDataReceived += (s, e) => { if (e.Data != null) Log(e.Data); };
+            _process.Exited += (s, e) =>
+            {
+                bool expected;
+                lock (_gate) expected = _shutdownRequested;
+                // A user close request may race stdout delivery.
+                try { expected |= (bool?)JObject.Parse(System.IO.File.ReadAllText(_stateFile))["closed"] == true; } catch { }
+                string exit = "unknown";
+                try { exit = ((Process)s).ExitCode.ToString(); } catch { }
+                Log("Helper exit code: " + exit + "; expected: " + expected);
+                _startupTimer?.Dispose();
+                if (!expected) ReportFailure("桌宠进程退出，退出码: " + exit);
+                lock (_gate) _closed = true;
+                try { System.IO.File.Delete(_stateFile); } catch { }
+                Dispatch(() => Closed?.Invoke(this, EventArgs.Empty));
+            };
+            try
+            {
+                _startupTimer = new System.Threading.Timer(_ =>
+                {
+                    lock (_gate) { if (_ready || _closed || _shutdownRequested) return; }
+                    ReportFailure("桌宠启动超时，尚未检测到可见且正在播放的动画。");
+                    Dispose();
+                }, null, 70000, System.Threading.Timeout.Infinite);
+                _process.Start();
+                Log("Helper PID: " + _process.Id);
+                _process.BeginOutputReadLine();
+                _process.BeginErrorReadLine();
+            }
+            catch (Exception ex)
+            {
+                _startupTimer?.Dispose();
+                Log(ex.ToString());
+                _process.Dispose();
+                _process = null;
+                try { System.IO.File.Delete(_stateFile); } catch { }
+                throw new InvalidOperationException("桌宠启动失败: " + ex.Message + "\n日志: " + LogPath, ex);
+            }
+        }
+
+        private void Log(string message)
+        {
+            Debug.WriteLine("[TxAgent pet] " + message);
+            try
+            {
+                lock (_logGate) System.IO.File.AppendAllText(LogPath,
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + " " + message + Environment.NewLine,
+                    new System.Text.UTF8Encoding(false));
+            }
+            catch { }
+        }
+
+        private void ReportFailure(string message)
+        {
+            lock (_gate)
+            {
+                if (_failureReported || _shutdownRequested) return;
+                _failureReported = true;
+            }
+            Log("FAILED: " + message);
+            Dispatch(() => Failed?.Invoke(message + "\n桌宠日志: " + LogPath));
+        }
+
+        private void Dispatch(Action action)
+        {
+            try
+            {
+                if (_dispatcher != null && !_dispatcher.IsDisposed && _dispatcher.IsHandleCreated)
+                    _dispatcher.BeginInvoke(action);
+            }
+            catch (InvalidOperationException) { }
+        }
+
+        public void SetState(string state, string task = null)
+        {
+            if (state != null && !new[] { "thinking", "working", "result", "waiting", "success", "error" }.Contains(state))
+                throw new ArgumentOutOfRangeException(nameof(state));
+            lock (_gate)
+            {
+                if (_closed || (_state == state && _task == task)) return;
+                _state = state;
+                _task = task;
+                _revision++;
+                WriteSnapshot();
+            }
+        }
+
+        public void SetThinking(bool thinking)
+        {
+            lock (_gate)
+            {
+                if (thinking) SetState("thinking");
+                else if (_state != "success" && _state != "error") SetState(null);
+            }
+        }
+        public void Celebrate() { SetState("success"); }
+
+        private void WriteSnapshot()
+        {
+            string temporary = _stateFile + ".tmp";
+            try
+            {
+                var value = new JObject
+                {
+                    ["state"] = _state == null ? JValue.CreateNull() : new JValue(_state),
+                    ["task"] = _task == null ? JValue.CreateNull() : new JValue(_task),
+                    ["ts"] = _revision,
+                    ["closed"] = _closed
+                };
+                System.IO.File.WriteAllText(temporary, value.ToString(Newtonsoft.Json.Formatting.None), new System.Text.UTF8Encoding(false));
+                if (System.IO.File.Exists(_stateFile)) System.IO.File.Replace(temporary, _stateFile, null);
+                else System.IO.File.Move(temporary, _stateFile);
+            }
+            catch (Exception ex) { Log("status write: " + ex.Message); }
+            finally { try { System.IO.File.Delete(temporary); } catch { } }
+        }
+
+        public void Dispose()
+        {
+            Process process;
+            lock (_gate)
+            {
+                process = _process;
+                if (_closed) return;
+                _shutdownRequested = true;
+                _closed = true;
+                _startupTimer?.Dispose();
+                _revision++;
+                WriteSnapshot();
+            }
+            // Avoid blocking the Process Simulate UI while Electron drains its renderer.
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try { if (process != null && !process.WaitForExit(2500)) process.Kill(); } catch { }
+                finally
+                {
+                    if (process != null) process.Dispose();
+                    try { System.IO.File.Delete(_stateFile); } catch { }
+                }
+            });
+        }
+    }
+
 }

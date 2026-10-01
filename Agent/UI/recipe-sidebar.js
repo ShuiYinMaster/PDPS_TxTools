@@ -24,6 +24,7 @@
     var _pickTimers = {};      // "recipeId:param" -> 取选择超时定时器
     var _runTimers = {};       // recipeId -> 执行超时定时器
     var state = {
+        activeTab: 'recipes',   // 默认展示已固化配方，候选片段独立显示
         recipes: [],           // 配方列表
         candidates: [],        // 可固化为配方的片段
         study: null,           // 当前 study 名，换 study 时绑定全部作废
@@ -34,7 +35,21 @@
         pickError: {}          // "recipeId:param" -> 最近一次取选择的错误文本
     };
 
-    var root, bodyEl;
+    var root, bodyEl, noticeEl;
+    var tabButtons = {};
+
+    function notice(ok, text) {
+        if (!noticeEl) return;
+        noticeEl.className = 'rcp-notice rcp-msg ' + (ok ? 'rcp-msg-ok' : 'rcp-msg-bad');
+        noticeEl.textContent = text || '';
+        noticeEl.hidden = !text;
+    }
+
+    function reveal(payload) {
+        send('recipe.reveal', payload, function (r) {
+            if (!r || r.ok === false) notice(false, (r && r.error) || '查看详情失败。');
+        });
+    }
 
     // ── 与宿主通信 ──
 
@@ -55,6 +70,11 @@
 
     function onHostMessage(msg) {
         if (!msg) return;
+        if (msg.type === 'recipe.sidebar.layout') {
+            // 最大化或屏幕空间不足时使用覆盖式侧栏，保持聊天区原有布局宽度。
+            if (root) root.classList.toggle('rcp-overlay', !!msg.overlay);
+            return;
+        }
         if (msg.seq && pending[msg.seq]) {
             var cb = pending[msg.seq];
             delete pending[msg.seq];
@@ -141,6 +161,16 @@
 
     function isObjectKind(kind) { return kind === 'object' || kind === 'objects'; }
 
+    var tagLabels = {
+        robot: '机器人', label: '标注', location: '位置', transform: '变换', coordinate: '坐标',
+        weld: '焊点', operation: '操作', query: '查询', selection: '选中对象', physical: '物理对象',
+        mfg: '制造对象', scene: '场景', kinematics: '运动学', tcp: 'TCP', collision: '碰撞',
+        export: '导出', simulation: '仿真', leadingpart: '主零件', traverse: '遍历', find: '查找',
+        create: '创建', logging: '日志', rename: '重命名', align: '对齐', alignment: '对齐',
+        device: '设备', batch: '批量处理', delete: '删除', inspect: '检查', scan: '扫描',
+        dict: '数据映射', dedup: '去重'
+    };
+
     // 任一配方在执行中(执行/取选择期间冻结其它按钮,避免并行占用 PS)
     function anyRecipeRunning() {
         for (var k in state.running) if (state.running[k]) return true;
@@ -156,23 +186,91 @@
         return e;
     }
 
+    function renderDescription(cls, text) {
+        // 复用聊天的 Markdown 渲染器（先转义 HTML），统一标题、列表和代码块格式。
+        var description = el('div', cls + ' rcp-markdown msg-content');
+        if (typeof window.renderMarkdown === 'function') {
+            description.innerHTML = window.renderMarkdown(text);
+        } else {
+            description.textContent = text;
+            description.className += ' rcp-markdown-fallback';
+        }
+        return description;
+    }
+
+    function selectTab(tab, focus) {
+        state.activeTab = tab;
+        render();
+        if (focus && tabButtons[tab]) tabButtons[tab].focus();
+    }
+
+    function updateTabs() {
+        ['recipes', 'candidates'].forEach(function (tab) {
+            var button = tabButtons[tab];
+            if (!button) return;
+            var selected = state.activeTab === tab;
+            var count = tab === 'recipes' ? state.recipes.length : state.candidates.length;
+            button.textContent = (tab === 'recipes' ? '我的配方' : '待固化') + '（' + count + '）';
+            button.className = 'rcp-tab rcp-tab-' + tab + (selected ? ' rcp-tab-active' : '');
+            button.setAttribute('aria-selected', selected ? 'true' : 'false');
+            button.tabIndex = selected ? 0 : -1;
+        });
+        if (bodyEl) bodyEl.setAttribute('aria-labelledby', 'rcp-tab-' + state.activeTab);
+    }
+
+    function candidateTitle(c) {
+        // 使用已有说明作能力名称，不根据代码猜功能；原始片段名保留在副标题中。
+        var lines = (c.description || '').split(/\r?\n/);
+        var inFence = false;
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim();
+            if (/^(`{3,}|~{3,})/.test(line)) { inFence = !inFence; continue; }
+            if (inFence) continue;
+            line = line.replace(/^\s*(?:#{1,6}|[-*+]|\d+[.)])\s+/, '')
+                .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+                .replace(/[*`]/g, '').trim();
+            if (!line || /^(?:用途|功能|功能说明|说明|使用方法|代码)[：:]?$/.test(line)
+                || /^未记录用途说明/.test(line) || /^</.test(line)) continue;
+            var content = line.replace(/^\[[^\]]*\]\s*/, '');
+            if (/^(?:var|using|return|if|for|foreach|while|class|public|private|static|const|int|double|bool|string|object|import|from)\b/.test(content)
+                || /^[\w.]+\s*(?:=|\()/.test(content)) continue;
+            var title = content.split('。')[0];
+            return title.length > 48 ? title.substring(0, 48) + '…' : title;
+        }
+        if (c.name && !/^auto[_-]/i.test(c.name) && /[\u4e00-\u9fff]/.test(c.name)) return c.name;
+        if (c.tags && c.tags.length)
+            return '相关能力：' + c.tags.slice(0, 3).map(function (tag) { return tagLabels[tag] || tag; }).join('、');
+        return '待整理的代码片段';
+    }
+
     function render() {
         if (!bodyEl) return;
+        updateTabs();
         bodyEl.innerHTML = '';
 
-        if (!state.recipes.length && !state.candidates.length) {
+        if (state.activeTab === 'recipes') {
+            if (state.recipes.length) {
+                state.recipes.forEach(function (rec) { bodyEl.appendChild(renderCard(rec)); });
+                return;
+            }
             var em = el('div', 'rcp-empty');
-            em.appendChild(el('div', null, '还没有配方。'));
+            em.appendChild(el('div', null, '还没有已固化配方。'));
             em.appendChild(el('div', null,
-                '让 AI 把跑通的脚本用 save_recipe 固化，之后就能在这里选对象直接执行，不用再问模型。'));
+                '可导入分享的配方，或将已成功运行的片段整理为配方。'));
+            if (state.candidates.length) {
+                var view = el('button', 'rcp-btn rcp-empty-action', '查看待固化（' + state.candidates.length + '）');
+                view.onclick = function () { selectTab('candidates', true); };
+                em.appendChild(view);
+            }
             bodyEl.appendChild(em);
             return;
         }
 
-        state.recipes.forEach(function (rec) { bodyEl.appendChild(renderCard(rec)); });
-
-        if (state.candidates.length) {
-            bodyEl.appendChild(el('div', 'rcp-section-title', '可固化为配方'));
+        bodyEl.appendChild(el('div', 'rcp-candidate-note',
+            '这些片段已成功运行，整理用途和参数后才能作为配方使用。'));
+        if (!state.candidates.length) {
+            bodyEl.appendChild(el('div', 'rcp-empty', '暂无待固化片段。已整理的配方可在“我的配方”中使用。'));
+        } else {
             state.candidates.forEach(function (c) { bodyEl.appendChild(renderCandidate(c)); });
         }
     }
@@ -191,16 +289,20 @@
         var head = el('div', 'rcp-card-head');
         head.appendChild(el('span', 'rcp-caret', state.open[rec.id] ? '▼' : '▶'));
         head.appendChild(el('span', 'rcp-name', rec.name));
-        head.appendChild(el('span', 'rcp-lang', rec.lang === 'python' ? 'PY' : 'C#'));
         head.onclick = function () {
             state.open[rec.id] = !state.open[rec.id];
             render();
         };
         card.appendChild(head);
 
+        var meta = el('div', 'rcp-card-meta');
+        meta.appendChild(el('span', 'rcp-status rcp-status-ready', '已固化'));
+        meta.appendChild(el('span', 'rcp-lang', rec.lang === 'python' ? 'PY' : 'C#'));
+        card.appendChild(meta);
+
         // 体
         var body = el('div', 'rcp-card-body');
-        if (rec.description) body.appendChild(el('p', 'rcp-desc', rec.description));
+        if (rec.description) body.appendChild(renderDescription('rcp-desc', rec.description));
 
         (rec.params || []).forEach(function (p) {
             body.appendChild(renderParam(rec, p));
@@ -228,9 +330,21 @@
         act.appendChild(stat);
 
         var codeBtn = el('button', 'rcp-iconbtn', '⟨⟩');
-        codeBtn.title = '在对话里查看这段代码';
-        codeBtn.onclick = function () { send('recipe.reveal', { recipeId: rec.id }); };
+        codeBtn.title = '在对话里查看配方文档';
+        codeBtn.onclick = function () { reveal({ recipeId: rec.id }); };
         act.appendChild(codeBtn);
+
+        var exportBtn = el('button', 'rcp-btn', '导出');
+        exportBtn.title = '导出 Markdown 文件，分享给其他人导入使用';
+        exportBtn.onclick = function () {
+            exportBtn.disabled = true;
+            send('recipe.export', { recipeId: rec.id }, function (r) {
+                exportBtn.disabled = false;
+                if (r && r.cancelled) return;
+                notice(!!(r && r.ok), (r && (r.text || r.error)) || '导出失败。');
+            });
+        };
+        act.appendChild(exportBtn);
 
         body.appendChild(act);
 
@@ -319,24 +433,61 @@
 
     function renderCandidate(c) {
         var row = el('div', 'rcp-cand');
-        row.appendChild(el('span', 'rcp-name', c.name));
+        var head = el('div', 'rcp-cand-head');
+        var name = el('span', 'rcp-name', candidateTitle(c));
+        name.title = c.name || '';
+        head.appendChild(name);
+        head.appendChild(el('span', 'rcp-lang', c.lang === 'python' ? 'PY' : 'C#'));
+        row.appendChild(head);
+
+        row.appendChild(el('div', 'rcp-source-name', '片段：' + (c.name || '(未命名)')));
+        row.appendChild(el('span', 'rcp-status rcp-status-pending', '待整理'));
+
+        var description = renderDescription('rcp-cand-desc',
+            c.description || '未记录用途说明，请查看代码确认功能。');
+        row.appendChild(description);
+        if (c.tags && c.tags.length) {
+            var tags = el('div', 'rcp-tags');
+            c.tags.forEach(function (tag) {
+                var chip = el('span', 'rcp-tag', tagLabels[tag] || tag);
+                chip.title = tag;
+                tags.appendChild(chip);
+            });
+            row.appendChild(tags);
+        }
+
+        if (c.codePreview) {
+            var details = el('details', 'rcp-preview');
+            details.appendChild(el('summary', null, '代码预览' + (c.previewTruncated ? '（部分）' : '')));
+            details.appendChild(el('pre', null, c.codePreview));
+            row.appendChild(details);
+        }
+
+        var actions = el('div', 'rcp-cand-actions');
         var s = el('span', 'rcp-stat');
         s.appendChild(el('span', 'rcp-ok', String(c.successCount || 0)));
         s.appendChild(document.createTextNode(' 次成功'));
-        row.appendChild(s);
+        if (c.failureCount) s.appendChild(el('span', 'rcp-bad', ' · ' + c.failureCount + ' 次失败'));
+        actions.appendChild(s);
 
-        var btn = el('button', 'rcp-btn', '固化');
+        var view = el('button', 'rcp-btn', '详情');
+        view.title = '在对话里查看用途说明和完整代码';
+        view.onclick = function () { reveal({ snippetName: c.name }); };
+        actions.appendChild(view);
+
+        var btn = el('button', 'rcp-btn rcp-promote', '整理为配方');
         btn.title = '让 AI 把这段片段整理成带参数的配方';
         btn.onclick = function () {
             btn.disabled = true;
             send('recipe.promote', { snippetName: c.name }, function (r) {
                 btn.disabled = false;
-                if (r && r.ok === false) alert(r.error || '固化失败。');
+                if (r && r.ok === false) notice(false, r.error || '固化失败。');
                 // 固化走的是一轮对话（AI 要给参数命名、写说明），
                 // 结果由宿主推 recipe.changed 回来刷新，这里不自作主张改列表。
             });
         };
-        row.appendChild(btn);
+        actions.appendChild(btn);
+        row.appendChild(actions);
         return row;
     }
 
@@ -359,12 +510,12 @@
         if (state.lastResult) delete state.lastResult[rec.id];
         render();
 
-        send('recipe.run', { recipeId: rec.id, args: args }, function (r) {
+        send('recipe.run', { recipeId: rec.id, study: state.study, args: args }, function (r) {
             clearTimeout(_runTimers[rec.id]);
             delete _runTimers[rec.id];
             state.running[rec.id] = false;
             var ok = !!(r && r.ok);
-            flash(rec.id, ok, (r && r.text) || (ok ? '执行完成。' : '执行失败。'));
+            flash(rec.id, ok, (r && (r.text || r.error)) || (ok ? '执行完成。' : '执行失败。'));
             state.open[rec.id] = true;       // 保持展开，让结果消息留在卡片里
             render();
             // 计数由宿主那边落盘，刷一次拿最新的
@@ -406,10 +557,12 @@
                 delete state.picking[key];
                 if (!r || r.ok === false) {
                     state.pickError[key] = (r && r.error) || '取选择失败。';
+                } else if ((r.study || null) !== state.study) {
+                    state.pickError[key] = 'study 已切换，请重新选取对象。';
                 } else {
                     state.pickError[key] = null;
                     setBinding(rec.id, p.name, {
-                        id: r.id, name: r.name, type: r.type, count: r.count || 1
+                        id: r.id, name: r.name, type: r.objectType, count: r.count || 1
                     });
                 }
                 render();
@@ -433,11 +586,37 @@
 
     // ── 挂载 ──
 
+    function notifySidebarLayout(open) {
+        var width = 300;
+        if (typeof window.getComputedStyle === 'function') {
+            width = parseFloat(window.getComputedStyle(root).getPropertyValue('--rcp-w')) || width;
+        }
+        // CSS 像素转为宿主窗体像素；devicePixelRatio 包含 WebView 的 DPI / 页面缩放。
+        send('recipe.sidebar', { open: open, width: width, pixelRatio: window.devicePixelRatio || 1 });
+    }
+
     function mount(container) {
-        root = el('div', 'rcp-root');
+        root = el('div', 'rcp-root rcp-collapsed');
 
         var head = el('div', 'rcp-head');
         head.appendChild(el('span', 'rcp-title', '配方'));
+
+        var importBtn = el('button', 'rcp-btn rcp-import', '导入');
+        importBtn.title = '导入配方 Markdown 文件，同名配方保存为新副本';
+        importBtn.onclick = function () {
+            importBtn.disabled = true;
+            send('recipe.import', {}, function (r) {
+                importBtn.disabled = false;
+                if (r && r.cancelled) return;
+                notice(!!(r && r.ok), (r && (r.text || r.error)) || '导入失败。');
+                if (r && r.ok) {
+                    state.activeTab = 'recipes';
+                    if (r.recipeId) state.open[r.recipeId] = true;
+                    refresh();
+                }
+            });
+        };
+        head.appendChild(importBtn);
 
         var reload = el('button', 'rcp-iconbtn rcp-reload', '⟳');
         reload.title = '刷新';
@@ -446,31 +625,55 @@
 
         root.appendChild(head);
 
+        var tabs = el('div', 'rcp-tabs');
+        tabs.setAttribute('role', 'tablist');
+        tabs.setAttribute('aria-label', '配方分类');
+        ['recipes', 'candidates'].forEach(function (tab) {
+            var button = el('button', 'rcp-tab');
+            button.type = 'button';
+            button.id = 'rcp-tab-' + tab;
+            button.setAttribute('role', 'tab');
+            button.setAttribute('aria-controls', 'rcp-tab-panel');
+            button.onclick = function () { selectTab(tab); };
+            button.onkeydown = function (e) {
+                var next;
+                if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') next = tab === 'recipes' ? 'candidates' : 'recipes';
+                else if (e.key === 'Home') next = 'recipes';
+                else if (e.key === 'End') next = 'candidates';
+                if (next) { e.preventDefault(); selectTab(next, true); }
+            };
+            tabButtons[tab] = button;
+            tabs.appendChild(button);
+        });
+        root.appendChild(tabs);
+
+        noticeEl = el('div', 'rcp-notice');
+        noticeEl.hidden = true;
+        root.appendChild(noticeEl);
+
         bodyEl = el('div', 'rcp-body');
+        bodyEl.id = 'rcp-tab-panel';
+        bodyEl.setAttribute('role', 'tabpanel');
         root.appendChild(bodyEl);
+        updateTabs();
 
         container.appendChild(root);
 
         // 展开/收起把手：独立于面板、固定在聊天区右侧垂直居中。
         // 展开/收起都在同一位置切换，避免“展开在中间、收起在左上角”的跳变。
         // 必须 append 在 root 之后，配合 .rcp-root.rcp-collapsed + .rcp-toggle 取位。
-        var toggle = el('button', 'rcp-toggle', '⟩');
+        var toggle = el('button', 'rcp-toggle', '⟨');
         toggle.title = '收起 / 展开配方栏';
         toggle.onclick = function () {
             root.classList.toggle('rcp-collapsed');
             var collapsed = root.classList.contains('rcp-collapsed');
             toggle.textContent = collapsed ? '⟨' : '⟩';
-            try { localStorage.setItem('txRecipeCollapsed', collapsed ? '1' : '0'); } catch (e) { }
+            notifySidebarLayout(!collapsed);
         };
         container.appendChild(toggle);
 
-        try {
-            if (localStorage.getItem('txRecipeCollapsed') === '1') {
-                root.classList.add('rcp-collapsed');
-                toggle.textContent = '⟨';
-            }
-        } catch (e) { }
-
+        // 页面重载后初始状态为收起，同步宿主以回收之前展开时增加的宽度。
+        notifySidebarLayout(false);
         refresh();
     }
 

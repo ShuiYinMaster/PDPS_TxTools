@@ -169,8 +169,8 @@ namespace TxTools.AutoRecorder
                 var screen = Screen.FromControl(this) ?? Screen.PrimaryScreen;
                 var wa = screen.WorkingArea;
                 this.Location = new Point(
-                    wa.Right - this.Width - 20,
-                    wa.Top + 60);
+                    Math.Max(wa.Left, wa.Right - this.Width - 20),
+                    Math.Max(wa.Top, Math.Min(wa.Top + 60, wa.Bottom - this.Height)));
             }
             catch { }
         }
@@ -1071,9 +1071,24 @@ namespace TxTools.AutoRecorder
             {
                 // 兜底：常量法（与原版一致）
                 int logExtra = _logExpanded ? (LOG_H + 2) : 0;
-                h = FORM_H_FALLBACK + logExtra;
+                h = (int)Math.Round((FORM_H_FALLBACK + logExtra) *
+                    FormUiKit.GetLayoutScale(this));
             }
-            this.ClientSize = new Size(this.ClientSize.Width, h);
+            var wa = Screen.FromControl(this).WorkingArea;
+            int chromeHeight = this.Height - this.ClientSize.Height;
+            int maxClientHeight = Math.Max(1, wa.Height - chromeHeight - 32);
+            int scrollWidth = AutoScrollMinSize.Width;
+            if (h > maxClientHeight)
+            {
+                AutoScroll = true;
+                AutoScrollMinSize = new Size(Math.Max(scrollWidth, ClientSize.Width), h);
+            }
+            else
+            {
+                AutoScrollMinSize = scrollWidth > ClientSize.Width
+                    ? new Size(scrollWidth, 0) : Size.Empty;
+            }
+            this.ClientSize = new Size(this.ClientSize.Width, Math.Min(h, maxClientHeight));
             if (_statusStrip != null) _statusStrip.BringToFront();
         }
 
