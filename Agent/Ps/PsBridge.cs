@@ -667,6 +667,11 @@ namespace TxTools.Agent.Ps
         /// </param>
         public static string RunCSharp(string code, out bool success, string undoLabel = null)
         {
+            return RunCSharp(code, out success, undoLabel, null);
+        }
+
+        internal static string RunCSharp(string code, out bool success, string undoLabel, Func<string> validateBeforeRun)
+        {
             success = false;
             if (string.IsNullOrWhiteSpace(code)) return "未提供代码。";
 
@@ -681,6 +686,8 @@ namespace TxTools.Agent.Ps
             // 2) 执行：碰 PS，必须主线程，包在 Undo 块里(可撤销)。
             var text = PsContext.Current.Run<string>(delegate
             {
+                var validation = validateBeforeRun?.Invoke();
+                if (validation != null) return validation;
                 var log = new StringBuilder();
                 Action<string> logfn = delegate (string s) { if (s != null) log.AppendLine(s); };
 

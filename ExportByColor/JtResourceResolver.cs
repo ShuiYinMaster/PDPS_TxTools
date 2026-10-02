@@ -8,7 +8,7 @@ using Tecnomatix.Engineering;
 namespace TxTools.ExportByColor
 {
     /// <summary>
-    /// Resolves the JT backing file of a Process Simulate resource without
+    /// Resolves the JT backing file or native resource directory of a Process Simulate resource without
     /// depending on one particular Tecnomatix SDK version.  SDK releases have
     /// exposed the backing path through different StorageObject/representation
     /// property names, so the resolver is deliberately reflection based and
@@ -35,6 +35,9 @@ namespace TxTools.ExportByColor
             "FileName", "Path", "Location", "SourcePath", "SourceFile",
             "ResourceFile", "ResourcePath", "RepresentationPath", "StoragePath",
             "NativeFile", "NativePath", "File", "DocumentPath"
+            , "ExternalFilePath", "ModelFilePath", "SourceFilePath",
+            "GeometryFilePath", "ResourceFilePath", "ExternalFile",
+            "FileLocation", "DataFilePath", "JtFilePath"
         };
 
         private static readonly string[] ObjectProperties =
@@ -57,6 +60,36 @@ namespace TxTools.ExportByColor
             var queue = new Queue<WorkItem>();
             var seen = new HashSet<int>();
             string nonExisting = null;
+            string nonExistingTrace = null;
+            // Match ExportGun/SRC/PsReader.TryGetToolStorageDir: SDK interface
+            // access works even when StorageObject is implemented explicitly.
+            var storable = resource as ITxStorable;
+            if (storable != null)
+            {
+                try
+                {
+                    TxStorage storage = storable.StorageObject;
+                    var library = storage as TxLibraryStorage;
+                    if (library != null)
+                    {
+                        string candidate = Candidate(library.FullPath);
+                        if (IsAvailable(candidate))
+                        {
+                            path = candidate;
+                            trace = "ITxStorable.StorageObject → TxLibraryStorage.FullPath";
+                            if (Directory.Exists(candidate)) trace += " (JT/COJT 资源目录，由 PS 原生加载)";
+                            return true;
+                        }
+                        if (candidate != null)
+                        {
+                            nonExisting = candidate;
+                            nonExistingTrace = "ITxStorable.StorageObject → TxLibraryStorage.FullPath";
+                        }
+                    }
+                    if (storage != null) queue.Enqueue(new WorkItem(storage, "ITxStorable.StorageObject", 0));
+                }
+                catch (Exception ex) { trace = "StorageObject 读取失败: " + ex.Message; }
+            }
             queue.Enqueue(new WorkItem(resource, "resource", 0));
             while (queue.Count > 0)
             {
@@ -73,14 +106,19 @@ namespace TxTools.ExportByColor
                     if (value == null) continue;
                     string candidate = Candidate(value);
                     if (string.IsNullOrEmpty(candidate)) continue;
-                    trace = item.Label + "." + propertyName;
-                    if (File.Exists(candidate))
+                    string candidateTrace = item.Label + "." + propertyName;
+                    if (IsAvailable(candidate))
                     {
                         path = candidate;
+                        trace = candidateTrace;
+                        if (Directory.Exists(candidate)) trace += " (JT/COJT 资源目录，由 PS 原生加载)";
                         return true;
                     }
-                    if (nonExisting == null && candidate.EndsWith(".jt", StringComparison.OrdinalIgnoreCase))
+                    if (nonExisting == null)
+                    {
                         nonExisting = candidate;
+                        nonExistingTrace = candidateTrace;
+                    }
                 }
 
                 if (item.Depth == 3) continue;
@@ -95,11 +133,17 @@ namespace TxTools.ExportByColor
             if (nonExisting != null)
             {
                 path = nonExisting;
-                trace = trace + " (文件尚未在本机确认存在)";
+                trace = nonExistingTrace + " (JT 文件或 COJT 目录不存在)";
                 return true;
             }
-            trace = "未找到 JT 路径";
+            trace = "未找到 JT/COJT 路径；资源类型=" + resource.GetType().FullName +
+                (string.IsNullOrEmpty(trace) ? "" : "；" + trace);
             return false;
+        }
+
+        private static bool IsAvailable(string candidate)
+        {
+            return candidate != null && (File.Exists(candidate) || Directory.Exists(candidate));
         }
 
         private static object ReadProperty(object value, string name)
@@ -133,9 +177,18 @@ namespace TxTools.ExportByColor
             if (string.IsNullOrWhiteSpace(text)) return null;
             text = text.Trim().Trim('"');
             if (text.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
-                text = text.Substring("file://".Length);
-            try { text = Path.GetFullPath(text); } catch { }
-            return text.EndsWith(".jt", StringComparison.OrdinalIgnoreCase) ? text : null;
+            {
+                Uri uri;
+                if (!Uri.TryCreate(text, UriKind.Absolute, out uri) || !uri.IsFile) return null;
+                text = uri.LocalPath;
+            }
+            text = Environment.ExpandEnvironmentVariables(text).TrimEnd('\\', '/');
+            // Do not resolve a library-relative path against the plugin's working directory.
+            if (!Path.IsPathRooted(text)) return null;
+            try { text = Path.GetFullPath(text); } catch { return null; }
+            return text.EndsWith(".jt", StringComparison.OrdinalIgnoreCase) ||
+                text.EndsWith(".cojt", StringComparison.OrdinalIgnoreCase) ||
+                Directory.Exists(text) ? text : null;
         }
     }
 }

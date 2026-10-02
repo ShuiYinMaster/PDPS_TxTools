@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0;net10.0;net472</TargetFrameworks>
+    <RootNamespace>DLAT.JTReader</RootNamespace>
+    <AssemblyName>JTReader</AssemblyName>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <Deterministic>true</Deterministic>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <NoWarn>$(NoWarn);CS0162;CS0169;CS0414;CS0219</NoWarn>
+
+    <SignAssembly>true</SignAssembly>
+    <AssemblyOriginatorKeyFile>JTReader.snk</AssemblyOriginatorKeyFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- SharpCompress: pure-managed LZMA/XZ decompression, MIT-licensed and strong-named, so a
+         signed consumer can reference JTReader on net472 without a native liblzma dependency.
+         Replaces the previously used Joveler.Compression.XZ (not strong-named upstream). -->
+    <PackageReference Include="SharpCompress" Version="0.49.0" />
+  </ItemGroup>
+
+</Project>

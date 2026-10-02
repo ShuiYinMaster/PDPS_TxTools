@@ -88,6 +88,9 @@ button { font-family: inherit; }
     transition: background 0.12s;
 }
 #topbar button:hover { background: var(--border-light); }
+#topbar > button { white-space: nowrap; flex-shrink: 0; }
+#topbar #btn-pet[aria-checked="true"] { color: var(--primary-dark); background: var(--user-bubble); }
+#topbar #btn-pet { white-space: nowrap; }
 
 #topbar #btn-more {
     padding: 5px 8px;
@@ -1446,6 +1449,7 @@ button { font-family: inherit; }
         <div id="model-menu" role="listbox" aria-label="可用模型" hidden></div>
     </div>
     <span class="spacer"></span>
+    <button id="btn-pet" type="button" role="switch" aria-label="显示桌宠" aria-checked="false" title="显示或隐藏桌宠，下次启动保持此设置" disabled>🐳 桌宠</button>
     <button id="btn-new" title="新对话">+ 新对话</button>
     <button id="btn-more" title="更多">⋯</button>
 </div>
@@ -1721,6 +1725,12 @@ window.dispatchMessage = function (json) {
         case "toolCall":       onToolCall(msg.name, msg.input); break;
         case "toolResult":     onToolResult(msg.name, msg.result, msg.isErr); break;
         case "status":         onStatus(msg.text); break;
+        case "openRecipes":    window.txRecipes?.open(); break;
+        case "petVisibility":
+            document.getElementById("btn-pet").setAttribute("aria-checked", String(msg.enabled === true));
+            document.getElementById("btn-pet").title = msg.enabled ? "隐藏桌宠（下次启动保持隐藏）" : "显示桌宠（下次启动自动显示）";
+            document.getElementById("btn-pet").disabled = false;
+            break;
         case "userTextPrefill": onUserTextPrefill(msg.text); break;
         case "busy":           onBusy(msg.value); break;
         case "tokenUsage":     onTokenUsage(msg); break;
@@ -1758,6 +1768,11 @@ document.getElementById("model-select").addEventListener("change", (e) => {
     postToHost({ type: "switchModel", model: model, providerId: providerId });
 });
 initModelPicker();
+document.getElementById("btn-pet").addEventListener("click", () => {
+    const button = document.getElementById("btn-pet");
+    button.disabled = true;
+    postToHost({ type: "setPetVisibility", enabled: button.getAttribute("aria-checked") !== "true" });
+});
 // ═════════════════════════════════════════════════════════════════
 //  权限档位 (原顶栏下拉,现为输入卡片内的按钮 + 菜单)
 // ═════════════════════════════════════════════════════════════════

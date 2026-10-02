@@ -167,7 +167,7 @@ class PetSprite {
     this.ac = ac;
     this.hit.addEventListener('pointerdown', (e) => this.onPointerDown(e), { signal: ac.signal });
     this.hit.addEventListener('pointermove', (e) => this.onPointerMove(e), { signal: ac.signal });
-    this.hit.addEventListener('click', () => this.onClick(), { signal: ac.signal });
+    this.hit.addEventListener('click', (e) => this.onRecipeClick(e), { signal: ac.signal });
     this.hit.addEventListener('contextmenu', (e) => this.onContextMenu(e), { signal: ac.signal });
     window.addEventListener('pointerup', (e) => this.onPointerUp(e), { signal: ac.signal });
     window.addEventListener('pointercancel', (e) => this.onPointerUp(e), { signal: ac.signal });
@@ -221,6 +221,7 @@ class PetSprite {
   }
 
   dispose() {
+    clearTimeout(this._recipeClickTimer);
     this.ac.abort();
     if (this.bubbleTimer !== null) window.clearTimeout(this.bubbleTimer);
     if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
@@ -753,9 +754,26 @@ class PetSprite {
   }
 
   // ---- 点击 vs 拖拽（与浏览器一致：阈值/抓取偏移/释放回循环待机；移动的是窗口） ----
+  recipeAnchor() {
+    const r = this.hitRect;
+    return {x:toScreen(this.pos.x+VIEW.x+r.x),y:toScreen(this.pos.y+VIEW.y+r.y),width:toScreen(r.w),height:toScreen(r.h)};
+  }
+
+  onRecipeClick(e) {
+    clearTimeout(this._recipeClickTimer);
+    if (this.justDragged || this.dragState.active || this.menuOpen || this.chatOpen || e.detail > 1) return;
+    this.stopThrow();
+    this.stopMove();
+    this._recipeClickTimer = setTimeout(() => {
+      if (!this.el.isConnected || this.justDragged || this.dragState.active || this.menuOpen || this.chatOpen) return;
+      window.petBridge.openRecipes(this.recipeAnchor());
+    }, window.petBridge.clickDelay);
+  }
+
   onPointerDown(e) {
     // 只认左键：右键进入拖拽判定会与右键菜单打架（右键不拖拽，两端一致）
     if (e.button !== 0) return;
+    clearTimeout(this._recipeClickTimer);
     // 抓取速度日志：stopThrow 之前读，否则飞行速度就没了；静止时记录 0（与浏览器同构）
     const grabState = this.throwState;
     console.log(
@@ -1024,6 +1042,7 @@ class PetSprite {
   }
 
   onContextMenu(e) {
+    clearTimeout(this._recipeClickTimer);
     const d = this.dragState;
     if (d.active || d.dragging || this.justDragged || this.menuOpen) return;
     e.preventDefault();
@@ -1032,6 +1051,8 @@ class PetSprite {
     // 桌面专属工具根项（打开网站 / 查看余额 / 碎碎念 / 对话 / 回到初始位置 / 重载配置）+ 共享菜单树（动作→分类→具体动画）
     // 碎碎念/对话项无条件显示：手动触发不受 whisperEnabled 限制（该字段只影响自动周期轮询）
     const tools = [
+      { label: '快捷配方', action: 'quick-recipes' },
+      { label: '配方管理', action: 'manage-recipes' },
       { label: '打开助手', action: 'open-site' },
       { label: '回到初始位置', action: 'home' },
       { label: '隐藏桌宠', action: 'close-pet' },
@@ -1062,6 +1083,11 @@ class PetSprite {
   onMenuAction(leaf) {
     this.closeMenu();
     if (!leaf || typeof leaf !== 'object') return;
+    if (leaf.action === 'quick-recipes' || leaf.action === 'manage-recipes') {
+      const method = leaf.action === 'quick-recipes' ? 'openRecipes' : 'manageRecipes';
+      window.petBridge[method](this.recipeAnchor());
+      return;
+    }
     if (leaf.action === 'open-site') {
       if (window.petBridge) window.petBridge.openDshSite(ORIGIN); // 系统默认浏览器打开（等效 Ctrl+点击链接）
       return;

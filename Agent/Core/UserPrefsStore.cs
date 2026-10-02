@@ -26,6 +26,11 @@ namespace TxTools.Agent.Core
 
     public sealed class UserPrefs
     {
+        /// <summary>Desktop pet visibility survives application restarts. Old prefs default to visible.</summary>
+        public bool DesktopPetVisible { get; set; } = true;
+        public List<string> PinnedRecipeIds { get; set; } = new List<string>();
+        public Dictionary<string, Dictionary<string, string>> RecipeArguments { get; set; }
+            = new Dictionary<string, Dictionary<string, string>>();
         public string ProviderId { get; set; }
         public string Model { get; set; }
         /// <summary>Official DeepSeek V4: low / high / max. Other providers keep their defaults.</summary>
@@ -96,6 +101,37 @@ namespace TxTools.Agent.Core
         {
             var p = Load();
             p.ApprovalMode = mode;
+            Save(p);
+        }
+
+        public static void UpdateDesktopPetVisible(bool visible)
+        {
+            var p = Load();
+            p.DesktopPetVisible = visible;
+            Save(p);
+        }
+
+        public static void UpdateRecipeFavorite(string id, bool favorite)
+        {
+            var p = Load();
+            if (p.PinnedRecipeIds == null) p.PinnedRecipeIds = new List<string>();
+            p.PinnedRecipeIds.RemoveAll(value => string.Equals(value, id, StringComparison.Ordinal));
+            if (favorite) p.PinnedRecipeIds.Add(id);
+            Save(p);
+        }
+
+        public static void UpdateRecipeArguments(Recipe recipe, IDictionary<string, string> args)
+        {
+            var p = Load();
+            if (p.RecipeArguments == null) p.RecipeArguments = new Dictionary<string, Dictionary<string, string>>();
+            var values = new Dictionary<string, string>();
+            foreach (var parameter in recipe.Params ?? new List<RecipeParam>())
+            {
+                string value;
+                if (parameter.Kind != "object" && parameter.Kind != "objects" && args.TryGetValue(parameter.Name, out value))
+                    values[parameter.Name] = value;
+            }
+            p.RecipeArguments[recipe.Id] = values;
             Save(p);
         }
 

@@ -359,6 +359,10 @@
     <Compile Include="Agent\Tools\SceneTreeTools.cs" />
     <Compile Include="Agent\Tools\UpdatePlanTool.cs" />
     <Compile Include="Agent\Tools\PlcTools.cs" />
+    <Compile Include="Agent\Core\RecipeUiActions.cs" />
+    <Compile Include="Agent\UI\RecipeQuickForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="Agent\UI\ApiKeyDialog.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -482,6 +486,7 @@
     </Compile>
     <Compile Include="ExportByColor\ExportByColorService.cs" />
     <Compile Include="ExportByColor\JtResourceResolver.cs" />
+    <Compile Include="ExportByColor\JtDirectBridge.cs" />
     <Compile Include="ExportByColor\CgrWriter.cs" />
     <Compile Include="ExportByColor\CgrCompact95.cs" />
     <Compile Include="ExportByColor\CgrLineFace95.cs" />
@@ -1454,6 +1459,7 @@
     <WCFMetadata Include="Connected Services\" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Agent\UI\recipe-quick.html" />
     <EmbeddedResource Include="Agent\UI\chat.html" />
     <EmbeddedResource Include="Agent\UI\recipe-sidebar.css" />
     <EmbeddedResource Include="Agent\UI\recipe-sidebar.js" />
@@ -1470,5 +1476,13 @@
   <Target Name="BuildMcpBridge" AfterTargets="Build" Condition="Exists('McpBridge\McpBridge.csproj')">
     <MSBuild Projects="McpBridge\McpBridge.csproj" Properties="Configuration=$(Configuration);OutDir=$(OutDir)" Targets="Build" />
   </Target>
+  <Import Project="Agent\maintenance\DefaultRecipes.Build.targets" />
   <Import Project="Agent\maintenance\DshPet.Build.targets" />
+  <Target Name="BuildJtDirectCs" AfterTargets="Build">
+    <MSBuild Projects="$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\Worker.csproj" Targets="Build" Properties="Configuration=Release;Platform=AnyCPU" />
+    <ItemGroup>
+      <JtDecoderFiles Include="$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\TxTools.JtDecoder.exe*;$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\*.dll;$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\LICENSE.JTReader;$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\THIRD-PARTY-NOTICES.txt" />
+    </ItemGroup>
+    <Copy SourceFiles="@(JtDecoderFiles)" DestinationFolder="$(TargetDir)JtDirectCs" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

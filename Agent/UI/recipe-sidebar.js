@@ -678,6 +678,14 @@
     }
 
     window.txRecipes = {
+        open: function () {
+            if (!root) return;
+            root.classList.remove('rcp-collapsed');
+            var toggle = document.querySelector('.rcp-toggle');
+            if (toggle) toggle.textContent = '⟩';
+            notifySidebarLayout(true);
+            refresh();
+        },
         mount: mount,
         refresh: refresh,
         onHostMessage: onHostMessage

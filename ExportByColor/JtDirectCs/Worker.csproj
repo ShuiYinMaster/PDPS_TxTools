@@ -1,0 +1,8 @@
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+ <PropertyGroup><OutputType>Exe</OutputType><TargetFrameworkVersion>v4.8</TargetFrameworkVersion><AssemblyName>TxTools.JtDecoder</AssemblyName><OutputPath>bin\Release\</OutputPath><LangVersion>latest</LangVersion><GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType><AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects></PropertyGroup>
+ <ItemGroup><Reference Include="System"/><Reference Include="System.Core"/><Reference Include="System.Numerics"/><Reference Include="System.IO.Compression"/><Reference Include="SharpCompress"><HintPath>Dependencies\SharpCompress.dll</HintPath></Reference><Compile Include="Program.cs"/><Compile Include="Vendor\**\*.cs" Exclude="Vendor\obj\**;Vendor\bin\**;Vendor\Properties\AssemblyInfo.cs"/></ItemGroup>
+ <PropertyGroup><BaseIntermediateOutputPath>worker_obj\</BaseIntermediateOutputPath><MSBuildProjectExtensionsPath>worker_obj\</MSBuildProjectExtensionsPath></PropertyGroup>
+ <ItemGroup><Reference Include="System.Xml"/><Reference Include="Dependencies\System.*.dll"/><Reference Include="Dependencies\Microsoft.Bcl.AsyncInterfaces.dll"/></ItemGroup>
+ <ItemGroup><Content Include="LICENSE.JTReader;THIRD-PARTY-NOTICES.txt"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content></ItemGroup>
+ <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>
+</Project>

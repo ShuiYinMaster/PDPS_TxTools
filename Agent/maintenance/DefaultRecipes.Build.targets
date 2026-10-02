@@ -1,0 +1,10 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)..\recipes\defaults\*.md">
+      <LogicalName>TxTools.Agent.DefaultRecipes.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)recipe-migrations\*.md">
+      <LogicalName>TxTools.Agent.LegacyRecipes.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+</Project>
