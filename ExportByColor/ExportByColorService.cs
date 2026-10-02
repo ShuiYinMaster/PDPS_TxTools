@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -525,32 +525,75 @@ namespace TxTools.ExportByColor
                             string jtPath = null, trace = null;
                             bool resolved = OnPs(() => JtResourceResolver.TryResolve(device, out jtPath, out trace));
                             if (!resolved || string.IsNullOrWhiteSpace(jtPath))
-                                throw new FileNotFoundException("未能从资源 StorageObject/表示属性解析 JT 文件", jtPath);
-                            if (!SysFile.Exists(jtPath))
-                                throw new FileNotFoundException("JT 文件不存在", jtPath);
+                                throw new FileNotFoundException("未能从资源解析 JT 文件或 COJT 目录（" + trace + "）", jtPath);
+                            if (!SysFile.Exists(jtPath) && !Directory.Exists(jtPath))
+                                throw new FileNotFoundException("JT 文件或 COJT 资源目录不存在", jtPath);
                             SafeLog(onLog, "[JT] " + name + " ← " + jtPath + "（" + trace + "）");
 
-                            var collected = CollectDeviceGroups(new List<ITxObject> { device }, null, onLog, true, null, null);
-                            var groups = new List<ColorGroup>();
-                            var treePath = new List<string>();
-                            foreach (var part in collected ?? new List<DeviceData>())
                             {
-                                if (treePath.Count == 0 && part.Path != null) treePath.AddRange(part.Path);
-                                if (part.Colors != null) groups.AddRange(part.Colors);
+                                var placement = OnPs(() =>
+                                {
+                                    var located = device as ITxLocatableObject;
+                                    if (located == null) throw new InvalidOperationException("资源没有可读取的放置坐标");
+                                    var loc = located.AbsoluteLocation;
+                                    var o = loc.Transform(new TxVector(0, 0, 0));
+                                    var x = loc.Transform(new TxVector(1, 0, 0));
+                                    var y = loc.Transform(new TxVector(0, 1, 0));
+                                    var z = loc.Transform(new TxVector(0, 0, 1));
+                                    return new double[] { x.X-o.X,x.Y-o.Y,x.Z-o.Z,0,
+                                        y.X-o.X,y.Y-o.Y,y.Z-o.Z,0,z.X-o.X,z.Y-o.Y,z.Z-o.Z,0,o.X,o.Y,o.Z,1 };
+                                });
+                                string decoder = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(typeof(ExportByColorService).Assembly.Location),
+                                    "JtDirectCs", "TxTools.JtDecoder.exe");
+                                SafeLog(onLog, "[JT 直接保色] 使用 JT 文件内姿态和颜色，应用资源整体放置；未采集 PS 运动部件当前姿态");
+                                progress.Report(onProgress, "JT 直接解码", name);
+                                var directTreePath = OnPs(() => GetTreePath(device, onLog));
+                                JtDirectBridge.Mesh mesh;
+                                try
+                                {
+                                    mesh = JtDirectBridge.Convert(jtPath, workDir, decoder, 300000);
+                                }
+                                catch (NotSupportedException unsupported)
+                                {
+                                    SafeLog(onLog, "[JT compatibility] " + unsupported.Message);
+                                    SafeLog(onLog, "[JT compatibility] Using loaded PS geometry/design colors and current PS pose; direct JT face-color decoder is not used.");
+                                    progress.Report(onProgress, "PS compatibility collection", name);
+                                    var nativeData = CollectDeviceGroups(new List<ITxObject> { device }, null, onLog, true);
+                                    if (nativeData == null || nativeData.Count == 0)
+                                        throw new InvalidOperationException("Native JT compatibility found no loaded PS geometry; " + unsupported.Message);
+                                    var nativeGroups = new List<ColorGroup>();
+                                    try
+                                    {
+                                        foreach (var data in nativeData) nativeGroups.AddRange(data.Colors);
+                                        if (nativeGroups.Count == 0)
+                                            throw new InvalidOperationException("Native PS compatibility found no triangles");
+                                        string nativeCgr = BuildCgr(nativeGroups, name, workDir,
+                                            message => DetailLog(onLog, "[" + name + "] " + message), CgrBackend.Compact);
+                                        progress.Collected++;
+                                        FinishExport(new EncodedDevice { Device = new DeviceData { Name = name, Path = directTreePath },
+                                            ExportName = name, Path = nativeCgr, SourcePath = jtPath },
+                                            "CGR", null, onLog, progress, onProgress, ref ok, ref failed);
+                                    }
+                                    finally
+                                    {
+                                        nativeGroups.Clear();
+                                        foreach (var data in nativeData) data.Colors.Clear();
+                                    }
+                                    continue;
+                                }
+                                JtDirectBridge.Place(mesh, placement);
+                                var directFaces = new List<CgrWriter.Face>();
+                                foreach (var face in mesh.Faces)
+                                    directFaces.Add(new CgrWriter.Face { Idx=face.Indices,R=face.R,G=face.G,B=face.B,Surface=face.Surface,
+                                        Nx=face.Normal[0],Ny=face.Normal[1],Nz=face.Normal[2] });
+                                string directCgr = System.IO.Path.Combine(workDir, name + ".cgr");
+                                CgrWriter.BuildFile(mesh.Vertices,directFaces,directCgr,CgrBackend.Compact,20000,
+                                    message => DetailLog(onLog,"["+name+"] "+message));
+                                progress.Collected++;
+                                FinishExport(new EncodedDevice { Device=new DeviceData { Name=name,Path=directTreePath },ExportName=name,
+                                    Path=directCgr,SourcePath=jtPath },"CGR",null,onLog,progress,onProgress,ref ok,ref failed);
+                                continue;
                             }
-                            if (groups.Count == 0) throw new InvalidOperationException("JT 资源未采集到有效三角面");
-                            var data = new DeviceData { Name = name, Path = treePath, Colors = groups };
-                            string cgr = BuildCgr(groups, name, workDir,
-                                message => DetailLog(onLog, "[" + name + "] " + message),
-                                CgrBackend.Compact);
-                            FinishExport(new EncodedDevice
-                            {
-                                Device = data,
-                                ExportName = name,
-                                Path = cgr,
-                                SourcePath = jtPath
-                            }, "CGR", null, onLog, progress, onProgress, ref ok, ref failed);
-                            foreach (var group in groups) if (group != null && group.Tris != null) group.Tris.Clear();
                         }
                         catch (Exception ex)
                         {

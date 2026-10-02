@@ -1,4 +1,4 @@
-// TxTools.Agent / UI / TxAgentForm.cs  (v3 — 全 HTML UI)
+﻿// TxTools.Agent / UI / TxAgentForm.cs  (v3 — 全 HTML UI)
 //
 // 从 1400 行的多控件自绘窗口简化为 ~500 行的"WebView2 壳":
 //   • 窗口内只有一个填满的 WebView2,加载 Agent/UI/chat.html
@@ -80,6 +80,7 @@ namespace TxTools.Agent.UI
         private WebView2 _webView;
         private bool _webViewReady;
         private string _petStartupError;
+        private bool _openRecipesWhenReady;
         private bool _dpiApplied;
 
         // ── 加载覆盖 (WebView 初始化期间遮盖空白,防止用户以为界面卡死) ──
@@ -96,7 +97,6 @@ namespace TxTools.Agent.UI
         private bool _studyPollPrimed;
 
         // 配方执行在飞标志(0=空闲,1=执行中)。见 HandleRecipeRun 里的防重入说明。
-        private int _recipeRunInFlight;
 
         // 侧栏展开时只增加一次宽度；收起时扣回实际增加量，保留用户后续的手动缩放。
         private bool _recipeSidebarOpen;
@@ -463,6 +463,12 @@ namespace TxTools.Agent.UI
                 {
                     case "jsReady":
                         OnJsReady();
+                        break;
+
+                    case "setPetVisibility":
+                        _petStartupError = null;
+                        TxAgentCommand.SetPetEnabled((bool?)msg["enabled"] == true);
+                        PostPetVisibility();
                         break;
 
                     case "setApiKey":
@@ -874,166 +880,12 @@ namespace TxTools.Agent.UI
 
         private void HandlePickSelection(int seq, JObject msg)
         {
-            // 【所有回包必须带 type】chat.html 的转发门只把 type 以 "recipe." 开头的
-            // 消息交给侧边栏;此前 pick/run/promote 的回包没有 type,在页面侧被静默丢弃,
-            // 前端只能等到超时 —— 表现为"执行/取选择永远超时",而宿主侧其实已经跑完。
-            bool multi = msg["multi"] != null && (bool)msg["multi"];
-            try
-            {
-                var sel = TxApplication.ActiveSelection.GetItems();
-                if (sel == null || sel.Count == 0)
-                {
-                    ReplyToWeb(seq, new JObject { ["type"] = "recipe.pick.result", ["ok"] = false,
-                        ["error"] = "PS 里当前没有选中任何对象。" });
-                    return;
-                }
-
-                if (!multi && sel.Count > 1)
-                {
-                    // 【不要替它选第一个】这正是踩过四次的那个模式。
-                    ReplyToWeb(seq, new JObject { ["type"] = "recipe.pick.result", ["ok"] = false,
-                        ["error"] = "当前选中了 " + sel.Count + " 个对象，而这个参数只要一个。请只选一个再点。" });
-                    return;
-                }
-
-                if (multi)
-                {
-                    // ITxObject.Id 里本身含逗号("3,57,2,1"),所以多选用 | 分隔
-                    var ids = string.Join("|", sel.Select(o => o.Id));
-                    ReplyToWeb(seq, new JObject { ["type"] = "recipe.pick.result", ["ok"] = true, ["id"] = ids,
-                        ["name"] = sel[0].Name, ["count"] = sel.Count,
-                        ["objectType"] = sel[0].GetType().Name, ["study"] = CurrentStudyKey() });
-                }
-                else
-                {
-                    var o = sel[0];
-                    ReplyToWeb(seq, new JObject { ["type"] = "recipe.pick.result", ["ok"] = true, ["id"] = o.Id,
-                        ["name"] = o.Name, ["count"] = 1,
-                        ["objectType"] = o.GetType().Name, ["study"] = CurrentStudyKey() });
-                }
-            }
-            catch (Exception ex)
-            {
-                ReplyToWeb(seq, new JObject { ["type"] = "recipe.pick.result", ["ok"] = false, ["error"] = "取选择失败: " + ex.Message });
-            }
+            ReplyToWeb(seq, RecipeUiActions.PickSelection((bool?)msg["multi"] == true));
         }
 
         private void HandleRecipeRun(int seq, JObject msg)
         {
-            var id = (string)msg["recipeId"];
-            var r = RecipeStore.Get(id);
-            if (r == null)
-            {
-                ReplyToWeb(seq, new JObject { ["type"] = "recipe.run.result", ["ok"] = false,
-                    ["recipeId"] = id ?? "", ["error"] = "配方不存在，可能已被删除。" });
-                return;
-            }
-
-            // study 可能在前端两次轮询之间切换；执行前再由宿主核对一次。
-            // 旧版页面没有 study 字段时仍允许执行，避免破坏已加载的页面。
-            JToken requestedStudy;
-            if (msg.TryGetValue("study", out requestedStudy)
-                && !string.Equals((string)requestedStudy, CurrentStudyKey(), StringComparison.Ordinal))
-            {
-                ReplyToWeb(seq, new JObject { ["type"] = "recipe.run.result", ["ok"] = false,
-                    ["recipeId"] = r.Id, ["error"] = "当前 study 已切换，请重新选取对象后执行。" });
-                return;
-            }
-
-            var args = new Dictionary<string, string>();
-            var jargs = msg["args"] as JObject;
-            if (jargs != null)
-                foreach (var kv in jargs) args[kv.Key] = kv.Value == null ? null : kv.Value.ToString();
-
-            string err;
-            var full = RecipeRunner.BuildCode(r, args, out err);
-            if (full == null)
-            {
-                ReplyToWeb(seq, new JObject { ["type"] = "recipe.run.result", ["ok"] = false,
-                    ["recipeId"] = r.Id, ["error"] = err });
-                return;
-            }
-
-            // 【宿主侧防重入】前端超时后会重新解锁按钮,用户可能对仍在执行的配方再点一次 ——
-            // 两次执行会在 PS 主线程队列里串行,表现为"点了一次跑了两遍"。
-            if (Interlocked.CompareExchange(ref _recipeRunInFlight, 1, 0) != 0)
-            {
-                ReplyToWeb(seq, new JObject { ["type"] = "recipe.run.result", ["ok"] = false,
-                    ["recipeId"] = r.Id, ["error"] = "已有配方正在执行中（可能已超时但仍在跑）。请等它结束或在 PS 里确认状态后再试。" });
-                return;
-            }
-
-            // ── 不走审批 ──
-            // 配方代码是人工固化过的,审批框里那段代码没有新信息量;
-            // 参数才是这次的变量,而参数就摆在侧边栏上,比审批框好读。
-            // 兜底靠 undo:下面把配方名传给 undoLabel,用户在 Ctrl+Z 历史里能认出是哪一步。
-
-            // ── 后台线程执行,不要阻塞 UI ──
-            // 原来整个 HandleRecipeRun 在 WebMessageReceived(UI 线程)里同步跑:
-            // 编译在 UI 线程、执行也占着 PS 主线程,前端连"执行中"都渲染不出来。
-            // 这里丢到后台线程:编译(C#)在后台做,执行仍由 RunCSharp/PythonHost 内部
-            // 封送回 PS 主线程(与 AgentLoop 调工具是同一套 PsContext 路由),UI 保持响应,
-            // 前端能显示执行中的反馈,完成后 ReplyToWeb 跨线程回 UI 发消息。
-            var lang = SnippetStore.NormalizeLang(r.Lang);
-            var runId = r.Id;
-            var runName = r.Name;
-
-            Task.Run(delegate
-            {
-                bool ok;
-                string text;
-                try
-                {
-                    if (lang == "python")
-                    {
-                        // PythonHost 未配置 MainThreadContext 时 Run 会在调用线程直接跑,
-                        // 而脚本里的 PS API 必须走主线程 —— 与 RunPythonTool 同样用
-                        // PsContext 包住整个 Run,避免从后台线程碰 PS API。
-                        var res = default(TxTools.Agent.Scripting.PythonExecResult);
-                        PsContext.Current.Run(delegate
-                        {
-                            res = TxTools.Agent.Scripting.PythonHostProvider.Instance.Run(
-                                full, TxTools.Agent.Scripting.PythonRunMode.Execute, "配方: " + runName);
-                        });
-                        ok = res != null && res.Success;
-                        text = res != null ? res.ToAgentText() : "(无结果)";
-                    }
-                    else
-                    {
-                        text = TxTools.Agent.Ps.PsBridge.RunCSharp(full, out ok, "配方: " + runName);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    ok = false;
-                    text = "执行异常: " + ex.Message;
-                }
-                finally
-                {
-                    Interlocked.Exchange(ref _recipeRunInFlight, 0);
-                }
-
-                try { RecipeStore.RecordRun(runId, ok); }
-                catch (Exception ex)
-                {
-                    try { AuditLog.Write("[warn] [Recipe] 记录执行结果失败: " + ex.Message); } catch { }
-                }
-                try
-                {
-                    AuditLog.Write((ok ? "[info]" : "[warn]") + " [Recipe] " + runName
-                        + " 执行" + (ok ? "成功" : "失败") + "，参数: "
-                        + string.Join(", ", args.Select(kv => kv.Key + "=" + kv.Value)));
-                }
-                catch { }
-
-                // 【type + recipeId 必须带】前端超时后 pending 可能已清,
-                // 靠 type 才能把迟到的结果兜底投递回卡片
-                ReplyToWeb(seq, new JObject
-                {
-                    ["type"] = "recipe.run.result", ["ok"] = ok,
-                    ["recipeId"] = runId, ["text"] = text ?? ""
-                });
-            });
+            RecipeUiActions.Run(seq, msg, ReplyToWeb);
         }
 
         /// <summary>recipe.reveal:把配方原文当作一条助手消息推进聊天区,不必走模型。</summary>
@@ -1190,6 +1042,8 @@ namespace TxTools.Agent.UI
             // 2) 工具组开关状态(设置面板)
             PostToolGroups();
 
+            PostPetVisibility();
+
             // 2) 推审批模式让前端 select 恢复选中
             PostJs(new { type = "approvalMode", value = _approvalMode });
 
@@ -1209,6 +1063,7 @@ namespace TxTools.Agent.UI
                 PostAskApiKey(prov, "\u9996\u6b21\u4f7f\u7528\u9700\u8981\u8bbe\u7f6e " + prov.DisplayName + " \u7684 API Key\u3002");
             }
             if (_petStartupError != null) PostStatus(_petStartupError);
+            if (_openRecipesWhenReady) { _openRecipesWhenReady = false; OpenRecipeManager(); }
         }
 
         /// <summary>发送全部 provider 及其模型列表(前端用 optgroup 分组显示),同时告诉当前选中。</summary>
@@ -1313,6 +1168,16 @@ namespace TxTools.Agent.UI
         }
 
         private void PostStatus(string text) { PostJs(new { type = "status", text }); }
+        internal void PostPetVisibility()
+        {
+            PostJs(new { type = "petVisibility", enabled = TxAgentCommand.PetEnabled });
+        }
+
+        internal void OpenRecipeManager()
+        {
+            if (!_webViewReady) { _openRecipesWhenReady = true; return; }
+            PostJs(new { type = "openRecipes" });
+        }
         internal void ReportPetError(string message)
         {
             _petStartupError = "桌宠未能显示: " + message;

@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>快捷配方</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f7f9fd;color:#24324b;font:13px "Microsoft YaHei UI",sans-serif}button,input{font:inherit}button{cursor:pointer}button:disabled{cursor:default;opacity:.5}button:focus-visible,input:focus-visible{outline:2px solid #82adff;outline-offset:2px}
+#app{height:100vh;display:flex;flex-direction:column}header{padding:14px 15px 10px;background:#fff;border-bottom:1px solid #e4eaf5}.heading{display:flex;align-items:center;gap:8px}h1{font-size:16px;margin:0;flex:1}.icon{border:0;background:none;color:#61728d;padding:4px 6px}#study{font-size:11px;color:#7d8ba3;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#search{margin-top:12px;padding:8px 10px;width:100%;background:#f5f7fc;border:1px solid #dde5f2;border-radius:7px}.tabs{display:flex;gap:5px;margin-top:9px}.tab{border:0;background:none;padding:5px 10px;border-radius:5px;color:#7887a0}.tab.active{background:#e9f1ff;color:#3566ba}main{padding:12px;flex:1;overflow:auto}footer{padding:8px 13px;background:white;border-top:1px solid #e4eaf5;display:flex;align-items:center;justify-content:space-between}footer button{border:0;background:none;color:#5277b6;padding:5px}#count{color:#8995a8;font-size:11px}.section-title{margin:5px 2px 8px;color:#73819a;font-size:11px;letter-spacing:.3px}.card{display:flex;gap:8px;background:#fff;border:1px solid #e3e9f3;border-radius:9px;margin-bottom:8px;padding:10px}.card-main{border:0;background:none;text-align:left;min-width:0;flex:1;padding:0;color:inherit}.name{font-weight:600;display:block;overflow-wrap:anywhere}.desc{display:block;font-size:11px;color:#7a88a0;margin-top:5px;line-height:1.5}.badge{display:block;font-size:10px;color:#8a98ac;margin-top:6px}.star{align-self:flex-start;border:0;background:none;color:#a6b0c2;padding:1px 3px;font-size:18px}.star.on{color:#d7a134}.empty{padding:32px 15px;text-align:center;color:#7f8ba0;line-height:1.8}.detail-title{display:flex;align-items:center;gap:5px;margin-bottom:9px}.detail-title h2{font-size:15px;flex:1;margin:0;overflow-wrap:anywhere}.purpose{font-size:12px;color:#6c7d98;line-height:1.6;margin:8px 0 13px}.field{margin:12px 0}.field label{font-weight:600;font-size:12px;display:block;margin-bottom:5px}.required{color:#d08484;margin-left:4px}.help{font-size:11px;color:#8d99ac;margin-top:5px;line-height:1.5}.field input:not([type=checkbox]){width:100%;border:1px solid #dce4f0;background:white;border-radius:6px;padding:7px 8px}.pick{display:flex;gap:6px}.pick button{flex-shrink:0;border:1px solid #cbdaf0;border-radius:6px;background:white;color:#466b9f;padding:6px 8px}.bound{min-width:0;flex:1;background:#edf3ff;color:#5576aa;padding:7px;border-radius:6px;font-size:11px;overflow-wrap:anywhere}.primary{width:100%;border:0;border-radius:7px;padding:9px;color:white;background:#527fca;margin-top:9px}#run-hint{font-size:11px;line-height:1.5;color:#8693a9;margin-top:7px}.result{margin-top:13px;border-radius:7px;padding:10px;background:#edf6f2;color:#39775c;font-size:12px}.result.error{background:#fff0ed;color:#a65d50}.result.busy{background:#edf3ff;color:#5576aa}.result pre{white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.6 "Microsoft YaHei UI",sans-serif;margin:8px 0 0;max-height:210px;overflow:auto}.result summary{cursor:pointer}.spinner{display:inline-block;width:11px;height:11px;border:2px solid #b7cdef;border-top-color:#547cc0;border-radius:50%;animation:spin 1s linear infinite;margin-right:5px}@keyframes spin{to{transform:rotate(360deg)}}#notice{display:none;margin:0 12px 8px;padding:8px;border-radius:6px;background:#fff0ed;color:#a65d50;font-size:11px}#notice.show{display:block}.code{white-space:pre-wrap;overflow-wrap:anywhere;background:#edf1f8;padding:10px;font:11px/1.6 Consolas,monospace;max-height:220px;overflow:auto}
+
+.markdown{overflow-wrap:anywhere;line-height:1.65;min-width:0}.markdown>:first-child{margin-top:0}.markdown>:last-child{margin-bottom:0}
+.markdown p{margin:5px 0}.markdown h1,.markdown h2,.markdown h3,.markdown h4,.markdown h5,.markdown h6{margin:10px 0 5px;font-size:1.1em;font-weight:600;color:inherit;line-height:1.5}
+.markdown ul,.markdown ol{padding-left:19px;margin:5px 0}.markdown li{margin:2px 0}.markdown blockquote{margin:7px 0}
+.markdown a{color:#3566ba;text-decoration:underline}.markdown code{font-family:Consolas,monospace;background:#e9eef6;padding:1px 4px;border-radius:3px;font-size:.95em}
+.markdown .code-block{border:1px solid #d8e1ee;border-radius:6px;overflow:hidden;margin:8px 0;background:#f5f7fb;color:#24324b}.markdown .code-block-head{display:flex;justify-content:space-between;align-items:center;padding:4px 7px;background:#eaf0f8;font-size:10px;color:#61728d}
+.markdown .code-copy-btn{border:0;background:none;color:#466b9f;padding:2px 5px;font-size:10px}.markdown .code-block pre{margin:0;padding:8px;max-height:210px;overflow:auto;white-space:pre;font:11px/1.6 Consolas,monospace}.markdown pre code{background:none;border-radius:0;padding:0;font:inherit}
+.markdown .md-table-wrap{max-width:100%;overflow-x:auto;margin:7px 0}.markdown table{border-collapse:collapse;font-size:11px;min-width:100%;color:inherit}.markdown th,.markdown td{border:1px solid #d8e1ee;padding:5px 7px;vertical-align:top}.markdown th{background:#eaf0f8;font-weight:600}
+.md-preview{max-height:3.3em;overflow:hidden}.md-preview h1,.md-preview h2,.md-preview h3,.md-preview h4,.md-preview h5,.md-preview h6{font-size:1em;margin:0}.md-preview p,.md-preview ul,.md-preview ol{margin:0}.md-preview .code-block{margin:0}.result-detail{margin-top:7px;max-height:280px;overflow:auto}.result .result-detail pre{white-space:pre;font-family:Consolas,monospace}
+</style></head><body><div id="app">
+<header><div class="heading"><h1>🐳 快捷配方</h1><button class="icon" id="refresh" title="刷新配方" aria-label="刷新配方">↻</button><button class="icon" id="close" title="收起" aria-label="收起">×</button></div><div id="study">正在读取研究…</div><input id="search" type="search" placeholder="搜索名称或用途…" aria-label="搜索配方"><nav class="tabs" aria-label="配方分类"><button class="tab active" data-tab="home">常用</button><button class="tab" data-tab="recent">最近</button><button class="tab" data-tab="all">全部</button></nav></header>
+<main id="content"><div class="empty">正在加载配方…</div></main><div id="notice" role="status"></div><footer><span id="count"></span><button id="manage">配方管理 ↗</button></footer></div>
+<script>
+'use strict';
+// Markdown follows the Agent renderer; parity is checked by QuickMarkdownRegression.js.
+function escapeHtml(s) {
+    if (s == null) return "";
+    return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
+function renderMarkdown(text) {
+    if (!text) return "";
+    // 宿主 StringBuilder / Markdown 文件使用 CRLF；统一后再按行解析围栏、列表和表格。
+    text = text.replace(/\r\n?/g, "\n");
+    text = escapeHtml(text);
+
+    // 1) 代码块 ```lang\ncode``` 先取出保护,避免其内容被后续规则误解
+    const codeBlocks = [];
+    text = text.replace(/^(`{3,}|~{3,})([\w-]*)[^\S\n]*\n([\s\S]*?)^\1[\t ]*(?=\n|$)/gm, (m, fence, lang, code) => {
+        const body = code.replace(/\n$/, "");
+        codeBlocks.push(
+            '<div class="code-block">' +
+                '<div class="code-block-head">' +
+                    '<span class="code-block-lang">' + (lang || "code") + '</span>' +
+                    '<button class="code-copy-btn" type="button">复制</button>' +
+                '</div>' +
+                '<pre><code>' + body + '</code></pre>' +
+            '</div>'
+        );
+        return "\n\n\u0001CB" + (codeBlocks.length - 1) + "\u0001\n\n";
+    });
+
+    // 2) 行内代码 `code`
+    const inlineCodes = [];
+    text = text.replace(/`([^`\n]+)`/g, (m, code) => {
+        inlineCodes.push('<code>' + code + '</code>');
+        return "\u0001IC" + (inlineCodes.length - 1) + "\u0001";
+    });
+
+    // 3) 标题
+    for (let i = 6; i >= 1; i--) {
+        const re = new RegExp("^" + "#".repeat(i) + " +(.+)$", "gm");
+        text = text.replace(re, "<h" + i + ">$1</h" + i + ">");
+    }
+
+    // 4) 粗体 / 斜体 (先粗后斜,避免 ** 被吃掉)
+    text = text.replace(/\*\*([^\*\n]+)\*\*/g, "<strong>$1</strong>");
+    text = text.replace(/(^|[^\*])\*([^\*\n]+)\*/g, "$1<em>$2</em>");
+
+    // 5) 链接 [text](url)
+    text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+    // 5.5) GFM 表格
+    //   | 表头1 | 表头2 |
+    //   |-------|-------|
+    //   | data  | data  |
+    // 分隔行至少要含 -,支持 :---/---: 对齐(可选)
+    text = text.replace(
+        /(?:^|\n)((?:[ \t]*\|.+\|[ \t]*\n)(?:[ \t]*\|[\s|:\-]*-[\s|:\-]*\|[ \t]*\n)(?:[ \t]*\|.*\|[ \t]*\n?)*)/g,
+        function (m, block) {
+            const lines = block.trim().split(/\n/);
+            if (lines.length < 2) return m;
+
+            function splitRow(line) {
+                let s = line.trim();
+                if (s.startsWith("|")) s = s.substring(1);
+                if (s.endsWith("|")) s = s.substring(0, s.length - 1);
+                return s.split("|").map(function (x) { return x.trim(); });
+            }
+
+            const headers = splitRow(lines[0]);
+            const aligns = splitRow(lines[1]).map(function (seg) {
+                const l = seg.startsWith(":");
+                const r = seg.endsWith(":");
+                if (l && r) return "center";
+                if (r) return "right";
+                if (l) return "left";
+                return null;
+            });
+            const rows = lines.slice(2).map(splitRow);
+
+            let html = '<div class="md-table-wrap"><table class="md-table"><thead><tr>';
+            headers.forEach(function (h, i) {
+                const a = aligns[i];
+                html += a ? '<th style="text-align:' + a + '">' : "<th>";
+                html += h + "</th>";
+            });
+            html += "</tr></thead><tbody>";
+            rows.forEach(function (row) {
+                html += "<tr>";
+                const ncols = Math.max(headers.length, row.length);
+                for (let i = 0; i < ncols; i++) {
+                    const a = aligns[i];
+                    html += a ? '<td style="text-align:' + a + '">' : "<td>";
+                    html += (row[i] != null ? row[i] : "") + "</td>";
+                }
+                html += "</tr>";
+            });
+            html += "</tbody></table></div>\n";
+            return "\n" + html;
+        }
+    );
+
+    // 6) 无序列表 (连续多行 - / * / +)
+    text = text.replace(/(?:^[ \t]*[-*+][ \t]+.+(?:\n|$))+/gm, (m) => {
+        const items = m.trim().split(/\n/)
+            .map(l => "<li>" + l.replace(/^[ \t]*[-*+][ \t]+/, "") + "</li>")
+            .join("");
+        return "<ul>" + items + "</ul>\n";
+    });
+
+    // 7) 有序列表
+    text = text.replace(/(?:^[ \t]*\d+\.[ \t]+.+(?:\n|$))+/gm, (m) => {
+        const items = m.trim().split(/\n/)
+            .map(l => "<li>" + l.replace(/^[ \t]*\d+\.[ \t]+/, "") + "</li>")
+            .join("");
+        return "<ol>" + items + "</ol>\n";
+    });
+
+    // 8) 引用 (每行以 > 开头,合并为一个 blockquote)
+    text = text.replace(/(?:^&gt;[ \t]?.*(?:\n|$))+/gm, (m) => {
+        const inner = m.split(/\n/).map(l => l.replace(/^&gt;[ \t]?/, "")).join("<br>");
+        return "<blockquote style=\"border-left:3px solid #d1d5db;padding-left:10px;color:#6b7280;\">"
+             + inner + "</blockquote>\n";
+    });
+
+    // 9) 段落 (双换行分段,块级元素独占段落)
+    const parts = text.split(/\n{2,}/);
+    text = parts.map(p => {
+        p = p.trim();
+        if (!p) return "";
+        if (/^\u0001CB\d+\u0001$/.test(p)) return p;
+        if (/^\s*<(h[1-6]|ul|ol|pre|blockquote|table|div)/.test(p)) return p;
+        return "<p>" + p.replace(/\n/g, "<br>") + "</p>";
+    }).join("\n");
+
+    // 10) 复原代码块与行内代码
+    text = text.replace(/\u0001CB(\d+)\u0001/g, (m, i) => codeBlocks[+i]);
+    text = text.replace(/\u0001IC(\d+)\u0001/g, (m, i) => inlineCodes[+i]);
+
+    // 11) 文件路径转成可点击链接
+    // Quick panel keeps paths as text; the full Agent owns path-opening actions.
+
+    return text;
+}
+
+const $=id=>document.getElementById(id);
+const state={recipes:[],favorites:[],recent:[],saved:{},study:null,tab:'home',selected:null,busy:false,runningId:null,args:{},bindings:{},results:{},schemas:{},revealResult:null};
+let sequence=0; const pending=new Map();let renderedView=null;
+function send(type,data={},callback){const seq=++sequence;if(callback)pending.set(seq,callback);window.chrome.webview.postMessage({type,seq,...data});return seq;}
+function notice(text){$('notice').textContent=text||'';$('notice').classList.toggle('show',!!text);}
+function el(tag,cls,text){const node=document.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node;}
+function markdown(cls,text,preview=false){
+ const node=el('div',cls+' markdown'+(preview?' md-preview':''));node.innerHTML=renderMarkdown(String(text||''));
+ if(preview){node.querySelectorAll('.code-copy-btn').forEach(b=>b.remove());node.querySelectorAll('a').forEach(a=>{const span=el('span','',a.textContent);a.replaceWith(span);});}
+ return node;
+}
+document.addEventListener('click',async event=>{
+ const anchor=event.target.closest('.markdown a');
+ if(anchor){event.preventDefault();event.stopPropagation();send('quick.openLink',{url:anchor.getAttribute('href')});return;}
+ const button=event.target.closest('.code-copy-btn');if(!button)return;
+ event.preventDefault();event.stopPropagation();const text=button.closest('.code-block').querySelector('pre code').textContent;
+ try{
+  if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(text);
+  else{const input=document.createElement('textarea');input.value=text;input.style.position='fixed';input.style.opacity='0';document.body.append(input);input.select();let ok;try{ok=document.execCommand('copy');}finally{input.remove();}if(!ok)throw Error('copy');}
+  button.textContent='已复制';setTimeout(()=>{if(button.isConnected)button.textContent='复制';},1200);
+ }catch{notice('复制失败，请选中代码后按 Ctrl+C。');}
+});
+function refresh(){send('recipe.list',{},applyList);}
+function applyList(msg){
+ if(!msg.ok){notice(msg.error||'配方读取失败');return;}
+ if(state.study!==msg.study){state.bindings={};notice(state.study!==null?'研究已切换，请重新取对象。':'');}
+ state.study=msg.study;state.recipes=msg.recipes||[];state.favorites=msg.favorites||[];state.recent=msg.recent||[];state.saved=msg.savedArgs||{};state.busy=msg.busy===true;state.runningId=msg.runningId||null;
+ for(const r of state.recipes){const schema=JSON.stringify(r.params||[]);if(state.schemas[r.id]&&state.schemas[r.id]!==schema){delete state.args[r.id];delete state.bindings[r.id];}state.schemas[r.id]=schema;}
+ if(state.selected&&!state.recipes.some(r=>r.id===state.selected))state.selected=null;
+ $('study').textContent=state.study?'当前研究 · '+state.study:'当前未打开研究';$('count').textContent=state.recipes.length+' 个已固化配方';render();
+}
+function favorite(r,button){button.disabled=true;send('recipe.favorite',{recipeId:r.id,favorite:!state.favorites.includes(r.id)},applyList);}
+function card(r){
+ const node=el('div','card');const open=el('button','card-main');open.append(el('span','name',r.name||r.id),markdown('desc',r.description||'打开查看参数并运行',true));
+ const objects=(r.params||[]).filter(p=>p.kind==='object'||p.kind==='objects');open.append(el('span','badge',objects.length?'需要选择对象 · '+(r.params||[]).length+' 项参数':(r.params||[]).length?'填写 '+r.params.length+' 项参数':'无参数 · 确认后运行'));
+ open.onclick=()=>{state.selected=r.id;notice('');render();};const star=el('button','star'+(state.favorites.includes(r.id)?' on':''),state.favorites.includes(r.id)?'★':'☆');star.title=state.favorites.includes(r.id)?'取消收藏':'收藏配方';star.setAttribute('aria-label',star.title+' '+r.name);star.onclick=()=>favorite(r,star);node.append(open,star);return node;
+}
+function render(){
+ const content=$('content');const view=state.selected?'detail:'+state.selected:'list:'+state.tab+':'+$('search').value;const resetScroll=view!==renderedView;renderedView=view;content.replaceChildren();document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===state.tab));
+ if(state.selected){const r=state.recipes.find(x=>x.id===state.selected);if(r){renderDetail(r,content);if(resetScroll)content.scrollTop=0;return;}}
+ const query=$('search').value.trim().toLocaleLowerCase();let rows=state.recipes.filter(r=>!query||((r.name||'')+' '+(r.description||'')).toLocaleLowerCase().includes(query));
+ function section(title,items){if(!items.length)return;content.append(el('div','section-title',title));items.forEach(r=>content.append(card(r)));}
+ if(query||state.tab==='all')section(query?'搜索结果':'全部配方',rows);
+ else if(state.tab==='recent')section('最近使用',state.recent.map(id=>rows.find(r=>r.id===id)).filter(Boolean));
+ else{
+  const favorites=state.favorites.map(id=>rows.find(r=>r.id===id)).filter(Boolean);section('置顶配方',favorites.slice(0,5));
+  section('最近使用',state.recent.filter(id=>!state.favorites.includes(id)).map(id=>rows.find(r=>r.id===id)).filter(Boolean));
+  if(!favorites.length&&!state.recent.length)section('点击 ☆ 收藏常用配方',rows.slice(0,5));
+ }
+ if(!content.childNodes.length)content.append(el('div','empty',query?'没有找到匹配的配方':state.recipes.length?'还没有最近使用的配方':'还没有已固化配方\n可从“配方管理”中添加'));
+ if(resetScroll)content.scrollTop=0;
+}
+function renderDetail(r,content){
+ const heading=el('div','detail-title');const back=el('button','icon','‹');back.title='返回列表';back.onclick=()=>{state.selected=null;render();};heading.append(back,el('h2','',r.name||r.id));const star=el('button','star'+(state.favorites.includes(r.id)?' on':''),state.favorites.includes(r.id)?'★':'☆');star.title='收藏 / 取消收藏';star.onclick=()=>favorite(r,star);heading.append(star);content.append(heading,markdown('purpose',r.description||'检查参数和目标对象后运行。'));
+ const args=state.args[r.id]||(state.args[r.id]={...state.saved[r.id]});const bindings=state.bindings[r.id]||(state.bindings[r.id]={});
+ const run=el('button','primary',state.busy?(state.runningId===r.id?'执行中…':'另一个配方执行中…'):'运行配方');run.id='run';const hint=el('div','', '');hint.id='run-hint';
+ function ready(){return (r.params||[]).every(p=>!p.required||(p.kind==='object'||p.kind==='objects'?!!bindings[p.name]:args[p.name]!==undefined&&String(args[p.name]).trim()!==''));}
+ function update(){run.disabled=state.busy||!ready();hint.textContent=state.busy?'正在等待执行完成，请勿重复运行。':!ready()?'请填写必填参数，并在软件中选对象后取当前选择。':'按当前参数执行已固化脚本，可在软件中撤销。';}
+ for(const p of r.params||[]){
+  const field=el('div','field');const label=el('label','',p.label||p.name);if(p.required)label.append(el('span','required','*'));field.append(label);
+  if(p.kind==='object'||p.kind==='objects'){
+   const row=el('div','pick');const bound=el('span','bound',bindings[p.name]?.label||'尚未选择对象');const pick=el('button','', '取当前选择');pick.disabled=state.busy;
+   pick.onclick=()=>{pick.disabled=true;send('recipe.pickSelection',{multi:p.kind==='objects'},msg=>{pick.disabled=state.busy;if(!msg.ok){notice(msg.error);return;}if(state.study!==msg.study){state.bindings={};state.study=msg.study;notice('研究已切换，请重新取对象。');refresh();return;}bindings[p.name]={id:msg.id,label:msg.name+(msg.count>1?' 等 '+msg.count+' 个对象':''),study:msg.study};bound.textContent=bindings[p.name].label;notice('');update();});};row.append(bound,pick);field.append(row);
+   if(bindings[p.name]){const clear=el('button','icon','清除绑定');clear.disabled=state.busy;clear.onclick=()=>{delete bindings[p.name];render();};field.append(clear);}
+  }else{
+   if(args[p.name]===undefined)args[p.name]=p.def!==null&&p.def!==undefined?p.def:(p.kind==='bool'?'false':'');
+   const input=el('input');input.id='param-'+p.name;label.htmlFor=input.id;input.disabled=state.busy;
+   if(p.kind==='bool'){input.type='checkbox';input.checked=['true','1','on'].includes(String(args[p.name]).toLowerCase());input.onchange=()=>{args[p.name]=String(input.checked);update();};}
+   else{input.type=p.kind==='number'?'number':'text';if(p.kind==='number')input.step='any';input.value=args[p.name];input.oninput=()=>{args[p.name]=input.value;update();};}field.append(input);
+  }
+  if(p.help||p.typeHint)field.append(markdown('help',p.help||'对象类型：'+p.typeHint));content.append(field);
+ }
+ run.onclick=()=>{
+  if(state.busy||!ready())return;const values={...args};for(const p of r.params||[])if(p.kind==='object'||p.kind==='objects')values[p.name]=bindings[p.name]?.id||'';
+  state.busy=true;state.runningId=r.id;state.results[r.id]={busy:true};notice('');render();
+  send('recipe.run',{recipeId:r.id,study:state.study,args:values},msg=>{state.results[r.id]=msg;state.busy=false;state.runningId=null;state.revealResult=r.id;render();refresh();});
+ };
+ content.append(run,hint);update();
+ const result=state.results[r.id];if(result){const box=el('div','result'+(result.busy?' busy':result.ok?'':' error'));if(result.busy){box.append(el('span','spinner'),document.createTextNode('正在执行，请等待结果…'));}else{box.append(el('strong','',result.ok?'执行完成':'执行未完成'));const summary=String(result.error||result.text||'已完成');box.append(markdown('help',summary,true));const details=el('details');details.append(el('summary','', '查看结果详情'),markdown('result-detail',summary));box.append(details);run.textContent='再次运行';}content.append(box);}
+ const source=el('button','icon','查看配方代码');source.onclick=()=>send('recipe.detail',{recipeId:r.id},msg=>{if(!msg.ok){notice(msg.error);return;}let pre=$('source-code');if(!pre){pre=el('pre','code');pre.id='source-code';content.append(pre);}pre.textContent=msg.code||'';});content.append(source);
+ if(state.revealResult===r.id){state.revealResult=null;requestAnimationFrame(()=>content.querySelector('.result')?.scrollIntoView({block:'nearest'}));}
+}
+window.chrome.webview.addEventListener('message',event=>{
+ const msg=typeof event.data==='string'?JSON.parse(event.data):event.data;
+ if(msg.type==='recipe.studyChanged'){state.bindings={};state.study=msg.study;notice('研究已切换，请重新选取对象。');refresh();return;}
+ if(msg.type==='quick.refresh'){refresh();return;}
+ const callback=pending.get(msg.seq);if(callback){pending.delete(msg.seq);callback(msg);}else if(msg.type==='recipe.list.result')applyList(msg);
+ if(msg.type==='quick.error'){notice(msg.error);refresh();}
+});
+$('search').oninput=()=>{state.selected=null;render();};document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{state.tab=b.dataset.tab;state.selected=null;notice('');render();});$('refresh').onclick=refresh;$('manage').onclick=()=>send('quick.manage');$('close').onclick=()=>send('quick.close');document.addEventListener('keydown',e=>{if(e.key==='Escape')send('quick.close');});
+send('quick.ready');
+</script></body></html>

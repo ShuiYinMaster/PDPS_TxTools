@@ -33,6 +33,8 @@ async function handle(method, rawUrl) {
   if (method === 'GET' && route.startsWith('/thumb/main/')) return asset('webm', route.slice(12), '.webm', 'video/webm');
   if (method === 'GET' && route.startsWith('/pic/')) return asset('pic', route.slice(5), '.png', 'image/png');
   if (method === 'POST' && route === '/close') {
+    // This is a user hide action, distinct from host shutdown or a crash.
+    process.stdout.write('txagent-pet:' + JSON.stringify({ kind: 'hidden' }) + '\n');
     setTimeout(() => require('electron').app.quit(), 100);
     return json({ ok: true });
   }

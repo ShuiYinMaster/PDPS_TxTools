@@ -27,7 +27,9 @@ namespace TxTools.Agent
     public sealed class TxAgentCommand : TxButtonCommand
     {
         private static TxAgentForm _form;
-        private static DshPetHost _pet;
+        private static DshPetController _petController;
+        private static string _petError;
+        private static RecipeQuickForm _quickRecipes;
 
         // ── 多 PDPS 无界面执行器:插件一加载就启动 ──
         // PS 反射扫描命令类注册按钮时会触发静态构造,趁这时把 RPC 执行器跑起来。
@@ -49,6 +51,7 @@ namespace TxTools.Agent
                 TxAgentService.Start(BuildToolRegistry());
             }
             catch { /* 服务起不来不影响窗口本身 */ }
+            InitializePet();
         }
 
         public override string Name { get { return "TxAgent"; } }
@@ -67,7 +70,6 @@ namespace TxTools.Agent
             // 本进程已开着窗口 → 前置激活，不重复创建。
             if (_form != null && !_form.IsDisposed)
             {
-                ShowPet();
                 if (_form.WindowState == FormWindowState.Minimized)
                     _form.WindowState = FormWindowState.Normal;
                 _form.BringToFront();
@@ -89,7 +91,7 @@ namespace TxTools.Agent
             _form.Name = _form.GetType().FullName;   // 跨插件窗口尺寸串扰修复(双保险)
             _form.FormClosed += (s, e) =>
             {
-                if (_pet != null) { _pet.Dispose(); _pet = null; }
+                if (!RecipeUiActions.IsRunning) SetPetState(null);
                 _form = null;
                 try { PsInstanceRegistry.ReleaseWindow(); } catch { }
             };
@@ -97,48 +99,82 @@ namespace TxTools.Agent
             IWin32Window owner = TryGetPsMainWindow();
             if (owner != null) _form.Show(owner);
             else _form.Show();
-            ShowPet();
+            if (_petError != null) _form.ReportPetError(_petError);
 
             try { TxApplication.StatusBarMessage = "TxTools.Agent 已启动"; } catch { }
         }
 
-        private void ShowPet()
+        private static void InitializePet()
         {
-            if (_pet != null && !_pet.IsDisposed) return;
-
+            if (_petController != null) return;
             try
             {
-                var pet = new DshPetHost(_form);
-                var owner = _form;
-                pet.Failed += message => { if (!owner.IsDisposed) owner.ReportPetError(message); };
-                pet.OpenAssistantRequested += (s, e) => Execute(null);
-                pet.Closed += (s, e) => { if (ReferenceEquals(_pet, pet)) _pet = null; };
-                _pet = pet;
+                // The command is registered on the PS UI thread during plugin loading.
+                // Queue startup so it runs after registration, outside the type initializer.
+                var controller = new DshPetController(UserPrefsStore.Load().DesktopPetVisible,
+                    UserPrefsStore.UpdateDesktopPetVisible, () =>
+                    {
+                        _quickRecipes?.Hide();
+                        new TxAgentCommand().Execute(null);
+                    }, ToggleQuickRecipes);
+                controller.Failed += message =>
+                {
+                    _petError = message;
+                    _form?.ReportPetError(message);
+                };
+                controller.Changed += (s, e) =>
+                {
+                    _form?.PostPetVisibility();
+                    if (!controller.Enabled) _quickRecipes?.Hide();
+                };
+                _petController = controller;
             }
             catch (Exception ex)
             {
+                _petError = ex.Message;
                 System.Diagnostics.Debug.WriteLine("[TxAgent] 鲸鱼娘悬浮窗创建失败: " + ex.Message);
                 _form?.ReportPetError(ex.Message);
-                if (_pet != null) { _pet.Dispose(); _pet = null; }
             }
+        }
+
+        internal static bool PetEnabled => _petController?.Enabled ?? UserPrefsStore.Load().DesktopPetVisible;
+
+        private static void ToggleQuickRecipes(JObject anchor)
+        {
+            if ((string)anchor?["kind"] == "manage-recipes") { OpenRecipeManager(); return; }
+            // This entry can run before Agent.Execute has ever created a conversation.
+            PsContext.CaptureFromMainThread();
+            if (_quickRecipes == null || _quickRecipes.IsDisposed) _quickRecipes = new RecipeQuickForm(OpenRecipeManager);
+            _quickRecipes.Toggle(anchor, TryGetPsMainWindow());
+        }
+
+        private static void OpenRecipeManager()
+        {
+            _quickRecipes?.Hide();
+            new TxAgentCommand().Execute(null);
+            _form?.OpenRecipeManager();
+        }
+
+        internal static void SetPetEnabled(bool enabled)
+        {
+            InitializePet();
+            _petError = null;
+            _petController?.SetEnabled(enabled);
         }
 
         internal static void SetPetThinking(bool thinking)
         {
-            var pet = _pet;
-            if (pet != null && !pet.IsDisposed) pet.SetThinking(thinking);
+            _petController?.SetThinking(thinking);
         }
 
         internal static void CelebratePet()
         {
-            var pet = _pet;
-            if (pet != null && !pet.IsDisposed) pet.Celebrate();
+            _petController?.SetState("success");
         }
 
         internal static void SetPetState(string state, string task = null)
         {
-            var pet = _pet;
-            if (pet != null && !pet.IsDisposed) pet.SetState(state, task);
+            _petController?.SetState(state, task);
         }
 
         /// <summary>Agent 窗口已被其它实例打开时的提示窗口（不进入对话，避免会话覆盖）。</summary>
@@ -385,6 +421,128 @@ namespace TxTools.Agent
         }
     }
 
+    /// <summary>Process lifetime owner. Its dispatcher survives every Agent window.</summary>
+    internal sealed class DshPetController : IDisposable
+    {
+        private readonly object _gate = new object();
+        private readonly Control _dispatcher;
+        private readonly Action<bool> _saveVisibility;
+        private readonly Action _openAssistant;
+        private readonly Action<JObject> _openRecipes;
+        private DshPetHost _host;
+        private string _state;
+        private string _task;
+        private bool _enabled;
+        private bool _disposed;
+        public event EventHandler Changed;
+        public event Action<string> Failed;
+        public bool Enabled { get { lock (_gate) return _enabled; } }
+
+        public DshPetController(bool enabled, Action<bool> saveVisibility, Action openAssistant, Action<JObject> openRecipes = null)
+        {
+            _enabled = enabled;
+            _saveVisibility = saveVisibility;
+            _openAssistant = openAssistant;
+            _openRecipes = openRecipes;
+            _dispatcher = new Control();
+            var handle = _dispatcher.Handle;
+            Application.ApplicationExit += OnApplicationExit;
+            AppDomain.CurrentDomain.ProcessExit += OnApplicationExit;
+            _dispatcher.BeginInvoke(new Action(EnsurePet));
+        }
+
+        public void SetEnabled(bool enabled)
+        {
+            if (_dispatcher.InvokeRequired)
+            {
+                _dispatcher.BeginInvoke(new Action(() => SetEnabled(enabled)));
+                return;
+            }
+            DshPetHost old = null;
+            bool changed;
+            lock (_gate)
+            {
+                if (_disposed) return;
+                changed = _enabled != enabled;
+                _enabled = enabled;
+                if (!enabled) { old = _host; _host = null; }
+            }
+            if (changed)
+            {
+                try { _saveVisibility(enabled); }
+                catch (Exception ex) { Failed?.Invoke("桌宠显示状态保存失败: " + ex.Message); }
+            }
+            old?.Dispose();
+            if (enabled) EnsurePet();
+            Changed?.Invoke(this, EventArgs.Empty);
+        }
+
+        private void EnsurePet()
+        {
+            lock (_gate)
+            {
+                if (_disposed || !_enabled || (_host != null && !_host.IsDisposed)) return;
+                try
+                {
+                    var host = new DshPetHost(_dispatcher);
+                    host.OpenAssistantRequested += (s, e) => _openAssistant();
+                    host.OpenRecipesRequested += anchor => _openRecipes?.Invoke(anchor);
+                    host.HideRequested += (s, e) =>
+                    {
+                        if (ReferenceEquals(_host, host)) SetEnabled(false);
+                    };
+                    host.Failed += message => Failed?.Invoke(message);
+                    host.Closed += (s, e) =>
+                    {
+                        lock (_gate) { if (ReferenceEquals(_host, host)) _host = null; }
+                        Changed?.Invoke(this, EventArgs.Empty);
+                    };
+                    _host = host;
+                    host.SetState(_state, _task);
+                }
+                catch (Exception ex) { Failed?.Invoke(ex.Message); }
+            }
+        }
+
+        public void SetState(string state, string task = null)
+        {
+            lock (_gate)
+            {
+                _state = state;
+                _task = task;
+                _host?.SetState(state, task);
+            }
+        }
+
+        public void SetThinking(bool thinking)
+        {
+            lock (_gate)
+            {
+                if (thinking) SetState("thinking");
+                else if (_state != "success" && _state != "error") SetState(null);
+            }
+        }
+
+        private void OnApplicationExit(object sender, EventArgs e) { Dispose(); }
+
+        public void Dispose()
+        {
+            DshPetHost host;
+            lock (_gate)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                host = _host;
+                _host = null;
+            }
+            Application.ApplicationExit -= OnApplicationExit;
+            AppDomain.CurrentDomain.ProcessExit -= OnApplicationExit;
+            host?.Dispose();
+            // ProcessExit can run off the UI thread; the process will release the HWND.
+            if (!_dispatcher.InvokeRequired) _dispatcher.Dispose();
+        }
+    }
+
     /// <summary>Owns dsh-pet's transparent Electron window and its local status channel.</summary>
     internal sealed class DshPetHost : IDisposable
     {
@@ -404,6 +562,8 @@ namespace TxTools.Agent
         private bool _failureReported;
         public event Action<string> Failed;
         public event EventHandler OpenAssistantRequested;
+        public event EventHandler HideRequested;
+        public event Action<JObject> OpenRecipesRequested;
         public event EventHandler Closed;
         public bool IsDisposed { get { lock (_gate) return _closed; } }
         public bool IsReady { get { lock (_gate) return _ready && !_closed; } }
@@ -427,7 +587,7 @@ namespace TxTools.Agent
             Log("Assembly: " + typeof(TxAgentCommand).Assembly.Location + "\nRuntime: " + runtime);
             string electron = System.IO.Path.Combine(runtime, "electron", "electron.exe");
             string entry = System.IO.Path.Combine(runtime, "entry.js");
-            var missing = new[] { "entry.js", "startup-monitor.js", "host-routes.js", "config.json",
+            var missing = new[] { "entry.js", "startup-monitor.js", "quick-launch.js", "host-routes.js", "config.json",
                 "electron/electron.exe", "electron/ffmpeg.dll", "electron/icudtl.dat", "electron/resources.pak",
                 "upstream/index.html", "upstream/main.js", "upstream/preload.js", "upstream/shared-core.js" }
                 .Where(name => !System.IO.File.Exists(System.IO.Path.Combine(runtime, name))).ToArray();
@@ -454,30 +614,12 @@ namespace TxTools.Agent
             start.EnvironmentVariables["DSH_PET_HOST_PID"] = Process.GetCurrentProcess().Id.ToString();
             start.EnvironmentVariables["TXAGENT_PET_STATE"] = _stateFile;
             start.EnvironmentVariables["TXAGENT_PET_PROFILE"] = _stateFile + ".profile";
+            start.EnvironmentVariables["TXAGENT_PET_CLICK_DELAY"] = GetDoubleClickTime().ToString();
             _process = new Process { StartInfo = start, EnableRaisingEvents = true };
             _process.OutputDataReceived += (s, e) =>
             {
                 if (e.Data != null) Log(e.Data);
-                if (e.Data != null && e.Data.StartsWith("txagent-pet:", StringComparison.Ordinal))
-                {
-                    try
-                    {
-                        var message = JObject.Parse(e.Data.Substring("txagent-pet:".Length));
-                        if ((string)message["kind"] == "open-assistant")
-                            Dispatch(() => OpenAssistantRequested?.Invoke(this, EventArgs.Empty));
-                        else if ((string)message["kind"] == "ready")
-                        {
-                            lock (_gate) _ready = true;
-                            _startupTimer?.Dispose();
-                        }
-                        else if ((string)message["kind"] == "closed")
-                        {
-                            lock (_gate) _shutdownRequested = true;
-                        }
-                        else if ((string)message["kind"] == "failed") ReportFailure((string)message["message"]);
-                    }
-                    catch (Exception ex) { Log(ex.ToString()); }
-                }
+                HandleHelperMessage(e.Data);
             };
             _process.ErrorDataReceived += (s, e) => { if (e.Data != null) Log(e.Data); };
             _process.Exited += (s, e) =>
@@ -531,6 +673,40 @@ namespace TxTools.Agent
             catch { }
         }
 
+        private void HandleHelperMessage(string line)
+        {
+            if (line == null || !line.StartsWith("txagent-pet:", StringComparison.Ordinal)) return;
+            try
+            {
+                var message = JObject.Parse(line.Substring("txagent-pet:".Length));
+                switch ((string)message["kind"])
+                {
+                    case "open-recipes":
+                    case "manage-recipes":
+                        Dispatch(() => OpenRecipesRequested?.Invoke(message));
+                        break;
+                    case "open-assistant":
+                        Dispatch(() => OpenAssistantRequested?.Invoke(this, EventArgs.Empty));
+                        break;
+                    case "ready":
+                        lock (_gate) _ready = true;
+                        _startupTimer?.Dispose();
+                        break;
+                    case "hidden":
+                        lock (_gate) _shutdownRequested = true;
+                        Dispatch(() => HideRequested?.Invoke(this, EventArgs.Empty));
+                        break;
+                    case "closed":
+                        lock (_gate) _shutdownRequested = true;
+                        break;
+                    case "failed":
+                        ReportFailure((string)message["message"]);
+                        break;
+                }
+            }
+            catch (Exception ex) { Log(ex.ToString()); }
+        }
+
         private void ReportFailure(string message)
         {
             lock (_gate)
@@ -541,6 +717,9 @@ namespace TxTools.Agent
             Log("FAILED: " + message);
             Dispatch(() => Failed?.Invoke(message + "\n桌宠日志: " + LogPath));
         }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern uint GetDoubleClickTime();
 
         private void Dispatch(Action action)
         {
@@ -588,7 +767,9 @@ namespace TxTools.Agent
                     ["ts"] = _revision,
                     ["closed"] = _closed
                 };
-                System.IO.File.WriteAllText(temporary, value.ToString(Newtonsoft.Json.Formatting.None), new System.Text.UTF8Encoding(false));
+                // The PS host may preload an older Json.NET without ToString(Formatting).
+                // Parameterless ToString is supported there too; whitespace is valid JSON.
+                System.IO.File.WriteAllText(temporary, value.ToString(), new System.Text.UTF8Encoding(false));
                 if (System.IO.File.Exists(_stateFile)) System.IO.File.Replace(temporary, _stateFile, null);
                 else System.IO.File.Move(temporary, _stateFile);
             }

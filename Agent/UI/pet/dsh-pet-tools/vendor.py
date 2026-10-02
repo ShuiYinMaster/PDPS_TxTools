@@ -1,6 +1,6 @@
 """Pin and adapt dsh-pet's desktop implementation without installing the DSH host."""
 from pathlib import Path
-import json, shutil, subprocess, re
+import json, shutil, subprocess, re, runpy
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'references/dsh-pet-source/dsh-pet'
@@ -85,6 +85,7 @@ text = text.replace(old, '''          workBaseline = ts;
 text = text.replace('setTimeout(() => void workLoop(), 1000);', 'setTimeout(() => void workLoop(), 200);')
 file.write_text(text, encoding='utf8')
 
+runpy.run_path(str(Path(__file__).with_name('patch-quick-launch.py')))
 commit = subprocess.check_output(['rtk', 'proxy', 'git', '-C', str(SOURCE.parent), 'rev-parse', 'HEAD'], text=True).strip()
 manifest = dict(repository='https://github.com/PC2005-cloud/dsh-pet', commit=commit,
                 version='0.3.0', webmCount=len(list((DEST/'assets/webm').glob('*.webm'))),

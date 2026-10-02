@@ -18,7 +18,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using Newtonsoft.Json;
 
@@ -107,6 +109,95 @@ namespace TxTools.Agent.Core
     public static class RecipeStore
     {
         private const string Folder = "recipes";
+        private const string DefaultResourcePrefix = "TxTools.Agent.DefaultRecipes.";
+        private static readonly object DefaultSync = new object();
+        private static readonly HashSet<string> DefaultFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Seed each bundled recipe once. The marker preserves intentional deletions.
+        private static void EnsureDefaults()
+        {
+            string folder = MdStore.FolderPath(Folder);
+            lock (DefaultSync)
+            {
+                if (DefaultFolders.Contains(folder)) return;
+                try
+                {
+                    string marker = Path.Combine(folder, ".default-recipes-installed");
+                    var installed = new HashSet<string>(File.Exists(marker)
+                        ? File.ReadAllLines(marker, Encoding.UTF8) : new string[0], StringComparer.Ordinal);
+                    var assembly = typeof(RecipeStore).Assembly;
+                    foreach (string resource in assembly.GetManifestResourceNames()
+                        .Where(n => n.StartsWith(DefaultResourcePrefix, StringComparison.Ordinal) && n.EndsWith(".md", StringComparison.Ordinal)))
+                    {
+                        string text;
+                        using (var stream = assembly.GetManifestResourceStream(resource))
+                        using (var reader = new StreamReader(stream, Encoding.UTF8)) text = reader.ReadToEnd();
+                        var recipe = FromDoc(MarkdownDoc.Parse(text));
+                        if (recipe == null || !IsIdentifier(recipe.Id) || ValidateParams(recipe.Params) != null)
+                            throw new InvalidOperationException("默认配方定义无效：" + resource);
+                        string path = Path.Combine(folder, recipe.Id + ".md");
+                        UpgradeGeometryDefault(assembly, path, recipe);
+                        if (installed.Contains(recipe.Id)) continue;
+                        if (!File.Exists(path))
+                        {
+                            string temporary = path + ".seed-" + Guid.NewGuid().ToString("N");
+                            try
+                            {
+                                File.WriteAllText(temporary, text, new UTF8Encoding(false));
+                                File.Move(temporary, path);
+                            }
+                            catch (IOException) { if (!File.Exists(path)) throw; }
+                            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+                        }
+                        installed.Add(recipe.Id);
+                    }
+                    File.WriteAllLines(marker, installed.OrderBy(id => id, StringComparer.Ordinal), new UTF8Encoding(false));
+                    DefaultFolders.Add(folder);
+                }
+                catch (Exception ex)
+                {
+                    try { AuditLog.Write("[warn] [Recipe] 安装默认配方失败：" + ex.Message); } catch { }
+                }
+            }
+        }
+
+        // Upgrade only the exact original definition; user edits and deletions stay intact.
+        private static void UpgradeGeometryDefault(Assembly assembly, string path, Recipe replacement)
+        {
+            if (replacement.Id != "default_geometry_weld_points" || !File.Exists(path)) return;
+            var current = FromDoc(MarkdownDoc.Load(path));
+            if (current == null || current.Id != replacement.Id) return;
+            bool original = false;
+            foreach (string resource in assembly.GetManifestResourceNames().Where(n =>
+                n.StartsWith("TxTools.Agent.LegacyRecipes.default_geometry_weld_points.", StringComparison.Ordinal)
+                && n.EndsWith(".md", StringComparison.Ordinal)))
+            {
+                Recipe legacy;
+                using (var stream = assembly.GetManifestResourceStream(resource))
+                using (var reader = new StreamReader(stream, Encoding.UTF8))
+                    legacy = FromDoc(MarkdownDoc.Parse(reader.ReadToEnd()));
+                if (legacy != null && current.Name == legacy.Name && current.Lang == legacy.Lang
+                    && current.SourceSnippet == legacy.SourceSnippet
+                    && current.Description == legacy.Description && current.Code == legacy.Code
+                    && JsonConvert.SerializeObject(current.Params) == JsonConvert.SerializeObject(legacy.Params))
+                { original = true; break; }
+            }
+            if (!original) return;
+            replacement.RunCount = current.RunCount;
+            replacement.FailCount = current.FailCount;
+            replacement.CreatedUtc = current.CreatedUtc;
+            replacement.LastRunUtc = current.LastRunUtc;
+            replacement.SourceSnippet = current.SourceSnippet;
+            string temporary = path + ".upgrade-" + Guid.NewGuid().ToString("N");
+            string backup = path + ".before-keyword-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                File.WriteAllText(temporary, ToDoc(replacement).ToString(), new UTF8Encoding(false));
+                File.Replace(temporary, path, backup);
+                AuditLog.Write("[info] [Recipe] 已升级标记几何焊点配方，原文件备份：" + backup);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
 
         /// <summary>
         /// 片段要跑成功过几次才够格出现在"可固化为配方"列表里。
@@ -119,6 +210,7 @@ namespace TxTools.Agent.Core
 
         public static List<Recipe> All()
         {
+            EnsureDefaults();
             var list = new List<Recipe>();
             foreach (var doc in MdStore.LoadAll(Folder))
             {

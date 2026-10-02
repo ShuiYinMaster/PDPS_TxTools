@@ -20,6 +20,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('petBridge', {
+  clickDelay: Number(process.env.TXAGENT_PET_CLICK_DELAY) || 500,
+  openRecipes(anchor) { ipcRenderer.send('pet:open-recipes', anchor); },
+  manageRecipes(anchor) { ipcRenderer.send('pet:manage-recipes', anchor); },
   setBounds(x, y, width, height, boxX, boxY, size, bottomPad, vx, vy) {
     ipcRenderer.send('pet:set-bounds', { x, y, width, height, boxX, boxY, size, bottomPad, vx, vy });
   },

@@ -5,7 +5,10 @@ const { app } = require('electron');
 const profile = process.env.TXAGENT_PET_PROFILE || path.join(app.getPath('appData'), 'TxAgent-dsh-pet');
 fs.mkdirSync(profile, { recursive: true });
 app.setPath('userData', profile);
-if (process.env.DSH_PET_DPI_PROBE !== '1') require('./startup-monitor.js');
+if (process.env.DSH_PET_DPI_PROBE !== '1') {
+  require('./startup-monitor.js');
+  require('./quick-launch.js');
+}
 process.env.DSH_PET_BRIDGE = '1';
 process.env.DSH_PET_PETS = JSON.stringify([{ id: 'main', size: 420 }]);
 process.env.DSH_PET_CONFIG_URL = 'https://txagent.local/dsh-pet-7340/config';
