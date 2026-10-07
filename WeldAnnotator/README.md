@@ -1,4 +1,6 @@
-# WeldAnnotator
+# WeldAnnotator — Weld Point Screenshots to Excel / 焊点标注截图
+
+Write Process Simulate viewport screenshots, weld-point annotations and optional data tables to an active Excel workbook.
 
 把 PS 视口截图和焊点标注信息写入活动 Excel，用于焊点布局、评审或交付资料制作。
 

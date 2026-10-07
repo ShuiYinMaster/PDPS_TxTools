@@ -1,4 +1,6 @@
-# DeviceZAligner — 设备 Z 向对齐
+# DeviceZAligner — Device Z Alignment / 设备 Z 向对齐
+
+Experimental device floor-alignment module for Process Simulate. The standalone plugin has a known unresolved runtime issue; see the status below.
 
 ## 当前状态
 

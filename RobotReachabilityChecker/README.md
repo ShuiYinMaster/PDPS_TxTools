@@ -1,4 +1,6 @@
-# RobotReachabilityChecker
+# RobotReachabilityChecker — Robot Reachability Check / 机器人可达性检查
+
+Check robot reachability and joint-limit conditions for welding locations in Tecnomatix Process Simulate.
 
 检查机器人操作路径点的可达性、关节限位余量、TCP 位置余量和点位干涉状态。
 

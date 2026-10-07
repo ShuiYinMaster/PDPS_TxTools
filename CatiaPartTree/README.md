@@ -1,4 +1,6 @@
-# CatiaPartTree
+# CatiaPartTree — CATIA Product Tree / 产品树读取
+
+Inspect CATIA product-tree structure and instance information through the local CATIA COM interface.
 
 根据 CATIA Product 目录树在 Process Simulate 中创建零件树，并把已导入的零件归类到对应的 `CompoundPart` 容器。
 

@@ -1,4 +1,6 @@
-# CrossEnvIO
+# CrossEnvIO — Process Simulate Data Transfer / 跨环境数据传输
+
+Transfer resource trees, part trees and weld-point data between Process Simulate instances and rebuild structures in the target environment.
 
 用于两个 Process Simulate 环境之间传输资源树、零件树和焊点数据，并在目标环境重建结构。
 

@@ -1,4 +1,6 @@
-# ExportByColor
+# ExportByColor — CATIA CGR and Mesh Export / 按颜色导出
+
+Export Process Simulate resources to CATIA CGR or mesh formats, with color grouping and coordinate-origin options.
 
 按当前 PS 场景中的可见资源导出 CATIA 可用的 CGR 或网格文件，并提供颜色、合并和坐标选项。
 

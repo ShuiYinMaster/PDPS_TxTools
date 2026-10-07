@@ -1,4 +1,6 @@
-# LibPathSync
+# LibPathSync — Process Simulate Library Paths / 库路径同步
+
+Synchronize Process Simulate resource-dialog folders with the system library root or the selected component directory.
 
 同步 Process Simulate 库路径相关的“上次访问目录”，减少不同资源对话框之间反复浏览目录的问题。
 

@@ -1,4 +1,6 @@
-# ExportGun
+# ExportGun — Weld Gun Export to CATIA / 焊枪与点云导出
+
+Export weld guns and weld-point clouds from Process Simulate to CATIA, with TCP and reference-frame options.
 
 将 Process Simulate 中的插枪、焊枪和焊点云数据导出到 CATIA，便于布局检查和外部交付。
 

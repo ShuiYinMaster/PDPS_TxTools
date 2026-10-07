@@ -1,4 +1,6 @@
-# WeldPointMatrix — 焊点矩阵
+# WeldPointMatrix — Weld Point Matrix / 焊点矩阵
+
+Compare locations across multiple operations, position associated robots and insert weld or via locations in Process Simulate.
 
 ## 命令
 

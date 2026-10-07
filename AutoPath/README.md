@@ -1,4 +1,6 @@
-# AutoPath（Weld Path Planner） — Tecnomatix Process Simulate 插件组件
+# AutoPath — Robotic Weld Path Planning / 焊接路径规划
+
+Plan robot welding approach, retract and transition points, with collision checks and optional weld-order optimization in Process Simulate.
 
 面向机器人焊接工艺的自动过渡点（Via）与路径编排器，作为 TxTools 插件的一部分。  
 在选中焊接操作内部按执行序为相邻焊点生成进/出枪点、插入过渡点并做静态/动态校验与修复，最终把 Via 写入 PS（Process Simulate）操作树中。

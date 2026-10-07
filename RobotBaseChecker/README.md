@@ -1,4 +1,6 @@
-# RobotBaseChecker
+# RobotBaseChecker — Robot BASE0 Validation / 基座校验
+
+Check robot BASE0 consistency and correct detected offsets in Process Simulate, with configurable tolerances and brand handling.
 
 检查场景中机器人 `BASE0` 与期望基准的一致性，并支持对存在偏差的机器人批量校正。
 

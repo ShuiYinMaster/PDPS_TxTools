@@ -1,4 +1,6 @@
-# WeldSpotGrouper — 焊点自动分组插件
+# WeldSpotGrouper — Weld Spot Grouping / 焊点自动分组
+
+Group weld points by their assigned-part signatures and move each group into a new welding operation in Process Simulate.
 
 按焊点绑定的零件，把绑定信息完全一致（零件名 + 数量都相同）的焊点归到同一个**新建的空白焊接操作**里。
 

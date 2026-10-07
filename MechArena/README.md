@@ -1,4 +1,6 @@
-# MechArena  |  机器人竞技场（PDPS 插件）
+# MechArena — Process Simulate Mech Arena / 机械对战
+
+A mech-arena demonstration module hosted inside Process Simulate.
 
 一个基于 Tecnomatix Process Simulate 2402 的射击小游戏。玩家在场景原点操控一个绿色方块，
 对抗场内所有 TxRobot —— 机器人通过关节 Sin 波挥舞进行攻击，>=3 台时自动合体成 Boss。
