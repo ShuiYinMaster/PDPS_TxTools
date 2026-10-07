@@ -5,6 +5,7 @@
 *{box-sizing:border-box}body{margin:0;background:#f7f9fd;color:#24324b;font:13px "Microsoft YaHei UI",sans-serif}button,input{font:inherit}button{cursor:pointer}button:disabled{cursor:default;opacity:.5}button:focus-visible,input:focus-visible{outline:2px solid #82adff;outline-offset:2px}
 #app{height:100vh;display:flex;flex-direction:column}header{padding:14px 15px 10px;background:#fff;border-bottom:1px solid #e4eaf5}.heading{display:flex;align-items:center;gap:8px}h1{font-size:16px;margin:0;flex:1}.icon{border:0;background:none;color:#61728d;padding:4px 6px}#study{font-size:11px;color:#7d8ba3;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#search{margin-top:12px;padding:8px 10px;width:100%;background:#f5f7fc;border:1px solid #dde5f2;border-radius:7px}.tabs{display:flex;gap:5px;margin-top:9px}.tab{border:0;background:none;padding:5px 10px;border-radius:5px;color:#7887a0}.tab.active{background:#e9f1ff;color:#3566ba}main{padding:12px;flex:1;overflow:auto}footer{padding:8px 13px;background:white;border-top:1px solid #e4eaf5;display:flex;align-items:center;justify-content:space-between}footer button{border:0;background:none;color:#5277b6;padding:5px}#count{color:#8995a8;font-size:11px}.section-title{margin:5px 2px 8px;color:#73819a;font-size:11px;letter-spacing:.3px}.card{display:flex;gap:8px;background:#fff;border:1px solid #e3e9f3;border-radius:9px;margin-bottom:8px;padding:10px}.card-main{border:0;background:none;text-align:left;min-width:0;flex:1;padding:0;color:inherit}.name{font-weight:600;display:block;overflow-wrap:anywhere}.desc{display:block;font-size:11px;color:#7a88a0;margin-top:5px;line-height:1.5}.badge{display:block;font-size:10px;color:#8a98ac;margin-top:6px}.star{align-self:flex-start;border:0;background:none;color:#a6b0c2;padding:1px 3px;font-size:18px}.star.on{color:#d7a134}.empty{padding:32px 15px;text-align:center;color:#7f8ba0;line-height:1.8}.detail-title{display:flex;align-items:center;gap:5px;margin-bottom:9px}.detail-title h2{font-size:15px;flex:1;margin:0;overflow-wrap:anywhere}.purpose{font-size:12px;color:#6c7d98;line-height:1.6;margin:8px 0 13px}.field{margin:12px 0}.field label{font-weight:600;font-size:12px;display:block;margin-bottom:5px}.required{color:#d08484;margin-left:4px}.help{font-size:11px;color:#8d99ac;margin-top:5px;line-height:1.5}.field input:not([type=checkbox]){width:100%;border:1px solid #dce4f0;background:white;border-radius:6px;padding:7px 8px}.pick{display:flex;gap:6px}.pick button{flex-shrink:0;border:1px solid #cbdaf0;border-radius:6px;background:white;color:#466b9f;padding:6px 8px}.bound{min-width:0;flex:1;background:#edf3ff;color:#5576aa;padding:7px;border-radius:6px;font-size:11px;overflow-wrap:anywhere}.primary{width:100%;border:0;border-radius:7px;padding:9px;color:white;background:#527fca;margin-top:9px}#run-hint{font-size:11px;line-height:1.5;color:#8693a9;margin-top:7px}.result{margin-top:13px;border-radius:7px;padding:10px;background:#edf6f2;color:#39775c;font-size:12px}.result.error{background:#fff0ed;color:#a65d50}.result.busy{background:#edf3ff;color:#5576aa}.result pre{white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.6 "Microsoft YaHei UI",sans-serif;margin:8px 0 0;max-height:210px;overflow:auto}.result summary{cursor:pointer}.spinner{display:inline-block;width:11px;height:11px;border:2px solid #b7cdef;border-top-color:#547cc0;border-radius:50%;animation:spin 1s linear infinite;margin-right:5px}@keyframes spin{to{transform:rotate(360deg)}}#notice{display:none;margin:0 12px 8px;padding:8px;border-radius:6px;background:#fff0ed;color:#a65d50;font-size:11px}#notice.show{display:block}.code{white-space:pre-wrap;overflow-wrap:anywhere;background:#edf1f8;padding:10px;font:11px/1.6 Consolas,monospace;max-height:220px;overflow:auto}
 
+select{font:inherit}.field select{width:100%;border:1px solid #dce4f0;background:white;border-radius:6px;padding:7px 8px}select:focus-visible{outline:2px solid #82adff;outline-offset:2px}.execution-buttons{display:flex;flex-wrap:wrap;gap:6px}.execution-buttons .primary{width:auto;flex:1 1 100px}
 .markdown{overflow-wrap:anywhere;line-height:1.65;min-width:0}.markdown>:first-child{margin-top:0}.markdown>:last-child{margin-bottom:0}
 .markdown p{margin:5px 0}.markdown h1,.markdown h2,.markdown h3,.markdown h4,.markdown h5,.markdown h6{margin:10px 0 5px;font-size:1.1em;font-weight:600;color:inherit;line-height:1.5}
 .markdown ul,.markdown ol{padding-left:19px;margin:5px 0}.markdown li{margin:2px 0}.markdown blockquote{margin:7px 0}
@@ -13,6 +14,7 @@
 .markdown .code-copy-btn{border:0;background:none;color:#466b9f;padding:2px 5px;font-size:10px}.markdown .code-block pre{margin:0;padding:8px;max-height:210px;overflow:auto;white-space:pre;font:11px/1.6 Consolas,monospace}.markdown pre code{background:none;border-radius:0;padding:0;font:inherit}
 .markdown .md-table-wrap{max-width:100%;overflow-x:auto;margin:7px 0}.markdown table{border-collapse:collapse;font-size:11px;min-width:100%;color:inherit}.markdown th,.markdown td{border:1px solid #d8e1ee;padding:5px 7px;vertical-align:top}.markdown th{background:#eaf0f8;font-weight:600}
 .md-preview{max-height:3.3em;overflow:hidden}.md-preview h1,.md-preview h2,.md-preview h3,.md-preview h4,.md-preview h5,.md-preview h6{font-size:1em;margin:0}.md-preview p,.md-preview ul,.md-preview ol{margin:0}.md-preview .code-block{margin:0}.result-detail{margin-top:7px;max-height:280px;overflow:auto}.result .result-detail pre{white-space:pre;font-family:Consolas,monospace}
+.object-filters{display:grid;grid-template-columns:65px minmax(0,1fr);align-items:center;gap:6px;margin-top:8px;padding:9px;background:#edf3ff;border-radius:7px}.object-filters label{font-weight:400;color:#6c7d98;margin:0}.query-search,.object-filters>.help{grid-column:1/-1}.query-search{border:1px solid #cbdaf0;border-radius:6px;background:white;color:#466b9f;padding:7px}.field input.color-picker{display:inline-block;width:64px;height:35px;padding:2px;vertical-align:middle;cursor:pointer}.color-value{font:11px Consolas,monospace;margin-left:8px}.palette{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px}.swatch{width:24px;height:24px;border:1px solid #b7c1cc;border-radius:5px}.swatch:focus-visible{outline:2px solid #527fca;outline-offset:2px}
 </style></head><body><div id="app">
 <header><div class="heading"><h1>🐳 快捷配方</h1><button class="icon" id="refresh" title="刷新配方" aria-label="刷新配方">↻</button><button class="icon" id="close" title="收起" aria-label="收起">×</button></div><div id="study">正在读取研究…</div><input id="search" type="search" placeholder="搜索名称或用途…" aria-label="搜索配方"><nav class="tabs" aria-label="配方分类"><button class="tab active" data-tab="home">常用</button><button class="tab" data-tab="recent">最近</button><button class="tab" data-tab="all">全部</button></nav></header>
 <main id="content"><div class="empty">正在加载配方…</div></main><div id="notice" role="status"></div><footer><span id="count"></span><button id="manage">配方管理 ↗</button></footer></div>
@@ -167,6 +169,7 @@ function renderMarkdown(text) {
 }
 
 const $=id=>document.getElementById(id);
+const objectQueries={};
 const state={recipes:[],favorites:[],recent:[],saved:{},study:null,tab:'home',selected:null,busy:false,runningId:null,args:{},bindings:{},results:{},schemas:{},revealResult:null};
 let sequence=0; const pending=new Map();let renderedView=null;
 function send(type,data={},callback){const seq=++sequence;if(callback)pending.set(seq,callback);window.chrome.webview.postMessage({type,seq,...data});return seq;}
@@ -193,14 +196,23 @@ function applyList(msg){
  if(!msg.ok){notice(msg.error||'配方读取失败');return;}
  if(state.study!==msg.study){state.bindings={};notice(state.study!==null?'研究已切换，请重新取对象。':'');}
  state.study=msg.study;state.recipes=msg.recipes||[];state.favorites=msg.favorites||[];state.recent=msg.recent||[];state.saved=msg.savedArgs||{};state.busy=msg.busy===true;state.runningId=msg.runningId||null;
- for(const r of state.recipes){const schema=JSON.stringify(r.params||[]);if(state.schemas[r.id]&&state.schemas[r.id]!==schema){delete state.args[r.id];delete state.bindings[r.id];}state.schemas[r.id]=schema;}
+ for(const r of state.recipes){const schema=JSON.stringify([(r.params||[]).map(p=>{const copy={...p};delete copy.objectTypes;delete copy.objectTypesLoaded;delete copy.typesLoading;return copy;}),r.actions||[]]);if(state.schemas[r.id]&&state.schemas[r.id]!==schema){delete state.args[r.id];delete state.bindings[r.id];}state.schemas[r.id]=schema;}
  if(state.selected&&!state.recipes.some(r=>r.id===state.selected))state.selected=null;
  $('study').textContent=state.study?'当前研究 · '+state.study:'当前未打开研究';$('count').textContent=state.recipes.length+' 个已固化配方';render();
+}
+function loadObjectTypes(r,p){
+ if(p.typesLoading||state.busy)return;p.typesLoading=true;const study=state.study;let finished=false;
+ const timer=setTimeout(()=>{if(finished)return;finished=true;p.typesLoading=false;p.objectTypesLoaded=true;notice('读取类型超时，可点击刷新类型重试。');render();},5000);
+ send('recipe.objectTypes',{recipeId:r.id,param:p.name,study},msg=>{
+  if(finished)return;finished=true;clearTimeout(timer);p.typesLoading=false;if(study!==state.study||!state.recipes.includes(r))return;p.objectTypesLoaded=true;
+  if(!msg.ok){notice(msg.error||'读取场景类型失败。');render();return;}p.objectTypes=msg.objectTypes||[{label:'全部类型',value:'all'}];
+  const query=objectQueries[r.id+':'+p.name];if(query&&!p.objectTypes.some(c=>c.value===query.type)){query.type='all';delete (state.bindings[r.id]||{})[p.name];}render();
+ });
 }
 function favorite(r,button){button.disabled=true;send('recipe.favorite',{recipeId:r.id,favorite:!state.favorites.includes(r.id)},applyList);}
 function card(r){
  const node=el('div','card');const open=el('button','card-main');open.append(el('span','name',r.name||r.id),markdown('desc',r.description||'打开查看参数并运行',true));
- const objects=(r.params||[]).filter(p=>p.kind==='object'||p.kind==='objects');open.append(el('span','badge',objects.length?'需要选择对象 · '+(r.params||[]).length+' 项参数':(r.params||[]).length?'填写 '+r.params.length+' 项参数':'无参数 · 确认后运行'));
+ const visible=(r.params||[]).filter(p=>!(r.actions||[]).length||!r.actions.every(a=>Object.prototype.hasOwnProperty.call(a.args||{},p.name)));const objects=visible.filter(p=>p.kind==='object'||p.kind==='objects');open.append(el('span','badge',(objects.length?'需要选择对象 · ':visible.length?'填写参数 · ':'')+((r.actions||[]).length?r.actions.length+' 个执行按钮':visible.length?visible.length+' 项参数':'无参数 · 点击运行')));
  open.onclick=()=>{state.selected=r.id;notice('');render();};const star=el('button','star'+(state.favorites.includes(r.id)?' on':''),state.favorites.includes(r.id)?'★':'☆');star.title=state.favorites.includes(r.id)?'取消收藏':'收藏配方';star.setAttribute('aria-label',star.title+' '+r.name);star.onclick=()=>favorite(r,star);node.append(open,star);return node;
 }
 function render(){
@@ -221,30 +233,64 @@ function render(){
 function renderDetail(r,content){
  const heading=el('div','detail-title');const back=el('button','icon','‹');back.title='返回列表';back.onclick=()=>{state.selected=null;render();};heading.append(back,el('h2','',r.name||r.id));const star=el('button','star'+(state.favorites.includes(r.id)?' on':''),state.favorites.includes(r.id)?'★':'☆');star.title='收藏 / 取消收藏';star.onclick=()=>favorite(r,star);heading.append(star);content.append(heading,markdown('purpose',r.description||'检查参数和目标对象后运行。'));
  const args=state.args[r.id]||(state.args[r.id]={...state.saved[r.id]});const bindings=state.bindings[r.id]||(state.bindings[r.id]={});
- const run=el('button','primary',state.busy?(state.runningId===r.id?'执行中…':'另一个配方执行中…'):'运行配方');run.id='run';const hint=el('div','', '');hint.id='run-hint';
- function ready(){return (r.params||[]).every(p=>!p.required||(p.kind==='object'||p.kind==='objects'?!!bindings[p.name]:args[p.name]!==undefined&&String(args[p.name]).trim()!==''));}
- function update(){run.disabled=state.busy||!ready();hint.textContent=state.busy?'正在等待执行完成，请勿重复运行。':!ready()?'请填写必填参数，并在软件中选对象后取当前选择。':'按当前参数执行已固化脚本，可在软件中撤销。';}
+ const actions=(r.actions||[]).length?r.actions:[null];const runs=actions.map((action,i)=>{const button=el('button','primary',state.busy?'执行中…':action?action.label:'运行配方');button.id=i?'run-'+action.id:'run';return {button,action};});const run=runs[0].button;const hint=el('div','', '');hint.id='run-hint';
+ function fixed(p){return (r.actions||[]).length>0&&r.actions.every(a=>Object.prototype.hasOwnProperty.call(a.args||{},p.name));}
+ function value(p,action){return action&&Object.prototype.hasOwnProperty.call(action.args||{},p.name)?action.args[p.name]:args[p.name];}
+ function ready(action){return (r.params||[]).every(p=>{
+  if(p.kind==='object'||p.kind==='objects')return !p.required||!!bindings[p.name];
+  const v=value(p,action);if(v===undefined||String(v).trim()==='')return !p.required;
+  return (p.kind!=='color'||/^#[0-9a-f]{6}$/i.test(String(v)))&&(p.kind!=='number'||Number.isFinite(Number(v)))&&(!(p.choices||[]).length||p.choices.some(c=>c.value===String(v)));
+ });}
+ function update(){runs.forEach(x=>x.button.disabled=state.busy||!ready(x.action));hint.textContent=state.busy?'正在执行，请等待结果。':!runs.some(x=>ready(x.action))?'请选择对象并检查必填参数。':'选择按钮执行，可在软件中撤销。';}
+ for(const p of r.params||[])if(p.kind!=='object'&&p.kind!=='objects'&&args[p.name]===undefined)args[p.name]=p.def!=null?p.def:(p.kind==='bool'?'false':'');
  for(const p of r.params||[]){
+  if(fixed(p))continue;
   const field=el('div','field');const label=el('label','',p.label||p.name);if(p.required)label.append(el('span','required','*'));field.append(label);
   if(p.kind==='object'||p.kind==='objects'){
    const row=el('div','pick');const bound=el('span','bound',bindings[p.name]?.label||'尚未选择对象');const pick=el('button','', '取当前选择');pick.disabled=state.busy;
-   pick.onclick=()=>{pick.disabled=true;send('recipe.pickSelection',{multi:p.kind==='objects'},msg=>{pick.disabled=state.busy;if(!msg.ok){notice(msg.error);return;}if(state.study!==msg.study){state.bindings={};state.study=msg.study;notice('研究已切换，请重新取对象。');refresh();return;}bindings[p.name]={id:msg.id,label:msg.name+(msg.count>1?' 等 '+msg.count+' 个对象':''),study:msg.study};bound.textContent=bindings[p.name].label;notice('');update();});};row.append(bound,pick);field.append(row);
+   const query=objectQueries[r.id+':'+p.name]||(objectQueries[r.id+':'+p.name]={type:'all',name:''});let queryControls=[],queryBusy=false;
+   function choose(search){if(state.busy||queryBusy)return;queryBusy=true;pick.disabled=true;queryControls.forEach(e=>e.disabled=true);const signature=JSON.stringify(query);
+    send('recipe.pickSelection',{recipeId:r.id,param:p.name,multi:p.kind==='objects',study:state.study,search,objectType:query.type,objectName:query.name},msg=>{
+     queryBusy=false;pick.disabled=state.busy;queryControls.forEach(e=>e.disabled=state.busy);if(typeof updateSearch==='function')updateSearch();
+     if(signature!==JSON.stringify(query))return;if(!msg.ok){notice(msg.error);return;}if(state.study!==msg.study){state.bindings={};state.study=msg.study;notice('研究已切换，请重新取对象。');refresh();return;}
+     bindings[p.name]={id:msg.id,label:msg.name+(msg.count>1?' 等 '+msg.count+' 个对象':''),study:msg.study};bound.textContent=bindings[p.name].label;notice('');update();
+    });}
+   pick.onclick=()=>choose(false);row.append(bound,pick);field.append(row);
+   let updateSearch;
+   if(p.objectFilter){
+    const filters=el('div','object-filters');const typeLabel=el('label','','对象类型');const type=el('select');type.id='object-type-'+p.name;typeLabel.htmlFor=type.id;
+    for(const c of (p.objectTypes?.length?p.objectTypes:[{label:'全部类型',value:'all'}])){const option=el('option','',c.label);option.value=c.value;type.append(option);}type.value=query.type;
+    const nameLabel=el('label','','名称包含');const name=el('input');name.type='text';name.id='object-name-'+p.name;nameLabel.htmlFor=name.id;name.value=query.name;name.placeholder='输入名称关键词，可留空';name.maxLength=200;
+    const search=el('button','query-search','按条件查找');queryControls=[type,name,search];queryControls.forEach(e=>e.disabled=state.busy);
+    updateSearch=()=>{search.disabled=state.busy||queryBusy||(query.type==='all'&&!query.name.trim());};
+    const changed=()=>{query.type=type.value;query.name=name.value;delete bindings[p.name];bound.textContent='尚未选择对象';notice('');updateSearch();update();};
+    type.onchange=changed;name.oninput=changed;search.onclick=()=>choose(true);updateSearch();const refreshTypes=el('button','query-search',p.typesLoading?'读取类型中…':'刷新类型');refreshTypes.disabled=state.busy||!!p.typesLoading;refreshTypes.onclick=()=>{loadObjectTypes(r,p);render();};
+    filters.append(typeLabel,type,nameLabel,name,search,refreshTypes,el('div','help','类型来自当前场景；名称按关键词匹配。'));field.append(filters);
+    if(p.objectTypesLoaded===false&&!p.typesLoading&&!state.busy)setTimeout(()=>{if(state.selected===r.id&&state.recipes.includes(r))loadObjectTypes(r,p);},0);
+   }
    if(bindings[p.name]){const clear=el('button','icon','清除绑定');clear.disabled=state.busy;clear.onclick=()=>{delete bindings[p.name];render();};field.append(clear);}
   }else{
    if(args[p.name]===undefined)args[p.name]=p.def!==null&&p.def!==undefined?p.def:(p.kind==='bool'?'false':'');
-   const input=el('input');input.id='param-'+p.name;label.htmlFor=input.id;input.disabled=state.busy;
-   if(p.kind==='bool'){input.type='checkbox';input.checked=['true','1','on'].includes(String(args[p.name]).toLowerCase());input.onchange=()=>{args[p.name]=String(input.checked);update();};}
-   else{input.type=p.kind==='number'?'number':'text';if(p.kind==='number')input.step='any';input.value=args[p.name];input.oninput=()=>{args[p.name]=input.value;update();};}field.append(input);
+   const choices=p.choices||[];const input=el(choices.length?'select':'input');input.id='param-'+p.name;label.htmlFor=input.id;input.disabled=state.busy;
+   if(choices.length){const empty=el('option','','请选择…');empty.value='';input.append(empty);for(const c of choices){const option=el('option','',c.label);option.value=c.value;input.append(option);}input.value=args[p.name];input.onchange=()=>{args[p.name]=input.value;update();};}
+   else if(p.kind==='bool'){input.type='checkbox';input.checked=['true','1','on'].includes(String(args[p.name]).toLowerCase());input.onchange=()=>{args[p.name]=String(input.checked);update();};}
+   else{input.type=p.kind==='color'?'color':p.kind==='number'?'number':'text';if(p.kind==='number')input.step='any';if(p.kind==='color'&&!/^#[0-9a-f]{6}$/i.test(String(args[p.name])))args[p.name]=p.def||'#4F83CC';input.value=args[p.name];input.oninput=input.onchange=()=>{args[p.name]=input.value;update();};}field.append(input);
+   if(p.kind==='color'){
+    input.className='color-picker';const hex=el('span','color-value',String(args[p.name]).toUpperCase());field.append(hex);const palette=el('div','palette');
+    for(const color of ['#4F83CC','#E45B5B','#49A879','#F0BC4D','#AD73D4','#F28D4B','#FFFFFF','#333333']){const swatch=el('button','swatch');swatch.type='button';swatch.style.backgroundColor=color;swatch.title=color;swatch.setAttribute('aria-label','选择颜色 '+color);swatch.disabled=state.busy;swatch.onclick=()=>{input.value=color;input.oninput();};palette.append(swatch);}
+    const saveColor=input.oninput;input.oninput=input.onchange=()=>{saveColor();hex.textContent=input.value.toUpperCase();};field.append(palette);
+   }
   }
-  if(p.help||p.typeHint)field.append(markdown('help',p.help||'对象类型：'+p.typeHint));content.append(field);
+  if(p.help)field.append(markdown('help',p.help));content.append(field);
  }
- run.onclick=()=>{
-  if(state.busy||!ready())return;const values={...args};for(const p of r.params||[])if(p.kind==='object'||p.kind==='objects')values[p.name]=bindings[p.name]?.id||'';
+ if((r.params||[]).some(p=>p.kind!=='object'&&p.kind!=='objects'&&!fixed(p))){const reset=el('button','icon','恢复默认值');reset.disabled=state.busy;reset.onclick=()=>{for(const p of r.params||[])if(p.kind!=='object'&&p.kind!=='objects')args[p.name]=p.def!=null?p.def:(p.kind==='bool'?'false':'');render();};content.append(reset);}
+ runs.forEach(({button,action})=>button.onclick=()=>{
+  if(state.busy||!ready(action))return;const values={...args};for(const p of r.params||[])if(p.kind==='object'||p.kind==='objects')values[p.name]=bindings[p.name]?.id||'';
   state.busy=true;state.runningId=r.id;state.results[r.id]={busy:true};notice('');render();
-  send('recipe.run',{recipeId:r.id,study:state.study,args:values},msg=>{state.results[r.id]=msg;state.busy=false;state.runningId=null;state.revealResult=r.id;render();refresh();});
- };
- content.append(run,hint);update();
- const result=state.results[r.id];if(result){const box=el('div','result'+(result.busy?' busy':result.ok?'':' error'));if(result.busy){box.append(el('span','spinner'),document.createTextNode('正在执行，请等待结果…'));}else{box.append(el('strong','',result.ok?'执行完成':'执行未完成'));const summary=String(result.error||result.text||'已完成');box.append(markdown('help',summary,true));const details=el('details');details.append(el('summary','', '查看结果详情'),markdown('result-detail',summary));box.append(details);run.textContent='再次运行';}content.append(box);}
+  send('recipe.run',{recipeId:r.id,study:state.study,args:values,actionId:action?.id||null},msg=>{state.results[r.id]=msg;state.busy=false;state.runningId=null;state.revealResult=r.id;render();refresh();});
+ });
+ const actionRow=el('div','execution-buttons');runs.forEach(x=>actionRow.append(x.button));content.append(actionRow,hint);update();
+ const result=state.results[r.id];if(result){const box=el('div','result'+(result.busy?' busy':result.ok?'':' error'));if(result.busy){box.append(el('span','spinner'),document.createTextNode('正在执行，请等待结果…'));}else{box.append(el('strong','',result.ok?'执行完成':'执行未完成'));const summary=String(result.error||result.text||'已完成');box.append(markdown('help',summary,true));const details=el('details');details.append(el('summary','', '查看结果详情'),markdown('result-detail',summary));box.append(details);if(!r.actions?.length)run.textContent='再次运行';}content.append(box);}
  const source=el('button','icon','查看配方代码');source.onclick=()=>send('recipe.detail',{recipeId:r.id},msg=>{if(!msg.ok){notice(msg.error);return;}let pre=$('source-code');if(!pre){pre=el('pre','code');pre.id='source-code';content.append(pre);}pre.textContent=msg.code||'';});content.append(source);
  if(state.revealResult===r.id){state.revealResult=null;requestAnimationFrame(()=>content.querySelector('.result')?.scrollIntoView({block:'nearest'}));}
 }

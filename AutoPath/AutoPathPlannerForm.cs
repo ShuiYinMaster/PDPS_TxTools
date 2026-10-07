@@ -110,7 +110,7 @@ using TxTools.RobotReachabilityChecker.Services;
 
 namespace TxTools.AutoPathPlanner
 {
-    public partial class AutoPathPlannerForm : TxForm
+    public partial class AutoPathPlannerForm : PickAwareTxForm
     {
         // ════════════════════════════════════════════════════════════
         //  日志级别

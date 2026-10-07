@@ -91,6 +91,11 @@ public static class DefaultRecipesRegression
                 var compiled=TxTools.Agent.Ps.CSharpRunner.Compile(code,out error);
                 Check(compiled!=null,recipe.Name+" variant "+variant+": "+error);
             }
+            foreach(var action in recipe.Actions){
+                string code=RecipeRunner.BuildCode(recipe,values,action.Id,out error);
+                Check(code!=null,error);
+                Check(TxTools.Agent.Ps.CSharpRunner.Compile(code,out error)!=null,recipe.Name+" action "+action.Id+": "+error);
+            }
             Console.WriteLine("PASS: "+recipe.Name+" parses, binds required objects, compiles against PS 2402 SDK / C# 5");
         }
         RecipeStore.RecordRun("default_number_objects",true);

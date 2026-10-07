@@ -35,3 +35,17 @@
 - `ExportByColorService.cs`：资源收集与导出编排。
 - `CgrWriter.cs`、`CgrCompact95.cs`：CGR 写出。
 - `MeshExport.cs`、`FbxExport.cs`：网格和 FBX 写出。
+
+## 界面与构建
+
+导出窗口接入 `PickAwareTxForm`，导出原点对象框接入 `PickFocus`。资源列表和原点拾取可用 Esc 退出并保留已选值。
+
+本模块随 `TxTools.csproj` 构建。环境与注册方式见 [项目 README](../README.md)。
+
+公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。
+
+## JT 解码器构建依赖
+
+`JtDirectCs/Worker.csproj` 编译已有 JTReader 源码，依赖 `JtDirectCs/Dependencies/SharpCompress.dll` 及配套的 `System.*.dll`、`Microsoft.Bcl.AsyncInterfaces.dll`。这些二进制按仓库规则不提交；首次构建需先准备对应依赖，版本声明可参考 `JtDirectCs/Vendor/JTReader.csproj`，许可证见解码器目录的说明文件。
+
+主项目会联动构建解码器，并将它及依赖复制到输出目录的 `JtDirectCs/`。`OutputPath` / `OutDir` 的覆盖不改变解码器独立输出目录；解码器先生成在自身 `bin/Release/`，再复制到主项目输出。

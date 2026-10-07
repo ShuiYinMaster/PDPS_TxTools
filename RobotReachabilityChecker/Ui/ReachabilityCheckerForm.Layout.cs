@@ -144,6 +144,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 Margin = new Padding(2, 1, 0, 0),
                 PickOnly = true, ListenToPick = true
             };
+            PickFocus.Wire(_txtOpNode);
             _txtOpNode.Picked += OnOpNodePicked;
             row1.Controls.Add(_txtOpNode);
             flow.Controls.Add(row1);

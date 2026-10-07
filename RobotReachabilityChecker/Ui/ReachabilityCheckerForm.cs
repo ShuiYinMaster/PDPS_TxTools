@@ -22,7 +22,7 @@ using static TxTools.RobotReachabilityChecker.Ui.Theme;
 
 namespace TxTools.RobotReachabilityChecker.Ui
 {
-    public partial class ReachabilityCheckerForm : TxForm, ILogger
+    public partial class ReachabilityCheckerForm : PickAwareTxForm, ILogger
     {
         // ====== 顶部工具栏（默认隐藏，仅检查时显示进度条）======
         private TxToolStrip _toolStrip;

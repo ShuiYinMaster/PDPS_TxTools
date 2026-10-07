@@ -28,6 +28,8 @@ namespace TxTools.Agent.Tools
                 return "把一段验证过、可复用的代码保存成配方(代码 + 参数声明)，供之后直接调用。" +
                        "code 是完整可执行的 C# 方法体或 Python 代码；lang 填 csharp 或 python。" +
                        "params 声明代码里哪些地方是可变的：对象类参数(object/objects)传 ITxObject.Id，number/text/bool 传字面量。" +
+                       "name 必须为简短中文标题，description 用一句中文说明用途，省略 API、实现原理和代码说明。" +
+                       "提供合理默认值；颜色用 color 类型和 #RRGGBB 默认值；对象查询可用 objectFilter；有限选项用 choices；同一功能的常用模式用 actions 生成多个中文执行按钮。" +
                        "仅在你已跑通、且确实值得复用时才保存。";
             }
         }
@@ -43,8 +45,10 @@ namespace TxTools.Agent.Tools
                     ["type"] = "object",
                     ["properties"] = new JObject
                     {
-                        ["name"] = new JObject { ["type"] = "string", ["description"] = "配方名(英文/下划线/连字符, 唯一)" },
-                        ["description"] = new JObject { ["type"] = "string", ["description"] = "配方用途说明" },
+                        ["name"] = new JObject { ["type"] = "string", ["description"] = "简短中文标题，建议 6–16 字，如“批量显示或隐藏对象”；不要用英文变量名作标题" },
+                        ["description"] = new JObject { ["type"] = "string", ["description"] = "一句简短中文说明用途和效果，建议不超过 50 字；只保留必要限制，不写技术实现" },
+                        ["id"] = new JObject { ["type"] = "string", ["description"] = "更新已有配方时填写其 id，以保留文件身份和运行记录" },
+                        ["source_snippet"] = new JObject { ["type"] = "string", ["description"] = "来源片段名；从片段固化时必填" },
                         ["lang"] = new JObject { ["type"] = "string", ["enum"] = new JArray("csharp", "python"), ["description"] = "代码语言, 默认 csharp" },
                         ["code"] = new JObject { ["type"] = "string", ["description"] = "完整可执行代码(C# 方法体或 Python 顶层语句)" },
                         ["params"] = new JObject
@@ -58,14 +62,34 @@ namespace TxTools.Agent.Tools
                                 {
                                     ["name"] = new JObject { ["type"] = "string", ["description"] = "代码里用的变量名(合法标识符)" },
                                     ["label"] = new JObject { ["type"] = "string", ["description"] = "界面上显示的名字" },
-                                    ["kind"] = new JObject { ["type"] = "string", ["enum"] = new JArray("object", "objects", "number", "text", "bool") },
+                                    ["kind"] = new JObject { ["type"] = "string", ["enum"] = new JArray("object", "objects", "number", "text", "bool", "color") },
                                     ["typeHint"] = new JObject { ["type"] = "string", ["description"] = "期望的 PS 类型如 TxRobot, 仅 object 类参数用" },
+                                    ["objectFilter"] = new JObject { ["type"] = "boolean", ["description"] = "对象参数启用类型下拉框和名称筛选" },
                                     ["required"] = new JObject { ["type"] = "boolean" },
                                     ["default"] = new JObject { ["type"] = "string", ["description"] = "默认值(文本)" },
-                                    ["help"] = new JObject { ["type"] = "string" }
+                                    ["help"] = new JObject { ["type"] = "string" },
+                                    ["choices"] = new JObject
+                                    {
+                                        ["type"] = "array", ["description"] = "文本或数字的有限选项，显示为下拉选择；default 必须是其中的 value",
+                                        ["items"] = new JObject { ["type"] = "object", ["properties"] = new JObject
+                                        {
+                                            ["label"] = new JObject { ["type"] = "string" },
+                                            ["value"] = new JObject { ["type"] = "string" }
+                                        }, ["required"] = new JArray("label", "value") }
+                                    }
                                 },
                                 ["required"] = new JArray("name")
                             }
+                        },
+                        ["actions"] = new JObject
+                        {
+                            ["type"] = "array", ["description"] = "可选的多个执行按钮，共用代码和对象绑定，例如显示/隐藏。args 覆盖标量参数，不能存对象 ID",
+                            ["items"] = new JObject { ["type"] = "object", ["properties"] = new JObject
+                            {
+                                ["id"] = new JObject { ["type"] = "string", ["description"] = "唯一英文标识，如 show/hide" },
+                                ["label"] = new JObject { ["type"] = "string", ["description"] = "简短中文按钮文字" },
+                                ["args"] = new JObject { ["type"] = "object", ["additionalProperties"] = new JObject { ["type"] = "string" } }
+                            }, ["required"] = new JArray("id", "label", "args") }
                         }
                     },
                     ["required"] = new JArray("name", "code")
@@ -80,11 +104,10 @@ namespace TxTools.Agent.Tools
             if (string.IsNullOrWhiteSpace(name)) return "配方缺少 name。";
             if (string.IsNullOrWhiteSpace(code)) return "配方缺少 code。";
 
-            // 自动净化 Name: LLM 可能会给中文名(不满足 API function.name ^[a-zA-Z0-9_-]+$)
-            var originalName = name;
+            name = name.Trim();
+            if (!System.Text.RegularExpressions.Regex.IsMatch(name, @"[\u4e00-\u9fff]"))
+                return "Error: 配方标题须使用中文，请用简短中文用途命名。";
             var safeName = Recipe.ToApiSafeName(name);
-            if (!string.Equals(safeName, originalName, StringComparison.Ordinal))
-                name = safeName;   // 持久化用安全名，避免下次启动再次净化
 
             var recipe = new Recipe
             {
@@ -92,27 +115,41 @@ namespace TxTools.Agent.Tools
                 Description = input["description"] != null ? (string)input["description"] : "",
                 Lang = SnippetStore.NormalizeLang(input["lang"] != null ? (string)input["lang"] : "csharp"),
                 Code = code,
-                Params = ParseParams(input["params"])
+                Params = ParseParams(input["params"]),
+                Actions = input["actions"] == null ? new List<RecipeAction>() : input["actions"].ToObject<List<RecipeAction>>(),
+                SourceSnippet = (string)input["source_snippet"]
             };
+            var previous = input["id"] == null
+                ? RecipeStore.All().FirstOrDefault(r => string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase))
+                : RecipeStore.Get((string)input["id"]);
+            if (input["id"] != null && previous == null)
+                return "Error: 要更新的配方不存在，请先 list_recipes。";
+            if (previous != null)
+            {
+                recipe.Id = previous.Id; recipe.CreatedUtc = previous.CreatedUtc;
+                recipe.RunCount = previous.RunCount; recipe.FailCount = previous.FailCount; recipe.LastRunUtc = previous.LastRunUtc;
+                if (recipe.SourceSnippet == null) recipe.SourceSnippet = previous.SourceSnippet;
+            }
 
             // 校验参数合法性(参数名会被写进生成的代码)
-            var bad = RecipeStore.ValidateParams(recipe.Params);
+            var bad = RecipeStore.ValidateDefinition(recipe);
             if (bad != null) return "Error: " + bad;
 
             // 不允许覆盖非配方的内置工具(防止遮蔽原语)；同名配方可更新。
             ITxAgentTool existing;
-            if (_registry.TryGet(recipe.Name, out existing) && !(existing is RecipeTool))
+            if (_registry.TryGet(safeName, out existing) && !(existing is RecipeTool))
                 return "名称 " + recipe.Name + " 已被内置工具占用，请换名。";
+            if (RecipeStore.All().Any(r => r.Id != recipe.Id && Recipe.ToApiSafeName(r.Name) == safeName))
+                return "Error: 此标题的工具名与已有配方冲突，请换一个中文标题。";
 
             var msg = RecipeStore.Upsert(recipe);
             if (!msg.StartsWith("已保存", StringComparison.Ordinal)) return "Error: " + msg;
 
+            if (previous != null && Recipe.ToApiSafeName(previous.Name) != safeName)
+                _registry.Remove(Recipe.ToApiSafeName(previous.Name));
             _registry.Register(new RecipeTool(recipe, _registry));
 
-            var nameNote = string.Equals(safeName, originalName, StringComparison.Ordinal)
-                ? "" : " (原始名 \"" + originalName + "\" 已净化)";
-            return msg + nameNote
-                   + "，参数 " + recipe.Params.Count + " 个，现在可直接调用。";
+            return msg + "，现在可在配方栏执行。";
         }
 
         /// <summary>把 params 数组解析成 RecipeParam 列表。宽容处理缺失字段。</summary>
@@ -131,9 +168,11 @@ namespace TxTools.Agent.Tools
                     Label = (string)jo["label"],
                     Kind = jo["kind"] != null ? (string)jo["kind"] : "object",
                     TypeHint = (string)jo["typeHint"],
-                    Required = jo["required"] != null && (bool)jo["required"],
+                    ObjectFilter = (bool?)jo["objectFilter"] == true,
+                    Required = jo["required"] == null || (bool)jo["required"],
                     Default = (string)jo["default"],
-                    Help = (string)jo["help"]
+                    Help = (string)jo["help"],
+                    Choices = jo["choices"] == null ? null : jo["choices"].ToObject<List<RecipeChoice>>()
                 };
                 if (string.IsNullOrWhiteSpace(p.Name)) continue;
                 list.Add(p);

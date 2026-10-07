@@ -7,17 +7,36 @@ run_count: 0
 fail_count: 0
 ---
 
-切换绑定对象的显示状态。勾选 **显示对象** 表示显示，取消勾选表示隐藏。
-
-默认只调用绑定对象的显示接口；对子树的影响遵循 PS 本身的可见性规则。勾选“包含下属对象”后也逐个处理下属可显示对象，重叠范围自动去重。
+取当前选择，或按类型和名称查找对象，再点击“显示”或“隐藏”。
 
 ## 参数
 
 ```json
 [
-  {"Name":"targets","Label":"显示／隐藏对象","Kind":"objects","Required":true},
-  {"Name":"show_objects","Label":"显示对象（取消勾选为隐藏）","Kind":"bool","Required":false,"Default":"true"},
+  {"Name":"targets","Label":"目标对象","Kind":"objects","TypeHint":"ITxDisplayableObject","ObjectFilter":true,"Required":true},
+  {"Name":"show_objects","Label":"显示对象","Kind":"bool","Required":false,"Default":"true"},
   {"Name":"include_children","Label":"包含下属对象","Kind":"bool","Required":false,"Default":"false"}
+]
+```
+
+## 执行按钮
+
+```json
+[
+  {
+    "id": "show",
+    "label": "显示",
+    "args": {
+      "show_objects": "true"
+    }
+  },
+  {
+    "id": "hide",
+    "label": "隐藏",
+    "args": {
+      "show_objects": "false"
+    }
+  }
 ]
 ```
 

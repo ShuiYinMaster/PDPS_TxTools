@@ -19,7 +19,7 @@ namespace TxTools.FenceBuilder
     /// 右侧主区域 (基线列表 + 操作按钮 + 日志面板)。
     /// 窗体非模态,允许用户在窗口打开时继续在 PS 选择对象。
     /// </summary>
-    public class FenceBuilderForm : TxForm
+    public class FenceBuilderForm : PickAwareTxForm
     {
         // 参数控件
         private NumericUpDown _nudMeshWidth, _nudMeshHeight, _nudMeshThk;

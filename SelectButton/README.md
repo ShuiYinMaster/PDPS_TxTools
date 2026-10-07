@@ -32,3 +32,7 @@
 
 - `SelectPointsCmds.cs`：三类点位收集、去重和选择集写入。
 - `OpenResourceFolderCmd.cs`：资源路径解析和 Explorer 调用。
+
+## 界面与构建
+
+本模块随 `TxTools.csproj` 构建。环境与注册方式见 [项目 README](../README.md)。

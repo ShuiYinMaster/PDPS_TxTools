@@ -7,9 +7,7 @@ run_count: 0
 fail_count: 0
 ---
 
-以表格列出绑定对象的世界坐标，便于检查标记位置或对照焊点坐标。
-
-默认读取对象的**绝对坐标原点**；勾选“读取几何中心”后使用 `GeometricCenter`。两者对偏置建模的几何可能不同。单位为 mm，只读取数据，不改变工程。
+查看所选对象的原点或几何中心坐标（mm），不改变工程。
 
 ## 参数
 
@@ -17,6 +15,27 @@ fail_count: 0
 [
   {"Name":"targets","Label":"检查对象","Kind":"objects","Required":true},
   {"Name":"use_geometric_center","Label":"读取几何中心","Kind":"bool","Required":false,"Default":"false"}
+]
+```
+
+## 执行按钮
+
+```json
+[
+  {
+    "id": "origin",
+    "label": "查看原点",
+    "args": {
+      "use_geometric_center": "false"
+    }
+  },
+  {
+    "id": "center",
+    "label": "查看几何中心",
+    "args": {
+      "use_geometric_center": "true"
+    }
+  }
 ]
 ```
 

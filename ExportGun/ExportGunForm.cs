@@ -63,7 +63,7 @@ using FlatColorLabel = TxTools.Common.FormUiKit.FlatColorLabel;
 
 namespace TxTools.ExportGun
 {
-    public partial class ExportGunForm : TxForm
+    public partial class ExportGunForm : PickAwareTxForm
     {
 
         // ════════════════════════════════════════════════════════════
@@ -301,6 +301,7 @@ namespace TxTools.ExportGun
             try
             {
                 _tcpFrameCombo = new TxFrameComboBoxCtrl { Dock = DockStyle.Fill, ListenToPick = true };
+                PickFocus.Wire(_tcpFrameCombo);
                 _tcpCustomPanel.Controls.Add(_tcpFrameCombo);
                 _tcpFrameCombo.ValidFrameSet += new TxFrameComboBoxCtrl_ValidFrameSetEventHandler(OnTcpFrameValidSet);
                 _tcpFrameCombo.InvalidFrameSet += new TxFrameComboBoxCtrl_InvalidFrameSetEventHandler(OnTcpFrameInvalidSet);
@@ -654,6 +655,7 @@ namespace TxTools.ExportGun
             try
             {
                 _frameCombo = new TxFrameComboBoxCtrl { Dock = DockStyle.Fill, ListenToPick = true };
+                PickFocus.Wire(_frameCombo);
                 frameCtrlPanel.Controls.Add(_frameCombo);
             }
             catch (Exception ex)

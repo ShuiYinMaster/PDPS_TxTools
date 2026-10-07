@@ -7,6 +7,7 @@ const vm = require('vm');
 
 class Element {
     constructor(tag) {
+        this.style = {};
         this.tag = tag;
         this.children = [];
         this.className = '';
@@ -247,3 +248,71 @@ assert(fallback && fallback.innerHTML === '' && fallback.textContent === '<img o
     'missing renderer must fall back to literal text');
 console.log('Recipe sidebar Markdown regression passed.');
 console.log('Recipe tabs, capability titles and status regression passed.');
+
+context.window.txRecipes.refresh();
+const controlsRequest = sent.pop();
+const controlsRecipe = { id: 'controls', name: '显示或隐藏对象', params: [
+    { name: 'targets', label: '对象', kind: 'objects', required: true },
+    { name: 'show', label: '显示模式', kind: 'bool', required: true },
+    { name: 'children', label: '包含下属对象', kind: 'bool', def: 'false' },
+    { name: 'mode', label: '范围', kind: 'text', required: true, def: 'all', choices: [{ label: '全部', value: 'all' }, { label: '部分', value: 'some' }] }
+], actions: [{ id: 'show', label: '显示', args: { show: 'true' } }, { id: 'hide', label: '隐藏', args: { show: 'false' } }] };
+context.window.txRecipes.onHostMessage({ type: 'recipe.list.result', seq: controlsRequest.seq, ok: true, study: 'Study A', recipes: [controlsRecipe], savedArgs: { controls: { children: 'false', mode: 'some' } } });
+assert(!find(root, e => e.tag === 'label' && e.textContent.includes('显示模式')), 'button-supplied parameter should be hidden');
+assert.strictEqual(find(root, e => e.tag === 'input' && e.type === 'checkbox').checked, false, 'remembered false must not turn into true');
+const choiceInput = find(root, e => e.tag === 'select');
+assert.strictEqual(choiceInput.value, 'some', 'remember scalar choices');
+assert(find(root, e => e.tag === 'button' && e.textContent === '隐藏').disabled);
+find(root, e => e.tag === 'button' && e.textContent === '取选择').onclick();
+const controlsPick = sent.pop();
+context.window.txRecipes.onHostMessage({ type: 'recipe.pick.result', seq: controlsPick.seq, ok: true, id: '3,1|3,2', name: '目标', count: 2, study: 'Study A' });
+const hiddenButton = find(root, e => e.tag === 'button' && e.textContent === '隐藏');
+assert(!hiddenButton.disabled, 'action satisfies required bool');
+hiddenButton.onclick();
+const controlsRun = sent.pop();
+assert.strictEqual(controlsRun.actionId, 'hide');
+assert.strictEqual(controlsRun.args.show, 'false');
+assert.strictEqual(controlsRun.args.targets, '3,1|3,2');
+assert(find(root, e => e.className.includes('rcp-run')).disabled, 'all action buttons share busy state');
+context.window.txRecipes.onHostMessage({ type: 'recipe.run.result', seq: controlsRun.seq, ok: true, text: '完成' });
+find(root, e => e.tag === 'button' && e.textContent === '恢复默认值').onclick();
+assert.strictEqual(find(root, e => e.tag === 'select').value, 'all');
+assert(!find(root, e => e.tag === 'button' && e.textContent === '显示').disabled, 'reset retains object selection');
+const updatedChoice = find(root, e => e.tag === 'select'); updatedChoice.value = ''; updatedChoice.onchange();
+assert(find(root, e => e.tag === 'button' && e.textContent === '显示').disabled, 'empty required choice disables execution immediately');
+updatedChoice.value = 'all'; updatedChoice.onchange();
+assert(!find(root, e => e.tag === 'button' && e.textContent === '显示').disabled);
+context.window.txRecipes.onHostMessage({ type: 'recipe.studyChanged', study: 'Study B' });
+assert(find(root, e => e.tag === 'button' && e.textContent === '显示').disabled, 'study switch invalidates action bindings');
+console.log('PASS: sidebar actions, dropdowns, defaults, saved false, live readiness, shared busy state and study invalidation');
+
+context.window.txRecipes.refresh();
+const queryRequest=sent.pop();
+const queryRecipe={id:'query-color',name:'选择颜色与对象',params:[{name:'targets',kind:'objects',required:true,objectFilter:true,objectTypes:[{label:'全部类型',value:'all'},{label:'组件',value:'components'}]},{name:'color',kind:'color',required:true,def:'#4F83CC'}],actions:[{id:'apply',label:'应用颜色',args:{}}]};
+context.window.txRecipes.onHostMessage({type:'recipe.list.result',seq:queryRequest.seq,ok:true,study:'Study B',recipes:[queryRecipe]});
+const queryName=find(root,e=>e.id==='rcp-name-query-color-targets');const queryType=find(root,e=>e.id==='rcp-type-query-color-targets');
+assert(find(root,e=>e.textContent==='按条件查找'&&e.tag==='button').disabled,'blank scene query disabled');
+assert.strictEqual(queryType.tag,'select');queryType.value='components';queryType.onchange();queryName.value='夹具';queryName.oninput();
+find(root,e=>e.textContent==='按条件查找'&&e.tag==='button').onclick();const searched=sent.pop();
+assert.strictEqual(searched.search,true);assert.strictEqual(searched.objectType,'components');assert.strictEqual(searched.objectName,'夹具');assert.strictEqual(searched.param,'targets');
+context.window.txRecipes.onHostMessage({type:'recipe.pick.result',seq:searched.seq,ok:true,id:'3,10',name:'夹具',count:1,study:'Study B'});
+const colorInput=find(root,e=>e.type==='color');assert(colorInput,'native color picker rendered');colorInput.value='#12abEF';colorInput.oninput();
+find(root,e=>e.tag==='button'&&e.textContent==='应用颜色').onclick();const colorRun=sent.pop();assert.strictEqual(colorRun.args.color,'#12abEF');assert.strictEqual(colorRun.args.targets,'3,10');
+context.window.txRecipes.onHostMessage({type:'recipe.run.result',seq:colorRun.seq,ok:true,text:'完成'});
+const changedName=find(root,e=>e.id==='rcp-name-query-color-targets');changedName.value='其他';changedName.oninput();
+assert(find(root,e=>e.tag==='button'&&e.textContent==='应用颜色').disabled,'changing name invalidates old binding');
+const swatch=find(root,e=>e.title==='#E45B5B'&&e.tag==='button');swatch.onclick();assert.strictEqual(find(root,e=>e.type==='color').value,'#E45B5B');
+console.log('PASS: sidebar color picker, palette, filtered query protocol and binding invalidation');
+
+find(root,e=>e.tag==='button'&&e.textContent==='刷新类型').onclick();const typeRequest=sent.pop();assert.equal(typeRequest.type,'recipe.objectTypes');assert.equal(typeRequest.recipeId,'query-color');
+context.window.txRecipes.onHostMessage({seq:typeRequest.seq,ok:true,study:'Study B',objectTypes:[{label:'全部类型',value:'all'},{label:'场景夹具',value:'Tecnomatix.Engineering.TxFixtureCustom'}]});
+assert.equal(find(root,e=>e.id==='rcp-type-query-color-targets').value,'all');const dynamicSelect=find(root,e=>e.id==='rcp-type-query-color-targets');assert.equal(dynamicSelect.children.length,2);dynamicSelect.value='Tecnomatix.Engineering.TxFixtureCustom';dynamicSelect.onchange();find(root,e=>e.tag==='button'&&e.textContent==='按条件查找').onclick();const dynamicPick=sent.pop();assert.equal(dynamicPick.objectType,'Tecnomatix.Engineering.TxFixtureCustom');
+context.window.txRecipes.onHostMessage({seq:dynamicPick.seq,ok:true,id:'3,20',name:'动态夹具',count:1,study:'Study B'});assert(!find(root,e=>e.tag==='button'&&e.textContent==='应用颜色').disabled);
+find(root,e=>e.tag==='button'&&e.textContent==='刷新类型').onclick();context.window.txRecipes.onHostMessage({seq:sent.pop().seq,ok:true,study:'Study B',objectTypes:[{label:'全部类型',value:'all'}]});assert.equal(find(root,e=>e.id==='rcp-type-query-color-targets').value,'all');assert(find(root,e=>e.tag==='button'&&e.textContent==='应用颜色').disabled,'removed category invalidates bindings');
+console.log('PASS: sidebar dynamic scene categories, refresh, removed category reset and stale binding invalidation');
+
+const autoTypes=[];context.setTimeout=(fn,delay)=>{if(delay===0)autoTypes.push(fn);return 1;};root.classList.add('rcp-collapsed');
+context.window.txRecipes.refresh();const lazyList=sent.pop();const lazyRecipe=JSON.parse(JSON.stringify(queryRecipe));lazyRecipe.params[0].objectTypes=[];lazyRecipe.params[0].objectTypesLoaded=false;
+context.window.txRecipes.onHostMessage({seq:lazyList.seq,ok:true,study:'Study B',recipes:[lazyRecipe]});assert.equal(autoTypes.length,0,'collapsed sidebar never scans scene categories');
+find(shell,e=>e.className==='rcp-toggle').onclick();assert(autoTypes.length>0,'opening object controls queues catalog load');while(autoTypes.length)autoTypes.shift()();const lazyTypes=sent.pop();assert.equal(lazyTypes.type,'recipe.objectTypes');context.window.txRecipes.onHostMessage({seq:lazyTypes.seq,ok:true,study:'Study B',objectTypes:[{label:'全部类型',value:'all'}]});
+console.log('PASS: collapsed sidebar defers scene scanning until object controls are visible');

@@ -185,6 +185,7 @@ namespace TxTools.Agent.UI
 
             // 配方变更 → 推 recipe.changed 刷新侧边栏(聊天里 save/delete 后不用手点刷新)
             TxTools.Agent.Core.RecipeStore.RecipesChanged += OnRecipesChanged;
+            RecipeUiActions.Changed += OnRecipesChanged;
 
             // study 轮询:轻量 dynamic 调用,UI 线程即 PS 主线程,2.5s 一次可忽略
             _studyTimer = new System.Windows.Forms.Timer { Interval = 2500 };
@@ -214,6 +215,7 @@ namespace TxTools.Agent.UI
             try { UploadStore.ClearAll(); } catch { }
             if (_studyTimer != null) { _studyTimer.Stop(); _studyTimer.Dispose(); _studyTimer = null; }
             try { TxTools.Agent.Core.RecipeStore.RecipesChanged -= OnRecipesChanged; } catch { }
+            try { RecipeUiActions.Changed -= OnRecipesChanged; } catch { }
             CleanupWebViewProfile();
             base.OnFormClosed(e);
         }
@@ -678,6 +680,7 @@ namespace TxTools.Agent.UI
             switch (type)
             {
                 case "recipe.list":          HandleRecipeList(seq); break;
+                case "recipe.objectTypes":   ReplyToWeb(seq, _recipeSidebarOpen ? RecipeUiActions.ObjectTypes(msg) : RecipeUiActions.Error("recipe.objectTypes.result", "请先展开配方栏。")); break;
                 case "recipe.pickSelection": HandlePickSelection(seq, msg); break;
                 case "recipe.run":           HandleRecipeRun(seq, msg); break;
                 case "recipe.reveal":        HandleRecipeReveal(seq, msg); break;
@@ -813,25 +816,7 @@ namespace TxTools.Agent.UI
 
         private void HandleRecipeList(int seq)
         {
-            var recipes = new JArray();
-            foreach (var r in RecipeStore.All())
-            {
-                var jr = new JObject
-                {
-                    ["id"] = r.Id, ["name"] = r.Name, ["description"] = r.Description,
-                    ["lang"] = r.Lang, ["runCount"] = r.RunCount, ["failCount"] = r.FailCount
-                };
-                var jp = new JArray();
-                foreach (var p in r.Params)
-                    jp.Add(new JObject
-                    {
-                        ["name"] = p.Name, ["label"] = p.Label, ["kind"] = p.Kind,
-                        ["typeHint"] = p.TypeHint, ["required"] = p.Required,
-                        ["def"] = p.Default, ["help"] = p.Help
-                    });
-                jr["params"] = jp;
-                recipes.Add(jr);
-            }
+            var result = RecipeUiActions.List();
 
             var cands = new JArray();
             foreach (var s in RecipeStore.PromotionCandidates())
@@ -852,12 +837,9 @@ namespace TxTools.Agent.UI
             var studyKey = CurrentStudyKey();
             _lastStudyKey = studyKey;              // 与轮询共用基线,避免列表刷新触发假推送
 
-            ReplyToWeb(seq, new JObject
-            {
-                ["type"] = "recipe.list.result", ["ok"] = true,
-                ["recipes"] = recipes, ["candidates"] = cands,
-                ["study"] = studyKey
-            });
+            result["candidates"] = cands;
+            result["study"] = studyKey;
+            ReplyToWeb(seq, result);
         }
 
         /// <summary>
@@ -880,7 +862,7 @@ namespace TxTools.Agent.UI
 
         private void HandlePickSelection(int seq, JObject msg)
         {
-            ReplyToWeb(seq, RecipeUiActions.PickSelection((bool?)msg["multi"] == true));
+            ReplyToWeb(seq, RecipeUiActions.PickSelection(msg));
         }
 
         private void HandleRecipeRun(int seq, JObject msg)
@@ -988,8 +970,14 @@ namespace TxTools.Agent.UI
                 return;
             }
 
-            var hint = "把片段 \"" + name + "\" 固化成配方：先用 get_snippet 读取完整代码，判断其中哪些部分应该做成参数（对象/数字/文本），"
-                     + "给每个参数起合法的英文变量名和中文标签，用中文写清用途、输入对象和执行效果，然后调用 save_recipe。";
+            var hint = "把片段 \"" + name + "\" 固化成易用配方。先用 get_snippet 读取完整代码并用 list_recipes 检查是否已有配方。"
+                     + "name 必须是简短中文标题，建议 6–16 字；description 用一句中文说明用途和效果，尽量不超过 50 字，"
+                     + "只保留影响使用的必要限制，不写 API 名、类名、实现原理或大段技术说明。"
+                     + "只把用户确实需要改变的值做成参数：合法英文变量名、简短中文标签、合理默认值和必要单位。"
+                     + "颜色参数用 color 色盘，对象参数可启用 objectFilter 按类型和名称筛选；有限选项用 choices，显示/隐藏等同一功能的常用模式用 actions 提供多个中文执行按钮并覆盖对应标量参数，减少手动输入。"
+                     + "不要把当前研究的对象 ID 存为默认值或按钮参数；对象由界面选取。"
+                     + "代码直接使用配方自动声明的参数变量，不重复声明同名变量。保留原片段已验证的行为，不增加未经验证的新操作。"
+                     + "调用 save_recipe 时填写 source_snippet；更新已有配方时带其 id。完成后只简短告知配方名称和使用方法。";
             PostJs(new { type = "userTextPrefill", text = hint });
             ReplyToWeb(seq, new JObject { ["type"] = "recipe.promote.result", ["ok"] = true });
         }

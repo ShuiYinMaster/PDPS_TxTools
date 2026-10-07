@@ -35,3 +35,11 @@
 - `Ui/ReachabilityCheckerForm*.cs`：界面、布局和事件处理。
 - `Services/ReachabilityChecker.cs`：检查流程编排。
 - `Services/AxisAnalyzer.cs`、`Services/InterferenceService.cs`：轴状态与干涉判定。
+
+## 界面与构建
+
+可达性窗口接入 `PickAwareTxForm`，操作节点对象框接入 `PickFocus`。拾取中按 Esc 保留所选节点并退出拾取。
+
+本模块随 `TxTools.csproj` 构建。环境与注册方式见 [项目 README](../README.md)。
+
+公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。

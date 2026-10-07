@@ -1486,7 +1486,7 @@ namespace TxTools.Common
             /// </summary>
             /// <param name="grid">目标网格（非 null 才处理）</param>
             /// <param name="focusTarget">
-            /// ESC 取消焦点后的落点；为 null 时取宿主窗体。
+            /// ESC 取消焦点后的落点；为 null 时使用不参与 Tab 顺序的焦点落点。
             /// 传窗体上的非拾取控件可让 ESC 把焦点让给该控件（如输入框/面板）。
             /// </param>
             public static void Wire(TxObjGridCtrl grid, Control focusTarget = null)
@@ -1494,17 +1494,9 @@ namespace TxTools.Common
                 if (grid == null) return;
                 try { grid.ListenToPick = true; } catch { }
 
-                grid.Enter += (s, e) => Activate(grid);
+                PickFocus.Wire(grid, focusTarget);
                 grid.MouseDown += (s, e) => Activate(grid);
                 grid.Click += (s, e) => Activate(grid);
-                grid.KeyDown += (s, e) =>
-                {
-                    if (e.KeyCode == Keys.Escape)
-                    {
-                        e.Handled = true;
-                        Cancel(grid, focusTarget);
-                    }
-                };
 
                 // 启动后抢焦点（ExportGun 同款）
                 // 兼容两种调用时机：窗体 OnLoad（句柄已建）或构造期建网格后（句柄未建 → 等 HandleCreated）
@@ -1544,18 +1536,6 @@ namespace TxTools.Common
                 catch { }
             }
 
-            private static void Cancel(TxObjGridCtrl grid, Control focusTarget)
-            {
-                try
-                {
-                    // 关闭拾取监听 = 退出拾取模式，避免后续点击被网格抢占
-                    grid.ListenToPick = false;
-                    Control target = focusTarget ?? grid.FindForm();
-                    if (target != null && target.CanFocus)
-                        target.Focus();
-                }
-                catch { }
-            }
         }
     }
 }

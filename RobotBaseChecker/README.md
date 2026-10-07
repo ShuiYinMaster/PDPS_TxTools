@@ -33,3 +33,7 @@
 - `RobotBaseCheckerCommand.cs`、`RobotBaseCheckerForm.cs`：命令和界面。
 - `RobotBaseReader.cs`：机器人、BASE0 和姿态读取。
 - `RobotKinematics.cs`：品牌识别和期望基准计算。
+
+## 界面与构建
+
+本模块随 `TxTools.csproj` 构建。环境与注册方式见 [项目 README](../README.md)。

@@ -77,10 +77,12 @@ namespace TxTools.WeldAnnotator
             // 卡片②：显示控制
             GroupBox snapCard = MakeRailCard("显示控制");
             _btnSnap     = MkRailBtn("拍摄快照",   BtnSnap_Click,    Theme.BtnPrimary);
-            _btnRestore  = MkRailBtn("恢复快照",   BtnRestore_Click, Theme.StatusOk);
+            _btnRestore  = MkRailBtn("恢复显示",   BtnRestore_Click, Theme.StatusOk);
             _btnShowOnly = MkRailBtn("仅显示外观", BtnShowOnly_Click,Theme.StatusWarn);
-            _btnShowAll  = MkRailBtn("显示全部",   BtnShowAll_Click, Theme.StatusNeutral);
             _btnRestore.Enabled = false;
+            _sharedToolTip.SetToolTip(_btnSnap, "记录当前场景的显示状态，包含操作节点和点位；可重复恢复此快照。");
+            _sharedToolTip.SetToolTip(_btnRestore, "优先恢复手动快照；未拍快照时，恢复本窗口首次显示/隐藏前的状态。");
+            _sharedToolTip.SetToolTip(_btnShowOnly, "仅显示操作绑定外观、机器人及工具；同时隐藏操作节点、焊点和过渡点。自动保留恢复记录。");
             _lblSnapStatus = new Label
             {
                 Text = "", AutoSize = false, Height = 16, Width = 240,
@@ -88,7 +90,7 @@ namespace TxTools.WeldAnnotator
                 Margin = new Padding(0, 4, 0, 0), TextAlign = ContentAlignment.MiddleLeft
             };
             FillRailCardGrid(snapCard, 2,
-                new Control[] { _btnSnap, _btnRestore, _btnShowOnly, _btnShowAll },
+                new Control[] { _btnSnap, _btnRestore, _btnShowOnly },
                 new Control[] { _lblSnapStatus });
 
             // 卡片③：导出设置

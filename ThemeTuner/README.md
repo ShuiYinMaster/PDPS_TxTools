@@ -32,3 +32,7 @@
 - `ThemeTunerCmd.cs`：命令入口。
 - `ThemeTunerForm.cs`：主题预设、色槽、预览和保存逻辑。
 - `ThemeTunerForm.UI.cs`：窗体控件布局。
+
+## 界面与构建
+
+本模块随 `TxTools.csproj` 构建。环境与注册方式见 [项目 README](../README.md)。

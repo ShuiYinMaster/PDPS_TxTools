@@ -2,9 +2,9 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const root = path.resolve(__dirname, '../dsh-pet');
-const config = require('../dsh-pet/config.json');
-const routes = require('../dsh-pet/host-routes.js');
+const root = process.argv[2] ? path.resolve(process.argv[2]) : path.resolve(__dirname, '../dsh-pet');
+const config = require(path.join(root, 'config.json'));
+const routes = require(path.join(root, 'host-routes.js'));
 const animations = config.animations;
 const names = new Set([
   ...animations.idle, ...animations.turn, ...animations.drag, ...animations.clicks,

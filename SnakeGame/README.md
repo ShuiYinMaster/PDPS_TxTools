@@ -88,3 +88,7 @@ root.CheckCollisions = true;   // 游戏结束/清除时恢复原值
 4. **`ITxLocatableObject.LocationRelativeToWorkingFrame` 可写性** —— 已提供 `AbsoluteLocation` 和反射两级兜底。
 
 调试时看窗体内的日志区（黑底文本框），所有失败路径都会打印具体异常信息，按 SHUIYIN 一贯的"跑起来看日志再改"节奏即可。
+
+## 界面与构建
+
+本模块随 `TxTools.csproj` 构建。环境与注册方式见 [项目 README](../README.md)。

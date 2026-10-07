@@ -59,18 +59,9 @@ namespace TxTools.Agent.Core
                     return;
                 }
 
-                // 【关键】本方法在插件加载的静态构造里执行，此时在 PS 主线程。
-                // 被控端用户可能从不点 TxAgent 按钮 —— 若这里不设置，PsContext.Current
-                // 的兜底会在管道后台线程捕获到 null SynchronizationContext，
-                // 退化成"内联执行"，PS API 就在后台线程跑了（Tecnomatix 非线程安全）。
-                // 幂等设置：点按钮的路径（TxAgentCommand.Execute）重复设置无副作用。
-                try
-                {
-                    PsContext.CaptureFromMainThread();   // 刷新可靠主线程上下文缓存
-                    if (PsContext.Current == null)
-                        PsContext.Current = new PsContext(SynchronizationContext.Current);
-                }
-                catch { }
+                // Startup now runs on a worker. Never capture that worker as the PS UI thread.
+                if (!PsContext.HasRealMainThreadContext)
+                    throw new InvalidOperationException("启动服务前需捕获 PS 主线程上下文。");
 
                 PsRpcClient.LocalToolRegistry = tools;
 

@@ -73,10 +73,20 @@ namespace TxTools.Agent.Core
                         if (help.Length > 0) pd["description"] = help.ToString();
 
                         props[p.Name] = pd;
-                        if (p.Required) required.Add(p.Name);
+                        if (p.Choices != null && p.Choices.Count > 0)
+                            pd["enum"] = new JArray(p.Choices.Select(c => p.Kind == "number"
+                                ? (JToken)new JValue(double.Parse(c.Value, System.Globalization.CultureInfo.InvariantCulture)) : new JValue(c.Value)));
+                        // 按钮可能提供该值，最终必填校验统一由 Runner 执行。
+                        if (p.Required && !(_recipe.Actions ?? new List<RecipeAction>()).Any(a => a.Args != null && a.Args.ContainsKey(p.Name))) required.Add(p.Name);
                     }
                 }
                 var schema = new JObject();
+                if (_recipe.Actions != null && _recipe.Actions.Count > 0)
+                    props["__recipe_action"] = new JObject
+                    {
+                        ["type"] = "string", ["enum"] = new JArray(_recipe.Actions.Select(a => a.Id)),
+                        ["description"] = "执行按钮: " + string.Join("、", _recipe.Actions.Select(a => a.Id + "=" + a.Label))
+                    };
                 schema["type"] = "object";
                 schema["properties"] = props;
                 if (required.Count > 0) schema["required"] = required;
@@ -101,7 +111,7 @@ namespace TxTools.Agent.Core
             }
 
             string err;
-            var full = RecipeRunner.BuildCode(_recipe, args, out err);
+            var full = RecipeRunner.BuildCode(_recipe, args, input == null ? null : (string)input["__recipe_action"], out err);
             if (full == null) return "Error: " + err;
 
             bool ok;

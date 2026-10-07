@@ -41,8 +41,22 @@ namespace TxTools.Agent.Core
         /// </summary>
         public static string BuildCode(Recipe r, Dictionary<string, string> args, out string error)
         {
+            return BuildCode(r, args, null, out error);
+        }
+
+        public static string BuildCode(Recipe r, Dictionary<string, string> args, string actionId, out string error)
+        {
             error = null;
             if (r == null) { error = "配方不存在。"; return null; }
+            error = RecipeStore.ValidateDefinition(r);
+            if (error != null) return null;
+            args = args == null ? new Dictionary<string, string>() : new Dictionary<string, string>(args);
+            if (!string.IsNullOrEmpty(actionId))
+            {
+                var action = (r.Actions ?? new List<RecipeAction>()).FirstOrDefault(a => a.Id == actionId);
+                if (action == null) { error = "执行按钮不存在，请刷新配方。"; return null; }
+                foreach (var pair in action.Args ?? new Dictionary<string, string>()) args[pair.Key] = pair.Value;
+            }
 
             var lang = SnippetStore.NormalizeLang(r.Lang);
             var sb = new StringBuilder();
@@ -64,6 +78,8 @@ namespace TxTools.Agent.Core
                     else { AppendNull(sb, lang, p.Name); continue; }
                 }
 
+                error = RecipeStore.ValidateValue(p, raw);
+                if (error != null) return null;
                 switch (p.Kind)
                 {
                     case "object": AppendObject(sb, lang, p, raw); break;
