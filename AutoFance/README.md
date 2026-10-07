@@ -1,4 +1,6 @@
-# FenceBuilder — Process Simulate 2402 围栏生成插件
+# AutoFance — Process Simulate Fence Builder / 围栏生成
+
+Generate fence panels and posts along line or polyline baselines in Process Simulate.
 
 根据场景中已有的直线/多段线特征(`TxLineFeature` / `TxPolylineFeature`),按用户指定的网片与立柱参数,沿线段生成围栏(网片 + 立柱 + 可选底板)。
 

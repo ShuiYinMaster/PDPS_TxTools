@@ -1,4 +1,6 @@
-# 焊点分配 / 更新（WeldSpotAllocator）使用帮助
+# WeldSpotAllocator — Weld Spot Allocation / 焊点分配
+
+Update weld coordinates, map unallocated weld points to reference paths and perform symmetric weld-point allocation in Process Simulate.
 
 TxTools 套件中的 Process Simulate 2402 插件，用于在焊接操作之间**更新焊点位置**或**分配焊点**。适用三类场景：旧版轨迹换新版坐标、把待分配焊点塞进已调好的参考轨迹、左右对称分配。
 

@@ -1,4 +1,6 @@
-# TxToolsMcpBridge — Process Simulate MCP 桥
+# McpBridge — Process Simulate MCP Server / MCP 桥接
+
+Expose TxAgent tools to external MCP clients over stdio, forwarding requests to Process Simulate through named-pipe RPC.
 
 让通用智能体（opencode / Claude Code / Codex / 其它支持 MCP 的 Agent）通过
 **MCP (Model Context Protocol)** 直接控制 Process Simulate。

@@ -1,4 +1,6 @@
-# AutoRecorder
+# AutoRecorder — Process Simulate Video Recording / 仿真录屏
+
+Record selected Process Simulate operations as videos, with configurable views, resolution and encoding.
 
 Process Simulate 操作录像插件，用于把选定操作的仿真过程批量录制为视频。
 

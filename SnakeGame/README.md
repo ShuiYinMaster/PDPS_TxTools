@@ -1,4 +1,6 @@
-# TxTools.SnakeGame
+# SnakeGame — Process Simulate Snake Game / 贪吃蛇
+
+A grid-based snake game that creates and moves scene geometry inside Process Simulate.
 
 在 Process Simulate 场景内玩一局贪吃蛇：蛇头/蛇身/食物都是真实的 3D 实体（`TxSolid` 长方体），移动、吃食物、干涉高亮全部映射到 PS SDK 调用。
 

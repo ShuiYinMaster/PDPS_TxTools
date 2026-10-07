@@ -1,4 +1,6 @@
-# WeldGunDefiner
+# WeldGunDefiner — X-Type Weld Gun Kinematics / X 枪运动学定义
+
+Create X-type weld-gun links, joints, poses and drive relationships through a Process Simulate kinematics wizard.
 
 通过向导在 Process Simulate 中快速创建 X 型焊枪的运动学定义和驱动关系。
 

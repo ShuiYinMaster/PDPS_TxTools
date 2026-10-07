@@ -1,4 +1,6 @@
-# SelectButton
+# SelectButton — Weld and Via Selection / 快捷选点
+
+Select weld points, via points or continuous locations from selected operations, and open resource directories in Process Simulate.
 
 根据当前选中的操作或操作组，一键收集并选中焊点、过渡点或连续点；同时提供打开资源磁盘目录的快捷命令。
 

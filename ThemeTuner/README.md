@@ -1,4 +1,6 @@
-# ThemeTuner
+# ThemeTuner — TxTools UI Themes / 界面主题
+
+Customize shared TxTools window colors and persist the palette in theme.cfg.
 
 运行时调整 TxTools 各插件窗体的统一配色主题，并将设置持久化到 `theme.cfg`。
 

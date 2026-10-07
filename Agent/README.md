@@ -1,4 +1,6 @@
-# TxAgent — Process Simulate 进程内 AI 助手
+# TxAgent — Process Simulate AI Agent / 进程内 AI 助手
+
+An in-process AI assistant for Tecnomatix Process Simulate, with scene tools, reusable C# / Python recipes and multi-instance collaboration.
 
 源码版本：2026-10-07。TxAgent 在 Process Simulate 2402 中提供聊天、工具调用、代码片段、配方和多实例协作。入口是 `TxAgentCommand.cs`，详细项目环境见 [总 README](../README.md)。
 

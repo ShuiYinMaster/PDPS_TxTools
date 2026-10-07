@@ -1,4 +1,24 @@
-# TxTools 使用与开发手册（中文）
+# TxTools — Tecnomatix Process Simulate Plugins / PDPS 二次开发插件
+
+[中文使用与开发手册](#一项目概述) · [English overview](README.en.md) · [安装与注册](#三快速安装与注册) · [全部插件](#四主要插件与功能简介) · [更新日志](#十三更新日志)
+
+面向 **Siemens Tecnomatix Process Simulate（PDPS）** 的 C# 二次开发插件集，用于机器人焊接仿真与离线编程：焊接路径规划、机器人可达性检查、焊点分配、CATIA / Excel 导出，以及 TxAgent AI 助手与 MCP 桥接。
+
+**C# plugins for Siemens Tecnomatix Process Simulate (PDPS)**, supporting robotic welding and offline programming: weld path planning, robot reachability checks, weld spot allocation, CATIA / Excel export, an in-process AI agent and an MCP stdio bridge.
+
+## 常用任务 / Common workflows
+
+| 工程任务 / Task | 插件与说明 / Documentation |
+|---|---|
+| 自动生成焊接过渡路径 / Robot weld path planning | [AutoPath](AutoPath/README.md) |
+| 检查机器人焊点可达性 / Robot reachability checks | [RobotReachabilityChecker](RobotReachabilityChecker/README.md) |
+| 更新、分配或镜像焊点 / Weld spot allocation | [WeldSpotAllocator](WeldSpotAllocator/README.md) |
+| 导出焊枪与布局至 CATIA / CATIA export | [ExportGun](ExportGun/README.md) · [ExportByColor](ExportByColor/README.md) |
+| 生成 Excel 焊点截图与标注 / Excel weld-point annotation | [WeldAnnotator](WeldAnnotator/README.md) |
+| 用 AI 查询场景并复用工程配方 / AI-assisted scene tools and recipes | [TxAgent](Agent/README.md) |
+| 通过 MCP 接入外部智能体 / Process Simulate MCP integration | [McpBridge](McpBridge/README.md) |
+
+主要宿主：Process Simulate 2402 · 主插件：.NET Framework 4.8 / x64 · 源码许可：[MIT](LICENSE)。首次使用请按下文配置 SDK、依赖与命令注册；各插件的前置条件见对应说明。
 
 版本：2026-10-07
 说明：本文件基于当前仓库代码整理，面向插件使用者与二次开发者。`Agent/` 为当前版本已纳入主项目的 TxAgent 实现，详细设计说明见 [`Agent/README.md`](Agent/README.md)。
@@ -203,6 +223,12 @@ TxAgent：
 
 
 ## 十三、更新日志
+
+### 2026-10-07 — 项目介绍与检索入口优化
+
+- GitHub 仓库简介更新为中英混合功能说明，Topics 扩展为 14 个，覆盖 Process Simulate、机器人仿真、点焊、离线编程、CATIA、C#、AI 与 MCP。
+- README 首屏增加中英文项目名称、用途和常用任务导航，明确 Process Simulate、PDPS、机器人焊接与离线编程场景。
+- 新增英文总览 `README.en.md`，列出安装前提、全部模块入口及 AI / MCP 能力；各模块 README 增加双语标题和英文功能摘要。
 
 ### 2026-10-07 — F 盘源码同步与文档更新
 

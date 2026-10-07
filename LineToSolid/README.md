@@ -1,4 +1,6 @@
-# LineToSolid — Process Simulate 2402 插件
+# LineToSolid — Curve-to-Solid Geometry / 曲线转实体
+
+Create rectangular or circular solids from line, polyline and arc features in Process Simulate.
 
 以场景中已有的曲线特征（**TxPolylineFeature / TxLineFeature / TxArcFeature**）为基线，按用户指定的截面参数（矩形宽×高 / 圆形直径）为每个直线段生成一个独立的长方体或圆柱体。几何体的长度方向自动与所在段方向对齐。
 
