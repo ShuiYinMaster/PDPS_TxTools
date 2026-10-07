@@ -1,4 +1,4 @@
-# TxAgent.Core Harness 接入说明
+﻿# TxAgent.Core Harness 接入说明
 
 本目录（`Agent/Core/Harness/`）存放从 `files (83).zip` 引入的**通用 agent 编排骨架**（`TxAgent.Core`）以及把它接入现有 TxAgent 项目所需的**适配/桥接层**。
 
@@ -63,7 +63,7 @@ Agent/Core/Harness/
 - **主线程封送**：构造接收 `SynchronizationContext`，`Invoke` / `Invoke<T>` 用 `_ctx.Send` 把工具执行封送回 PS 主线程（PS API 非线程安全）。
 - **模式探测**：`Mode` 通过反射读 `TxApplication.IsTeamcenterConnected` 决定 `Connected` / `Standalone`。
 - **确认弹窗**：`Confirm` 解析 harness 固定格式 `"工具：<name>\n参数：<json>"`，优先调 `ConfirmRequest` 委托，无委托时 fallback 到 `MessageBox`。
-- **回滚点**：`CreateRestorePoint` 反射调 `TxApplication.ActiveDocument.Save()`。
+- **回滚点**：`CreateRestorePoint` 在独立模式使用 `SaveDataToFile(..., AllAttributes)` 导出唯一 `.psz` 快照，校验文件存在且非空后才报告成功。连接模式使用平台版本管理；工程快照不覆盖外部文件。
 - **日志**：`Log` 转 `AuditLog.Write`。
 - 公开属性：`ConfirmRequest`、`AutoApproveTools`。
 
@@ -102,7 +102,7 @@ private const bool UseNewHarness = false;
 | 错误回灌自修 | ✅ | ✅ | harness 内建,连续失败 3 次熔断 |
 | 主线程封送 | ✅ | ✅ | 由 PsAgentHost.Invoke 保证 |
 | 写操作确认弹窗 | ✅ | ✅ | 由 PsAgentHost.Confirm + Adapter 的 IsWrite 保证 |
-| 回滚点 | ✅ | ✅ | CreateRestorePoint(保存文档) |
+| 回滚点 | ✅ | ✅ | CreateRestorePoint(导出并验证快照) |
 | 记忆注入(Facts+Gotchas) | ✅ | ✅ | [P1] Reset/LoadHistory 时调用 BuildSystemPromptWithMemory 注入 |
 | 历史压缩 | ✅ | ✅ | [P5] SendAsync 前按 MaxTurnsToKeep 压缩旧消息为摘要 |
 | AutoSnippet | ✅ | ✅ | [P4] 每轮 SendAsync 开始时按需注入 Top-3 相关 Snippet,finally 移除 |

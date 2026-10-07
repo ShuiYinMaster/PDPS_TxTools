@@ -1,4 +1,4 @@
-# CrossEnvIO — Process Simulate Data Transfer / 跨环境数据传输
+﻿# CrossEnvIO — Process Simulate Data Transfer / 跨环境数据传输
 
 Transfer resource trees, part trees and weld-point data between Process Simulate instances and rebuild structures in the target environment.
 
@@ -47,3 +47,10 @@ Transfer resource trees, part trees and weld-point data between Process Simulate
 本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
 
 公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。
+
+
+## 撤销与恢复（2026-10-07）
+
+树、焊点重建及组件插入使用场景撤销分组；默认不自动覆盖并重载工程。MCP 参数 save_reload=true 才启用带原文件备份的保存/路径修补/重载。复制用独立暂存目录发布；失败目录保留清理记录，内容变化或工程引用时禁止清理。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

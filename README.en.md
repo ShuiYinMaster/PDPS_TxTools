@@ -1,4 +1,4 @@
-# TxTools — Siemens Tecnomatix Process Simulate Plugins
+﻿# TxTools — Siemens Tecnomatix Process Simulate Plugins
 
 [English](README.en.md) · [中文完整手册](README.md) · [Installation](#installation) · [Plugin directory](#plugin-directory)
 
@@ -83,3 +83,8 @@ The standalone DeviceZAligner plugin retains its documented unresolved runtime i
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance, the [Chinese developer manual](README.md) for SDK and geometry conventions, and [Issues](https://github.com/ShuiYinMaster/PDPS_TxTools/issues) for bug reports. Include the host version, reproduction steps and relevant logs when reporting a problem.
 
 TxTools source is licensed under [MIT](LICENSE). Siemens SDK assemblies and other third-party components retain their own licenses; see [NOTICE.md](NOTICE.md) and the relevant component notices.
+
+
+## Undo and recovery
+
+Persistent scene edits use validated PS 2402 transaction grouping. A failed edit is not automatically rolled back: inspect its result and use Ctrl+Z in the target PS document when needed. Files, CATIA/Excel output and registry changes require their own recovery methods. Save/reload boundaries and legacy gun ownership are described in the [undo safety guide](docs/undo-safety.md).

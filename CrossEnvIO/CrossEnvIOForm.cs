@@ -695,6 +695,8 @@ namespace TxTools.CrossEnvIO
                     return;
                 }
                 var rep = CojtTransfer.CopyCojtList(cojts, src, dst, Log);
+                var previous = _partMode ? _lastPartCopy : _lastResCopy;
+                if (previous != null) rep.Merge(previous);
                 if (_partMode) _lastPartCopy = rep; else _lastResCopy = rep;
                 Log("[完成] " + rep);
             }
@@ -709,12 +711,12 @@ namespace TxTools.CrossEnvIO
                 if (doc == null) { Log("[错误] 无活动文档"); return; }
                 string file = GetText(_txtFile);
                 Log("=== 重建" + ModeName() + " ===");
+                var copy = _partMode ? _lastPartCopy : _lastResCopy;
+                if (copy != null) copy.SceneMayReferenceFiles = true;
                 var rep = StructureIO.RebuildStructure(file, doc.PhysicalRoot, !_partMode, Log,
                     _originX, _originY, _originZ);
                 foreach (var e in rep.Errors) Log("[警告] " + e);
-                // 统一收尾：保存 + 改 psz 路径 + 重载刷新（与对端重建同一套逻辑）
-                Log("[修路径] 重建完成，统一保存+改psz+重载");
-                ComponentIO.FixPszAfterInsert(Log);
+                Log("[Undo] 场景重建已结束，可在当前 PS 工程按 Ctrl+Z；未自动保存/重载工程。");
                 Log("[完成] " + rep);
                 TryRefresh();
             }
@@ -727,7 +729,7 @@ namespace TxTools.CrossEnvIO
             var rep = _partMode ? _lastPartCopy : _lastResCopy;
             if (rep == null || rep.CopiedDirs.Count == 0)
             { Log("[撤销] 无可撤销的复制记录"); return; }
-            rep.Undo(Log);
+            rep.Undo(Log, dir => !ComponentIO.IsPathReferencedByScene(dir));
         }
 
         private void RunExportWeld()

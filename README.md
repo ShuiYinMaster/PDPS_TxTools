@@ -1,4 +1,4 @@
-# TxTools — Tecnomatix Process Simulate Plugins / PDPS 二次开发插件
+﻿# TxTools — Tecnomatix Process Simulate Plugins / PDPS 二次开发插件
 
 [中文使用与开发手册](#一项目概述) · [English overview](README.en.md) · [安装与注册](#三快速安装与注册) · [全部插件](#四主要插件与功能简介) · [更新日志](#十三更新日志)
 
@@ -31,7 +31,7 @@ TxTools 是面向机器人焊接工艺的 Process Simulate（Tecnomatix）二次
 设计要点：
 - 在不同 PS 版本下采用防御式 API 探测（dynamic + 多路径 try/catch）。
 - 统一的 GUI 风格：基于 TxForm + TxFlexGrid 的卡片式面板与日志。
-- 批量操作包裹在 UndoScope 中，支持 Ctrl+Z 回滚。
+- 需要撤销保障的场景写入使用撤销事务分组；文件、CATIA、Excel 和配置写入使用各自恢复方式，详见 [撤销与恢复说明](docs/undo-safety.md)。
 - 对外部系统（如 CATIA）使用桥接层以集中管理 COM 互操作。
 - TxAgent 的 PS 调用统一经过 `PsContext` / `PsAgentHost` 回到 UI 主线程，变更工具默认需要审批并记录审计日志。
 - 记忆、配方和知识库使用可读的 Markdown 文件保存，方便查看、版本控制和迁移。
@@ -74,28 +74,28 @@ TxTools 是面向机器人焊接工艺的 Process Simulate（Tecnomatix）二次
 
 ## 四、主要插件与功能简介
 
-以下为全部 23 个模块的使用说明入口；“本次变化”以本轮 F 盘源码同步为准。
+以下为全部 23 个模块的使用说明入口；“本次变化”包含源码同步及本轮撤销修复。
 
 | 模块 | 用途 | 本次变化 |
 |---|---|---|
-| [TxAgent](Agent/README.md) | 进程内 AI、工具与配方 | 配方控件、迁移、动态类型、后台启动、桌宠组件 |
+| [TxAgent](Agent/README.md) | 进程内 AI、工具与配方 | 真实场景事务、快照校验、Python 关闭失败报告 |
 | [ExportGun](ExportGun/README.md) | 导插枪、坐标与 CATIA 导出 | 对象/TCP/参考系拾取退出 |
 | [ExportByColor](ExportByColor/README.md) | 按颜色导出 CGR 和网格 | 资源与原点拾取退出 |
 | [WeldAnnotator](WeldAnnotator/README.md) | 焊点截图及 Excel 标注 | 独立显示会话、三态恢复与事务保护 |
-| [AutoPath](AutoPath/README.md) | 自动过渡点与路径规划 | 操作拾取退出 |
-| [AutoFance](AutoFance/README.md) | 沿基线生成围栏 | 基线拾取退出 |
-| [LineToSolid](LineToSolid/README.md) | 曲线生成实体 | 特征拾取退出 |
+| [AutoPath](AutoPath/README.md) | 自动过渡点与路径规划 | 路径与多机器人干涉集撤销分组、工程切换检查 |
+| [AutoFance](AutoFance/README.md) | 沿基线生成围栏 | 多基线批次记录、按 ID 清理、既有及后加内容保护 |
+| [LineToSolid](LineToSolid/README.md) | 曲线生成实体 | 批量几何撤销分组、失败空容器清理 |
 | [AutoRecorder](AutoRecorder/README.md) | 仿真自动录屏 | 操作拾取退出 |
-| [CrossEnvIO](CrossEnvIO/README.md) | 跨 PS 环境传输和重建 | 资源/操作/原点拾取退出 |
+| [CrossEnvIO](CrossEnvIO/README.md) | 跨 PS 环境传输和重建 | 重建撤销分组、复制清理保护、显式保存重载 |
 | [RobotReachabilityChecker](RobotReachabilityChecker/README.md) | 机器人可达性检查 | 操作节点拾取退出 |
-| [WeldGunDefiner](WeldGunDefiner/README.md) | X 枪运动学向导 | 几何与 TCP 拾取退出 |
-| [WeldSpotAllocator](WeldSpotAllocator/README.md) | 焊点更新、分配与镜像 | 参考集/目标集拾取退出 |
-| [WeldSpotGrouper](WeldSpotGrouper/README.md) | 按绑定零件分组焊点 | 范围节点拾取退出 |
-| [McpBridge](McpBridge/README.md) | 外部 Agent 的 MCP stdio 桥 | 构建输出路径与说明 |
-| [WeldPointMatrix](WeldPointMatrix/README.md) | 多操作点位矩阵与插入 | 为已有模块补齐 README |
-| [CatiaPartTree](CatiaPartTree/README.md) | CATIA 产品树 | 核对文档，业务源码未变 |
-| [RobotBaseChecker](RobotBaseChecker/README.md) | BASE0 检查与校正 | 核对文档，业务源码未变 |
-| [DeviceZAligner](DeviceZAligner/README.md) | 设备 Z 向对齐 | 补充说明，保留原有不可正常运行状态 |
+| [WeldGunDefiner](WeldGunDefiner/README.md) | X 枪运动学向导 | 机构所有权检查、生成与 TCPF/定义统一分组 |
+| [WeldSpotAllocator](WeldSpotAllocator/README.md) | 焊点更新、分配与镜像 | 替换无效事务接口、明确部分失败恢复方式 |
+| [WeldSpotGrouper](WeldSpotGrouper/README.md) | 按绑定零件分组焊点 | 真实事务、失败新空父节点清理 |
+| [McpBridge](McpBridge/README.md) | 外部 Agent 的 MCP stdio 桥 | 明确目标实例与外部副作用的撤销边界 |
+| [WeldPointMatrix](WeldPointMatrix/README.md) | 多操作点位矩阵与插入 | 点位事务、移动失败补偿、激活刷新 |
+| [CatiaPartTree](CatiaPartTree/README.md) | CATIA 产品树 | 真实事务、保存重载默认关闭、覆盖前备份 |
+| [RobotBaseChecker](RobotBaseChecker/README.md) | BASE0 检查与校正 | 同步全部 BASE0 纳入同一场景撤销批次 |
+| [DeviceZAligner](DeviceZAligner/README.md) | 设备 Z 向对齐 | 真实事务、几何与偏移刷新；最低点算法待实机核验 |
 | [LibPathSync](LibPathSync/README.md) | PS 库目录同步 | 核对文档，业务源码未变 |
 | [SelectButton](SelectButton/README.md) | 快捷选点与资源目录 | 核对文档，业务源码未变 |
 | [ThemeTuner](ThemeTuner/README.md) | 统一主题配色 | 核对文档，业务源码未变 |
@@ -125,7 +125,7 @@ TxTools 是面向机器人焊接工艺的 Process Simulate（Tecnomatix）二次
   - 记忆与知识：多对话历史、Facts/Gotchas、可复用代码片段、Markdown 知识库和语义检索；数据优先保存在插件目录，不可写时回退到 `%LOCALAPPDATA%`。
   - 配方与计划：把经过验证的多步操作保存为带参数的可复用配方，并用计划工具管理复杂任务。
   - 源码工作区：在限定的工作区内读取、搜索、创建、精确修改、回滚和编译 C# 源码；修改类操作需要审批并自动保留备份。
-  - 安全与并发：只读/变更工具分级、变更审批、Undo 回滚、审计日志；支持多个 PDPS 实例之间发现、只读执行和结果对比。
+  - 安全与并发：只读/变更工具分级、变更审批、场景撤销分组、恢复快照与审计日志；支持多个 PDPS 实例之间发现、只读执行和结果对比。
 
 - CrossEnvIO（`CrossEnvIO/`）  
   提供跨环境结构、组件、焊点和数学数据的导入导出及重建辅助。
@@ -146,7 +146,7 @@ LineToSolid：
 FenceBuilder（围栏）：
 1. 在场景准备直线或多段线基线（首端 Z 作为地面）。  
 2. 菜单 → TxTools → 围栏生成器，选择基线并调整参数（网片宽/高、立柱尺寸、间隙、底板、纹理）。  
-3. 点击【生成围栏】；若不满意使用 Ctrl+Z 或【撤销上次】。
+3. 点击【生成围栏】；若不满意在 PS 中使用 Ctrl+Z，或用【清理上次生成】清理该批生成物。
 
 ExportGun：
 1. 在插件窗体加载或选择焊点集合/焊枪对象。  
@@ -223,6 +223,15 @@ TxAgent：
 
 
 ## 十三、更新日志
+
+### 2026-10-07 — Ctrl+Z 撤销与恢复修复
+
+- 新增公共 `SceneUndoScope`，使用经本机 PS 2402 SDK 核验的无参 Start/End 事务；支持嵌套调用、文档绑定和关闭失败阻断，替换各写入层及 Agent 中无效的事务接口。
+- 围栏按对象 ID 保存整批生成物，清理保留原有建模组件及后续新增内容，支持多基线和失败重试；几何生成、路径/干涉集、BASE0、焊钳、点位矩阵及组件导入补齐撤销分组。
+- 焊钳重建只处理带所有权标记的机构；矩阵移动失败尝试恢复原顺序；设备对齐在重新激活及写入前刷新几何与偏移。
+- Agent 恢复点改为导出并验证独立工程快照；Python 明确报告事务关闭失败，不再宣称自动回滚。组件导入保留唯一中转目录，避免撤销/重做引用已删除文件。
+- cojt 复制使用唯一暂存目录发布，保留失败清理记录并校验内容/工程引用；保存并重载默认关闭，显式执行先备份原工程，区分磁盘恢复与场景撤销。
+- 更新全部模块 README 和远程工具描述，新增 [撤销修复清单及验收说明](docs/undo-safety.md)。新增 17 项撤销安全回归通过；Release 构建及 14 份配方资源验证通过。真实 PS/CATIA/Excel 工程操作尚需宿主验收，现有编译警告仍保留。
 
 ### 2026-10-07 — 项目介绍与检索入口优化
 

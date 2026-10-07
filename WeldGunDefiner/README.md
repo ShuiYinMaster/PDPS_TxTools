@@ -1,4 +1,4 @@
-# WeldGunDefiner — X-Type Weld Gun Kinematics / X 枪运动学定义
+﻿# WeldGunDefiner — X-Type Weld Gun Kinematics / X 枪运动学定义
 
 Create X-type weld-gun links, joints, poses and drive relationships through a Process Simulate kinematics wizard.
 
@@ -47,3 +47,10 @@ Create X-type weld-gun links, joints, poses and drive relationships through a Pr
 本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
 
 公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。
+
+
+## 撤销与恢复（2026-10-07）
+
+TCPF、运动学、姿态和焊钳定义纳入场景撤销分组。仅清理带 TxTools.RprrOwner 标记的已有关节；未标记的同名关节/Link 不自动接管，需用原生命令确认旧机构。失败如有部分变更，使用 Ctrl+Z；不宣称自动恢复旧机构。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

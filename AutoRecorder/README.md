@@ -1,4 +1,4 @@
-# AutoRecorder — Process Simulate Video Recording / 仿真录屏
+﻿# AutoRecorder — Process Simulate Video Recording / 仿真录屏
 
 Record selected Process Simulate operations as videos, with configurable views, resolution and encoding.
 
@@ -46,3 +46,10 @@ Process Simulate 操作录像插件，用于把选定操作的仿真过程批量
 本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
 
 公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。
+
+
+## 撤销与恢复（2026-10-07）
+
+录制、播放、相机切换属于运行和视图状态；生成的视频文件不由 PS Ctrl+Z 删除或恢复。取消使用停止/终止接口；录制前视角及实际仿真状态应在宿主中核验。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

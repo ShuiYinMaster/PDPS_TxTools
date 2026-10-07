@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
@@ -225,6 +225,7 @@ namespace TxTools.RobotBaseChecker
             {
                 PsContext.Run(() =>
                 {
+                    using (var undoScope = TxTools.Common.SceneUndoScope.Begin("批量同步 BASE0"))
                     foreach (var r in _results)
                     {
                         // 逻辑梳理：跳过已一致或缺乏坐标无法对比的机器人

@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 //  PythonHost.cs  —  TxAgent IronPython 执行宿主
 // -----------------------------------------------------------------------------
 //  目标环境: Process Simulate 2402 内嵌 IronPython 2.7.7 / .NET Framework 4.8 / C# 7.3
@@ -9,7 +9,7 @@
 //    2. 复用 PDPS 进程内已加载的 IronPython 程序集(若已加载)，避免版本冲突。
 //    3. __future__ 影响的是"每个编译单元",因此 division/print_function/unicode_literals
 //       必须逐次拼在用户代码前面(offset = 1 行,报错行号已自动回退)。
-//    4. Probe 模式 = 照常开 undo 事务,但结束时无条件回滚 —— agent 可零成本探测 API。
+//    4. Probe 模式由工具层只读检查约束；SDK 撤销事务仅分组，不提供自动回滚。
 //    5. 超时通过 sys.settrace 看门狗实现(需引擎 Tracing 选项),独立编译单元下发,
 //       不污染用户代码的行号。
 //
@@ -44,9 +44,9 @@ namespace TxTools.Agent.Scripting
     /// <summary>执行模式。</summary>
     public enum PythonRunMode
     {
-        /// <summary>探测模式：照常执行，但结束时无条件回滚，场景不受影响。</summary>
+        /// <summary>探测模式：只读性由工具层静态检查保证，不依赖自动回滚。</summary>
         Probe,
-        /// <summary>执行模式：成功提交，异常回滚。</summary>
+        /// <summary>执行模式：结束撤销分组；失败时报告实际状态，需用户 Ctrl+Z。</summary>
         Execute
     }
 
@@ -1275,7 +1275,7 @@ def tx_sig(o, name):
 
         /// <summary>执行脚本。自动 marshal 到 PS 主线程。</summary>
         /// <param name="undoLabel">
-        /// 本次执行的 undo 分组名，出现在用户的 Ctrl+Z 历史里。留空则用 Options.UndoContextName。
+        /// 本次执行的诊断标签。PS 2402 的事务接口不接受名称；留空则用 Options.UndoContextName。
         /// 【配方执行务必传】配方不走审批，undo 是唯一的兜底手段；
         /// 全都叫 "TxAgent Python Script" 的话，连跑几个配方后用户认不出该撤到哪一步。
         /// </param>
@@ -1356,8 +1356,17 @@ def tx_sig(o, name):
                 }
 
                 // ---- 3. 事务内执行 ----
-                var undo = new UndoScope(
-                    string.IsNullOrWhiteSpace(undoLabel) ? _opt.UndoContextName : undoLabel, Log);
+                UndoScope undo;
+                try
+                {
+                    undo = new UndoScope(string.IsNullOrWhiteSpace(undoLabel) ? _opt.UndoContextName : undoLabel, Log);
+                }
+                catch (Exception ex)
+                {
+                    res.Success = false; res.ErrorType = "UndoUnavailable"; res.ErrorMessage = ex.Message;
+                    sw.Stop(); res.DurationMs = sw.ElapsedMilliseconds;
+                    return res;
+                }
                 res.UndoAvailable = undo.Available;
                 res.CanRollback = undo.CanRollback;
                 bool ok = false;
@@ -1394,12 +1403,15 @@ def tx_sig(o, name):
                 }
                 finally
                 {
-                    // Probe 模式无条件回滚；Execute 模式失败才回滚
+                    // 始终关闭事务；本机 SDK 不提供自动回滚，失败后由用户 Ctrl+Z 撤销。
                     bool rollback = (mode == PythonRunMode.Probe) || !ok;
                     res.RolledBack = undo.Finish(rollback);
                 }
 
-                res.Success = ok;
+                res.UndoAvailable = undo.Completed;
+                res.Success = ok && !undo.CloseFailed;
+                if (undo.CloseFailed)
+                { res.ErrorType = "UndoCloseFailed"; res.ErrorMessage = undo.Diagnostic; }
                 res.Output = _stdout.Drain();
                 res.ErrorOutput = _stderr.Drain();
                 res.OutputTruncated = _stdout.Truncated || _stderr.Truncated;
@@ -1575,230 +1587,42 @@ def tx_sig(o, name):
         /// <summary>
         /// 反射访问 PS 的 undo 管理器，避免对 Tecnomatix.Engineering 的编译期依赖。
         /// 属性名与方法名在不同 PS 版本间可能不同，因此按候选列表逐个尝试；
-        /// 全部失败时把 TxApplication 的真实静态成员清单写进 Diagnostic —— 
+        /// 全部失败时把 TxApplication 的真实静态成员清单写进 Diagnostic ——
         /// 这样错误信息本身就包含答案，不依赖调用方是否接了日志。
-        /// 任何一步失败都降级为"无事务"，绝不假装回滚成功。
+        /// 开始失败阻止执行，结束失败报告失败；不假装自动回滚成功。
         /// </summary>
         private sealed class UndoScope
         {
-            private static readonly string[] ManagerMembers =
-            {
-                "ActiveUndoManager", "UndoRedoManager", "UndoManager",
-                "ActiveUndoRedoManager", "ActiveUndo", "Undo"
-            };
-            private static readonly string[] OpenNames =
-            { "StartTransaction", "OpenUndoContext", "BeginUndoContext", "StartUndoContext", "BeginTransaction" };
-            private static readonly string[] CloseNames =
-            { "EndTransaction", "CloseUndoContext", "EndUndoContext", "CommitTransaction" };
-            // PS 2402 的 TxUndoTransactionManager 只有 StartTransaction/EndTransaction/ClearAllTransactions，
-            // 没有任何回滚方法。保留候选列表只是为了兼容将来版本，实测应为 CanRollback == false。
-            private static readonly string[] UndoNames =
-            { "Undo", "UndoLast", "UndoTransaction", "Rollback", "RollbackTransaction" };
-
-            private object _mgr;
+            private TxTools.Common.SceneUndoScope _scope;
             private readonly Action<string> _log;
-            private bool _opened;
-            private MethodInfo _undoMi;
-
-            /// <summary>失败时的可读诊断（含真实成员清单）。成功时为空。</summary>
             public string Diagnostic = "";
-
-            /// <summary>事务已开启。注意：这只保证"改动被分组、用户可 Ctrl+Z"，不代表能程序化回滚。</summary>
-            public bool Available { get { return _mgr != null && _opened; } }
-
-            /// <summary>该 undo 管理器是否提供程序化回滚。PS 2402 下为 false。</summary>
-            public bool CanRollback { get { return _undoMi != null; } }
-
+            public bool Available { get { return _scope != null; } }
+            public bool CanRollback { get { return false; } }
+            public bool Completed { get; private set; }
+            public bool CloseFailed { get; private set; }
             public UndoScope(string name, Action<string> log)
             {
                 _log = log;
-                var sb = new StringBuilder();
-                try
-                {
-                    Type app = FindType("Tecnomatix.Engineering.TxApplication");
-                    if (app == null)
-                    {
-                        Diagnostic = "未找到 Tecnomatix.Engineering.TxApplication 类型（程序集可能未加载）。";
-                        Log(Diagnostic);
-                        return;
-                    }
-
-                    // --- 1) 找 undo 管理器 ---
-                    object mgr = null;
-                    string usedMember = null;
-                    foreach (var mn in ManagerMembers)
-                    {
-                        object v;
-                        if (!TryGetStatic(app, mn, out v, sb)) continue;
-                        if (v != null) { mgr = v; usedMember = mn; break; }
-                        sb.AppendLine("  " + mn + " 存在但返回 null");
-                    }
-
-                    if (mgr == null)
-                    {
-                        Diagnostic = "在 TxApplication 上找不到可用的 undo 管理器。"
-                                   + (sb.Length > 0 ? "\n尝试记录:\n" + sb : "")
-                                   + "\nTxApplication 的静态成员如下（请据此告知正确名称）:\n"
-                                   + DumpStaticMembers(app);
-                        Log(Diagnostic);
-                        return;
-                    }
-
-                    // --- 2) 开启事务 ---
-                    Type mt = mgr.GetType();
-                    MethodInfo open = FindMethod(mt, OpenNames, new[] { typeof(string) });
-                    if (open == null) open = FindMethod(mt, OpenNames, Type.EmptyTypes);
-
-                    if (open == null)
-                    {
-                        Diagnostic = "已取到 undo 管理器 " + usedMember + " (类型 " + mt.FullName
-                                   + ")，但找不到开启事务的方法。\n该类型的公共实例方法如下:\n"
-                                   + DumpInstanceMethods(mt);
-                        Log(Diagnostic);
-                        return;
-                    }
-
-                    open.Invoke(mgr, open.GetParameters().Length == 1 ? new object[] { name } : null);
-                    _mgr = mgr;
-                    _opened = true;
-                    _undoMi = FindMethod(mt, UndoNames, Type.EmptyTypes);
-                    if (_undoMi == null)
-                        Log("undo 管理器 " + mt.Name + " 不提供程序化回滚，只能分组供用户 Ctrl+Z。");
-                }
-                catch (Exception ex)
-                {
-                    var inner = ex.InnerException ?? ex;
-                    Diagnostic = "开启 undo 事务时抛异常: " + inner.GetType().Name + ": " + inner.Message;
-                    Log(Diagnostic);
-                    _mgr = null;
-                    _opened = false;
-                }
+                _scope = TxTools.Common.SceneUndoScope.Begin(name);
             }
-
-            /// <summary>关闭事务。rollback=true 时执行 Undo。返回是否确实回滚。</summary>
             public bool Finish(bool rollback)
             {
-                if (!Available) return false;
-                Type mt = _mgr.GetType();
-                bool rolledBack = false;
-
-                try
-                {
-                    MethodInfo close = FindMethod(mt, CloseNames, Type.EmptyTypes);
-                    if (close != null) close.Invoke(_mgr, null);
-                    else Log("未找到关闭事务的方法，候选: " + string.Join("/", CloseNames));
-                }
-                catch (Exception ex) { Log("关闭 undo 事务失败: " + Unwrap(ex)); }
-
-                if (rollback)
-                {
-                    if (_undoMi == null)
-                    {
-                        Log("该 undo 管理器不提供回滚方法，无法自动撤销。");
-                        return false;
-                    }
-                    try { _undoMi.Invoke(_mgr, null); rolledBack = true; }
-                    catch (Exception ex) { Log("回滚失败: " + Unwrap(ex)); }
-                }
-                return rolledBack;
-            }
-
-            // ---------------------------------------------------------- 反射助手
-
-            private static bool TryGetStatic(Type t, string member, out object value, StringBuilder sb)
-            {
-                value = null;
-                try
-                {
-                    var p = t.GetProperty(member, BindingFlags.Public | BindingFlags.Static);
-                    if (p != null && p.CanRead) { value = p.GetValue(null, null); return true; }
-
-                    var f = t.GetField(member, BindingFlags.Public | BindingFlags.Static);
-                    if (f != null) { value = f.GetValue(null); return true; }
-
-                    var m = t.GetMethod(member, BindingFlags.Public | BindingFlags.Static, null, Type.EmptyTypes, null);
-                    if (m != null && m.ReturnType != typeof(void)) { value = m.Invoke(null, null); return true; }
-                }
+                if (_scope == null) return false;
+                var scope = _scope;
+                _scope = null;
+                try { scope.Dispose(); Completed = true; }
                 catch (Exception ex)
                 {
-                    if (sb != null) sb.AppendLine("  " + member + " 访问抛异常: " + Unwrap(ex));
+                    CloseFailed = true;
+                    Diagnostic = ex.Message;
+                    Log("撤销事务关闭失败: " + Diagnostic);
                 }
+                if (rollback) Log("当前 SDK 不提供自动回滚；如脚本已修改场景，请在当前 PS 工程按 Ctrl+Z 撤销。");
                 return false;
             }
-
-            private static MethodInfo FindMethod(Type t, string[] names, Type[] sig)
+            private void Log(string message)
             {
-                foreach (var n in names)
-                {
-                    try
-                    {
-                        var m = t.GetMethod(n, BindingFlags.Public | BindingFlags.Instance, null, sig, null);
-                        if (m != null) return m;
-                    }
-                    catch { }
-                }
-                return null;
-            }
-
-            private static string DumpStaticMembers(Type t)
-            {
-                var sb = new StringBuilder();
-                try
-                {
-                    foreach (var p in t.GetProperties(BindingFlags.Public | BindingFlags.Static)
-                                       .OrderBy(p => p.Name))
-                        sb.AppendLine("  [prop] " + p.Name + " : " + Short(p.PropertyType));
-
-                    foreach (var m in t.GetMethods(BindingFlags.Public | BindingFlags.Static)
-                                       .Where(m => !m.IsSpecialName && m.GetParameters().Length == 0)
-                                       .OrderBy(m => m.Name))
-                        sb.AppendLine("  [method] " + m.Name + "() : " + Short(m.ReturnType));
-                }
-                catch (Exception ex) { sb.AppendLine("  (枚举成员失败: " + ex.Message + ")"); }
-                return sb.Length == 0 ? "  (无)" : sb.ToString().TrimEnd();
-            }
-
-            private static string DumpInstanceMethods(Type t)
-            {
-                var sb = new StringBuilder();
-                try
-                {
-                    foreach (var m in t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
-                                       .Where(m => !m.IsSpecialName && m.DeclaringType != typeof(object))
-                                       .OrderBy(m => m.Name))
-                    {
-                        sb.Append("  ").Append(m.Name).Append('(')
-                          .Append(string.Join(", ", m.GetParameters().Select(p => Short(p.ParameterType)).ToArray()))
-                          .Append(") : ").AppendLine(Short(m.ReturnType));
-                    }
-                }
-                catch (Exception ex) { sb.AppendLine("  (枚举方法失败: " + ex.Message + ")"); }
-                return sb.Length == 0 ? "  (无)" : sb.ToString().TrimEnd();
-            }
-
-            private static string Short(Type t)
-            {
-                if (t == null) return "?";
-                return t.Namespace != null && t.Namespace.StartsWith("System", StringComparison.Ordinal)
-                     ? t.Name : t.FullName ?? t.Name;
-            }
-
-            private static string Unwrap(Exception ex)
-            {
-                var e = ex.InnerException ?? ex;
-                return e.GetType().Name + ": " + e.Message;
-            }
-
-            private void Log(string m) { if (_log != null) { try { _log("[UndoScope] " + m); } catch { } } }
-
-            private static Type FindType(string fullName)
-            {
-                foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
-                {
-                    try { var t = a.GetType(fullName, false); if (t != null) return t; }
-                    catch { }
-                }
-                return null;
+                if (_log != null) { try { _log("[UndoScope] " + message); } catch { } }
             }
         }
     }

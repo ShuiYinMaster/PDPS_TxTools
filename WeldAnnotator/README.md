@@ -1,4 +1,4 @@
-# WeldAnnotator — Weld Point Screenshots to Excel / 焊点标注截图
+﻿# WeldAnnotator — Weld Point Screenshots to Excel / 焊点标注截图
 
 Write Process Simulate viewport screenshots, weld-point annotations and optional data tables to an active Excel workbook.
 
@@ -59,3 +59,10 @@ Windows 离线验证可运行 `powershell -NoProfile -File Tests/WeldAnnotatorDi
 显示状态管理从公共 `PsReader` 迁入窗口独立的 `DisplaySession`，精确保留 `None / Partial / All`。新增恢复基线、白名单 ID 校验、事务能力检查与失败重试保护，详见上文“显示控制”。
 
 本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
+
+
+## 撤销与恢复（2026-10-07）
+
+显示变更与恢复使用配对的 StartTransaction/EndTransaction，开始失败不修改显示；失败保留快照依据。Excel 输出不由 PS Ctrl+Z 恢复。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

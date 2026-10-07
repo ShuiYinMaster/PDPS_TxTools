@@ -1,4 +1,4 @@
-# LineToSolid — Curve-to-Solid Geometry / 曲线转实体
+﻿# LineToSolid — Curve-to-Solid Geometry / 曲线转实体
 
 Create rectangular or circular solids from line, polyline and arc features in Process Simulate.
 
@@ -38,7 +38,7 @@ LineToSolid/
    - 输入尺寸（mm）
    - 如果列表里有圆弧，调整"圆弧最大弦高（mm）"控制细分密度（默认 0.5）
 6. 点 **[生成几何体]**
-7. 不满意可 **[撤销上次]** 或 Ctrl+Z
+7. 不满意可在 PS 中按 Ctrl+Z
 
 ## 圆弧细分原理
 
@@ -108,7 +108,7 @@ PS 2402 的 `TxArcFeature` 实际属性需要在 IntelliSense 中确认；首次
 
 ### 4. UndoManager 接口
 
-按 `OpenScope` / `BeginScope` / `Begin` 顺序尝试。
+`SceneUndoScope` 使用 PS 2402 的 `StartTransaction()` / `EndTransaction()`，并绑定原文档和管理器。无法开启事务则停止写入；不清空历史。
 
 ### 5. LineToSolidCommand 的 GUID
 
@@ -121,7 +121,7 @@ PS 2402 的 `TxArcFeature` 实际属性需要在 IntelliSense 中确认；首次
 - `FlatStyle.Flat` 按钮（`TxToolStrip` 默认就是 Flat）
 - 顶部 `TxToolStrip` 工具条
 - 底部可折叠日志面板
-- UndoScope 包裹整批操作，Ctrl+Z 一键回滚
+- UndoScope 包裹整批操作，Ctrl+Z 撤销场景批次；不提供自动回滚
 
 ## 已知限制 / 后续可扩展
 
@@ -139,3 +139,10 @@ PS 2402 的 `TxArcFeature` 实际属性需要在 IntelliSense 中确认；首次
 本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
 
 公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。
+
+
+## 撤销与恢复（2026-10-07）
+
+整批几何生成使用 SceneUndoScope，创建/设置失败的空容器会尝试清理；部分成功仍需在当前 PS 工程按 Ctrl+Z 撤销。源码没有独立的“撤销上次”按钮。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

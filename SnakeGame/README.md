@@ -1,4 +1,4 @@
-# SnakeGame — Process Simulate Snake Game / 贪吃蛇
+﻿# SnakeGame — Process Simulate Snake Game / 贪吃蛇
 
 A grid-based snake game that creates and moves scene geometry inside Process Simulate.
 
@@ -96,3 +96,10 @@ root.CheckCollisions = true;   // 游戏结束/清除时恢复原值
 核对游戏命令、键盘控制、几何清理及参数说明。本次该模块业务源码未修改；游戏会创建场景几何与干涉对，结束后可用窗口的清理功能移除。
 
 本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
+
+
+## 撤销与恢复（2026-10-07）
+
+生成、移动及清理游戏几何不是一局游戏的原生 Undo。退出/清理处理自身几何；实时操作与原生 Ctrl+Z/Ctrl+Y 的交互仍需 PS 验收。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

@@ -1,4 +1,4 @@
-# ThemeTuner — TxTools UI Themes / 界面主题
+﻿# ThemeTuner — TxTools UI Themes / 界面主题
 
 Customize shared TxTools window colors and persist the palette in theme.cfg.
 
@@ -40,3 +40,10 @@ Customize shared TxTools window colors and persist the palette in theme.cfg.
 核对预设、自定义色槽和 `theme.cfg` 持久化流程。本次该模块业务源码未修改；主题仍由公共 `FormUiKit` 提供，并影响已打开的插件窗口。
 
 本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
+
+
+## 撤销与恢复（2026-10-07）
+
+主题写入配置文件，PS 工程 Ctrl+Z 不恢复配色；使用主题重置或恢复原配置。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

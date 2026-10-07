@@ -1,4 +1,4 @@
-// WeldGunWizardForm.cs — C# 7.3
+﻿// WeldGunWizardForm.cs — C# 7.3
 // 布局：AutoScroll Panel + 垂直 stack(TableLayoutPanel Dock=Top AutoSize)
 // 卡片 MkCard(GroupBox AutoSize) / MkFixedCard(固定高)
 // 参考 AllocatorForm.cs 风格
@@ -1070,58 +1070,68 @@ namespace TxTools.WeldGunDefiner.UI
         // ═════════════════════════════════════════════════════════════════
         private void DoGenerate()
         {
-            if (_model.TargetKinematics == null)
+            try
             {
-                MessageBox.Show("请在「目标焊枪设备节点」中选取焊枪根节点。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            // 6. 建模状态检测
-            if (!_model.TargetKinematics.IsOpenForKinematicsModeling)
-            {
-                var dr = MessageBox.Show(
-                    "焊枪设备尚未开启运动学建模状态。\n\n是否立即启用？",
-                    "需要建模状态", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-                if (dr != DialogResult.Yes) return;
-                try { (_model.TargetComponent as ITxComponent)?.SetModelingScope(); }
-                catch (Exception ex)
+                using (var undoScope = TxTools.Common.SceneUndoScope.Begin("生成焊钳及 TCPF"))
                 {
-                    MessageBox.Show("启用建模状态失败: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
+                    if (_model.TargetKinematics == null)
+                    {
+                        MessageBox.Show("请在「目标焊枪设备节点」中选取焊枪根节点。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+
+                    // 6. 建模状态检测
+                    if (!_model.TargetKinematics.IsOpenForKinematicsModeling)
+                    {
+                        var dr = MessageBox.Show(
+                            "焊枪设备尚未开启运动学建模状态。\n\n是否立即启用？",
+                            "需要建模状态", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                        if (dr != DialogResult.Yes) return;
+                        try { (_model.TargetComponent as ITxComponent)?.SetModelingScope(); }
+                        catch (Exception ex)
+                        {
+                            MessageBox.Show("启用建模状态失败: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            return;
+                        }
+                    }
+                    _model.J1_Name = _txtJ1?.Text ?? "j1";
+                    _model.J2_Name = _txtJ2?.Text ?? "j2";
+                    _model.InputJ1_Name = _txtInputJ1?.Text ?? "input_j1";
+
+                    // 需求3：TCP Frame 准备
+                    // 若用户点选的是已有Frame(_model.TcpFrame已设)，直接用；
+                    // 否则在点选位置创建名为 TCPF 的 Frame
+                    if (_model.TcpFrame == null && _tcpPickedLocation != null && _model.TargetComponent != null)
+                    {
+                        string fErr;
+                        var tcpf = PsSdkHelper.CreateFrame(_model.TargetComponent, "TCPF", _tcpPickedLocation, out fErr);
+                        if (tcpf != null) _model.TcpFrame = tcpf;
+                        else MessageBox.Show("创建TCPF失败: " + fErr + "\n焊钳定义的TCP将为空。", "提示",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+
+                    var result = _service.GenerateAll();
+                    _txtResult.Text = result.Summary();
+                    _txtResult.ForeColor = result.Success ? Color.DarkGreen : Color.DarkRed;
+
+                    // 7. 生成成功后显示完成按钮
+                    if (result.Success)
+                    {
+                        _btnFinish.Visible = true;
+                        // 问题5：OPEN适配成功后，几何已被驱动并置零为CLOSE状态。
+                        // 自动取消勾选，避免再次点生成时重复驱动+置零导致过冲。
+                        if (_model.OpenStateAdapt)
+                        {
+                            _model.OpenStateAdapt = false;
+                            try { if (_chkOpenAdapt != null) _chkOpenAdapt.Checked = false; } catch { }
+                        }
+                    }
+
                 }
-            }
-            _model.J1_Name = _txtJ1?.Text ?? "j1";
-            _model.J2_Name = _txtJ2?.Text ?? "j2";
-            _model.InputJ1_Name = _txtInputJ1?.Text ?? "input_j1";
 
-            // 需求3：TCP Frame 准备
-            // 若用户点选的是已有Frame(_model.TcpFrame已设)，直接用；
-            // 否则在点选位置创建名为 TCPF 的 Frame
-            if (_model.TcpFrame == null && _tcpPickedLocation != null && _model.TargetComponent != null)
-            {
-                string fErr;
-                var tcpf = PsSdkHelper.CreateFrame(_model.TargetComponent, "TCPF", _tcpPickedLocation, out fErr);
-                if (tcpf != null) _model.TcpFrame = tcpf;
-                else MessageBox.Show("创建TCPF失败: " + fErr + "\n焊钳定义的TCP将为空。", "提示",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
-
-            var result = _service.GenerateAll();
-            _txtResult.Text = result.Summary();
-            _txtResult.ForeColor = result.Success ? Color.DarkGreen : Color.DarkRed;
-
-            // 7. 生成成功后显示完成按钮
-            if (result.Success)
-            {
-                _btnFinish.Visible = true;
-                // 问题5：OPEN适配成功后，几何已被驱动并置零为CLOSE状态。
-                // 自动取消勾选，避免再次点生成时重复驱动+置零导致过冲。
-                if (_model.OpenStateAdapt)
-                {
-                    _model.OpenStateAdapt = false;
-                    try { if (_chkOpenAdapt != null) _chkOpenAdapt.Checked = false; } catch { }
-                }
-            }
+            catch (Exception ex)
+            { MessageBox.Show("生成已停止：" + ex.Message + "\n如有部分变更，请在当前 PS 工程按 Ctrl+Z 撤销。", "焊钳生成", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         }
 
         // ═════════════════════════════════════════════════════════════════

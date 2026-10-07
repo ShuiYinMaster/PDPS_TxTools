@@ -1,4 +1,4 @@
-# CatiaPartTree — CATIA Product Tree / 产品树读取
+﻿# CatiaPartTree — CATIA Product Tree / 产品树读取
 
 Inspect CATIA product-tree structure and instance information through the local CATIA COM interface.
 
@@ -43,3 +43,10 @@ Inspect CATIA product-tree structure and instance information through the local 
 核对 CATIA 产品树读取、名称与实例信息展示的现有说明。本次该模块业务源码未修改；仍需本机 CATIA COM 环境，随主项目编译和注册。
 
 本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
+
+
+## 撤销与恢复（2026-10-07）
+
+建树和归类分别使用场景撤销分组。保存并重载默认关闭；显式启用会备份原工程文件，但磁盘写入及重载后的历史不能统称 Ctrl+Z 可恢复。外层事务未结束时跳过保存/重载。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

@@ -1,4 +1,4 @@
-# LibPathSync — Process Simulate Library Paths / 库路径同步
+﻿# LibPathSync — Process Simulate Library Paths / 库路径同步
 
 Synchronize Process Simulate resource-dialog folders with the system library root or the selected component directory.
 
@@ -43,3 +43,10 @@ Synchronize Process Simulate resource-dialog folders with the system library roo
 核对系统库根与所选组件目录的同步入口。本次该模块业务源码未修改；同步会写入当前 Windows 用户的 PS 注册表配置，使用前确认目标目录。
 
 本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
+
+
+## 撤销与恢复（2026-10-07）
+
+库路径写入注册表，PS 工程 Ctrl+Z 不恢复系统配置。恢复时重新设置原库路径。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

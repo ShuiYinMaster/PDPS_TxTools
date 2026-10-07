@@ -1,4 +1,4 @@
-# ExportByColor — CATIA CGR and Mesh Export / 按颜色导出
+﻿# ExportByColor — CATIA CGR and Mesh Export / 按颜色导出
 
 Export Process Simulate resources to CATIA CGR or mesh formats, with color grouping and coordinate-origin options.
 
@@ -53,3 +53,10 @@ Export Process Simulate resources to CATIA CGR or mesh formats, with color group
 `JtDirectCs/Worker.csproj` 编译已有 JTReader 源码，依赖 `JtDirectCs/Dependencies/SharpCompress.dll` 及配套的 `System.*.dll`、`Microsoft.Bcl.AsyncInterfaces.dll`。这些二进制按仓库规则不提交；首次构建需先准备对应依赖，版本声明可参考 `JtDirectCs/Vendor/JTReader.csproj`，许可证见解码器目录的说明文件。
 
 主项目会联动构建解码器，并将它及依赖复制到输出目录的 `JtDirectCs/`。本次修正 `OutputPath` / `OutDir` 覆盖时对子项目的传递，保持解码器先生成在自身的 `bin/Release/`，再按既有规则复制。
+
+
+## 撤销与恢复（2026-10-07）
+
+PS 主要提供几何读取，导出文件及 CATIA 输出不在 PS 的工程撤销栈中；请使用文件备份或目标应用的恢复方式。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

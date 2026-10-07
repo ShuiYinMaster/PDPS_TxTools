@@ -1,4 +1,4 @@
-# ExportGun — Weld Gun Export to CATIA / 焊枪与点云导出
+﻿# ExportGun — Weld Gun Export to CATIA / 焊枪与点云导出
 
 Export weld guns and weld-point clouds from Process Simulate to CATIA, with TCP and reference-frame options.
 
@@ -42,3 +42,10 @@ Export weld guns and weld-point clouds from Process Simulate to CATIA, with TCP 
 本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
 
 公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。
+
+
+## 撤销与恢复（2026-10-07）
+
+CATIA 插枪/球体和 Excel 文件输出属于外部应用；PS Ctrl+Z 不撤销这些输出。请在目标应用内处理撤销并保留导出文件备份。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

@@ -1,4 +1,4 @@
-# WeldSpotAllocator — Weld Spot Allocation / 焊点分配
+﻿# WeldSpotAllocator — Weld Spot Allocation / 焊点分配
 
 Update weld coordinates, map unallocated weld points to reference paths and perform symmetric weld-point allocation in Process Simulate.
 
@@ -107,3 +107,10 @@ TxTools 套件中的 Process Simulate 2402 插件，用于在焊接操作之间*
 本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
 
 公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。
+
+
+## 撤销与恢复（2026-10-07）
+
+写坐标、迁移点位、复制参数、删除占位及镜像等属于同一场景撤销分组；部分失败需在当前 PS 工程按 Ctrl+Z 撤销，不把关闭事务称为自动回滚。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

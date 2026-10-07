@@ -1,9 +1,9 @@
-// TxTools.Agent / Tools / RunPythonTool.cs
+﻿// TxTools.Agent / Tools / RunPythonTool.cs
 // Python(IronPython 2.7) 执行通道。拆成两个工具，因为 ITxAgentTool.IsReadOnly 是类型级属性，
 // 无法按调用参数切换审批策略 —— 而 probe 免审批正是这条路径的价值所在。
 //
-//   probe_python : IsReadOnly=true  -> 免审批。执行后无条件回滚，场景保证不变。
-//   run_python   : IsReadOnly=false -> 强制审批 + 审计。成功提交，失败回滚。
+//   probe_python : IsReadOnly=true  -> 免审批。由静态检查限制为只读；SDK 不提供自动回滚。
+//   run_python   : IsReadOnly=false -> 强制审批 + 审计。成功/失败均关闭撤销分组；失败后需手动 Ctrl+Z。
 //
 // 安全边界：PS 2402 的 TxUndoTransactionManager 只有 StartTransaction/EndTransaction/ClearAllTransactions，
 //   **没有程序化回滚方法** —— undo 只能把改动分组供用户手动 Ctrl+Z。因此 probe 的只读性由
@@ -170,11 +170,11 @@ namespace TxTools.Agent.Tools
             get
             {
                 return "在 PS 进程内执行 Python 代码并提交变更。这是会改动场景的操作：" +
-                       "执行前需用户确认，整段被包进一次 undo 事务，用户可按一次 Ctrl+Z 撤销全部改动。" +
+                       "执行前需用户确认，支持撤销的场景改动被包进一次 undo 事务，在目标 PS 工程按 Ctrl+Z；文件和外部应用写入需另行恢复。" +
                        "注意 PS 不支持程序化回滚，脚本中途失败时前面已生效的改动不会自动撤销，" +
                        "需要用户 Ctrl+Z —— 所以务必先探测确认再提交。" +
 
-                       "【标准姿势】先用 probe_python 把 API 探清楚（免审批、零风险），" +
+                       "【标准姿势】先用 probe_python 把 API 探清楚（免审批、受只读静态检查约束），" +
                        "确认无误后再用本工具提交。不要跳过探测直接写变更代码。" +
 
                        "已 from Tecnomatix.Engineering import *。写顶层语句，用 print() 输出。" +

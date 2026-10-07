@@ -1,4 +1,4 @@
-// ComponentIO.cs  --  C# 8.0
+﻿// ComponentIO.cs  --  C# 8.0
 // 组件/cojt 插入场景 + 复制粘贴补件。
 //
 // 【插入分流 —— 基于 2026-08-18 TxAgent 5 组对照实测（2402/Offline）】
@@ -85,84 +85,88 @@ namespace TxTools.CrossEnvIO
                                       string libraryDir, double x, double y, double z,
                                       Action<string> log, out string resultSummary)
         {
-            log = log ?? Nop;
-            resultSummary = "";
-            var sb = new StringBuilder();
-
-            var doc = TxApplication.ActiveDocument;
-            if (doc == null) { sb.AppendLine("Error: 无活动文档"); resultSummary = sb.ToString(); return false; }
-            var root = doc.PhysicalRoot;
-            if (root == null) { sb.AppendLine("Error: 无 PhysicalRoot"); resultSummary = sb.ToString(); return false; }
-            if (string.IsNullOrWhiteSpace(cojtPath) || !Directory.Exists(cojtPath))
-            { sb.AppendLine("Error: cojt 目录不存在: " + cojtPath); resultSummary = sb.ToString(); return false; }
-
-            bool pathPureAscii = IsPureAsciiPath(cojtPath);
-            bool insideSystemRoot = IsInsideSystemRoot(cojtPath);
-
-            try
+            using (var undoScope = TxTools.Common.SceneUndoScope.Begin("插入 cojt 组件"))
             {
-                // —— 分支 A：全 ASCII 路径（对话实测 ①③④：直插即可，无需临时路径/迁回）——
-                if (pathPureAscii)
-                {
-                    sb.AppendLine("路径为纯 ASCII，走【直接插入】路径");
-                    var ok = DirectInsert(root, cojtPath, finalName, prototypeFrom,
-                                          x, y, z, insideSystemRoot, sb);
-                    if (ok) RecordInsertedPath(cojtPath);
-                    resultSummary = sb.ToString();
-                    return ok;
-                }
+                log = log ?? Nop;
+                resultSummary = "";
+                var sb = new StringBuilder();
 
-                // —— 分支 B：路径含中文/全角/乱码（绝对红线）——
-                // 用户实测方案：无 prototype 插入要求资源在库范围内，而 SystemRootDirectory 可修改。
-                // ① 建 ASCII junction 指向含全角的真实路径（逐段映射成纯 ASCII 链接路径）
-                // ② 临时把 SystemRootDirectory 切到 junction 所在路径 → 资源"在库内"
-                // ③ 无原型直插 ④ 恢复真实库路径 ⑤ 刷新资源路径
-                sb.AppendLine("路径含中文/全角/乱码，走【junction + 临时改库路径】绕路");
-                string asciiPath = EnsureAsciiLink(cojtPath, sb);
-                if (string.IsNullOrEmpty(asciiPath))
+                var doc = TxApplication.ActiveDocument;
+                if (doc == null) { sb.AppendLine("Error: 无活动文档"); resultSummary = sb.ToString(); return false; }
+                var root = doc.PhysicalRoot;
+                if (root == null) { sb.AppendLine("Error: 无 PhysicalRoot"); resultSummary = sb.ToString(); return false; }
+                if (string.IsNullOrWhiteSpace(cojtPath) || !Directory.Exists(cojtPath))
+                { sb.AppendLine("Error: cojt 目录不存在: " + cojtPath); resultSummary = sb.ToString(); return false; }
+
+                bool pathPureAscii = IsPureAsciiPath(cojtPath);
+                bool insideSystemRoot = IsInsideSystemRoot(cojtPath);
+
+                try
                 {
-                    sb.AppendLine("Error: 无法建立 ASCII 链接路径，插入中止。");
+                    // —— 分支 A：全 ASCII 路径（对话实测 ①③④：直插即可，无需临时路径/迁回）——
+                    if (pathPureAscii)
+                    {
+                        sb.AppendLine("路径为纯 ASCII，走【直接插入】路径");
+                        var ok = DirectInsert(root, cojtPath, finalName, prototypeFrom,
+                                              x, y, z, insideSystemRoot, sb);
+                        if (ok) RecordInsertedPath(cojtPath);
+                        resultSummary = sb.ToString();
+                        return ok;
+                    }
+
+                    // —— 分支 B：路径含中文/全角/乱码（绝对红线）——
+                    // 用户实测方案：无 prototype 插入要求资源在库范围内，而 SystemRootDirectory 可修改。
+                    // ① 建 ASCII junction 指向含全角的真实路径（逐段映射成纯 ASCII 链接路径）
+                    // ② 临时把 SystemRootDirectory 切到 junction 所在路径 → 资源"在库内"
+                    // ③ 无原型直插 ④ 恢复真实库路径 ⑤ 刷新资源路径
+                    sb.AppendLine("路径含中文/全角/乱码，走【junction + 临时改库路径】绕路");
+                    string asciiPath = EnsureAsciiLink(cojtPath, sb);
+                    if (string.IsNullOrEmpty(asciiPath))
+                    {
+                        sb.AppendLine("Error: 无法建立 ASCII 链接路径，插入中止。");
+                        resultSummary = sb.ToString();
+                        return false;
+                    }
+                    sb.AppendLine("ASCII 链接路径: " + asciiPath);
+
+                    string originalRoot = null;
+                    try { originalRoot = TxApplication.SystemRootDirectory; } catch { }
+                    // junction 位置 = ascii 路径的父目录，临时设为库路径，让资源"在库内"
+                    string asciiRoot = Path.GetDirectoryName(asciiPath);
+                    bool ok2 = false;
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(asciiRoot))
+                        {
+                            TxApplication.SystemRootDirectory = asciiRoot;
+                            sb.AppendLine("临时库路径: " + asciiRoot + "（原: " + originalRoot + "）");
+                        }
+                        ok2 = DirectInsert(root, asciiPath, finalName, prototypeFrom,
+                                           x, y, z, insideSystemRoot: true, sb);
+                    }
+                    finally
+                    {
+                        if (!string.IsNullOrEmpty(originalRoot))
+                        {
+                            try { TxApplication.SystemRootDirectory = originalRoot; }
+                            catch { }
+                            sb.AppendLine("已恢复库路径: " + originalRoot);
+                        }
+                    }
+
+                    // 注意：不在单个插入后保存/改psz/重载（每插一个保存很慢很卡）。
+                    // 由批量入口(CrossEnvRebuildTool)在全部插入完成后统一：保存 → 改 psz → 重载。
+                    if (ok2) RecordInsertedPath(cojtPath);
+                    resultSummary = sb.ToString();
+                    return ok2;
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine("Error: " + ex.GetType().Name + ": " + ex.Message);
                     resultSummary = sb.ToString();
                     return false;
                 }
-                sb.AppendLine("ASCII 链接路径: " + asciiPath);
 
-                string originalRoot = null;
-                try { originalRoot = TxApplication.SystemRootDirectory; } catch { }
-                // junction 位置 = ascii 路径的父目录，临时设为库路径，让资源"在库内"
-                string asciiRoot = Path.GetDirectoryName(asciiPath);
-                bool ok2 = false;
-                try
-                {
-                    if (!string.IsNullOrEmpty(asciiRoot))
-                    {
-                        TxApplication.SystemRootDirectory = asciiRoot;
-                        sb.AppendLine("临时库路径: " + asciiRoot + "（原: " + originalRoot + "）");
-                    }
-                    ok2 = DirectInsert(root, asciiPath, finalName, prototypeFrom,
-                                       x, y, z, insideSystemRoot: true, sb);
-                }
-                finally
-                {
-                    if (!string.IsNullOrEmpty(originalRoot))
-                    {
-                        try { TxApplication.SystemRootDirectory = originalRoot; }
-                        catch { }
-                        sb.AppendLine("已恢复库路径: " + originalRoot);
-                    }
-                }
-
-                // 注意：不在单个插入后保存/改psz/重载（每插一个保存很慢很卡）。
-                // 由批量入口(CrossEnvRebuildTool)在全部插入完成后统一：保存 → 改 psz → 重载。
-                if (ok2) RecordInsertedPath(cojtPath);
-                resultSummary = sb.ToString();
-                return ok2;
-            }
-            catch (Exception ex)
-            {
-                sb.AppendLine("Error: " + ex.GetType().Name + ": " + ex.Message);
-                resultSummary = sb.ToString();
-                return false;
             }
         }
 
@@ -394,6 +398,8 @@ namespace TxTools.CrossEnvIO
         /// </summary>
         public static void FixPszAfterInsert(Action<string> log)
         {
+            if (TxTools.Common.SceneUndoScope.HasActiveTransaction)
+                throw new InvalidOperationException("场景事务尚未结束，不能保存/重载工程。");
             log = log ?? Nop;
             try
             {
@@ -416,6 +422,9 @@ namespace TxTools.CrossEnvIO
                 {
                     var provider = doc.PlatformGlobalServicesProvider;
                     if (provider == null) { log("[修路径] 无 PlatformGlobalServicesProvider"); return; }
+                    if (File.Exists(pszPath))
+                        File.Copy(pszPath, pszPath + ".before-rebuild-" + Guid.NewGuid().ToString("N") + ".bak", false);
+                    log("[修路径] 保存/重载会写磁盘并影响撤销历史，原工程已备份（如存在）。");
                     provider.SaveDataToFile(pszPath);
                     log("[修路径] ✓ 已保存工程 → " + pszPath);
                 }
@@ -675,6 +684,32 @@ namespace TxTools.CrossEnvIO
         // ════════════════════════════════════════════════════════════
         //  工具
         // ════════════════════════════════════════════════════════════
+
+        /// <summary>检查活动工程的库存储路径；无法完整检查时保守地视为已引用。</summary>
+        public static bool IsPathReferencedByScene(string directory)
+        {
+            try
+            {
+                var doc = TxApplication.ActiveDocument;
+                if (doc == null || doc.PhysicalRoot == null) return true;
+                string root = Path.GetFullPath(directory).TrimEnd('\\', '/');
+                var all = doc.PhysicalRoot.GetAllDescendants(new TxTypeFilter(typeof(ITxObject)));
+                foreach (ITxObject obj in all)
+                {
+                    var storable = obj as ITxStorable;
+                    if (storable == null) continue;
+                    var storage = storable.StorageObject as TxLibraryStorage;
+                    if (storage == null) continue;
+                    string full = storage.FullPath;
+                    if (string.IsNullOrWhiteSpace(full)) continue;
+                    full = Path.GetFullPath(full).TrimEnd('\\', '/');
+                    if (string.Equals(root, full, StringComparison.OrdinalIgnoreCase)
+                        || full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) return true;
+                }
+                return false;
+            }
+            catch { return true; }
+        }
 
         private static ITxObject FindByNameInScene(string name)
         {

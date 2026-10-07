@@ -1,4 +1,4 @@
-# WeldPointMatrix — Weld Point Matrix / 焊点矩阵
+﻿# WeldPointMatrix — Weld Point Matrix / 焊点矩阵
 
 Compare locations across multiple operations, position associated robots and insert weld or via locations in Process Simulate.
 
@@ -24,3 +24,10 @@ Compare locations across multiple operations, position associated robots and ins
 - `PointService.cs`：点位读取、机器人定位与点位创建辅助。
 
 本模块随 `TxTools.csproj` 构建，环境与注册方式见 [项目 README](../README.md)。
+
+
+## 撤销与恢复（2026-10-07）
+
+新增和移动点位使用场景撤销分组，移动验证失败会尝试恢复源操作和顺序；补偿失败明确提示 Ctrl+Z。窗口重新激活时刷新矩阵；机器人驱动是独立状态变化。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

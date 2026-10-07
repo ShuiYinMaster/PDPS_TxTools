@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════════
 // DeviceZAligner — Process Simulate 二次开发插件
 // 功能：遍历场景中的设备，忽略焊枪等特殊设备，检查设备Z向位置，
 //       将最低点对齐到世界坐标Z=0，支持Ctrl+Z撤销
@@ -96,6 +96,8 @@ namespace TxTools.DeviceZAligner
 
         // ── 数据 ────────────────────────────────────────────────────────
         private List<DeviceInfo> _devices = new List<DeviceInfo>();
+        private TxDocument _scanDocument;
+        private bool _aligning;
         private bool _logVisible = false;
 
         // ── 默认忽略关键词（不区分大小写） ──────────────────────────────
@@ -126,6 +128,7 @@ namespace TxTools.DeviceZAligner
         // =====================================================================
         public DeviceZAlignerForm()
         {
+            Activated += (s, e) => { if (!_aligning) RefreshCurrentGeometry(); };
             InitializeComponent();
         }
 
@@ -376,6 +379,7 @@ namespace TxTools.DeviceZAligner
                     SetStatus("错误：ActiveDocument 为 null");
                     return;
                 }
+                _scanDocument = doc;
                 Log("ActiveDocument OK");
 
                 // ── 获取忽略关键词列表 ────────────────────────────────
@@ -490,8 +494,35 @@ namespace TxTools.DeviceZAligner
         // =====================================================================
         // 核心功能2：对齐选中设备
         // =====================================================================
+        private bool RefreshCurrentGeometry()
+        {
+            if (_devices.Count == 0) return true;
+            if (_scanDocument == null || !Equals(_scanDocument, TxApplication.ActiveDocument))
+            {
+                _devices.Clear(); _scanDocument = null;
+                RefreshGrid(); SetStatus("工程已切换，请重新扫描设备。");
+                return false;
+            }
+            foreach (var dev in _devices)
+            {
+                if (dev.IsSkipped) continue;
+                try
+                {
+                    var current = _scanDocument.GetObjectById(dev.TxObj.Id);
+                    if (current == null) throw new InvalidOperationException("设备已删除");
+                    dev.TxObj = current;
+                    UpdateDeviceGeometry(dev);
+                    dev.IsAligned = Math.Abs(dev.OffsetZ) < 0.01;
+                }
+                catch (Exception ex) { dev.IsSkipped = true; dev.IsAligned = false; dev.Message = ex.Message; }
+            }
+            RefreshGrid();
+            return true;
+        }
+
         private void AlignSelected()
         {
+            if (!RefreshCurrentGeometry()) return;
             int selRow = _grid.RowSel;
             if (selRow < _grid.Rows.Fixed) return;
 
@@ -518,6 +549,7 @@ namespace TxTools.DeviceZAligner
         // =====================================================================
         private void AlignAll()
         {
+            if (!RefreshCurrentGeometry()) return;
             var toAlign = _devices
                 .Where(d => !d.IsSkipped && Math.Abs(d.OffsetZ) > 0.01)
                 .ToList();
@@ -543,82 +575,90 @@ namespace TxTools.DeviceZAligner
         // =====================================================================
         private void AlignDevices(List<DeviceInfo> devices)
         {
-            Log("═══════════════════════════════════════════════════");
-            Log($"开始对齐 {devices.Count} 个设备...");
-
-            int success = 0, fail = 0;
-
+            _aligning = true;
             try
             {
-                TxDocument doc = TxApplication.ActiveDocument;
-                if (doc == null)
-                {
-                    Log("ActiveDocument 为 null", "ERR");
-                    return;
-                }
+                Log("═══════════════════════════════════════════════════");
+                Log($"开始对齐 {devices.Count} 个设备...");
 
-                // ── 包裹在Undo上下文中，使整个操作可撤销 ────────────
-                // PS 的 Undo 机制通过 TxDocument 或 TxApplication 暴露
-                // 不同版本属性名不同，使用 dynamic 防御式访问
-                bool undoStarted = BeginUndoBlock(doc, $"设备Z向对齐({devices.Count}个)");
-                if (!undoStarted)
-                    Log("Undo上下文启动失败，操作将不可撤销", "WARN");
-                else
-                    Log("Undo上下文已启动 — 操作完成后可用 Ctrl+Z 撤销", "OK");
-
-                _tsProgress.Visible = true;
-                _tsProgress.Maximum = devices.Count;
-                _tsProgress.Value = 0;
+                int success = 0, fail = 0;
 
                 try
                 {
-                    foreach (var dev in devices)
+                    TxDocument doc = TxApplication.ActiveDocument;
+                    if (doc == null)
                     {
-                        try
-                        {
-                            bool ok = ApplyZOffset(dev);
-                            if (ok)
-                            {
-                                dev.IsAligned = true;
-                                dev.Message = $"已对齐 (偏移 {-dev.OffsetZ:F1}mm)";
-                                success++;
-                                Log($"  [{dev.Name}] 对齐成功, Z偏移={-dev.OffsetZ:F1}mm", "OK");
-                            }
-                            else
-                            {
-                                dev.Message = "对齐失败";
-                                fail++;
-                                Log($"  [{dev.Name}] 对齐失败", "ERR");
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            dev.Message = $"异常: {ex.Message}";
-                            fail++;
-                            Log($"  [{dev.Name}] 异常: {ex.Message}", "ERR");
-                        }
-
-                        _tsProgress.Value++;
+                        Log("ActiveDocument 为 null", "ERR");
+                        return;
                     }
+
+                    // ── 包裹在Undo上下文中，使整个操作可撤销 ────────────
+                    // PS 的 Undo 机制通过 TxDocument 或 TxApplication 暴露
+                    // 不同版本属性名不同，使用 dynamic 防御式访问
+                    var undoStarted = BeginUndoBlock(doc, $"设备Z向对齐({devices.Count}个)");
+                    if (undoStarted == null)
+                        Log("Undo上下文启动失败，操作将不可撤销", "WARN");
+                    else
+                        Log("Undo上下文已启动 — 操作完成后可用 Ctrl+Z 撤销", "OK");
+
+                    _tsProgress.Visible = true;
+                    _tsProgress.Maximum = devices.Count;
+                    _tsProgress.Value = 0;
+
+                    try
+                    {
+                        foreach (var dev in devices)
+                        {
+                            try
+                            {
+                                undoStarted.EnsureDocument();
+                                bool ok = ApplyZOffset(dev);
+                                if (ok)
+                                {
+                                    UpdateDeviceGeometry(dev);
+                                    dev.IsAligned = Math.Abs(dev.OffsetZ) < 0.01;
+                                    dev.Message = $"已对齐 (偏移 {-dev.OffsetZ:F1}mm)";
+                                    success++;
+                                    Log($"  [{dev.Name}] 对齐成功, Z偏移={-dev.OffsetZ:F1}mm", "OK");
+                                }
+                                else
+                                {
+                                    dev.Message = "对齐失败";
+                                    fail++;
+                                    Log($"  [{dev.Name}] 对齐失败", "ERR");
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                dev.Message = $"异常: {ex.Message}";
+                                fail++;
+                                Log($"  [{dev.Name}] 异常: {ex.Message}", "ERR");
+                            }
+
+                            _tsProgress.Value++;
+                        }
+                    }
+                    finally
+                    {
+                        // ── 关闭Undo上下文 ───────────────────────────────
+                        EndUndoBlock(undoStarted);
+                    }
+
+                    _tsProgress.Visible = false;
+                    RefreshGrid();
+
+                    Log($"对齐完成: 成功 {success}, 失败 {fail}", success > 0 ? "OK" : "WARN");
+                    SetStatus($"对齐完成: 成功 {success}, 失败 {fail}");
                 }
-                finally
+                catch (Exception ex)
                 {
-                    // ── 关闭Undo上下文 ───────────────────────────────
-                    EndUndoBlock(doc);
+                    Log($"对齐过程异常: {ex.Message}", "ERR");
+                    SetStatus($"对齐异常: {ex.Message}");
+                    _tsProgress.Visible = false;
                 }
 
-                _tsProgress.Visible = false;
-                RefreshGrid();
-
-                Log($"对齐完成: 成功 {success}, 失败 {fail}", success > 0 ? "OK" : "WARN");
-                SetStatus($"对齐完成: 成功 {success}, 失败 {fail}");
             }
-            catch (Exception ex)
-            {
-                Log($"对齐过程异常: {ex.Message}", "ERR");
-                SetStatus($"对齐异常: {ex.Message}");
-                _tsProgress.Visible = false;
-            }
+            finally { _aligning = false; }
         }
 
         // =====================================================================
@@ -629,79 +669,15 @@ namespace TxTools.DeviceZAligner
         /// 启动Undo块 — PS SDK不同版本暴露不同的API
         /// 成功返回true，失败返回false（操作仍然执行，但不可撤销）
         /// </summary>
-        private bool BeginUndoBlock(TxDocument doc, string description)
+        private TxTools.Common.SceneUndoScope BeginUndoBlock(TxDocument doc, string description)
         {
-            // 策略1：TxDocument.UndoRedo.BeginCommand（PS 15+常见）
-            try
-            {
-                dynamic ddoc = doc;
-                dynamic undoRedo = ddoc.UndoRedo;
-                if (undoRedo != null)
-                {
-                    undoRedo.BeginCommand(description);
-                    Log("  Undo策略1: UndoRedo.BeginCommand OK");
-                    return true;
-                }
-            }
-            catch { }
-
-            // 策略2：TxDocument.UndoContext.Open（部分版本）
-            try
-            {
-                dynamic ddoc = doc;
-                dynamic ctx = ddoc.UndoContext;
-                if (ctx != null)
-                {
-                    ctx.Open(description);
-                    Log("  Undo策略2: UndoContext.Open OK");
-                    return true;
-                }
-            }
-            catch { }
-
-            // 策略3：TxApplication 级别的Undo
-            try
-            {
-                dynamic app = TxApplication.ActiveDocument;
-                dynamic undoMgr = app.UndoManager;
-                if (undoMgr != null)
-                {
-                    undoMgr.BeginUndoStep(description);
-                    Log("  Undo策略3: UndoManager.BeginUndoStep OK");
-                    return true;
-                }
-            }
-            catch { }
-
-            // 策略4：直接通过 TxApplication 静态方法
-            try
-            {
-                dynamic txApp = typeof(TxApplication);
-                // 部分版本有 TxApplication.BeginCommand(string)
-                TxApplication.ActiveDocument.GetType()
-                    .GetMethod("BeginCommand")?
-                    .Invoke(doc, new object[] { description });
-                Log("  Undo策略4: 反射BeginCommand OK");
-                return true;
-            }
-            catch { }
-
-            Log("  所有Undo策略均失败", "WARN");
-            return false;
+            return TxTools.Common.SceneUndoScope.Begin(doc, description);
         }
 
         /// <summary>结束Undo块</summary>
-        private void EndUndoBlock(TxDocument doc)
+        private void EndUndoBlock(TxTools.Common.SceneUndoScope undo)
         {
-            // 与BeginUndoBlock对应，逐策略尝试关闭
-            try { dynamic ddoc = doc; ddoc.UndoRedo.EndCommand(); return; } catch { }
-            try { dynamic ddoc = doc; ddoc.UndoContext.Close(); return; } catch { }
-            try { dynamic ddoc = doc; ddoc.UndoManager.EndUndoStep(); return; } catch { }
-            try
-            {
-                doc.GetType().GetMethod("EndCommand")?.Invoke(doc, null);
-            }
-            catch { }
+            if (undo != null) undo.Dispose();
         }
 
         // =====================================================================
@@ -1011,7 +987,10 @@ namespace TxTools.DeviceZAligner
         private bool ApplyZOffset(DeviceInfo dev)
         {
             if (dev.TxObj == null) return false;
-            double offsetZ = dev.OffsetZ; // 需要减去这个值
+            if (!Equals(_scanDocument, TxApplication.ActiveDocument))
+                throw new InvalidOperationException("工程已切换，请重新扫描设备。");
+            UpdateDeviceGeometry(dev);
+            double offsetZ = dev.OffsetZ; // 写入前重算，不能重复使用旧偏移
 
             if (Math.Abs(offsetZ) < 0.01) return true; // 无需偏移
 

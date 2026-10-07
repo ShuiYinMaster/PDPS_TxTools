@@ -1,4 +1,4 @@
-# TxAgent — Process Simulate AI Agent / 进程内 AI 助手
+﻿# TxAgent — Process Simulate AI Agent / 进程内 AI 助手
 
 An in-process AI assistant for Tecnomatix Process Simulate, with scene tools, reusable C# / Python recipes and multi-instance collaboration.
 
@@ -96,3 +96,10 @@ node Agent/UI/pet/dsh-pet-tools/validate.cjs
 [配方及启动回归说明](maintenance/recipe-controls-tests/README.md) 包含 C# 回归、JavaScript 界面验证、预览和编译后资源检查命令。历史记忆维护记录见 [maintenance/README.md](maintenance/README.md)，其中的部署日期与路径属于历史记录。
 
 回归测试与源码编译不能替代 PS、CATIA 和真实模型服务的实机验证；本次验证范围见 [项目更新日志](../README.md#十三更新日志)。
+
+
+## 撤销与恢复（2026-10-07）
+
+C#、Python 及相关工程写工具使用场景撤销分组；开启失败阻止写入，关闭失败报告错误。执行失败不代表自动回滚。独立模式恢复点为已导出并校验的工程快照，外部文件和应用写入需另行恢复。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

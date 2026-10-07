@@ -1,4 +1,4 @@
-# DeviceZAligner — Device Z Alignment / 设备 Z 向对齐
+﻿# DeviceZAligner — Device Z Alignment / 设备 Z 向对齐
 
 Experimental device floor-alignment module for Process Simulate. The standalone plugin has a known unresolved runtime issue; see the status below.
 
@@ -20,3 +20,10 @@ Experimental device floor-alignment module for Process Simulate. The standalone 
 `DeviceZAligner.cs` 包含命令、窗体、设备信息和对齐逻辑。TxAgent 的 `align_devices_z` 使用独立的 `Agent/Ps/DeviceZAlignService.cs`；不能用该工具的行为推断本窗口已经修复。
 
 编译环境与总更新日志见 [项目 README](../README.md)。
+
+
+## 撤销与恢复（2026-10-07）
+
+对齐使用真实的 SDK 撤销分组，无法开启则停止。窗口重新激活与每次写入前重读当前几何，避免撤销后继续使用旧偏移；切换工程需重新扫描。最低点检测仍需真实场景核验。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

@@ -1,4 +1,4 @@
-# AutoPath — Robotic Weld Path Planning / 焊接路径规划
+﻿# AutoPath — Robotic Weld Path Planning / 焊接路径规划
 
 Plan robot welding approach, retract and transition points, with collision checks and optional weld-order optimization in Process Simulate.
 
@@ -120,3 +120,10 @@ Plan robot welding approach, retract and transition points, with collision check
 本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
 
 公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。
+
+
+## 撤销与恢复（2026-10-07）
+
+路径规划和干涉集创建各自使用场景撤销分组。停止规划保留已完成的 Via，需在当前 PS 工程 Ctrl+Z 撤销。临时机器人/焊枪状态在结束时尝试恢复；真实撤销栈和长任务干预仍需宿主验收。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

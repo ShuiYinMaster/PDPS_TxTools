@@ -1,4 +1,4 @@
-// StructureIO.cs  --  C# 8.0
+﻿// StructureIO.cs  --  C# 8.0
 // 跨环境目录结构 + 位姿导出/重建（资源树 TxCompoundResource / 零件树 TxCompoundPart）。
 //
 // 数据格式（TSV，首行头）:
@@ -204,6 +204,7 @@ namespace TxTools.CrossEnvIO
                 .ToList();
 
             object um = OpenUndo(isResource ? "跨环境重建资源树" : "跨环境重建零件树", log);
+            using ((TxTools.Common.SceneUndoScope)um)
             try
             {
                 // 路径 -> 容器对象。key 用含 R:/P: 前缀的完整路径，
@@ -675,31 +676,18 @@ namespace TxTools.CrossEnvIO
 
         private static object OpenUndo(string name, Action<string> log)
         {
-            try
-            {
-                dynamic um = TxApplication.ActiveUndoManager;
-                if (um == null) return null;
-                try { um.OpenUndoTransaction(name); return um; } catch { }
-                try { um.OpenTransaction(name); return um; } catch { }
-                try { um.StartTransaction(name); return um; } catch { }
-                try { um.BeginUndoTransaction(name); return um; } catch { }
-            }
-            catch { }
-            log("[Undo] 未开启事务（PS 仍可 Ctrl+Z）");
-            return null;
+            return TxTools.Common.SceneUndoScope.Begin(name);
         }
 
         private static void CommitUndo(object um, Action<string> log)
         {
-            if (um == null) return;
-            try { dynamic d = um; try { d.CommitUndoTransaction(); return; } catch { } try { d.CommitTransaction(); return; } catch { } try { d.Commit(); return; } catch { } } catch { }
+            if (um != null) ((TxTools.Common.SceneUndoScope)um).Dispose();
         }
 
         private static void AbortUndo(object um, Action<string> log)
         {
-            if (um == null) return;
-            try { dynamic d = um; try { d.AbortUndoTransaction(); return; } catch { } try { d.AbortTransaction(); return; } catch { } try { d.Rollback(); return; } catch { } } catch { }
-            log("[Undo] 已尝试回滚");
+            if (um != null) ((TxTools.Common.SceneUndoScope)um).Dispose();
+            log("[Undo] 执行未完整完成，已关闭撤销分组；如已有部分场景变更，请在当前 PS 工程按 Ctrl+Z 撤销本批次。未自动回滚。");
         }
     }
 }

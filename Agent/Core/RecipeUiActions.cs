@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -236,7 +236,7 @@ namespace TxTools.Agent.Core
             TxTools.Agent.TxAgentCommand.SetPetState("working", r.Name);
             NotifyChanged();
             // Solidified recipes retain their existing execution policy: confirm parameters,
-            // execute the saved code with its named Undo block, then record the outcome.
+            // execute the saved code in a scene Undo group, then record the outcome.
             Task.Run(() =>
             {
                 bool ok = false;

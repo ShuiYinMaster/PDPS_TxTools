@@ -501,6 +501,9 @@
     <Compile Include="ExportByColor\FbxExport.cs" />
     <Compile Include="SRC\FormUiKit.cs" />
     <Compile Include="SRC\PickFocus.cs" />
+    <Compile Include="SRC\SceneUndoScope.cs" />
+    <Compile Include="SRC\SceneCreationBatch.cs" />
+    <Compile Include="SRC\StudySnapshot.cs" />
     <Compile Include="SRC\PickAwareTxForm.cs">
       <SubType>Form</SubType>
     </Compile>

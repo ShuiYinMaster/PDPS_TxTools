@@ -1,4 +1,4 @@
-# MechArena — Process Simulate Mech Arena / 机械对战
+﻿# MechArena — Process Simulate Mech Arena / 机械对战
 
 A mech-arena demonstration module hosted inside Process Simulate.
 
@@ -57,3 +57,10 @@ TxTools.MechArena/
 核对当前机械对战模块的使用与实现说明。本次该模块业务源码未修改；运行依赖 PS 宿主，窗口和场景行为以现有实现为准。
 
 本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
+
+
+## 撤销与恢复（2026-10-07）
+
+游戏的实体、机器人驱动与清理是实时场景操作，退出会尝试恢复原始姿态、位置及相机。一局游戏不能视作普通的一步撤销；运行期间与退出后的工程撤销栈需实机验收。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

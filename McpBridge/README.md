@@ -1,4 +1,4 @@
-# McpBridge — Process Simulate MCP Server / MCP 桥接
+﻿# McpBridge — Process Simulate MCP Server / MCP 桥接
 
 Expose TxAgent tools to external MCP clients over stdio, forwarding requests to Process Simulate through named-pipe RPC.
 
@@ -99,7 +99,7 @@ codex mcp add tx-tools -- "G:/Program Files/Tecnomatix_2402/eMPower/DotNetComman
 - `tools/list` 返回 PS 实例里 ToolRegistry 的全部工具（名称、描述、JSON Schema、
   只读标记）。`--readonly` 时只暴露只读工具。
 - `tools/call` 转发到 PS 执行，返回工具输出文本。
-- 写工具（`IsReadOnly=false`）同样暴露——执行时受 PS 自身 undo 保护（Ctrl+Z）。
+- 写工具（`IsReadOnly=false`）同样暴露——可撤销性由目标工具决定。支持分组的场景写入需在目标 PS 工程按 Ctrl+Z；磁盘、CATIA、Excel 和注册表写入不由 PS Undo 回退。
 - 多实例：默认控制主控实例；`list_environments` 工具可枚举所有实例，
   `run_in_environment` / `compare_environments` 可跨实例操作。
 - 实例不可达时：`tools/list` 退化为占位工具 `ps_connection_status`，供排查连接。
@@ -119,3 +119,10 @@ McpBridge/
 更新两种构建配置的默认输出路径，并修正文档中的产物目录。协议和命令行行为沿用原实现；TxAgent 实例服务现在延后到宿主消息循环就绪后在后台初始化，PS 启动阶段短暂不可达时可稍后重试。
 
 完整环境与更新日志见 [项目 README](../README.md)。
+
+
+## 撤销与恢复（2026-10-07）
+
+桥接层不提供独立撤销事务。撤销能力与目标工具一致，工程历史属于目标 PDPS 实例；发起端的 Ctrl+Z 不撤销另一个实例的工程。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

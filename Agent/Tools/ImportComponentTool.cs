@@ -1,4 +1,4 @@
-// TxTools.Agent / Tools / Import / ImportComponentTool.cs
+﻿// TxTools.Agent / Tools / Import / ImportComponentTool.cs
 //
 // 从磁盘导入 cojt 组件到当前 study。
 //
@@ -53,7 +53,7 @@ namespace TxTools.Agent.Core
             get
             {
                 return "把磁盘上的 cojt 组件导入当前 study，并落到项目库中。"
-                     + "内部流程:复制到纯英文临时路径 → 插入 → 迁回项目库 → 清理临时文件。"
+                     + "内部流程:复制到纯英文临时路径 → 插入 → 迁回项目库 → 保留中转文件以支持撤销/重做。"
                      + "【为什么要绕这一圈】PS 的 InsertComponent 遇到中文路径或中文名会失败，"
                      + "且报的是含义无关的通用异常，所以必须在纯 ASCII 路径下完成插入再迁回。"
                      + "prototype_from 传场景里一个同类型组件名(如已有的同型号焊枪)，"
@@ -79,7 +79,7 @@ namespace TxTools.Agent.Core
                         'x':              { 'type': 'number' },
                         'y':              { 'type': 'number' },
                         'z':              { 'type': 'number' },
-                        'keep_temp':      { 'type': 'boolean', 'description': '可选，保留临时文件以便排查，默认 false' },
+                        'keep_temp':      { 'type': 'boolean', 'description': '可选，失败前尚未插入时也保留中转文件，默认 false；成功插入后始终保留以支持重做' },
                         'probe':          { 'type': 'boolean', 'description': '只探查接口与配置，不实际导入' }
                     }
                 }");
@@ -107,13 +107,15 @@ namespace TxTools.Agent.Core
 
             var log = new StringBuilder();
             string tempDir = null;
+            bool inserted = false;
 
+            using (var undo = TxTools.Common.SceneUndoScope.Begin(doc, "导入组件"))
             try
             {
                 // ── ① 复制到纯英文临时路径 ──
                 // 临时名也必须是 ASCII:name 走窄字符 CString,中文同样会崩
                 var asciiName = ToAscii(finalName);
-                tempDir = Path.Combine(EnsureTempRoot(), asciiName + ".cojt");
+                tempDir = Path.Combine(EnsureTempRoot(), asciiName + "_" + Guid.NewGuid().ToString("N") + ".cojt");
 
                 CopyTree(srcPath, tempDir);
                 log.AppendLine("① 已复制到临时路径: " + tempDir);
@@ -142,6 +144,7 @@ namespace TxTools.Agent.Core
                 }
 
                 if (comp == null) return log + "\n② 插入返回 null，未知失败。";
+                inserted = true;
                 log.AppendLine("② 插入成功: " + SafeName(comp));
 
                 // ── ③ 迁回项目库 ──
@@ -162,17 +165,9 @@ namespace TxTools.Agent.Core
                     }
                 }
 
-                // ── ⑤ 清理 ──
-                if (migrated && !Bool(input, "keep_temp"))
-                {
-                    TryDelete(tempDir);
-                    log.AppendLine("⑤ 已清理临时文件");
-                }
-                else if (!migrated)
-                {
-                    log.AppendLine("⑤ 【临时文件已保留】—— 迁库未完成，"
-                                 + "组件仍指向临时目录，删掉它组件就会损坏: " + tempDir);
-                }
+                // 成功插入后历史中的 InsertComponent 仍可能引用中转路径；保留供 Ctrl+Y。
+                log.AppendLine("⑤ 中转文件已保留以支持撤销/重做: " + tempDir);
+                if (!migrated) log.AppendLine("组件仍引用中转目录，请勿删除。");
 
                 log.AppendLine();
                 log.Append("导入完成。对象: ").Append(SafeName(comp));
@@ -181,7 +176,7 @@ namespace TxTools.Agent.Core
             }
             catch (Exception ex)
             {
-                if (tempDir != null && !Bool(input, "keep_temp")) TryDelete(tempDir);
+                if (!inserted && tempDir != null && !Bool(input, "keep_temp")) TryDelete(tempDir);
                 return log + "\nError: " + ex.GetType().Name + ": " + ex.Message;
             }
         }
@@ -294,7 +289,7 @@ namespace TxTools.Agent.Core
 
         private static void CopyTree(string src, string dst)
         {
-            if (Directory.Exists(dst)) Directory.Delete(dst, true);
+            if (Directory.Exists(dst)) throw new IOException("中转目录已存在，未覆盖: " + dst);
             Directory.CreateDirectory(dst);
 
             if (File.Exists(src))

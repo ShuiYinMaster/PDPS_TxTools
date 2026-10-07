@@ -1,4 +1,4 @@
-// CrossEnvRebuildTool.cs  --  C# 8.0
+﻿// CrossEnvRebuildTool.cs  --  C# 8.0
 // 跨环境远程重建工具：在【被调用的 PS 实例】里执行结构/零件/焊点重建。
 //
 // 目的：主控端「复制 cojt 到对端库」之后，不必再手动切到对端窗口点重建 ——
@@ -45,6 +45,7 @@ namespace TxTools.CrossEnvIO
                     'properties': {
                         'kind': { 'type': 'string', 'description': 'resource | part | weld' },
                         'file': { 'type': 'string', 'description': 'TSV 数据文件绝对路径' },
+                        'save_reload': { 'type': 'boolean', 'description': '默认 false；true 时保存/修路径/重载，磁盘操作不由 Ctrl+Z 恢复' },
                         'project': { 'type': 'boolean', 'description': 'weld: 重建后投影到零件表面' },
                         'bind_only': { 'type': 'boolean', 'description': 'weld: 仅绑定已有焊点，不新建' },
                         'origin_x': { 'type': 'number', 'description': '重建原点 X（世界坐标偏移，用于场景坐标同步）' },
@@ -82,9 +83,10 @@ namespace TxTools.CrossEnvIO
                         var rep = StructureIO.RebuildStructure(file, doc.PhysicalRoot,
                             kind == "resource", log, ox, oy, oz);
                         foreach (var e in rep.Errors) log("[警告] " + e);
-                        // 统一收尾：保存 → 改 psz 路径 → 重载刷新（资源/零件同一套逻辑，无条件执行）
-                        log("[修路径] 重建完成，统一保存+改psz+重载");
-                        ComponentIO.FixPszAfterInsert(log);
+                        // 文件操作必须显式请求；避免默认覆盖工程并重载撤销历史。
+                        if (input["save_reload"] != null && (bool)input["save_reload"])
+                            ComponentIO.FixPszAfterInsert(log);
+                        else log("[Undo] 未自动保存/重载；场景变更可在目标 PS 工程 Ctrl+Z 撤销。");
                         return sb.ToString() + "\n" + rep;
                     }
 

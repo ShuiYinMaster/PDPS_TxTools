@@ -1,4 +1,4 @@
-# AutoFance — Process Simulate Fence Builder / 围栏生成
+﻿# AutoFance — Process Simulate Fence Builder / 围栏生成
 
 Generate fence panels and posts along line or polyline baselines in Process Simulate.
 
@@ -84,7 +84,7 @@ FenceBuilder/
    - 是否启用底板
    - 是否贴网格纹理(失败自动降级为半透明纯色)
 5. 【生成围栏】
-6. 不满意按 Ctrl+Z(整批撤销)或点【撤销上次】
+6. 不满意可在 PS 中按 Ctrl+Z 撤销场景批次，或点【清理上次生成】清理本批次对象；复用的建模组件及原有内容会保留
 
 ## 性能与扩展
 
@@ -109,3 +109,10 @@ FenceBuilder/
 本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
 
 公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。
+
+
+## 撤销与恢复（2026-10-07）
+
+生成使用一个场景撤销分组。清理按钮只按 ID 清理记录的生成物，仅删除本次新建且已空的容器；既有建模资源保留。多基线整批记录及失败项可重试，清理本身也是一个场景变更。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

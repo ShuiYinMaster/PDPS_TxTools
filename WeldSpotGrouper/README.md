@@ -1,4 +1,4 @@
-# WeldSpotGrouper — Weld Spot Grouping / 焊点自动分组
+﻿# WeldSpotGrouper — Weld Spot Grouping / 焊点自动分组
 
 Group weld points by their assigned-part signatures and move each group into a new welding operation in Process Simulate.
 
@@ -30,7 +30,7 @@ WeldSpotGrouper/
 3. **扫描预览** → 表里看各组的焊点数与零件指纹。
 4. **执行分组** → 每组新建一个空白焊接操作（挂 OperationRoot 根），把该组焊点移入。
 
-整个执行包在一个 Undo 事务里，出错回滚；PS 里也可 Ctrl+Z。
+整个执行包在一个场景撤销事务里，成功和失败都结束分组。部分失败会报告已保留的变更，需在当前 PS 工程按 Ctrl+Z 撤销；不宣称自动回滚。
 
 ## 首跑要看的两处日志（`%TEMP%\WeldSpotGrouper.log`，窗体点「日志」也能看）
 
@@ -50,3 +50,10 @@ WeldSpotGrouper/
 本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
 
 公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。
+
+
+## 撤销与恢复（2026-10-07）
+
+父/子操作创建及原始点位迁移纳入同一场景撤销分组，无法继续创建时尝试清理新空父节点；其余部分失败须手动 Ctrl+Z。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。
