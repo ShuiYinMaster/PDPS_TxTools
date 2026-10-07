@@ -181,7 +181,7 @@ TxAgent：
 
 ## 十一、许可与联系方式
 - 授权：MIT（详见 LICENSE 文件）。  
-- 欢迎在仓库中提交 Issue 与 PR： https://github.com/ShuiYinMaster/TxTools
+- 欢迎在 [PDPS_TxTools 仓库](https://github.com/ShuiYinMaster/PDPS_TxTools) 中提交 Issue 与 PR。
 
 ---
 
