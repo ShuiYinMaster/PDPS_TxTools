@@ -1,4 +1,4 @@
-# SelectButton — Weld and Via Selection / 快捷选点
+﻿# SelectButton — Weld and Via Selection / 快捷选点
 
 Select weld points, via points or continuous locations from selected operations, and open resource directories in Process Simulate.
 
@@ -38,3 +38,9 @@ Select weld points, via points or continuous locations from selected operations,
 ## 界面与构建
 
 本模块随 `TxTools.csproj` 构建。环境与注册方式见 [项目 README](../README.md)。
+
+## 撤销与恢复（2026-10-07）
+
+选择集合和资源目录导航属于选择/界面操作，不是持久模型批次。输入框和 PS 图形窗口中的 Ctrl+Z 作用域由焦点与宿主决定。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

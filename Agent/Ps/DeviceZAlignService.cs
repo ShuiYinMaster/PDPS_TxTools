@@ -1,4 +1,4 @@
-// TxTools.Agent / Ps / DeviceZAlignService.cs
+﻿// TxTools.Agent / Ps / DeviceZAlignService.cs
 // 无界面的设备 Z 向落地对齐，忠实复刻 DeviceZAligner 的多策略实现，作用于"当前选中"。
 // 与 select_objects 配合：先选中要对齐的设备，再调 align_devices_z。
 // 全程包在 Undo 块里 -> 对齐后可 Ctrl+Z 撤销。
@@ -38,7 +38,7 @@ namespace TxTools.Agent.Ps
             int aligned = 0, already = 0, skipped = 0, failed = 0;
             var notes = new List<string>();
 
-            bool undo = BeginUndoBlock(doc, "设备Z向对齐(" + targets.Count + "个)");
+            var undo = BeginUndoBlock(doc, "设备Z向对齐(" + targets.Count + "个)");
             try
             {
                 foreach (var obj in targets)
@@ -57,13 +57,13 @@ namespace TxTools.Agent.Ps
                     else { failed++; notes.Add(SafeName(obj) + " 写入失败"); }
                 }
             }
-            finally { if (undo) EndUndoBlock(doc); }
+            finally { if (undo != null) EndUndoBlock(undo); }
 
             try { TxApplication.RefreshDisplay(); } catch { }
 
             var sb = new System.Text.StringBuilder();
             sb.AppendLine("对齐完成：成功 " + aligned + "，已在Z=0 " + already + "，跳过 " + skipped + "，失败 " + failed
-                          + (undo ? "（可 Ctrl+Z 撤销）" : "（注意：Undo 未启动，不可撤销）"));
+                          + (undo != null ? "（可 Ctrl+Z 撤销）" : "（注意：Undo 未启动，不可撤销）"));
             int cap = Math.Min(notes.Count, 20);
             for (int i = 0; i < cap; i++) sb.AppendLine("• " + notes[i]);
             if (notes.Count > cap) sb.AppendLine("…(其余省略)");
@@ -193,19 +193,14 @@ namespace TxTools.Agent.Ps
             return applied;
         }
 
-        private static bool BeginUndoBlock(TxDocument doc, string desc)
+        private static TxTools.Common.SceneUndoScope BeginUndoBlock(TxDocument doc, string description)
         {
-            try { dynamic d = doc; dynamic ur = d.UndoRedo; if (ur != null) { ur.BeginCommand(desc); return true; } } catch { }
-            try { dynamic d = doc; dynamic ctx = d.UndoContext; if (ctx != null) { ctx.Open(desc); return true; } } catch { }
-            try { dynamic d = TxApplication.ActiveDocument; dynamic um = d.UndoManager; if (um != null) { um.BeginUndoStep(desc); return true; } } catch { }
-            return false;
+            return TxTools.Common.SceneUndoScope.Begin(doc, description);
         }
 
-        private static void EndUndoBlock(TxDocument doc)
+        private static void EndUndoBlock(TxTools.Common.SceneUndoScope undo)
         {
-            try { dynamic d = doc; d.UndoRedo.EndCommand(); return; } catch { }
-            try { dynamic d = doc; d.UndoContext.Close(); return; } catch { }
-            try { dynamic d = doc; d.UndoManager.EndUndoStep(); return; } catch { }
+            if (undo != null) undo.Dispose();
         }
 
         private static string SafeName(ITxObject o)

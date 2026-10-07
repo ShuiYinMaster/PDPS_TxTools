@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -55,8 +55,7 @@ namespace TxTools.FenceBuilder
         private bool _logVisible = true;
 
         // 撤销记忆
-        private List<TxSolid> _lastCreatedSolids = new List<TxSolid>();
-        private TxComponent _lastCreatedContainer;
+        private TxTools.Common.SceneCreationBatch _lastBatch;
 
         // 纹理
         private string _texturePath;
@@ -203,7 +202,7 @@ namespace TxTools.FenceBuilder
             _btnGenerate.Click += OnGenerate;
             actFlow.Controls.Add(_btnGenerate);
 
-            _btnUndo = NewFlatButton("撤销上次", 120);
+            _btnUndo = NewFlatButton("清理上次生成", 120);
             _btnUndo.Click += OnUndoLast;
             actFlow.Controls.Add(_btnUndo);
 
@@ -574,8 +573,6 @@ namespace TxTools.FenceBuilder
             try
             {
                 _btnGenerate.Enabled = false;
-                _lastCreatedSolids.Clear();
-                _lastCreatedContainer = null;
 
                 List<ITxObject> raw = ReadGridObjects();
                 if (raw.Count == 0)
@@ -601,14 +598,24 @@ namespace TxTools.FenceBuilder
                     "  立柱=" + p.PostWidth + "  底板=" + p.BaseplateMode);
 
                 int totalSolids = 0;
+                var batch = new TxTools.Common.SceneCreationBatch();
+                using (var undo = TxTools.Common.SceneUndoScope.Begin("生成围栏"))
                 foreach (ITxObject obj in baselines)
                 {
                     BaseSegmentChain chain = FenceBaselineReader.ReadAsChain(obj, Log);
                     if (chain == null) continue;
                     FenceLayout layout = FenceLayoutPlanner.Plan(chain, p, Log);
-                    BuildResult br = FenceGeometryBuilder.Build(layout, p, _texturePath, Log);
-                    _lastCreatedSolids.AddRange(br.CreatedSolids);
-                    if (br.Container != null) _lastCreatedContainer = br.Container;
+                    undo.EnsureDocument();
+                    var br = new BuildResult();
+                    try { FenceGeometryBuilder.Build(layout, p, _texturePath, Log, br); }
+                    finally
+                    {
+                        foreach (var solid in br.CreatedSolids) batch.Add(solid);
+                        foreach (var group in br.PanelGroups) batch.AddNewContainer(group);
+                        foreach (var group in br.PostGroups) batch.AddNewContainer(group);
+                        if (!br.UsedActiveModeling) batch.AddNewContainer(br.Container);
+                        if (batch.Count > 0) _lastBatch = batch;
+                    }
                     totalSolids += br.CreatedSolids.Count;
                 }
                 Log("[Gen] 全部完成,本次共创建 " + totalSolids + " 个 Solid");
@@ -625,45 +632,17 @@ namespace TxTools.FenceBuilder
 
         private void OnUndoLast(object sender, EventArgs e)
         {
-            // 优先删除整个 Part 容器
-            if (_lastCreatedContainer != null)
-            {
-                try
-                {
-                    MethodInfo mi = _lastCreatedContainer.GetType().GetMethod("Delete", Type.EmptyTypes);
-                    if (mi != null)
-                    {
-                        mi.Invoke(_lastCreatedContainer, null);
-                        Log("[UI] 已删除整个容器 Part");
-                        _lastCreatedContainer = null;
-                        _lastCreatedSolids.Clear();
-                        return;
-                    }
-                }
-                catch (Exception ex) { Log("[UI] 删除容器失败: " + ex.Message); }
-            }
-
-            // 退化:用 PS 原生 Undo
             try
             {
-                TxDocument doc = TxApplication.ActiveDocument;
-                if (doc != null)
-                {
-                    PropertyInfo pi = doc.GetType().GetProperty("UndoManager");
-                    if (pi != null)
-                    {
-                        object mgr = pi.GetValue(doc, null);
-                        if (mgr != null)
-                        {
-                            MethodInfo mi = mgr.GetType().GetMethod("Undo", Type.EmptyTypes);
-                            if (mi != null) { mi.Invoke(mgr, null); Log("[UI] 已调用 PS Undo"); return; }
-                        }
-                    }
-                }
+                if (_lastBatch == null || _lastBatch.Count == 0)
+                { Log("[清理] 没有上次生成记录；原生撤销请在 PS 中按 Ctrl+Z。"); return; }
+                bool complete = _lastBatch.RemoveCreated(Log);
+                if (complete) _lastBatch = null;
+                Log(complete ? "[清理] 已清理整批生成物；原有组件保留。本次清理也可 Ctrl+Z 撤销。"
+                             : "[清理] 部分对象保留，记录未丢失，可再次清理。");
+                TxApplication.RefreshDisplay();
             }
-            catch (Exception ex) { Log("[UI] PS Undo 失败: " + ex.Message); }
-
-            Log("[UI] WARN 撤销未能执行,请手动 Ctrl+Z");
+            catch (Exception ex) { Log("[清理] 已停止: " + ex.Message); }
         }
 
         private List<ITxObject> ReadGridObjects()

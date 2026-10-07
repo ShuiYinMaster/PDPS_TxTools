@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
@@ -628,8 +628,15 @@ namespace TxTools.LineToSolid
         /// <summary>按当前选项卡分发生成。</summary>
         private void OnBuild()
         {
-            if (_tabs.SelectedTab == _tabCyl) OnBuildCyl();
-            else OnBuildRect();
+            try
+            {
+                if (_tabs.SelectedTab == _tabCyl) OnBuildCyl();
+                else OnBuildRect();
+            }
+            catch (Exception ex)
+            {
+                Log("[失败] " + ex.Message + "；如有部分变更，请在当前 PS 工程 Ctrl+Z 撤销。");
+            }
         }
 
         private void OnBuildRect()

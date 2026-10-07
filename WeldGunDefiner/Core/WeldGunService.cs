@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Tecnomatix.Engineering;
 using TxTools.WeldGunDefiner.Math;
@@ -189,136 +189,140 @@ namespace TxTools.WeldGunDefiner.Core
         // ── 生成运动学：完整复刻RPRR向导 ──
         public GenerationResult GenerateAll()
         {
-            var result = new GenerationResult();
-
-            if (_model.TargetKinematics == null)
-            { result.AddError("未指定目标设备"); return result; }
-            if (_model.Plane == null)
-            { result.AddError("参考平面未初始化，请先完成铰点选取"); return result; }
-
-            // ── 6. 建模状态检测（在UI层已做，这里再兜底）──
-            if (!_model.TargetKinematics.IsOpenForKinematicsModeling)
+            using (var undoScope = TxTools.Common.SceneUndoScope.Begin("焊钳定义"))
             {
-                result.AddError("设备未开启运动学建模状态，请在向导中启用");
-                return result;
-            }
+                var result = new GenerationResult();
 
-            // ── TCP 坐标（从选取的 ITxObject 读取世界坐标）──
-            Vec3 worldStaticTip = _model.WorldStaticTip;
-            Vec3 worldMovingTip = _model.WorldMovingTip;
-            if (_model.ObjStaticTip != null)
-                PsSdkHelper.TryGetWorldPosition(_model.ObjStaticTip, out worldStaticTip);
-            if (_model.ObjMovingTip != null)
-                PsSdkHelper.TryGetWorldPosition(_model.ObjMovingTip, out worldMovingTip);
+                if (_model.TargetKinematics == null)
+                { result.AddError("未指定目标设备"); return result; }
+                if (_model.Plane == null)
+                { result.AddError("参考平面未初始化，请先完成铰点选取"); return result; }
 
-            // ── 臂长计算：动TCP投影到参考平面的点 → O投影点的距离 ──
-            double R_arm = 0;
-            if (_model.Plane != null && _model.ObjMovingTip != null)
-            {
-                Vec3 projMovTcp = _model.Plane.Project(worldMovingTip);
-                Vec3 projO = _model.Plane.Project(_model.WorldO);
-                R_arm = (projMovTcp - projO).Length;
-                _model.ArmLength = R_arm;
-            }
-
-            // ── 最大张开距离反算（4. 注入开口值）──
-            // 活塞最大行程对应的动臂最大转角，用转角×臂长算焊钳开口
-            // OpenGap 用户填的值作为j1 Low的绝对值，同时用于公式换算
-            // MaxOpenGap 用臂长×活塞行程对应角度几何算（更精确）
-            // 当前先用用户输入值作为 j1 Low limit，后续可用臂长反校
-            _model.MaxOpenGap = _model.OpenGap;  // 先等于用户输入，后续精化
-
-            // ── 活塞方向：从铰点几何推算（不依赖活塞杆几何体）──
-            Vec3 pistonDir = ComputePistonDirFromHinges();
-
-            // 构建RprrParams
-            var p = new RprrParams
-            {
-                WorldO = _model.WorldO,
-                WorldA = _model.WorldA,
-                WorldC = _model.WorldC,
-                N = _model.PlaneNormal,
-                PistonDir = pistonDir,
-                Plane = _model.Plane,
-                FixedLinkBodies = _model.FixedLinkBodies,
-                InputLinkBodies = _model.InputLinkBodies,
-                CouplerLinkBodies = _model.CouplerLinkBodies,
-                OutputLinkBodies = _model.OutputLinkBodies,
-                Lnk2Bodies = _model.Lnk2Bodies,
-                WorldStaticTip = worldStaticTip,
-                WorldMovingTip = worldMovingTip,
-                R_arm = R_arm,
-                S0 = _model.S0,
-                PistonStroke = _model.PistonStroke,
-                OpenGap = _model.MaxOpenGap,
-                WearAllowance = _model.WearAllowance,
-                OpenStateAdapt = _model.OpenStateAdapt,
-            };
-
-            // 执行构建
-            var builder = new RprrBuilder(_model.TargetKinematics, p);
-            string buildErr;
-            if (!builder.Build(out buildErr))
-            {
-                result.AddError($"RPRR构建失败: {buildErr}");
-                result.AddInfo(builder.Log);
-                return result;
-            }
-            result.AddSuccess("RPRR运动学结构创建完成（7 Link + 6 Joint）");
-            result.AddInfo(builder.Log);
-
-            // 公式常数（用于日志）
-            var formulas = builder.BuildFormulas();
-            result.AddInfo("");
-            result.AddInfo("=== 几何常数 ===");
-            result.AddInfo($"a=|OA|={formulas.Const_a:F2}  b=连杆={formulas.Const_b:F2}  r=|OC|={formulas.Const_r:F2}  s0={formulas.Const_s0:F2}");
-
-            // Pose：拖动主动轴 j1（焊钳开口）
-            if (_model.TargetDevice != null)
-            {
-                var closeVals = new System.Collections.Generic.Dictionary<TxJoint, double>();
-                var openVals = new System.Collections.Generic.Dictionary<TxJoint, double>();
-                if (builder.J1 != null)
+                // ── 6. 建模状态检测（在UI层已做，这里再兜底）──
+                if (!_model.TargetKinematics.IsOpenForKinematicsModeling)
                 {
-                    // Close = j1 @ High(+磨量), Open = j1 @ Low(-开口)
-                    closeVals[builder.J1] = formulas.J1_High;
-                    openVals[builder.J1] = formulas.J1_Low;
+                    result.AddError("设备未开启运动学建模状态，请在向导中启用");
+                    return result;
                 }
-                string pcErr, poErr;
-                bool pc = PsSdkHelper.CreatePose(_model.TargetDevice, "CLOSE", closeVals, out pcErr);
-                result.AddInfo(pc ? "[OK] Pose: CLOSE" : "[X] Pose: CLOSE 失败 - " + pcErr);
-                bool po = PsSdkHelper.CreatePose(_model.TargetDevice, "OPEN", openVals, out poErr);
-                result.AddInfo(po ? "[OK] Pose: OPEN" : "[X] Pose: OPEN 失败 - " + poErr);
 
-                bool lb = PsSdkHelper.CreateSimpleLogicBlock(_model.TargetDevice, "GUN_OPEN", "OPEN", "CLOSE");
-                result.AddInfo(lb ? "[OK] Logic Block" : "[!] Logic Block 需手动配置");
+                // ── TCP 坐标（从选取的 ITxObject 读取世界坐标）──
+                Vec3 worldStaticTip = _model.WorldStaticTip;
+                Vec3 worldMovingTip = _model.WorldMovingTip;
+                if (_model.ObjStaticTip != null)
+                    PsSdkHelper.TryGetWorldPosition(_model.ObjStaticTip, out worldStaticTip);
+                if (_model.ObjMovingTip != null)
+                    PsSdkHelper.TryGetWorldPosition(_model.ObjMovingTip, out worldMovingTip);
+
+                // ── 臂长计算：动TCP投影到参考平面的点 → O投影点的距离 ──
+                double R_arm = 0;
+                if (_model.Plane != null && _model.ObjMovingTip != null)
+                {
+                    Vec3 projMovTcp = _model.Plane.Project(worldMovingTip);
+                    Vec3 projO = _model.Plane.Project(_model.WorldO);
+                    R_arm = (projMovTcp - projO).Length;
+                    _model.ArmLength = R_arm;
+                }
+
+                // ── 最大张开距离反算（4. 注入开口值）──
+                // 活塞最大行程对应的动臂最大转角，用转角×臂长算焊钳开口
+                // OpenGap 用户填的值作为j1 Low的绝对值，同时用于公式换算
+                // MaxOpenGap 用臂长×活塞行程对应角度几何算（更精确）
+                // 当前先用用户输入值作为 j1 Low limit，后续可用臂长反校
+                _model.MaxOpenGap = _model.OpenGap;  // 先等于用户输入，后续精化
+
+                // ── 活塞方向：从铰点几何推算（不依赖活塞杆几何体）──
+                Vec3 pistonDir = ComputePistonDirFromHinges();
+
+                // 构建RprrParams
+                var p = new RprrParams
+                {
+                    WorldO = _model.WorldO,
+                    WorldA = _model.WorldA,
+                    WorldC = _model.WorldC,
+                    N = _model.PlaneNormal,
+                    PistonDir = pistonDir,
+                    Plane = _model.Plane,
+                    FixedLinkBodies = _model.FixedLinkBodies,
+                    InputLinkBodies = _model.InputLinkBodies,
+                    CouplerLinkBodies = _model.CouplerLinkBodies,
+                    OutputLinkBodies = _model.OutputLinkBodies,
+                    Lnk2Bodies = _model.Lnk2Bodies,
+                    WorldStaticTip = worldStaticTip,
+                    WorldMovingTip = worldMovingTip,
+                    R_arm = R_arm,
+                    S0 = _model.S0,
+                    PistonStroke = _model.PistonStroke,
+                    OpenGap = _model.MaxOpenGap,
+                    WearAllowance = _model.WearAllowance,
+                    OpenStateAdapt = _model.OpenStateAdapt,
+                };
+
+                // 执行构建
+                var builder = new RprrBuilder(_model.TargetKinematics, p);
+                string buildErr;
+                if (!builder.Build(out buildErr))
+                {
+                    result.AddError($"RPRR构建失败: {buildErr}。如有部分变更，请在当前 PS 工程按 Ctrl+Z 撤销本批次；未自动回滚。");
+                    result.AddInfo(builder.Log);
+                    return result;
+                }
+                result.AddSuccess("RPRR运动学结构创建完成（7 Link + 6 Joint）");
+                result.AddInfo(builder.Log);
+
+                // 公式常数（用于日志）
+                var formulas = builder.BuildFormulas();
+                result.AddInfo("");
+                result.AddInfo("=== 几何常数 ===");
+                result.AddInfo($"a=|OA|={formulas.Const_a:F2}  b=连杆={formulas.Const_b:F2}  r=|OC|={formulas.Const_r:F2}  s0={formulas.Const_s0:F2}");
+
+                // Pose：拖动主动轴 j1（焊钳开口）
+                if (_model.TargetDevice != null)
+                {
+                    var closeVals = new System.Collections.Generic.Dictionary<TxJoint, double>();
+                    var openVals = new System.Collections.Generic.Dictionary<TxJoint, double>();
+                    if (builder.J1 != null)
+                    {
+                        // Close = j1 @ High(+磨量), Open = j1 @ Low(-开口)
+                        closeVals[builder.J1] = formulas.J1_High;
+                        openVals[builder.J1] = formulas.J1_Low;
+                    }
+                    string pcErr, poErr;
+                    bool pc = PsSdkHelper.CreatePose(_model.TargetDevice, "CLOSE", closeVals, out pcErr);
+                    result.AddInfo(pc ? "[OK] Pose: CLOSE" : "[X] Pose: CLOSE 失败 - " + pcErr);
+                    bool po = PsSdkHelper.CreatePose(_model.TargetDevice, "OPEN", openVals, out poErr);
+                    result.AddInfo(po ? "[OK] Pose: OPEN" : "[X] Pose: OPEN 失败 - " + poErr);
+
+                    bool lb = PsSdkHelper.CreateSimpleLogicBlock(_model.TargetDevice, "GUN_OPEN", "OPEN", "CLOSE");
+                    result.AddInfo(lb ? "[OK] Logic Block" : "[!] Logic Block 需手动配置");
+                }
+
+                // ── 焊钳定义（Servo Gun）：写完Pose后添加 ──
+                // Tool=Servo Gun, TCP=选取的TcpFrame, Base=焊钳自身坐标,
+                // 不检测干涉=静/动电极帽（可留空）
+                if (_model.TargetKinematics != null)
+                {
+                    // Base = 焊钳组件自身坐标系
+                    TxTransformation baseLoc = null;
+                    try { baseLoc = (_model.TargetComponent as ITxLocatableObject)?.AbsoluteLocation; }
+                    catch { baseLoc = null; }
+
+                    // 不检测干涉的实体：两个电极帽
+                    var nonColliding = new System.Collections.Generic.List<ITxObject>();
+                    if (_model.ObjStaticTip != null) nonColliding.Add(_model.ObjStaticTip);
+                    if (_model.ObjMovingTip != null) nonColliding.Add(_model.ObjMovingTip);
+
+                    string gunErr;
+                    bool gun = PsSdkHelper.DefineAsServoGun(
+                        _model.TargetKinematics, _model.TcpFrame, baseLoc, nonColliding, out gunErr);
+                    result.AddInfo(gun
+                        ? $"[OK] 焊钳定义: Servo Gun (TCP={(_model.TcpFrame != null ? _model.TcpFrame.Name : "未设")}, 不检测干涉×{nonColliding.Count})"
+                        : "[!] 焊钳定义部分失败 - " + gunErr);
+                }
+
+                result.Success = result.Errors.Count == 0;
+                return result;
+
             }
-
-            // ── 焊钳定义（Servo Gun）：写完Pose后添加 ──
-            // Tool=Servo Gun, TCP=选取的TcpFrame, Base=焊钳自身坐标,
-            // 不检测干涉=静/动电极帽（可留空）
-            if (_model.TargetKinematics != null)
-            {
-                // Base = 焊钳组件自身坐标系
-                TxTransformation baseLoc = null;
-                try { baseLoc = (_model.TargetComponent as ITxLocatableObject)?.AbsoluteLocation; }
-                catch { baseLoc = null; }
-
-                // 不检测干涉的实体：两个电极帽
-                var nonColliding = new System.Collections.Generic.List<ITxObject>();
-                if (_model.ObjStaticTip != null) nonColliding.Add(_model.ObjStaticTip);
-                if (_model.ObjMovingTip != null) nonColliding.Add(_model.ObjMovingTip);
-
-                string gunErr;
-                bool gun = PsSdkHelper.DefineAsServoGun(
-                    _model.TargetKinematics, _model.TcpFrame, baseLoc, nonColliding, out gunErr);
-                result.AddInfo(gun
-                    ? $"[OK] 焊钳定义: Servo Gun (TCP={(_model.TcpFrame != null ? _model.TcpFrame.Name : "未设")}, 不检测干涉×{nonColliding.Count})"
-                    : "[!] 焊钳定义部分失败 - " + gunErr);
-            }
-
-            result.Success = result.Errors.Count == 0;
-            return result;
         }
 
         // 活塞方向从铰点几何推算：A→C 方向投影到参考平面内

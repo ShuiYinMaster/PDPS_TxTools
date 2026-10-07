@@ -1,4 +1,4 @@
-// TxTools.Agent / Tools / BatchTools.cs
+﻿// TxTools.Agent / Tools / BatchTools.cs
 // 批量操作工具：find_objects（只读搜索）+ batch_rename（变更，需审批，可撤销）。
 // find_objects 是 count_objects 的补充，按名称/类型关键字搜索对象列表后可定位操作；
 // batch_rename 支持前缀/后缀/正则三种模式重命名，包 Undo 块可 Ctrl+Z 撤销。
@@ -321,7 +321,7 @@ namespace TxTools.Agent.Tools
                         return "没有找到任何要重命名的对象。未找到: " + string.Join(", ", missingNames);
 
                     // 开启 Undo 块（多策略反射，同 PsBridge 的模式）
-                    bool undo = BeginUndo(doc, "batch_rename");
+                    var undo = BeginUndo(doc, "batch_rename");
 
                     int renamed = 0, skipped = 0;
                     var details = new List<string>();
@@ -387,7 +387,7 @@ namespace TxTools.Agent.Tools
                     }
                     finally
                     {
-                        if (undo) EndUndo(doc);
+                        if (undo != null) EndUndo(undo);
                     }
 
                     try { TxApplication.RefreshDisplay(); } catch { }
@@ -401,7 +401,7 @@ namespace TxTools.Agent.Tools
                     for (int i = 0; i < detailCap; i++) sb.AppendLine("  " + details[i]);
                     if (details.Count > detailCap)
                         sb.AppendLine("  ...(其余 " + (details.Count - detailCap) + " 条省略)");
-                    if (undo) sb.AppendLine("可 Ctrl+Z 撤销");
+                    if (undo != null) sb.AppendLine("可 Ctrl+Z 撤销");
                     return sb.ToString();
                 }
                 catch (Exception ex) { return "批量重命名失败: " + ex.Message; }
@@ -410,19 +410,14 @@ namespace TxTools.Agent.Tools
 
         // ─── Undo 辅助（多策略反射，同 PsBridge 的模式）───
 
-        private static bool BeginUndo(TxDocument doc, string desc)
+        private static TxTools.Common.SceneUndoScope BeginUndo(TxDocument doc, string description)
         {
-            try { dynamic d = doc; dynamic ur = d.UndoRedo; if (ur != null) { ur.BeginCommand(desc); return true; } } catch { }
-            try { dynamic d = doc; dynamic ctx = d.UndoContext; if (ctx != null) { ctx.Open(desc); return true; } } catch { }
-            try { dynamic d = doc; dynamic um = d.UndoManager; if (um != null) { um.BeginUndoStep(desc); return true; } } catch { }
-            return false;
+            return TxTools.Common.SceneUndoScope.Begin(doc, description);
         }
 
-        private static void EndUndo(TxDocument doc)
+        private static void EndUndo(TxTools.Common.SceneUndoScope undo)
         {
-            try { dynamic d = doc; d.UndoRedo.EndCommand(); return; } catch { }
-            try { dynamic d = doc; d.UndoContext.Close(); return; } catch { }
-            try { dynamic d = doc; d.UndoManager.EndUndoStep(); return; } catch { }
+            if (undo != null) undo.Dispose();
         }
 
         // ─── 场景遍历辅助 ───

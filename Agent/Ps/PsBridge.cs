@@ -1,4 +1,4 @@
-// TxTools.Agent / Ps / PsBridge.cs
+﻿// TxTools.Agent / Ps / PsBridge.cs
 // PS 场景访问门面：所有工具对 Tecnomatix.Engineering / PsReader 的调用都收敛到这里。
 // 套路：dynamic + try/catch 兜 SDK 版本差异；经 PsContext.Current.Run(...) 路由回 PS 主线程。
 //
@@ -694,12 +694,12 @@ namespace TxTools.Agent.Ps
                 TxDocument doc = null;
                 try { doc = TxApplication.ActiveDocument; } catch { }
                 var label = string.IsNullOrWhiteSpace(undoLabel) ? "run_csharp" : undoLabel;
-                bool undo = doc != null && BeginUndo(doc, label);
+                var undo = BeginUndo(doc, label);
 
                 string result;
                 try { result = CSharpRunner.Invoke(assembly, logfn); ok = true; }
                 catch (Exception ex) { result = "执行异常: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message); }
-                finally { if (undo) EndUndo(doc); }
+                finally { if (undo != null) EndUndo(undo); }
 
                 try { TxApplication.RefreshDisplay(); } catch { }
 
@@ -1108,7 +1108,7 @@ namespace TxTools.Agent.Ps
                 var doc = TxApplication.ActiveDocument;
                 if (doc == null) return "没有打开的研究文档。";
 
-                bool undo = BeginUndo(doc, "set_object_location(" + name + ")");
+                var undo = BeginUndo(doc, "set_object_location(" + name + ")");
                 try
                 {
                     // 获取当前变换
@@ -1168,10 +1168,10 @@ namespace TxTools.Agent.Ps
                     if (rx.HasValue) sb.Append("  RX=" + rx.Value.ToString("F4"));
                     if (ry.HasValue) sb.Append("  RY=" + ry.Value.ToString("F4"));
                     if (rz.HasValue) sb.Append("  RZ=" + rz.Value.ToString("F4"));
-                    if (undo) sb.Append("\n可 Ctrl+Z 撤销");
+                    if (undo != null) sb.Append("\n可 Ctrl+Z 撤销");
                     return sb.ToString();
                 }
-                finally { if (undo) EndUndo(doc); }
+                finally { if (undo != null) EndUndo(undo); }
             });
         }
 
@@ -1272,19 +1272,14 @@ namespace TxTools.Agent.Ps
             });
         }
 
-        private static bool BeginUndo(TxDocument doc, string desc)
+        private static TxTools.Common.SceneUndoScope BeginUndo(TxDocument doc, string description)
         {
-            try { dynamic d = doc; dynamic ur = d.UndoRedo; if (ur != null) { ur.BeginCommand(desc); return true; } } catch { }
-            try { dynamic d = doc; dynamic ctx = d.UndoContext; if (ctx != null) { ctx.Open(desc); return true; } } catch { }
-            try { dynamic d = doc; dynamic um = d.UndoManager; if (um != null) { um.BeginUndoStep(desc); return true; } } catch { }
-            return false;
+            return TxTools.Common.SceneUndoScope.Begin(doc, description);
         }
 
-        private static void EndUndo(TxDocument doc)
+        private static void EndUndo(TxTools.Common.SceneUndoScope undo)
         {
-            try { dynamic d = doc; d.UndoRedo.EndCommand(); return; } catch { }
-            try { dynamic d = doc; d.UndoContext.Close(); return; } catch { }
-            try { dynamic d = doc; d.UndoManager.EndUndoStep(); return; } catch { }
+            if (undo != null) undo.Dispose();
         }
 
         // ───────── 内部：遍历辅助 (均在 PsContext.Run 内被调用，不再二次路由) ─────────
@@ -1910,7 +1905,7 @@ namespace TxTools.Agent.Ps
                                                                  if (string.IsNullOrWhiteSpace(dataType)) dataType = "BOOL";
 
                                                                  dynamic doc = TxApplication.ActiveDocument;
-                                                                 bool undo = BeginUndo(doc, "create_signal: " + name);
+                                                                 var undo = BeginUndo(doc, "create_signal: " + name);
                                                                  try
                                                                  {
                                                                      dynamic sig;
@@ -1947,10 +1942,10 @@ namespace TxTools.Agent.Ps
                                                                      }
                                                                      string result = "已创建" + signalType + "信号: " + SafeName(sig) + "  类型:" + dataType
                                                                          + (string.IsNullOrWhiteSpace(address) ? "" : "  地址:" + address);
-                                                                     if (undo) result += "\n可 Ctrl+Z 撤销。";
+                                                                     if (undo != null) result += "\n可 Ctrl+Z 撤销。";
                                                                      return result;
                                                                  }
-                                                                 finally { if (undo) EndUndo(doc); }
+                                                                 finally { if (undo != null) EndUndo(undo); }
                                                              }
                                                              catch (Exception ex) { return "创建信号失败: " + ex.Message; }
                                                          });
@@ -1973,7 +1968,7 @@ namespace TxTools.Agent.Ps
                     if (obj == null) return "未找到资源'" + (name ?? "(选中)") + "'。";
 
                     dynamic doc = TxApplication.ActiveDocument;
-                    bool undo = BeginUndo(doc, "add_logic: " + SafeName(obj));
+                    var undo = BeginUndo(doc, "add_logic: " + SafeName(obj));
                     try
                     {
                         dynamic d = obj;
@@ -1982,10 +1977,10 @@ namespace TxTools.Agent.Ps
 
                         d.CreateLogicBehavior();
                         string result = "已为资源 '" + Ref(obj) + "' 创建逻辑行为（智能组件）。";
-                        if (undo) result += "\n可在 Resource Logic Behavior Editor 中编辑 Entries/Exits/Actions。可 Ctrl+Z 撤销。";
+                        if (undo != null) result += "\n可在 Resource Logic Behavior Editor 中编辑 Entries/Exits/Actions。可 Ctrl+Z 撤销。";
                         return result;
                     }
-                    finally { if (undo) EndUndo(doc); }
+                    finally { if (undo != null) EndUndo(undo); }
                 }
                 catch (Exception ex) { return "添加逻辑行为失败: " + ex.Message; }
             });
@@ -2006,7 +2001,7 @@ namespace TxTools.Agent.Ps
                     if (obj == null) return "未找到资源'" + (name ?? "(选中)") + "'。";
 
                     dynamic doc = TxApplication.ActiveDocument;
-                    bool undo = BeginUndo(doc, "create_scl: " + SafeName(obj));
+                    var undo = BeginUndo(doc, "create_scl: " + SafeName(obj));
                     try
                     {
                         dynamic d = obj;
@@ -2015,10 +2010,10 @@ namespace TxTools.Agent.Ps
 
                         d.CreateSclContainer();
                         string result = "已为资源 '" + Ref(obj) +"' 创建 SCL 容器。";
-                        if (undo) result += "\n可在 SCL Editor 中编写结构化文本逻辑。可 Ctrl+Z 撤销。";
+                        if (undo != null) result += "\n可在 SCL Editor 中编写结构化文本逻辑。可 Ctrl+Z 撤销。";
                         return result;
                     }
-                    finally { if (undo) EndUndo(doc); }
+                    finally { if (undo != null) EndUndo(undo); }
                 }
                 catch (Exception ex) { return "创建 SCL 容器失败: " + ex.Message; }
             });
@@ -2039,7 +2034,7 @@ namespace TxTools.Agent.Ps
                     if (!TryResolve(targetName, targetId, out tgt, out rerr)) return "Error: 目标资源 -> " + rerr;
 
                     dynamic doc = TxApplication.ActiveDocument;
-                    bool undo = BeginUndo(doc, "copy_logic: " + SafeName(src) + " → " + SafeName(tgt));
+                    var undo = BeginUndo(doc, "copy_logic: " + SafeName(src) + " → " + SafeName(tgt));
                     try
                     {
                         dynamic dSrc = src;
@@ -2047,10 +2042,10 @@ namespace TxTools.Agent.Ps
                         catch (Exception ex) { return "复制逻辑失败: " + ex.Message + "。目标资源可能已有逻辑或类型不兼容。"; }
 
                         string result = "已将 '" + Ref(src) + "' 的逻辑行为复制到 '" + Ref(tgt) + "'。";
-                        if (undo) result += "\n可 Ctrl+Z 撤销。";
+                        if (undo != null) result += "\n可 Ctrl+Z 撤销。";
                         return result;
                     }
-                    finally { if (undo) EndUndo(doc); }
+                    finally { if (undo != null) EndUndo(undo); }
                 }
                 catch (Exception ex) { return "复制逻辑失败: " + ex.Message; }
             });
@@ -2073,16 +2068,16 @@ namespace TxTools.Agent.Ps
                     if (string.IsNullOrWhiteSpace(name)) return "模块名称不能为空。";
 
                     dynamic doc = TxApplication.ActiveDocument;
-                    bool undo = BeginUndo(doc, "create_module: " + name);
+                    var undo = BeginUndo(doc, "create_module: " + name);
                     try
                     {
                         var data = new TxPlcModuleCreationData(name);
                         dynamic mod = plcProg.CreateModule(data);
                         string result = "已创建 CEE 模块: " + name;
-                        if (undo) result += "\n可在 Modules Viewer 中编辑信号表达式和 IF/ELSE 条件。可 Ctrl+Z 撤销。";
+                        if (undo != null) result += "\n可在 Modules Viewer 中编辑信号表达式和 IF/ELSE 条件。可 Ctrl+Z 撤销。";
                         return result;
                     }
-                    finally { if (undo) EndUndo(doc); }
+                    finally { if (undo != null) EndUndo(undo); }
                 }
                 catch (Exception ex) { return "创建 CEE 模块失败: " + ex.Message; }
             });
@@ -2107,7 +2102,7 @@ namespace TxTools.Agent.Ps
                         sensorName = "Sensor_" + SafeName(obj);
 
                     dynamic doc = TxApplication.ActiveDocument;
-                    bool undo = BeginUndo(doc, "create_sensor: " + sensorName);
+                    var undo = BeginUndo(doc, "create_sensor: " + sensorName);
                     try
                     {
                         dynamic d = obj;
@@ -2147,10 +2142,10 @@ namespace TxTools.Agent.Ps
                         string sensorRef;
                         try { sensorRef = Ref((ITxObject)sensor); } catch { sensorRef = SafeName(sensor); }
                         string result = "已创建光传感器: " + sensorRef + " (资源: " + Ref(obj) + ")";
-                        if (undo) result += "\n可 Ctrl+Z 撤销。";
+                        if (undo != null) result += "\n可 Ctrl+Z 撤销。";
                         return result;
                     }
-                    finally { if (undo) EndUndo(doc); }
+                    finally { if (undo != null) EndUndo(undo); }
                 }
                 catch (Exception ex) { return "创建传感器失败: " + ex.Message; }
             });

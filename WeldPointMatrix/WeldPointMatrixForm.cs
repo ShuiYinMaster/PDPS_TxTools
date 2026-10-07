@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
@@ -59,6 +59,7 @@ namespace TxTools.WeldPointMatrix
                 new Size(760, 480), sizable: true);
             try { SemiModal = false; } catch { }
             BuildUi();
+            Activated += (s, e) => { if (_initialized && !_rendering) RefreshMatrix(false); };
             Load += (s, e) =>
             {
                 EnsurePicker();

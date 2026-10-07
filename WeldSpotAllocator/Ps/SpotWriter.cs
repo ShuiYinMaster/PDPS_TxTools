@@ -1,4 +1,4 @@
-// SpotWriter.cs  —  C# 7.3
+﻿// SpotWriter.cs  —  C# 7.3
 // 写入层。A 走原地更新；B/C 走 Paste 路线（对齐第三方“为每条参考轨迹建对应新轨迹”）。
 //
 // B/C 流程（每条参考轨迹）：
@@ -45,6 +45,7 @@ namespace TxTools.WeldSpotAllocator
         {
             var rep = new WriteReport();
             object um = OpenUndo("焊点位置更新", log);
+            using ((TxTools.Common.SceneUndoScope)um)
             try
             {
                 foreach (var om in plan.OpMatches)
@@ -78,6 +79,7 @@ namespace TxTools.WeldSpotAllocator
         {
             var rep = new WriteReport();
             object um = OpenUndo("焊点分配", log);
+            using ((TxTools.Common.SceneUndoScope)um)
             try
             {
                 foreach (var om in plan.OpMatches)
@@ -268,32 +270,19 @@ namespace TxTools.WeldSpotAllocator
             log("[Writer] 提示：_Mapped 轨迹未自动解绑零件分身，请按需手动绑定。");
         }
 
-        // ── Undo 事务（cascading 方法名）──────────────────────────────────
+        // ── Undo 事务（经核验的公共场景分组）──────────────────────────────────
         private static object OpenUndo(string name, Action<string> log)
         {
-            try
-            {
-                dynamic um = TxApplication.ActiveUndoManager;
-                if (um == null) return null;
-                try { um.OpenUndoTransaction(name); return um; } catch { }
-                try { um.OpenTransaction(name); return um; } catch { }
-                try { um.StartTransaction(name); return um; } catch { }
-                try { um.BeginUndoTransaction(name); return um; } catch { }
-            }
-            catch { }
-            log("[Writer] 未开启 Undo 事务（PS 仍有自动撤销，可 Ctrl+Z 回退）");
-            return null;
+            return TxTools.Common.SceneUndoScope.Begin(name);
         }
         private static void CommitUndo(object um, Action<string> log)
         {
-            if (um == null) return;
-            try { dynamic d = um; try { d.CommitUndoTransaction(); return; } catch { } try { d.CommitTransaction(); return; } catch { } try { d.Commit(); return; } catch { } } catch { }
+            if (um != null) ((TxTools.Common.SceneUndoScope)um).Dispose();
         }
         private static void AbortUndo(object um, Action<string> log)
         {
-            if (um == null) return;
-            try { dynamic d = um; try { d.AbortUndoTransaction(); return; } catch { } try { d.AbortTransaction(); return; } catch { } try { d.Rollback(); return; } catch { } } catch { }
-            log("[Writer] 已尝试回滚事务");
+            if (um != null) ((TxTools.Common.SceneUndoScope)um).Dispose();
+            log("[Undo] 执行未完整完成，已关闭撤销分组；如已有部分场景变更，请在当前 PS 工程按 Ctrl+Z 撤销本批次。未自动回滚。");
         }
 
         // ── 矩阵小工具 ────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.DataTypes;
@@ -67,95 +67,103 @@ namespace TxTools.LineToSolid
 
         public static BuildResult BuildForSegments(List<LineSegment> segments, GeometryParams p)
         {
-            var result = new BuildResult();
-            if (segments == null || segments.Count == 0)
+            using (var undoScope = TxTools.Common.SceneUndoScope.Begin("线转实体"))
             {
-                result.Messages.Add("无可用线段"); return result;
-            }
-            if (p == null) { result.Messages.Add("参数为空"); return result; }
+                var result = new BuildResult();
+                if (segments == null || segments.Count == 0)
+                {
+                    result.Messages.Add("无可用线段"); return result;
+                }
+                if (p == null) { result.Messages.Add("参数为空"); return result; }
 
-            var doc = TxApplication.ActiveDocument;
-            if (doc == null || doc.PhysicalRoot == null)
-            {
-                result.Messages.Add("ActiveDocument 或 PhysicalRoot 不可用"); return result;
-            }
-            var root = doc.PhysicalRoot;
+                var doc = TxApplication.ActiveDocument;
+                if (doc == null || doc.PhysicalRoot == null)
+                {
+                    result.Messages.Add("ActiveDocument 或 PhysicalRoot 不可用"); return result;
+                }
+                var root = doc.PhysicalRoot;
 
-            string ts = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            string resName = string.Format("{0}_{1}", p.PartNamePrefix, ts);
-            ITxComponent comp;
-            try { comp = root.CreateResource(new TxResourceCreationData(resName)); }
-            catch (Exception ex)
-            {
-                result.Messages.Add("Resource 创建失败：" + ex.Message); return result;
-            }
-            if (comp == null) { result.Messages.Add("Resource 创建返回 null"); return result; }
+                string ts = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                string resName = string.Format("{0}_{1}", p.PartNamePrefix, ts);
+                ITxComponent comp;
+                try { comp = root.CreateResource(new TxResourceCreationData(resName)); }
+                catch (Exception ex)
+                {
+                    result.Messages.Add("Resource 创建失败：" + ex.Message); return result;
+                }
+                if (comp == null) { result.Messages.Add("Resource 创建返回 null"); return result; }
 
-            try
-            {
-                if (!comp.CanOpenForModeling)
-                { result.Messages.Add("CanOpenForModeling=false"); return result; }
-                comp.SetModelingScope();
-            }
-            catch (Exception ex)
-            {
-                result.Messages.Add("SetModelingScope 失败：" + ex.Message); return result;
-            }
-
-            var tc = comp as TxComponent;
-            int idx = 0;
-            int total = segments.Count;
-            foreach (var seg in segments)
-            {
-                idx++;
-                string baseName = string.Format("seg_{0:D4}", idx);
-                var prev = (idx > 1) ? segments[idx - 2] : null;
-                var next = (idx < total) ? segments[idx] : null;
                 try
                 {
-                    int created;
-                    if (p.Section == CrossSectionType.Rectangle)
-                    {
-                        double extra = ComputeBoxExtension(seg, next, p.Width);
-                        created = CreateBox(tc, seg, p, baseName, extra) ? 1 : 0;
-                    }
-                    else
-                    {
-                        // 圆柱：考虑相邻段做核减
-                        created = CreateCylinders(tc, seg, prev, next, p, baseName);
-
-                        // 拐角填补：单根用球，多根用同心环
-                        if (p.RoundCornerForCylinder && next != null)
-                        {
-                            int tCreated;
-                            if (p.PipeCount <= 1)
-                                tCreated = CreateCornerSpheres(tc, seg, next, p,
-                                    string.Format("corner_{0:D4}", idx));
-                            else
-                                tCreated = CreateCornerTori(tc, seg, next, p,
-                                    string.Format("corner_{0:D4}", idx));
-                            created += tCreated;
-                        }
-                    }
-
-                    if (created > 0) result.SuccessCount += created;
-                    else { result.FailCount++; result.Messages.Add(string.Format("段{0}：未创建", idx)); }
+                    if (!comp.CanOpenForModeling)
+                    { result.Messages.Add("CanOpenForModeling=false");
+                    try { ((ITxObject)comp).Delete(); } catch (Exception ex) { result.Messages.Add("清理空容器失败: " + ex.Message); }
+                    return result; }
+                    comp.SetModelingScope();
                 }
                 catch (Exception ex)
                 {
-                    result.FailCount++;
-                    result.Messages.Add(string.Format("段{0}：异常 {1}", idx, ex.Message));
+                    result.Messages.Add("SetModelingScope 失败：" + ex.Message);
+                    try { ((ITxObject)comp).Delete(); } catch (Exception cleanup) { result.Messages.Add("清理空容器失败: " + cleanup.Message); }
+                    return result;
                 }
+
+                var tc = comp as TxComponent;
+                int idx = 0;
+                int total = segments.Count;
+                foreach (var seg in segments)
+                {
+                    idx++;
+                    string baseName = string.Format("seg_{0:D4}", idx);
+                    var prev = (idx > 1) ? segments[idx - 2] : null;
+                    var next = (idx < total) ? segments[idx] : null;
+                    try
+                    {
+                        int created;
+                        if (p.Section == CrossSectionType.Rectangle)
+                        {
+                            double extra = ComputeBoxExtension(seg, next, p.Width);
+                            created = CreateBox(tc, seg, p, baseName, extra) ? 1 : 0;
+                        }
+                        else
+                        {
+                            // 圆柱：考虑相邻段做核减
+                            created = CreateCylinders(tc, seg, prev, next, p, baseName);
+
+                            // 拐角填补：单根用球，多根用同心环
+                            if (p.RoundCornerForCylinder && next != null)
+                            {
+                                int tCreated;
+                                if (p.PipeCount <= 1)
+                                    tCreated = CreateCornerSpheres(tc, seg, next, p,
+                                        string.Format("corner_{0:D4}", idx));
+                                else
+                                    tCreated = CreateCornerTori(tc, seg, next, p,
+                                        string.Format("corner_{0:D4}", idx));
+                                created += tCreated;
+                            }
+                        }
+
+                        if (created > 0) result.SuccessCount += created;
+                        else { result.FailCount++; result.Messages.Add(string.Format("段{0}：未创建", idx)); }
+                    }
+                    catch (Exception ex)
+                    {
+                        result.FailCount++;
+                        result.Messages.Add(string.Format("段{0}：异常 {1}", idx, ex.Message));
+                    }
+                }
+
+                // 注意：不调 EndModeling。
+                // EndModeling 要求传 .cojt 路径将 Resource 保存到磁盘，
+                // PS 2402 上这一步耗时较长（卡顿明显）且会抛 "Error in the application"
+                // 警告。实测不调 EndModeling 时，PS 会在后续操作前自动收尾 modeling scope，
+                // 不影响生成结果，效率明显更高。
+
+                result.CreatedPart = (ITxObject)comp;
+                return result;
+
             }
-
-            // 注意：不调 EndModeling。
-            // EndModeling 要求传 .cojt 路径将 Resource 保存到磁盘，
-            // PS 2402 上这一步耗时较长（卡顿明显）且会抛 "Error in the application"
-            // 警告。实测不调 EndModeling 时，PS 会在后续操作前自动收尾 modeling scope，
-            // 不影响生成结果，效率明显更高。
-
-            result.CreatedPart = (ITxObject)comp;
-            return result;
         }
 
         // ---------- 偏移：在段方向的正交平面内 ----------

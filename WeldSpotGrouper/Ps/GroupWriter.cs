@@ -1,4 +1,4 @@
-// GroupWriter.cs — C# 7.3
+﻿// GroupWriter.cs — C# 7.3
 // 写入层：OperationRoot 根下先建一个父复合操作（汇总容器），每组的焊接操作建在该复合操作
 // 之下，再把组内焊点位操作移入对应焊接操作。
 //
@@ -38,6 +38,7 @@ namespace TxTools.WeldSpotGrouper
             if (makeCompound == null) { Fail(rep, "OperationRoot 根下未找到建复合操作的方法（见日志）"); return rep; }
 
             object um = OpenUndo("焊点自动分组", log);
+            using ((TxTools.Common.SceneUndoScope)um)
             try
             {
                 // 建父复合操作（一个汇总容器，承载本次所有分组焊接操作）
@@ -55,7 +56,12 @@ namespace TxTools.WeldSpotGrouper
                     log("[建-焊] 父容器下未找到建焊接操作的方法，降级为在其下建复合子操作");
                     makeWeld = ResolveCreator(parent, ScoreCompound, "[建-焊降级]", log);
                 }
-                if (makeWeld == null) { Fail(rep, "父容器下无可用创建方法"); AbortUndo(um, log); return rep; }
+                if (makeWeld == null)
+                {
+                    Fail(rep, "父容器下无可用创建方法");
+                    try { parent.Delete(); } catch (Exception ex) { Fail(rep, "清理新父容器失败: " + ex.Message); }
+                    AbortUndo(um, log); return rep;
+                }
 
                 int idx = 1;
                 var usedNames = new HashSet<string>(StringComparer.Ordinal);
@@ -194,33 +200,20 @@ namespace TxTools.WeldSpotGrouper
         }
 
         // ════════════════════════════════════════════════════════════
-        // Undo（TxApplication.ActiveUndoManager + OpenUndoTransaction）
+        // Undo（经核验的 SceneUndoScope，StartTransaction/EndTransaction）
         // ════════════════════════════════════════════════════════════
         private static object OpenUndo(string name, Action<string> log)
         {
-            try
-            {
-                dynamic um = TxApplication.ActiveUndoManager;
-                if (um == null) return null;
-                try { um.OpenUndoTransaction(name); return um; } catch { }
-                try { um.OpenTransaction(name); return um; } catch { }
-                try { um.StartTransaction(name); return um; } catch { }
-                try { um.BeginUndoTransaction(name); return um; } catch { }
-            }
-            catch { }
-            log("[Undo] 未开启事务（PS 仍可 Ctrl+Z）");
-            return null;
+            return TxTools.Common.SceneUndoScope.Begin(name);
         }
         private static void CommitUndo(object um, Action<string> log)
         {
-            if (um == null) return;
-            try { dynamic d = um; try { d.CommitUndoTransaction(); return; } catch { } try { d.CommitTransaction(); return; } catch { } try { d.Commit(); return; } catch { } } catch { }
+            if (um != null) ((TxTools.Common.SceneUndoScope)um).Dispose();
         }
         private static void AbortUndo(object um, Action<string> log)
         {
-            if (um == null) return;
-            try { dynamic d = um; try { d.AbortUndoTransaction(); return; } catch { } try { d.AbortTransaction(); return; } catch { } try { d.Rollback(); return; } catch { } } catch { }
-            log("[Undo] 已尝试回滚");
+            if (um != null) ((TxTools.Common.SceneUndoScope)um).Dispose();
+            log("[Undo] 执行未完整完成，已关闭撤销分组；如已有部分场景变更，请在当前 PS 工程按 Ctrl+Z 撤销本批次。未自动回滚。");
         }
 
         // ════════════════════════════════════════════════════════════

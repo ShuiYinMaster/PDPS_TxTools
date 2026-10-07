@@ -1,4 +1,4 @@
-// TxTools.Agent / Core / Multi / PsRpcClient.cs + 跨环境工具
+﻿// TxTools.Agent / Core / Multi / PsRpcClient.cs + 跨环境工具
 //
 // 主控侧:向指定 PDPS 实例发起工具调用，以及给模型用的三个环境工具。
 //
@@ -252,7 +252,7 @@ namespace TxTools.Agent.Core
             if (live.Count == 1)
                 sb.Append("只有一个环境，跨环境工具用不上。");
             else
-                sb.Append("主被控可互访 —— 写工具也能跨环境执行（在目标进程内运行，可 Ctrl+Z 撤销）。");
+                sb.Append("主被控可互访 —— 写工具也能跨环境执行（在目标进程内运行；支持撤销的场景变更须在目标 PS 工程 Ctrl+Z，文件和外部系统写入不受保护）。");
 
             return sb.ToString();
         }
@@ -271,7 +271,7 @@ namespace TxTools.Agent.Core
                 return "在【指定的另一个 PDPS 环境】里执行一个工具，返回它的输出。"
                      + "先用 list_environments 拿到环境名。"
                      + "tool 传工具名，input 传该工具的参数对象(和直接调用时一样)。"
-                     + "【主被控互访】写工具也能跨环境执行 —— 在目标进程内运行，可 Ctrl+Z 撤销。";
+                     + "【主被控互访】写工具也能跨环境执行 —— 在目标进程内运行；支持撤销的场景变更须在目标 PS 工程 Ctrl+Z，文件和外部系统写入不受保护。";
             }
         }
 

@@ -1,4 +1,4 @@
-// CojtTransfer.cs  --  C# 8.0
+﻿// CojtTransfer.cs  --  C# 8.0
 // 跨环境 cojt 目录传输工具。
 //
 // 背景：.cojt 是「目录」不是文件（内含 .jt/.cgr/kin_graph.xml/TuneData.xml 等），
@@ -19,59 +19,59 @@ namespace TxTools.CrossEnvIO
         /// 把一个 .cojt 目录整体复制到目标父目录（保留目录名）。
         /// 栈式逐文件复制，避免 Directory.Copy 在 PS 沙箱内不可用的问题。
         /// </summary>
-        public static bool CopyCojtDirectory(string srcDir, string dstParentDir, Action<string> log)
+        public static bool CopyCojtDirectory(string srcDir, string dstParentDir, Action<string> log, CopyResult record = null)
         {
             log = log ?? Nop;
+            string ownedPath = null;
             try
             {
                 if (string.IsNullOrWhiteSpace(srcDir) || !Directory.Exists(srcDir))
-                {
-                    log("[复制] 源 cojt 目录不存在: " + srcDir);
-                    return false;
-                }
-                if (string.IsNullOrWhiteSpace(dstParentDir)) { log("[复制] 目标父目录为空"); return false; }
+                    throw new IOException("源 cojt 目录不存在: " + srcDir);
+                if (string.IsNullOrWhiteSpace(dstParentDir)) throw new IOException("目标父目录为空");
+                srcDir = Path.GetFullPath(srcDir).TrimEnd('\\', '/');
+                dstParentDir = Path.GetFullPath(dstParentDir);
                 Directory.CreateDirectory(dstParentDir);
-
-                string name = Path.GetFileName(srcDir.TrimEnd('\\', '/'));
-                string dstDir = Path.Combine(dstParentDir, name);
-
-                // 目录结构
-                var dirs = new List<string> { srcDir };
-                while (dirs.Count > 0)
+                string dstDir = Path.Combine(dstParentDir, Path.GetFileName(srcDir));
+                if (Directory.Exists(dstDir) || File.Exists(dstDir))
+                    throw new IOException("目标已存在，未覆盖: " + dstDir);
+                // 用唯一暂存目录复制，Move 发布不会覆盖已有目标。
+                ownedPath = Path.Combine(dstParentDir, ".txtools-copy-" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(ownedPath);
+                if (record != null) record.Track(ownedPath);
+                var pending = new Stack<string>(); pending.Push(srcDir);
+                int count = 0;
+                while (pending.Count > 0)
                 {
-                    string d = dirs[dirs.Count - 1];
-                    dirs.RemoveAt(dirs.Count - 1);
-                    foreach (var sub in Directory.GetDirectories(d))
-                        dirs.Add(sub);
-                    Directory.CreateDirectory(d.Replace(srcDir, dstDir));
+                    string current = pending.Pop();
+                    if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                        throw new IOException("不复制链接目录: " + current);
+                    string relative = current.Substring(srcDir.Length).TrimStart('\\', '/');
+                    string destination = Path.Combine(ownedPath, relative);
+                    Directory.CreateDirectory(destination);
+                    foreach (string file in Directory.GetFiles(current))
+                    {
+                        if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
+                            throw new IOException("不复制链接文件: " + file);
+                        File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), false);
+                        count++;
+                    }
+                    foreach (string child in Directory.GetDirectories(current)) pending.Push(child);
                 }
-
-                // 文件（栈式）
-                var files = new List<string>();
-                var stack = new Stack<string>();
-                stack.Push(srcDir);
-                while (stack.Count > 0)
-                {
-                    string cur = stack.Pop();
-                    foreach (var f in Directory.GetFiles(cur))
-                        files.Add(f);
-                    foreach (var d in Directory.GetDirectories(cur))
-                        stack.Push(d);
-                }
-                foreach (var f in files)
-                {
-                    string dst = f.Replace(srcDir, dstDir);
-                    Directory.CreateDirectory(Path.GetDirectoryName(dst));
-                    File.Copy(f, dst, true);
-                }
-
-                log("[复制] ✓ " + srcDir + " → " + dstDir + " (" + files.Count + " 个文件)");
+                Directory.Move(ownedPath, dstDir);
+                if (record != null) record.RenameTracked(ownedPath, dstDir);
+                ownedPath = dstDir;
+                log("[复制] ✓ " + srcDir + " → " + dstDir + " (" + count + " 个文件)");
                 return true;
             }
             catch (Exception ex)
             {
                 log("[复制] 异常: " + ex.Message);
                 return false;
+            }
+            finally
+            {
+                // 包括失败复制的半成品。无法读取清单时保留记录、禁止自动删除。
+                if (record != null && ownedPath != null) record.Capture(ownedPath, log);
             }
         }
 
@@ -162,10 +162,9 @@ namespace TxTools.CrossEnvIO
                     continue;
                 }
 
-                if (CopyCojtDirectory(src, dstParent, log))
+                if (CopyCojtDirectory(src, dstParent, log, rep))
                 {
                     rep.Ok++;
-                    rep.CopiedDirs.Add(dstDir);  // 记录实际复制的目录，用于撤销
                 }
                 else rep.Fail++;
             }
@@ -245,47 +244,92 @@ namespace TxTools.CrossEnvIO
         public int Ok;
         public int Fail;
         public int Skipped;
+        public bool SceneMayReferenceFiles;
         public readonly List<string> CopiedDirs = new List<string>();
+        private readonly Dictionary<string, Dictionary<string, string>> _snapshots =
+            new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
 
         public override string ToString() => $"复制成功 {Ok} · 失败 {Fail} · 已跳过 {Skipped}";
 
-        /// <summary>
-        /// 撤销：删除本次实际复制的 cojt 目录。对端的 cojt 已被 PS 锁定时可能删除失败，
-        /// 日志记录每个失败项，重启 PS 后可手动清理。
-        /// </summary>
-        public void Undo(Action<string> log)
+        internal void Track(string directory)
         {
-            log = log ?? (s => { });
-            if (CopiedDirs.Count == 0) { log("[撤销] 无已复制的 cojt，无需撤销"); return; }
+            if (!CopiedDirs.Contains(directory)) CopiedDirs.Add(directory);
+        }
+        internal void RenameTracked(string oldPath, string newPath)
+        {
+            CopiedDirs.Remove(oldPath); _snapshots.Remove(oldPath); Track(newPath);
+        }
+        internal void Capture(string directory, Action<string> log)
+        {
+            try { _snapshots[directory] = Snapshot(directory); }
+            catch (Exception ex) { log("[复制] 无法记录文件清单，保留目录且不允许自动清理: " + directory + " - " + ex.Message); }
+        }
+        /// <summary>保留之前批次的清理记录和模型依赖保护，避免新复制覆盖旧记录。</summary>
+        public void Merge(CopyResult previous)
+        {
+            if (previous == null) return;
+            foreach (var directory in previous.CopiedDirs) Track(directory);
+            foreach (var item in previous._snapshots) _snapshots[item.Key] = item.Value;
+            SceneMayReferenceFiles |= previous.SceneMayReferenceFiles;
+        }
+
+        private static Dictionary<string, string> Snapshot(string directory)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var pending = new Stack<string>(); pending.Push(directory);
+            while (pending.Count > 0)
+            {
+                string current = pending.Pop();
+                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                    throw new IOException("目录已变成链接");
+                result["D:" + current.Substring(directory.Length)] = "directory";
+                foreach (string file in Directory.GetFiles(current))
+                {
+                    if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
+                        throw new IOException("文件已变成链接");
+                    using (var sha = System.Security.Cryptography.SHA256.Create())
+                    using (var stream = File.OpenRead(file))
+                        result["F:" + file.Substring(directory.Length)] = Convert.ToBase64String(sha.ComputeHash(stream));
+                }
+                foreach (string child in Directory.GetDirectories(current)) pending.Push(child);
+            }
+            return result;
+        }
+
+        /// <summary>文件清理独立于场景撤销；调用方必须先检查当前工程引用。</summary>
+        public void Undo(Action<string> log, Func<string, bool> canRemove = null)
+        {
+            log = log ?? delegate { };
+            if (SceneMayReferenceFiles)
+            { log("[清理] 已进行场景重建，保留模型依赖和记录。请关闭相关工程后手动核对库文件。"); return; }
+            if (canRemove == null)
+            { log("[清理] 缺少工程引用检查，已保留全部文件和记录。"); return; }
             int ok = 0, fail = 0;
-            foreach (var dir in CopiedDirs)
+            foreach (string directory in new List<string>(CopiedDirs))
             {
                 try
                 {
-                    if (Directory.Exists(dir))
+                    if (!Directory.Exists(directory))
+                    { CopiedDirs.Remove(directory); _snapshots.Remove(directory); continue; }
+                    Dictionary<string, string> before;
+                    if (!_snapshots.TryGetValue(directory, out before))
+                        throw new IOException("没有所有权清单，不能自动清理");
+                    if (!canRemove(directory)) throw new IOException("工程仍引用此目录或无法核验引用");
+                    var now = Snapshot(directory);
+                    if (before.Count != now.Count) throw new IOException("复制后目录内容发生变化");
+                    foreach (var entry in before)
                     {
-                        Directory.Delete(dir, true);
-                        ok++;
+                        string value;
+                        if (!now.TryGetValue(entry.Key, out value) || value != entry.Value)
+                            throw new IOException("复制后文件内容发生变化");
                     }
-                    else
-                    {
-                        log("[撤销] 已不存在: " + dir);
-                        fail++;
-                    }
-                }
-                catch (IOException)
-                {
-                    fail++;
-                    log("[撤销] 目录被 PS 进程锁定，请关闭 PS 后手动删除: " + dir);
+                    Directory.Delete(directory, true);
+                    CopiedDirs.Remove(directory); _snapshots.Remove(directory); ok++;
                 }
                 catch (Exception ex)
-                {
-                    fail++;
-                    log("[撤销] 删除失败: " + dir + " - " + ex.Message);
-                }
+                { fail++; log("[清理] 未删除，保留记录以便重试: " + directory + " - " + ex.Message); }
             }
-            CopiedDirs.Clear();
-            log("[撤销] 完成: 删除 " + ok + " 个，失败 " + fail + " 个");
+            log("[清理] 完成: 删除 " + ok + " 个，保留 " + fail + " 个；不等同于 PS Ctrl+Z。");
         }
     }
 }

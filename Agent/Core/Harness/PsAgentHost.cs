@@ -1,4 +1,4 @@
-// TxTools.Agent / Core / Harness / PsAgentHost.cs
+﻿// TxTools.Agent / Core / Harness / PsAgentHost.cs
 // IAgentHost 的 Process Simulate 实现。
 // 把"主线程封送 / 审批 / 回滚点 / 日志"这套宿主能力接到 TxAgent.Core 的 harness 上。
 //
@@ -198,11 +198,10 @@ namespace TxTools.Agent.Harness
         // ── 回滚点 ──
 
         /// <summary>
-        /// 【封送】整个方法体都在碰 PS 文档对象并触发保存。
+        /// 【封送】在 PS 主线程导出并校验独立工程恢复快照。
         ///
-        /// 这是最危险的一处:每次首个写操作前必然走到，
-        /// 从线程池线程访问 TxApplication.ActiveDocument 并调 Save()，
-        /// 等于每次改场景都在赌进程不崩。
+        /// SDK 文档访问和 SaveDataToFile 必须在主线程执行。
+        /// 快照仅覆盖工程数据，不包含外部库文件与其他应用的写入。
         /// </summary>
         public RestorePoint CreateRestorePoint(string reason)
         {
@@ -220,43 +219,24 @@ namespace TxTools.Agent.Harness
         {
             try
             {
-                // Standalone: 保存当前工程(PDPS 保存会生成新文件,旧文件进回收站)。
-                var t = typeof(TxApplication);
-                var docProp = t.GetProperty("ActiveDocument");
-                if (docProp == null) return RestorePoint.None("无法获取活动文档,未建立回滚点。");
-
-                var doc = docProp.GetValue(null, null);
-                if (doc == null) return RestorePoint.None("当前没有打开的工程,未建立回滚点。");
-
-                var saveMethod = doc.GetType().GetMethod("Save", Type.EmptyTypes);
-                if (saveMethod != null) saveMethod.Invoke(doc, null);
-
-                string path = null;
-                var pathProp = doc.GetType().GetProperty("Path")
-                            ?? doc.GetType().GetProperty("FileName")
-                            ?? doc.GetType().GetProperty("Name");
-                if (pathProp != null)
-                {
-                    try { path = pathProp.GetValue(doc, null) as string; } catch { }
-                }
-
-                // 已经在主线程里了，直接取核心实现，别再走会二次封送的 Mode 属性
+                var doc = TxApplication.ActiveDocument;
+                if (doc == null) return RestorePoint.None("当前没有打开的工程。");
                 var mode = IsConnectedToServerCore() ? HostMode.Connected : HostMode.Standalone;
-
+                if (mode != HostMode.Standalone)
+                    return RestorePoint.None("连接服务器的工程不支持本地完整恢复快照，请使用平台版本管理。");
+                string directory = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TxTools", "RestorePoints");
+                string path = TxTools.Common.StudySnapshot.Export(doc, directory);
                 return new RestorePoint
                 {
-                    Created = true,
-                    Mode = mode,
-                    TimeUtc = DateTime.UtcNow,
-                    FilePath = path,
-                    HowToRollback = string.IsNullOrEmpty(path)
-                        ? "已保存当前工程(PDPS Save),可在文件历史/回收站找回旧版本。"
-                        : "已保存当前工程: " + path + " (旧版本在回收站/文件历史)"
+                    Created = true, Mode = mode, TimeUtc = DateTime.UtcNow, FilePath = path,
+                    HowToRollback = "变更前工程快照: " + path +
+                        "。需要时在 PS 中打开该快照恢复场景；外部库文件、CATIA、Excel 和注册表修改不包含在快照内。"
                 };
             }
             catch (Exception ex)
             {
-                return RestorePoint.None("保存失败,未建立回滚点: " + ex.Message);
+                return RestorePoint.None("工程快照导出失败，未建立回滚点: " + ex.Message);
             }
         }
 

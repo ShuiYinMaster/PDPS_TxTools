@@ -1,4 +1,4 @@
-// CatiaPartTreeForm.cs — 主窗体：读取 CATIA 目录树、在树内做调整（勾选/增删/改名/排序）、
+﻿// CatiaPartTreeForm.cs — 主窗体：读取 CATIA 目录树、在树内做调整（勾选/增删/改名/排序）、
 // 创建 PS 零件树、把已导入零件归类进对应容器。
 // 遵循套件统一 GUI 规范（FormUiKit），配色全部来自 Theme。
 
@@ -298,7 +298,7 @@ namespace TxTools.CatiaPartTree
             btnBuild.Click += (s, e) => OnBuildTree();
             content.Controls.Add(btnBuild);
 
-            _chkReload = new CheckBox { Text = "建树后保存并重载，刷新 PS 树", AutoSize = true, Checked = true, Font = FormUiKit.BaseFont };
+            _chkReload = new CheckBox { Text = "建树后保存并重载（会写工程文件，影响撤销历史）", AutoSize = true, Checked = false, Font = FormUiKit.BaseFont };
             content.Controls.Add(_chkReload);
 
             var rowScope = FormUiKit.MkRowFlow();
@@ -680,7 +680,7 @@ namespace TxTools.CatiaPartTree
                 "   · 勾选『建树后保存并重载刷新 PS 树』可在创建后自动保存并重载刷新树视图\n" +
                 "4. 零件已导入 PS 后，点 [归类已导入零件] 按名称/PartNumber 自动归入对应容器\n\n" +
                 "· 未勾选的分支不创建；未匹配零件可勾选移入『未分类』\n" +
-                "· 所有 PS 操作可 Ctrl+Z 撤销；保存/重载会重建 PS 树视图",
+                "· 未保存/重载的场景变更按批次 Ctrl+Z；保存/重载不保证保留撤销历史，磁盘文件需从备份恢复",
                 "帮助", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
     }

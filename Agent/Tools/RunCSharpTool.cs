@@ -1,4 +1,4 @@
-// TxTools.Agent / Tools / RunCSharpTool.cs
+﻿// TxTools.Agent / Tools / RunCSharpTool.cs
 // 让 AI 根据需求自己写 C# 代码、在 PS 进程内编译执行。这是兜底能力：现成工具搞不定时才用。
 //
 // 安全：IsReadOnly=false -> 每次执行前强制用户审批(审批框展示完整代码)；包在 Undo 块里(可 Ctrl+Z 撤销)；
@@ -35,7 +35,7 @@ namespace TxTools.Agent.Tools
                        "代码作为方法体注入，已 using Tecnomatix.Engineering，可用 TxApplication.ActiveDocument 等；" +
                        "用 log(\"...\") 输出、return 任意对象作为结果。" +
                        "约束：自带编译器是 C# 5 语法(无字符串插值、无 ?.、无表达式体)。" +
-                       "这是会改动场景的操作：执行前需用户确认，操作后可 Ctrl+Z 撤销。" +
+                       "这是会改动场景的操作：执行前需用户确认，场景变更按批次 Ctrl+Z；文件或外部应用写入不由 PS 撤销。" +
 
                        "【何时用本工具，而不是 Python】" +
                        "1) 循环规模超过约 1000 次(IronPython 比 C# 慢一到两个数量级，遍历数千焊点、批量 IK 必须走这里)；" +
@@ -45,7 +45,7 @@ namespace TxTools.Agent.Tools
 
                        "【何时改用 Python】" +
                        "探测 SDK、查询、筛选、串联多个工具这类活，一律先用 probe_python —— " +
-                       "它免审批、执行后强制回滚、且有 tx_dir/tx_type/tx_sig 可以直接查出成员和签名，" +
+                       "它免审批、由静态检查限制为只读探测、且有 tx_dir/tx_type/tx_sig 可以直接查出成员和签名，" +
                        "比在这里靠猜 API 再编译试错快得多。" +
                        "本工具连续两次编译失败(尤其是 CS1061/CS0117 这类找不到成员的错误)时，" +
                        "不要继续猜，改用 probe_python 先把 API 查清楚。" +

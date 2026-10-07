@@ -1074,15 +1074,19 @@ namespace TxTools.AutoPathPlanner
 
                 // ---- 2. 逐台机器人处理 ----
                 int createdOk = 0, reused = 0, cancelled = 0, failed = 0;
-                foreach (var robot in robots)
+                using (var undoBatch = TxTools.Common.SceneUndoScope.Begin("批量创建干涉集"))
                 {
-                    LogRobotIdentityBrief(robot);
-                    switch (CreateForRobot(robot))
+                    foreach (var robot in robots)
                     {
-                        case CreateOutcome.Created:   createdOk++; break;
-                        case CreateOutcome.Reused:    reused++;    break;
-                        case CreateOutcome.Cancelled: cancelled++; break;
-                        default:                      failed++;    break;
+                        undoBatch.EnsureDocument();
+                        LogRobotIdentityBrief(robot);
+                        switch (CreateForRobot(robot))
+                        {
+                            case CreateOutcome.Created:   createdOk++; break;
+                            case CreateOutcome.Reused:    reused++;    break;
+                            case CreateOutcome.Cancelled: cancelled++; break;
+                            default:                      failed++;    break;
+                        }
                     }
                 }
 
@@ -1125,50 +1129,54 @@ namespace TxTools.AutoPathPlanner
         /// </summary>
         private CreateOutcome CreateForRobot(TxRobot robot)
         {
-            bool forceNew = false;
-            string existingName;
-            if (CollisionSetService.TryFindExistingPairName(robot, out existingName, s => Log(s, LogLevel.Info)))
+            using (var undoScope = TxTools.Common.SceneUndoScope.Begin("创建干涉集"))
             {
-                var res = MessageBox.Show(
-                    string.Format(
-                        "机器人 '{0}' (HashCode={1}) 检测到已有干涉集:\n\n" +
-                        "    {2}\n\n" +
-                        "是否继续新建?\n\n" +
-                        "  是 = 强制新建 (与已有并存)\n" +
-                        "  否 = 直接复用已有\n" +
-                        "  取消 = 什么也不做",
-                        robot.Name, robot.GetHashCode(), existingName),
-                    "已存在干涉集",
-                    MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                bool forceNew = false;
+                string existingName;
+                if (CollisionSetService.TryFindExistingPairName(robot, out existingName, s => Log(s, LogLevel.Info)))
+                {
+                    var res = MessageBox.Show(
+                        string.Format(
+                            "机器人 '{0}' (HashCode={1}) 检测到已有干涉集:\n\n" +
+                            "    {2}\n\n" +
+                            "是否继续新建?\n\n" +
+                            "  是 = 强制新建 (与已有并存)\n" +
+                            "  否 = 直接复用已有\n" +
+                            "  取消 = 什么也不做",
+                            robot.Name, robot.GetHashCode(), existingName),
+                        "已存在干涉集",
+                        MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
 
-                if (res == DialogResult.Cancel)
-                {
-                    Log("  已取消 — 该机器人干涉集未做任何更改", LogLevel.Warn);
-                    return CreateOutcome.Cancelled;
+                    if (res == DialogResult.Cancel)
+                    {
+                        Log("  已取消 — 该机器人干涉集未做任何更改", LogLevel.Warn);
+                        return CreateOutcome.Cancelled;
+                    }
+                    if (res == DialogResult.No)
+                    {
+                        Log(string.Format("  复用已有干涉集: {0}", existingName), LogLevel.Info);
+                        using (var existing = CollisionSetService.CreateRobotVsWorld(robot, null,
+                            CollisionSetService.CollectOperationAppearances(ReadGrid(_gridOps)), s => Log(s, LogLevel.Info)))
+                            return existing.IsReady ? CreateOutcome.Reused : CreateOutcome.Failed;
+                    }
+                    forceNew = true;
+                    Log("  用户确认新建 — 强制创建 (与已有并存)", LogLevel.Info);
                 }
-                if (res == DialogResult.No)
-                {
-                    Log(string.Format("  复用已有干涉集: {0}", existingName), LogLevel.Info);
-                    using (var existing = CollisionSetService.CreateRobotVsWorld(robot, null,
-                        CollisionSetService.CollectOperationAppearances(ReadGrid(_gridOps)), s => Log(s, LogLevel.Info)))
-                        return existing.IsReady ? CreateOutcome.Reused : CreateOutcome.Failed;
-                }
-                forceNew = true;
-                Log("  用户确认新建 — 强制创建 (与已有并存)", LogLevel.Info);
-            }
 
-            using (var cs = CollisionSetService.CreateRobotVsWorld(
-                robot, null, CollisionSetService.CollectOperationAppearances(ReadGrid(_gridOps)), s => Log(s, LogLevel.Info), forceNew))
-            {
-                cs.KeepPairOnDispose = true;
-                if (cs.IsReady)
+                using (var cs = CollisionSetService.CreateRobotVsWorld(
+                    robot, null, CollisionSetService.CollectOperationAppearances(ReadGrid(_gridOps)), s => Log(s, LogLevel.Info), forceNew))
                 {
-                    Log(string.Format("  [✓] 干涉集就绪 (检测方 {0} 项 / 障碍方 {1} 项)",
-                        cs.CheckObjectCount, cs.ObstacleObjectCount), LogLevel.Ok);
-                    return CreateOutcome.Created;
+                    cs.KeepPairOnDispose = true;
+                    if (cs.IsReady)
+                    {
+                        Log(string.Format("  [✓] 干涉集就绪 (检测方 {0} 项 / 障碍方 {1} 项)",
+                            cs.CheckObjectCount, cs.ObstacleObjectCount), LogLevel.Ok);
+                        return CreateOutcome.Created;
+                    }
+                    Log("  [✗] 干涉集创建失败 — 详见上方日志", LogLevel.Error);
+                    return CreateOutcome.Failed;
                 }
-                Log("  [✗] 干涉集创建失败 — 详见上方日志", LogLevel.Error);
-                return CreateOutcome.Failed;
+
             }
         }
 

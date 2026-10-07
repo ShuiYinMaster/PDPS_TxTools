@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.DataTypes;
@@ -64,225 +64,230 @@ namespace TxTools.WeldGunDefiner.Core
         // ═════════════════════════════════════════════════════════════════
         public bool Build(out string error)
         {
-            error = null;
-            try
+            using (var undoScope = TxTools.Common.SceneUndoScope.Begin("焊钳运动学"))
             {
-                AddLog($"IsOpenForKinematicsModeling = {_device.IsOpenForKinematicsModeling}");
-                AddLog($"设备逆矩阵: {(_invDeviceTx != null ? "已计算" : "null")}");
-
-                // 先进入建模状态，再清理残留——否则非建模状态下
-                // _device.Joints 可能返回不完整，残留Joint清不掉
-                if (!_device.IsOpenForKinematicsModeling)
+                error = null;
+                try
                 {
-                    try { (_device as ITxComponent)?.SetModelingScope(); } catch { }
-                    AddLog($"SetModelingScope后 IsOpen = {_device.IsOpenForKinematicsModeling}");
-                }
+                    AddLog($"IsOpenForKinematicsModeling = {_device.IsOpenForKinematicsModeling}");
+                    AddLog($"设备逆矩阵: {(_invDeviceTx != null ? "已计算" : "null")}");
 
-                CleanupPrevious();
+                    // 先进入建模状态，再清理残留——否则非建模状态下
+                    // _device.Joints 可能返回不完整，残留Joint清不掉
+                    if (!_device.IsOpenForKinematicsModeling)
+                    {
+                        try { (_device as ITxComponent)?.SetModelingScope(); } catch { }
+                        AddLog($"SetModelingScope后 IsOpen = {_device.IsOpenForKinematicsModeling}");
+                    }
 
-                // ── 创建 7 个 Link ──
-                var fixedLink = CreateLink("fixed_link", _p.FixedLinkBodies);
-                var inputLink = CreateLink("input_link", _p.InputLinkBodies);
-                var couplerLink = CreateLink("coupler_link", _p.CouplerLinkBodies);
-                var outputLink = CreateLink("output_link", _p.OutputLinkBodies);
-                var dummyLink = CreateLink("dummy_link", new List<ITxObject>());
-                var lnk1 = CreateLink("lnk1", new List<ITxObject>());
-                var lnk2 = CreateLink("lnk2", _p.Lnk2Bodies ?? new List<ITxObject>());
-                if (fixedLink == null || inputLink == null || couplerLink == null ||
-                    outputLink == null || dummyLink == null || lnk1 == null || lnk2 == null)
-                { error = "创建 Link 失败"; return false; }
+                    ValidateOwnership();
+                    CleanupPrevious();
 
-                // ── 计算公式 + 常数（在创建Joint前算好）──
-                var f = BuildFormulas();
+                    // ── 创建 7 个 Link ──
+                    var fixedLink = CreateLink("fixed_link", _p.FixedLinkBodies);
+                    var inputLink = CreateLink("input_link", _p.InputLinkBodies);
+                    var couplerLink = CreateLink("coupler_link", _p.CouplerLinkBodies);
+                    var outputLink = CreateLink("output_link", _p.OutputLinkBodies);
+                    var dummyLink = CreateLink("dummy_link", new List<ITxObject>());
+                    var lnk1 = CreateLink("lnk1", new List<ITxObject>());
+                    var lnk2 = CreateLink("lnk2", _p.Lnk2Bodies ?? new List<ITxObject>());
+                    if (fixedLink == null || inputLink == null || couplerLink == null ||
+                        outputLink == null || dummyLink == null || lnk1 == null || lnk2 == null)
+                    { error = "创建 Link 失败"; return false; }
 
-                // ── 三铰点投影到参考平面（统一轴向位置，保证共面）──
-                // 选点时三点可能不严格共面，投影后机构面与焊钳侧面平行
-                Vec3 projA = _p.Plane != null ? _p.Plane.Project(_p.WorldA) : _p.WorldA;
-                Vec3 projC = _p.Plane != null ? _p.Plane.Project(_p.WorldC) : _p.WorldC;
-                Vec3 projO = _p.Plane != null ? _p.Plane.Project(_p.WorldO) : _p.WorldO;
+                    // ── 计算公式 + 常数（在创建Joint前算好）──
+                    var f = BuildFormulas();
 
-                // 活塞方向投影到平面内（去除轴向分量）
-                Vec3 pistonDirProj = _p.PistonDir;
-                if (_p.Plane != null)
-                {
-                    Vec3 pEnd = _p.Plane.Project(_p.WorldA + _p.PistonDir);
-                    pistonDirProj = (pEnd - projA).Normalized();
-                }
+                    // ── 三铰点投影到参考平面（统一轴向位置，保证共面）──
+                    // 选点时三点可能不严格共面，投影后机构面与焊钳侧面平行
+                    Vec3 projA = _p.Plane != null ? _p.Plane.Project(_p.WorldA) : _p.WorldA;
+                    Vec3 projC = _p.Plane != null ? _p.Plane.Project(_p.WorldC) : _p.WorldC;
+                    Vec3 projO = _p.Plane != null ? _p.Plane.Project(_p.WorldO) : _p.WorldO;
 
-                AddLog($"铰点投影: A偏移={(projA - _p.WorldA).Length:F3}mm C偏移={(projC - _p.WorldC).Length:F3}mm O偏移={(projO - _p.WorldO).Length:F3}mm");
-                AddLog($"平面法向 N = ({_p.N.X:F4}, {_p.N.Y:F4}, {_p.N.Z:F4})  [所有Revolute轴方向]");
-                AddLog($"活塞方向(投影) = ({pistonDirProj.X:F4}, {pistonDirProj.Y:F4}, {pistonDirProj.Z:F4})  [input_j1轴]");
+                    // 活塞方向投影到平面内（去除轴向分量）
+                    Vec3 pistonDirProj = _p.PistonDir;
+                    if (_p.Plane != null)
+                    {
+                        Vec3 pEnd = _p.Plane.Project(_p.WorldA + _p.PistonDir);
+                        pistonDirProj = (pEnd - projA).Normalized();
+                    }
 
-                // ── 主链 4 个 Joint（用投影后的共面点，世界坐标）──
-                // fixed_Input_j1：Revolute，fixed_link→input_link，轴过A
-                // 注意：fixed_Input_j1 和 coup_output_j1 轴方向取 -N（与output_j1相反）
-                // 使这两个公式驱动轴的转动正方向与几何期望一致
-                Vec3 negN = new Vec3(-_p.N.X, -_p.N.Y, -_p.N.Z);
-                FixedInputJl = CreateJointInternal("fixed_Input_j1", "Revolute",
-                    projA.ToTxVector(), (projA + negN).ToTxVector(),
-                    0, 0, fixedLink, inputLink);
-                if (FixedInputJl == null) { error = "创建 fixed_Input_j1 失败"; return false; }
+                    AddLog($"铰点投影: A偏移={(projA - _p.WorldA).Length:F3}mm C偏移={(projC - _p.WorldC).Length:F3}mm O偏移={(projO - _p.WorldO).Length:F3}mm");
+                    AddLog($"平面法向 N = ({_p.N.X:F4}, {_p.N.Y:F4}, {_p.N.Z:F4})  [所有Revolute轴方向]");
+                    AddLog($"活塞方向(投影) = ({pistonDirProj.X:F4}, {pistonDirProj.Y:F4}, {pistonDirProj.Z:F4})  [input_j1轴]");
 
-                // input_j1：Prismatic，input_link→coupler_link，活塞方向（投影后）
-                // OPEN适配模式：初始限位放宽到±行程，允许阶段B正向驱动回闭合
-                double inJ1Low = _p.OpenStateAdapt ? -_p.PistonStroke : f.InputJl_Low;
-                double inJ1High = _p.OpenStateAdapt ? _p.PistonStroke : f.InputJl_High;
-                InputJl = CreateJointInternal("input_j1", "Prismatic",
-                    projA.ToTxVector(), (projA + pistonDirProj).ToTxVector(),
-                    inJ1Low, inJ1High, inputLink, couplerLink);
-                if (InputJl == null) { error = "创建 input_j1 失败"; return false; }
+                    // ── 主链 4 个 Joint（用投影后的共面点，世界坐标）──
+                    // fixed_Input_j1：Revolute，fixed_link→input_link，轴过A
+                    // 注意：fixed_Input_j1 和 coup_output_j1 轴方向取 -N（与output_j1相反）
+                    // 使这两个公式驱动轴的转动正方向与几何期望一致
+                    Vec3 negN = new Vec3(-_p.N.X, -_p.N.Y, -_p.N.Z);
+                    FixedInputJl = CreateJointInternal("fixed_Input_j1", "Revolute",
+                        projA.ToTxVector(), (projA + negN).ToTxVector(),
+                        0, 0, fixedLink, inputLink);
+                    if (FixedInputJl == null) { error = "创建 fixed_Input_j1 失败"; return false; }
 
-                // coup_output_j1：Revolute，coupler_link→output_link，轴过C，轴向-N
-                CoupOutputJl = CreateJointInternal("coup_output_j1", "Revolute",
-                    projC.ToTxVector(), (projC + negN).ToTxVector(),
-                    0, 0, couplerLink, outputLink);
-                if (CoupOutputJl == null) { error = "创建 coup_output_j1 失败"; return false; }
+                    // input_j1：Prismatic，input_link→coupler_link，活塞方向（投影后）
+                    // OPEN适配模式：初始限位放宽到±行程，允许阶段B正向驱动回闭合
+                    double inJ1Low = _p.OpenStateAdapt ? -_p.PistonStroke : f.InputJl_Low;
+                    double inJ1High = _p.OpenStateAdapt ? _p.PistonStroke : f.InputJl_High;
+                    InputJl = CreateJointInternal("input_j1", "Prismatic",
+                        projA.ToTxVector(), (projA + pistonDirProj).ToTxVector(),
+                        inJ1Low, inJ1High, inputLink, couplerLink);
+                    if (InputJl == null) { error = "创建 input_j1 失败"; return false; }
 
-                // output_j1：Revolute，output_link→dummy_link，轴过O，轴向+N
-                OutputJl = CreateJointInternal("output_j1", "Revolute",
-                    projO.ToTxVector(), (projO + _p.N).ToTxVector(),
-                    0, 0, outputLink, dummyLink);
-                if (OutputJl == null) { error = "创建 output_j1 失败"; return false; }
+                    // coup_output_j1：Revolute，coupler_link→output_link，轴过C，轴向-N
+                    CoupOutputJl = CreateJointInternal("coup_output_j1", "Revolute",
+                        projC.ToTxVector(), (projC + negN).ToTxVector(),
+                        0, 0, couplerLink, outputLink);
+                    if (CoupOutputJl == null) { error = "创建 coup_output_j1 失败"; return false; }
 
-                // ── 旁支 2 个 Joint ──
-                // j1：Prismatic 主动，fixed_link→lnk1，Low=-开口 High=+磨量
-                // 轴方向 = 静电极→动电极
-                Vec3 gunAxis = (_p.WorldMovingTip - _p.WorldStaticTip).Normalized();
-                if (gunAxis.Length < 0.5) gunAxis = _p.PistonDir;
-                J1 = CreateJointInternal("j1", "Prismatic",
-                    _p.WorldStaticTip.ToTxVector(),
-                    (_p.WorldStaticTip + gunAxis).ToTxVector(),
-                    f.J1_Low, f.J1_High, fixedLink, lnk1);
-                if (J1 == null) { error = "创建 j1 失败"; return false; }
+                    // output_j1：Revolute，output_link→dummy_link，轴过O，轴向+N
+                    OutputJl = CreateJointInternal("output_j1", "Revolute",
+                        projO.ToTxVector(), (projO + _p.N).ToTxVector(),
+                        0, 0, outputLink, dummyLink);
+                    if (OutputJl == null) { error = "创建 output_j1 失败"; return false; }
 
-                // j2:Prismatic 磨量补偿，fixed_link→lnk2
-                J2 = CreateJointInternal("j2", "Prismatic",
-                    _p.WorldStaticTip.ToTxVector(),
-                    (_p.WorldStaticTip + gunAxis).ToTxVector(),
-                    0, 0, fixedLink, lnk2);
-                if (J2 == null) { error = "创建 j2 失败"; return false; }
+                    // ── 旁支 2 个 Joint ──
+                    // j1：Prismatic 主动，fixed_link→lnk1，Low=-开口 High=+磨量
+                    // 轴方向 = 静电极→动电极
+                    Vec3 gunAxis = (_p.WorldMovingTip - _p.WorldStaticTip).Normalized();
+                    if (gunAxis.Length < 0.5) gunAxis = _p.PistonDir;
+                    J1 = CreateJointInternal("j1", "Prismatic",
+                        _p.WorldStaticTip.ToTxVector(),
+                        (_p.WorldStaticTip + gunAxis).ToTxVector(),
+                        f.J1_Low, f.J1_High, fixedLink, lnk1);
+                    if (J1 == null) { error = "创建 j1 失败"; return false; }
 
-                // ── 验证 PS 实际分配的关节名（CreationData.Name 应已生效）──
-                string nFixedInput = SafeName(FixedInputJl);
-                string nInput = SafeName(InputJl);
-                string nCoupOut = SafeName(CoupOutputJl);
-                string nOutput = SafeName(OutputJl);
-                string nJ1 = SafeName(J1);
-                string nJ2 = SafeName(J2);
+                    // j2:Prismatic 磨量补偿，fixed_link→lnk2
+                    J2 = CreateJointInternal("j2", "Prismatic",
+                        _p.WorldStaticTip.ToTxVector(),
+                        (_p.WorldStaticTip + gunAxis).ToTxVector(),
+                        0, 0, fixedLink, lnk2);
+                    if (J2 == null) { error = "创建 j2 失败"; return false; }
 
-                AddLog("");
-                AddLog("=== 关节名验证 ===");
-                AddLog($"期望 fixed_Input_j1 → 实际 {nFixedInput}");
-                AddLog($"期望 input_j1       → 实际 {nInput}");
-                AddLog($"期望 coup_output_j1 → 实际 {nCoupOut}");
-                AddLog($"期望 output_j1      → 实际 {nOutput}");
-                AddLog($"期望 j1             → 实际 {nJ1}");
-                AddLog($"期望 j2             → 实际 {nJ2}");
+                    // ── 验证 PS 实际分配的关节名（CreationData.Name 应已生效）──
+                    string nFixedInput = SafeName(FixedInputJl);
+                    string nInput = SafeName(InputJl);
+                    string nCoupOut = SafeName(CoupOutputJl);
+                    string nOutput = SafeName(OutputJl);
+                    string nJ1 = SafeName(J1);
+                    string nJ2 = SafeName(J2);
 
-                // ── 用实际名生成公式（即使PS改了名也能对应上）──
-                var f2 = BuildFormulasWithNames(nFixedInput, nInput, nCoupOut, nOutput, nJ1, nJ2);
-
-                if (_p.OpenStateAdapt)
-                {
-                    // ═══ 需求4：OPEN状态适配，分阶段写入 ═══
-                    // OPEN几何读的|AC|是张开活塞长(228)。
-                    //   阶段A驱动公式用 s0=|AC|(228)：让input_j1=0对应当前张开几何，
-                    //     正向+行程才能正确驱动到闭合(活塞330.5)。
-                    //   阶段E最终公式用 s0=|AC|+行程(330.5)：置零后几何已闭合，
-                    //     此值才是正确的闭合活塞长，运动学不偏移。
                     AddLog("");
-                    AddLog("=== OPEN状态适配模式：分阶段写入 ===");
+                    AddLog("=== 关节名验证 ===");
+                    AddLog($"期望 fixed_Input_j1 → 实际 {nFixedInput}");
+                    AddLog($"期望 input_j1       → 实际 {nInput}");
+                    AddLog($"期望 coup_output_j1 → 实际 {nCoupOut}");
+                    AddLog($"期望 output_j1      → 实际 {nOutput}");
+                    AddLog($"期望 j1             → 实际 {nJ1}");
+                    AddLog($"期望 j2             → 实际 {nJ2}");
 
-                    Vec2 _O2 = _p.Plane.To2D(_p.WorldO);
-                    Vec2 _A2 = _p.Plane.To2D(_p.WorldA);
-                    Vec2 _C2 = _p.Plane.To2D(_p.WorldC);
-                    double acOpen = (_C2 - _A2).Length;        // OPEN读取的|AC|(张开活塞长)
-                    double s0Drive = acOpen;                   // 阶段A驱动用
-                    double s0Final = acOpen + _p.PistonStroke; // 阶段E最终用(闭合活塞长)
-                    AddLog($"[i] OPEN|AC|={acOpen:F2} → 驱动s0={s0Drive:F2}, 最终s0={s0Final:F2}");
+                    // ── 用实际名生成公式（即使PS改了名也能对应上）──
+                    var f2 = BuildFormulasWithNames(nFixedInput, nInput, nCoupOut, nOutput, nJ1, nJ2);
 
-                    // 阶段A：用驱动s0(原始|AC|)写从动公式，让几何能正确驱动回闭合
-                    var fDrive = BuildFormulasWithNames(nFixedInput, nInput, nCoupOut, nOutput, nJ1, nJ2, s0Drive);
-                    WriteFormula(FixedInputJl, fDrive.FixedInputJl_Formula, nFixedInput);
-                    WriteFormula(CoupOutputJl, fDrive.CoupOutputJl_Formula, nCoupOut);
-                    WriteFormula(OutputJl, fDrive.OutputJl_Formula, nOutput);
-                    AddLog("[A] 主链从动公式已写(驱动s0,input_j1暂独立)");
-
-                    // input_j1 临时限位放宽，允许正向驱动回闭合
-                    try
+                    if (_p.OpenStateAdapt)
                     {
-                        var hl = new TxJointConstantHardLimits(-_p.PistonStroke, _p.PistonStroke);
-                        InputJl.HardLimits = hl;
-                        InputJl.LowerSoftLimit = -_p.PistonStroke;
-                        InputJl.UpperSoftLimit = _p.PistonStroke;
-                    }
-                    catch (Exception ex) { AddLog($"[A] input_j1临时限位失败:{ex.Message}"); }
+                        // ═══ 需求4：OPEN状态适配，分阶段写入 ═══
+                        // OPEN几何读的|AC|是张开活塞长(228)。
+                        //   阶段A驱动公式用 s0=|AC|(228)：让input_j1=0对应当前张开几何，
+                        //     正向+行程才能正确驱动到闭合(活塞330.5)。
+                        //   阶段E最终公式用 s0=|AC|+行程(330.5)：置零后几何已闭合，
+                        //     此值才是正确的闭合活塞长，运动学不偏移。
+                        AddLog("");
+                        AddLog("=== OPEN状态适配模式：分阶段写入 ===");
 
-                    // 阶段B：正方向驱动 input_j1 = +行程 → 几何回到闭合(CLOSE)
-                    try
+                        Vec2 _O2 = _p.Plane.To2D(_p.WorldO);
+                        Vec2 _A2 = _p.Plane.To2D(_p.WorldA);
+                        Vec2 _C2 = _p.Plane.To2D(_p.WorldC);
+                        double acOpen = (_C2 - _A2).Length;        // OPEN读取的|AC|(张开活塞长)
+                        double s0Drive = acOpen;                   // 阶段A驱动用
+                        double s0Final = acOpen + _p.PistonStroke; // 阶段E最终用(闭合活塞长)
+                        AddLog($"[i] OPEN|AC|={acOpen:F2} → 驱动s0={s0Drive:F2}, 最终s0={s0Final:F2}");
+
+                        // 阶段A：用驱动s0(原始|AC|)写从动公式，让几何能正确驱动回闭合
+                        var fDrive = BuildFormulasWithNames(nFixedInput, nInput, nCoupOut, nOutput, nJ1, nJ2, s0Drive);
+                        WriteFormula(FixedInputJl, fDrive.FixedInputJl_Formula, nFixedInput);
+                        WriteFormula(CoupOutputJl, fDrive.CoupOutputJl_Formula, nCoupOut);
+                        WriteFormula(OutputJl, fDrive.OutputJl_Formula, nOutput);
+                        AddLog("[A] 主链从动公式已写(驱动s0,input_j1暂独立)");
+
+                        // input_j1 临时限位放宽，允许正向驱动回闭合
+                        try
+                        {
+                            var hl = new TxJointConstantHardLimits(-_p.PistonStroke, _p.PistonStroke);
+                            InputJl.HardLimits = hl;
+                            InputJl.LowerSoftLimit = -_p.PistonStroke;
+                            InputJl.UpperSoftLimit = _p.PistonStroke;
+                        }
+                        catch (Exception ex) { AddLog($"[A] input_j1临时限位失败:{ex.Message}"); }
+
+                        // 阶段B：正方向驱动 input_j1 = +行程 → 几何回到闭合(CLOSE)
+                        try
+                        {
+                            InputJl.CurrentValue = _p.PistonStroke;
+                            AddLog($"[B] 已驱动 input_j1 = +{_p.PistonStroke:F2}(几何回闭合)");
+                        }
+                        catch (Exception ex) { AddLog($"[B] 驱动input_j1失败:{ex.Message}"); }
+
+                        // 阶段C：DefineZeroPosition——当前闭合位姿定为零位
+                        try
+                        {
+                            bool can = true;
+                            try { can = _device.CanDefineZeroPosition(); } catch { can = true; }
+                            if (can) { _device.DefineZeroPosition(); AddLog("[C] DefineZeroPosition 成功(闭合=0位)"); }
+                            else AddLog("[C] CanDefineZeroPosition=false，跳过");
+                        }
+                        catch (Exception ex) { AddLog($"[C] DefineZeroPosition失败:{ex.Message}"); }
+
+                        // 阶段D：重写 input_j1 限位为 [-行程, 0]（闭合=0，张开=-行程）
+                        try
+                        {
+                            var hl = new TxJointConstantHardLimits(-_p.PistonStroke, 0);
+                            InputJl.HardLimits = hl;
+                            InputJl.LowerSoftLimit = -_p.PistonStroke;
+                            InputJl.UpperSoftLimit = 0;
+                            AddLog($"[D] input_j1限位重写为 [{-_p.PistonStroke:F2}, 0]");
+                        }
+                        catch (Exception ex) { AddLog($"[D] 重写input_j1限位失败:{ex.Message}"); }
+
+                        // 阶段E：置零后用【最终s0=|AC|+行程】重刷全部公式
+                        // 此时几何已闭合、零点已重置，s0=闭合活塞长，运动学不偏移。
+                        var fFinal = BuildFormulasWithNames(nFixedInput, nInput, nCoupOut, nOutput, nJ1, nJ2, s0Final);
+                        WriteFormula(FixedInputJl, fFinal.FixedInputJl_Formula, nFixedInput);
+                        WriteFormula(CoupOutputJl, fFinal.CoupOutputJl_Formula, nCoupOut);
+                        WriteFormula(OutputJl, fFinal.OutputJl_Formula, nOutput);
+                        WriteFormula(InputJl, fFinal.InputJl_Formula, nInput);
+                        WriteFormula(J2, fFinal.J2_Formula, nJ2);
+                        AddLog("[E] 置零后用最终s0重刷全部公式 + 接j1驱动链");
+                    }
+                    else
                     {
-                        InputJl.CurrentValue = _p.PistonStroke;
-                        AddLog($"[B] 已驱动 input_j1 = +{_p.PistonStroke:F2}(几何回闭合)");
+                        // ═══ 默认：一次性写入全部公式 ═══
+                        WriteFormula(InputJl, f2.InputJl_Formula, nInput);
+                        WriteFormula(FixedInputJl, f2.FixedInputJl_Formula, nFixedInput);
+                        WriteFormula(CoupOutputJl, f2.CoupOutputJl_Formula, nCoupOut);
+                        WriteFormula(OutputJl, f2.OutputJl_Formula, nOutput);
+                        WriteFormula(J2, f2.J2_Formula, nJ2);
                     }
-                    catch (Exception ex) { AddLog($"[B] 驱动input_j1失败:{ex.Message}"); }
 
-                    // 阶段C：DefineZeroPosition——当前闭合位姿定为零位
-                    try
-                    {
-                        bool can = true;
-                        try { can = _device.CanDefineZeroPosition(); } catch { can = true; }
-                        if (can) { _device.DefineZeroPosition(); AddLog("[C] DefineZeroPosition 成功(闭合=0位)"); }
-                        else AddLog("[C] CanDefineZeroPosition=false，跳过");
-                    }
-                    catch (Exception ex) { AddLog($"[C] DefineZeroPosition失败:{ex.Message}"); }
+                    AddLog("");
+                    AddLog("=== 公式汇总（已用真实关节名）===");
+                    AddLog($"{nJ1} (主动): Low={f.J1_Low:F2} High={f.J1_High:F2}");
+                    AddLog($"{nInput}     = {f2.InputJl_Formula}");
+                    AddLog($"{nFixedInput} = {f2.FixedInputJl_Formula}");
+                    AddLog($"{nCoupOut} = {f2.CoupOutputJl_Formula}");
+                    AddLog($"{nOutput}    = {f2.OutputJl_Formula}");
+                    AddLog($"{nJ2}           = {f2.J2_Formula}");
 
-                    // 阶段D：重写 input_j1 限位为 [-行程, 0]（闭合=0，张开=-行程）
-                    try
-                    {
-                        var hl = new TxJointConstantHardLimits(-_p.PistonStroke, 0);
-                        InputJl.HardLimits = hl;
-                        InputJl.LowerSoftLimit = -_p.PistonStroke;
-                        InputJl.UpperSoftLimit = 0;
-                        AddLog($"[D] input_j1限位重写为 [{-_p.PistonStroke:F2}, 0]");
-                    }
-                    catch (Exception ex) { AddLog($"[D] 重写input_j1限位失败:{ex.Message}"); }
-
-                    // 阶段E：置零后用【最终s0=|AC|+行程】重刷全部公式
-                    // 此时几何已闭合、零点已重置，s0=闭合活塞长，运动学不偏移。
-                    var fFinal = BuildFormulasWithNames(nFixedInput, nInput, nCoupOut, nOutput, nJ1, nJ2, s0Final);
-                    WriteFormula(FixedInputJl, fFinal.FixedInputJl_Formula, nFixedInput);
-                    WriteFormula(CoupOutputJl, fFinal.CoupOutputJl_Formula, nCoupOut);
-                    WriteFormula(OutputJl, fFinal.OutputJl_Formula, nOutput);
-                    WriteFormula(InputJl, fFinal.InputJl_Formula, nInput);
-                    WriteFormula(J2, fFinal.J2_Formula, nJ2);
-                    AddLog("[E] 置零后用最终s0重刷全部公式 + 接j1驱动链");
+                    return true;
                 }
-                else
+                catch (Exception ex)
                 {
-                    // ═══ 默认：一次性写入全部公式 ═══
-                    WriteFormula(InputJl, f2.InputJl_Formula, nInput);
-                    WriteFormula(FixedInputJl, f2.FixedInputJl_Formula, nFixedInput);
-                    WriteFormula(CoupOutputJl, f2.CoupOutputJl_Formula, nCoupOut);
-                    WriteFormula(OutputJl, f2.OutputJl_Formula, nOutput);
-                    WriteFormula(J2, f2.J2_Formula, nJ2);
+                    error = ex.Message;
+                    if (ex.InnerException != null) error += " | " + ex.InnerException.Message;
+                    return false;
                 }
 
-                AddLog("");
-                AddLog("=== 公式汇总（已用真实关节名）===");
-                AddLog($"{nJ1} (主动): Low={f.J1_Low:F2} High={f.J1_High:F2}");
-                AddLog($"{nInput}     = {f2.InputJl_Formula}");
-                AddLog($"{nFixedInput} = {f2.FixedInputJl_Formula}");
-                AddLog($"{nCoupOut} = {f2.CoupOutputJl_Formula}");
-                AddLog($"{nOutput}    = {f2.OutputJl_Formula}");
-                AddLog($"{nJ2}           = {f2.J2_Formula}");
-
-                return true;
-            }
-            catch (Exception ex)
-            {
-                error = ex.Message;
-                if (ex.InnerException != null) error += " | " + ex.InnerException.Message;
-                return false;
             }
         }
 
@@ -405,72 +410,47 @@ namespace TxTools.WeldGunDefiner.Core
         // ═════════════════════════════════════════════════════════════════
         // 底层 SDK 调用（已验证）
         // ═════════════════════════════════════════════════════════════════
+        private const string OwnerAttribute = "TxTools.RprrOwner";
+        private static bool IsOwned(ITxObject obj)
+        {
+            var owner = obj.GetAttribute(OwnerAttribute) as TxStringAttribute;
+            return owner != null && owner.Value == "RPRR-v1";
+        }
+
+        // 未标记的旧机构不自动接管；同名不是所有权证据。
+        private void ValidateOwnership()
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "fixed_Input_j1", "fixed_input_jl", "input_j1", "input_jl", "coup_output_j1",
+              "coup_output_jl", "output_j1", "output_jl", "j1", "j2",
+              "fixed_link", "input_link", "coupler_link", "output_link", "dummy_link", "lnk1", "lnk2" };
+            foreach (ITxObject obj in _device.Joints)
+            {
+                if (names.Contains(obj.Name) && !IsOwned(obj))
+                    throw new InvalidOperationException("存在未标记的已有关节 " + obj.Name + "，已停止。请在 PS 原生命令中确认并处理旧机构，再重新生成。");
+                var joint = obj as TxJoint;
+                if (joint != null && !IsOwned(joint) &&
+                    ((joint.ParentLink != null && IsOwned(joint.ParentLink)) ||
+                     (joint.ChildLink != null && IsOwned(joint.ChildLink))))
+                    throw new InvalidOperationException("已有用户关节引用本工具 Link: " + obj.Name + "，已停止重建，请先用 PS 原生命令确认机构。");
+            }
+            foreach (ITxObject obj in _device.Links)
+                if (names.Contains(obj.Name) && !IsOwned(obj))
+                    throw new InvalidOperationException("存在未标记的已有 Link " + obj.Name + "，已停止，未自动删除或接管。");
+        }
+
         private void CleanupPrevious()
         {
-            // 诊断：打印设备现有所有 Link 和 Joint
-            try
+            var joints = _device.Joints;
+            if (joints == null) return;
+            var owned = new List<TxJoint>();
+            foreach (ITxObject obj in joints)
             {
-                var allLinks = _device.Links;
-                AddLog($"=== 设备现有 Link ({(allLinks == null ? "null" : "有")}) ===");
-                if (allLinks != null)
-                    foreach (ITxObject lo in allLinks)
-                    {
-                        var l = lo as TxKinematicLink;
-                        if (l != null) AddLog($"  Link: '{l.Name}'");
-                    }
-                var allJoints = _device.Joints;
-                AddLog($"=== 设备现有 Joint ({(allJoints == null ? "null" : "有")}) ===");
-                if (allJoints != null)
-                    foreach (ITxObject jo in allJoints)
-                    {
-                        var j = jo as TxJoint;
-                        if (j != null)
-                        {
-                            string pn = "?", cn = "?";
-                            try { pn = j.ParentLink?.Name; cn = j.ChildLink?.Name; } catch { }
-                            AddLog($"  Joint: '{j.Name}' ({pn}→{cn})");
-                        }
-                    }
+                var joint = obj as TxJoint;
+                if (joint != null && IsOwned(joint)) owned.Add(joint);
             }
-            catch (Exception ex) { AddLog($"诊断设备内容异常: {ex.Message}"); }
-
-            var ourLinkNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { "fixed_link", "input_link", "coupler_link", "output_link", "dummy_link", "lnk1", "lnk2" };
-            try
-            {
-                var joints = _device.Joints;
-                if (joints == null) return;
-                var toDelete = new List<TxJoint>();
-                foreach (ITxObject jo in joints)
-                {
-                    var j = jo as TxJoint;
-                    if (j == null) continue;
-                    bool del = false;
-                    string[] pre = { "fixed_Input_j1", "fixed_input_jl", "input_j1", "input_jl",
-                                     "coup_output_j1", "coup_output_jl", "output_j1", "output_jl", "j1", "j2" };
-                    foreach (var p in pre)
-                        if (j.Name != null && j.Name.Equals(p, StringComparison.OrdinalIgnoreCase))
-                        { del = true; break; }
-                    if (!del)
-                    {
-                        try
-                        {
-                            string pn = j.ParentLink?.Name, cn = j.ChildLink?.Name;
-                            if ((pn != null && ourLinkNames.Contains(pn)) ||
-                                (cn != null && ourLinkNames.Contains(cn))) del = true;
-                        }
-                        catch { }
-                    }
-                    if (del) toDelete.Add(j);
-                }
-                foreach (var j in toDelete)
-                {
-                    string jn = "?"; try { jn = j.Name; } catch { }
-                    try { j.Delete(); AddLog($"清理残留 Joint: {jn}"); }
-                    catch (Exception ex) { AddLog($"删除 Joint '{jn}' 失败: {ex.Message}"); }
-                }
-            }
-            catch (Exception ex) { AddLog($"清理异常: {ex.Message}"); }
+            foreach (var joint in owned)
+            { string name = joint.Name; joint.Delete(); AddLog("清理本工具关节: " + name); }
         }
 
         private TxKinematicLink FindExistingLink(string name)
@@ -501,6 +481,7 @@ namespace TxTools.WeldGunDefiner.Core
                     data.Name = name;
                     link = _device.CreateLink(data);
                     if (link == null) return null;
+                    link.SetAttribute(new TxStringAttribute(OwnerAttribute, "RPRR-v1"));
                 }
                 if (bodies != null)
                     foreach (var b in bodies)
@@ -536,6 +517,7 @@ namespace TxTools.WeldGunDefiner.Core
 
                 TxJoint joint = _device.CreateJoint(data);
                 if (joint == null) { AddLog($"  [X] {name}: CreateJoint 返回 null"); return null; }
+                joint.SetAttribute(new TxStringAttribute(OwnerAttribute, "RPRR-v1"));
 
                 if (high != 0 || low != 0)
                 {

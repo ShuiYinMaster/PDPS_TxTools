@@ -1,4 +1,4 @@
-# RobotBaseChecker — Robot BASE0 Validation / 基座校验
+﻿# RobotBaseChecker — Robot BASE0 Validation / 基座校验
 
 Check robot BASE0 consistency and correct detected offsets in Process Simulate, with configurable tolerances and brand handling.
 
@@ -39,3 +39,9 @@ Check robot BASE0 consistency and correct detected offsets in Process Simulate, 
 ## 界面与构建
 
 本模块随 `TxTools.csproj` 构建。环境与注册方式见 [项目 README](../README.md)。
+
+## 撤销与恢复（2026-10-07）
+
+只读检查不需要模型撤销；同步全部 BASE0 使用一个场景撤销分组，部分失败报告明细，需在当前 PS 工程按 Ctrl+Z 撤销本次同步。
+
+详见 [统一撤销与恢复说明](../docs/undo-safety.md)。

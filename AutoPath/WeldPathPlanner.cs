@@ -167,6 +167,7 @@ namespace TxTools.AutoPathPlanner
 
         private void ThrowIfCancelled()
         {
+            TxTools.Common.SceneUndoScope.EnsureActiveDocument();
             if (IsCancelled != null && IsCancelled())
                 throw new OperationCanceledException();
         }
@@ -182,178 +183,184 @@ namespace TxTools.AutoPathPlanner
             TxRobot fallbackRobot,
             List<ITxObject> selectedOps)
         {
-            var report = new PlanningReport { OperationCount = selectedOps.Count };
-            _activeReport = report;
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-
-            _log("========== RRT 自动路径规划 (操作内模式) ==========");
-            _log(string.Format("选中操作数: {0}", selectedOps.Count));
-
-            // 每台实际用到的机器人一套 (干涉集 + 碰撞世界)，按引用缓存
-            var setCache = new Dictionary<TxRobot, CollisionSetService>();
-            var worldCache = new Dictionary<TxRobot, CollisionWorld>();
-            var costCache = new Dictionary<TxRobot, CycleCost>();   // v6.0
-
-            _rrt = new RrtPlanner
+            using (var undoScope = TxTools.Common.SceneUndoScope.Begin("自动路径规划"))
             {
-                StepSize = RrtStepSize,
-                GoalTolerance = RrtStepSize,
-                GoalBias = RrtGoalBias,
-                MaxIterations = RrtMaxIterations,
-                EdgeCheckResolution = EdgeCheckResolution,
-                ShouldAbort = delegate { return IsCancelled != null && IsCancelled(); },
-                OnProgress = delegate (int iter, int nodeCount)
+                var report = new PlanningReport { OperationCount = selectedOps.Count };
+                _activeReport = report;
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+
+                _log("========== RRT 自动路径规划 (操作内模式) ==========");
+                _log(string.Format("选中操作数: {0}", selectedOps.Count));
+
+                // 每台实际用到的机器人一套 (干涉集 + 碰撞世界)，按引用缓存
+                var setCache = new Dictionary<TxRobot, CollisionSetService>();
+                var worldCache = new Dictionary<TxRobot, CollisionWorld>();
+                var costCache = new Dictionary<TxRobot, CycleCost>();   // v6.0
+
+                _rrt = new RrtPlanner
                 {
-                    if (iter > 0)
-                        _log(string.Format("    RRT: 迭代 {0}, 树节点 {1}", iter, nodeCount));
-                    Application.DoEvents(); // SDK 单线程，保持UI响应
-                }
-            };
+                    StepSize = RrtStepSize,
+                    GoalTolerance = RrtStepSize,
+                    GoalBias = RrtGoalBias,
+                    MaxIterations = RrtMaxIterations,
+                    EdgeCheckResolution = EdgeCheckResolution,
+                    ShouldAbort = delegate { return IsCancelled != null && IsCancelled(); },
+                    OnProgress = delegate (int iter, int nodeCount)
+                    {
+                        if (iter > 0)
+                            _log(string.Format("    RRT: 迭代 {0}, 树节点 {1}", iter, nodeCount));
+                        Application.DoEvents(); // SDK 单线程，保持UI响应
+                    undoScope.EnsureDocument();
+                    }
+                };
 
-            try
-            {
-                int opIdx = -1;
-                foreach (var op in selectedOps)
+                try
                 {
-                    opIdx++;
-                    ThrowIfCancelled();
-
-                    // ---- 机器人解析: op.Robot 优先 ----
-                    TxRobot robot = ResolveRobotOf(op);
-                    if (robot == null)
+                    int opIdx = -1;
+                    foreach (var op in selectedOps)
                     {
-                        robot = fallbackRobot;
-                        _log(string.Format("  [警告] 操作 {0} 未关联机器人, 回退使用界面选择: {1}",
-                            GetNameSafe(op), robot != null ? robot.Name : "无"));
-                    }
-                    if (robot == null)
-                    {
-                        report.Warnings.Add("操作 " + GetNameSafe(op) + " 无法解析机器人，跳过");
-                        continue;
-                    }
-                    LogRobotIdentity(robot);
+                        opIdx++;
+                        undoScope.EnsureDocument();
+                        ThrowIfCancelled();
 
-                    // ---- 该机器人的干涉集/碰撞世界 (缓存) ----
-                    if (!worldCache.ContainsKey(robot))
-                    {
-                        // v4.10: 纯附着模式 —— 只复用用户已建好的干涉集, 绝不新建。
-                        // 找不到就跳过本操作 (不偷偷新建, 避免堆积)。
-                        var cs = CollisionSetService.CreateRobotVsWorld(
-                            robot, null, CollisionSetService.CollectOperationAppearances(selectedOps), _log, forceNew: false, attachOnly: true);
-
-                        if (!cs.IsReady)
+                        // ---- 机器人解析: op.Robot 优先 ----
+                        TxRobot robot = ResolveRobotOf(op);
+                        if (robot == null)
                         {
-                            string warn = string.Format(
-                                "机器人 '{0}' 未找到干涉集 — 请先在主界面点击\"自动创建干涉集\"按钮建立, 再开始规划",
-                                robot.Name);
-                            _log("  [错误] " + warn + " → 跳过本操作");
-                            report.Warnings.Add(warn);
-                            cs.Dispose();
+                            robot = fallbackRobot;
+                            _log(string.Format("  [警告] 操作 {0} 未关联机器人, 回退使用界面选择: {1}",
+                                GetNameSafe(op), robot != null ? robot.Name : "无"));
+                        }
+                        if (robot == null)
+                        {
+                            report.Warnings.Add("操作 " + GetNameSafe(op) + " 无法解析机器人，跳过");
                             continue;
                         }
+                        LogRobotIdentity(robot);
 
-                        setCache[robot] = cs;
-                        var w = new CollisionWorld(robot, cs, _log);
+                        // ---- 该机器人的干涉集/碰撞世界 (缓存) ----
+                        if (!worldCache.ContainsKey(robot))
+                        {
+                            // v4.10: 纯附着模式 —— 只复用用户已建好的干涉集, 绝不新建。
+                            // 找不到就跳过本操作 (不偷偷新建, 避免堆积)。
+                            var cs = CollisionSetService.CreateRobotVsWorld(
+                                robot, null, CollisionSetService.CollectOperationAppearances(selectedOps), _log, forceNew: false, attachOnly: true);
 
-                        // v5.5: GUI 参数全量透传
-                        w.DynamicCheckEnabled = DynamicCheckEnabled;
-                        w.DynamicJointQuantum = DynamicJointQuantum;
-                        w.DynamicCartesianQuantum = DynamicCartesianQuantum;
-                        w.MaxSweepSteps = MaxSweepSteps;
-                        w.ConfigJumpThreshold = ConfigJumpThreshold;
-                        w.OrientationVariantsEnabled = OrientationVariantsEnabled;
-                        w.MaxVariantTries = MaxVariantTries;
-                        w.CacheEnabled = QueryCacheEnabled;      // v6.3
-                        w.CacheQuantum = CacheQuantum;
+                            if (!cs.IsReady)
+                            {
+                                string warn = string.Format(
+                                    "机器人 '{0}' 未找到干涉集 — 请先在主界面点击\"自动创建干涉集\"按钮建立, 再开始规划",
+                                    robot.Name);
+                                _log("  [错误] " + warn + " → 跳过本操作");
+                                report.Warnings.Add(warn);
+                                cs.Dispose();
+                                continue;
+                            }
 
-                        w.ApplyGunOpenPoses(); // 焊枪张开后再进行任何碰撞查询
-                        cs.RecaptureBaseline(); // 张开后的形态重拍常驻接触基线
+                            setCache[robot] = cs;
+                            var w = new CollisionWorld(robot, cs, _log);
 
-                        // v6.7: 被焊工件移出障碍方 + 常驻接触豁免开关
-                        cs.BaselineExemption = BaselineExemptionEnabled;
-                        // 操作绑定外观必须参与碰撞，不再全局豁免被焊工件。
-                        worldCache[robot] = w;
+                            // v5.5: GUI 参数全量透传
+                            w.DynamicCheckEnabled = DynamicCheckEnabled;
+                            w.DynamicJointQuantum = DynamicJointQuantum;
+                            w.DynamicCartesianQuantum = DynamicCartesianQuantum;
+                            w.MaxSweepSteps = MaxSweepSteps;
+                            w.ConfigJumpThreshold = ConfigJumpThreshold;
+                            w.OrientationVariantsEnabled = OrientationVariantsEnabled;
+                            w.MaxVariantTries = MaxVariantTries;
+                            w.CacheEnabled = QueryCacheEnabled;      // v6.3
+                            w.CacheQuantum = CacheQuantum;
 
-                        // v6.0: 关节节拍代价模型 (每台机器人一份)
-                        if (!costCache.ContainsKey(robot))
-                            costCache[robot] = new CycleCost(robot, _log);
+                            w.ApplyGunOpenPoses(); // 焊枪张开后再进行任何碰撞查询
+                            cs.RecaptureBaseline(); // 张开后的形态重拍常驻接触基线
+
+                            // v6.7: 被焊工件移出障碍方 + 常驻接触豁免开关
+                            cs.BaselineExemption = BaselineExemptionEnabled;
+                            // 操作绑定外观必须参与碰撞，不再全局豁免被焊工件。
+                            worldCache[robot] = w;
+
+                            // v6.0: 关节节拍代价模型 (每台机器人一份)
+                            if (!costCache.ContainsKey(robot))
+                                costCache[robot] = new CycleCost(robot, _log);
+                        }
+                        _world = worldCache[robot];
+                        _rrt.IsStateFree = _world.IsPositionFree;
+                        _cost = costCache.ContainsKey(robot) ? costCache[robot] : null;
+
+                        // v6.0: 焊钳外部轴探测 —— 每个操作重探 (活动枪 op.Gun 随操作变)
+                        _gunAxis = null;
+                        if (GunAxisWriteEnabled)
+                        {
+                            var ga = new GunAxisService(_log);
+                            // v6.4: 覆盖必须在 Probe 之前设 —— ProbeSignConvention 会读它
+                            ga.OpenDirectionOverride = GunOpenDirectionOverride;
+                            ga.MaxOpeningOverride = GunMaxOpeningOverride;
+                            ga.Probe(robot, op);
+                            // v6.3: 开口变了 = 枪包络变了 → 失效位姿缓存
+                            var wRef = _world;
+                            ga.OnGeometryChanged = delegate { wRef.InvalidateCache(); };
+                            _gunAxis = ga;
+                        }
+
+                        if (_progress != null)
+                        {
+                            _progress.SetOperationScope(opIdx, selectedOps.Count);
+                            _progress.Enter(PlanStage.Init);
+                        }
+
+                        PlanSingleOperation(op, report);
                     }
-                    _world = worldCache[robot];
-                    _rrt.IsStateFree = _world.IsPositionFree;
-                    _cost = costCache.ContainsKey(robot) ? costCache[robot] : null;
 
-                    // v6.0: 焊钳外部轴探测 —— 每个操作重探 (活动枪 op.Gun 随操作变)
-                    _gunAxis = null;
-                    if (GunAxisWriteEnabled)
-                    {
-                        var ga = new GunAxisService(_log);
-                        // v6.4: 覆盖必须在 Probe 之前设 —— ProbeSignConvention 会读它
-                        ga.OpenDirectionOverride = GunOpenDirectionOverride;
-                        ga.MaxOpeningOverride = GunMaxOpeningOverride;
-                        ga.Probe(robot, op);
-                        // v6.3: 开口变了 = 枪包络变了 → 失效位姿缓存
-                        var wRef = _world;
-                        ga.OnGeometryChanged = delegate { wRef.InvalidateCache(); };
-                        _gunAxis = ga;
-                    }
+                    _log(string.Format(
+                        "\n规划完成: 插入 {0} 个Via (直连 {1} / 定向 {2} / 中继 {3} / RRT {4}成功·{5}次 / 失败段 {6} / 净空绕行 {7} / 动态违例 {8}·修复 {9}·精修{10}轮 / 共线剪枝 {11})",
+                        report.InsertedViaCount, report.DirectHits, report.QuickPlanHits,
+                        report.RelayHits, report.RrtSuccesses, report.RrtInvocations,
+                        report.FailedSegments, report.ClearanceSegments,
+                        report.DynamicViolations, report.DynamicRepairs,
+                        report.RefineRounds, report.PrunedVias));
+                    report.GunOpeningsWritten = _viaOpeningCount;
+                    if (_progress != null) _progress.Done();
 
-                    if (_progress != null)
-                    {
-                        _progress.SetOperationScope(opIdx, selectedOps.Count);
-                        _progress.Enter(PlanStage.Init);
-                    }
+                    if (report.ReorderedOps > 0)
+                        _log(string.Format("焊序优化: {0} 个操作已重排", report.ReorderedOps));
+                    if (report.GunOpeningsWritten > 0)
+                        _log(string.Format("焊钳开口: {0} 个 Via 已写入外部轴", report.GunOpeningsWritten));
 
-                    PlanSingleOperation(op, report);
+                    if (report.FailedSegments > 0)
+                        report.Warnings.Add(string.Format(
+                            "共 {0} 个过渡段规划失败 (未插过渡点), 明细见上方警告", report.FailedSegments));
                 }
-
-                _log(string.Format(
-                    "\n规划完成: 插入 {0} 个Via (直连 {1} / 定向 {2} / 中继 {3} / RRT {4}成功·{5}次 / 失败段 {6} / 净空绕行 {7} / 动态违例 {8}·修复 {9}·精修{10}轮 / 共线剪枝 {11})",
-                    report.InsertedViaCount, report.DirectHits, report.QuickPlanHits,
-                    report.RelayHits, report.RrtSuccesses, report.RrtInvocations,
-                    report.FailedSegments, report.ClearanceSegments,
-                    report.DynamicViolations, report.DynamicRepairs,
-                    report.RefineRounds, report.PrunedVias));
-                report.GunOpeningsWritten = _viaOpeningCount;
-                if (_progress != null) _progress.Done();
-
-                if (report.ReorderedOps > 0)
-                    _log(string.Format("焊序优化: {0} 个操作已重排", report.ReorderedOps));
-                if (report.GunOpeningsWritten > 0)
-                    _log(string.Format("焊钳开口: {0} 个 Via 已写入外部轴", report.GunOpeningsWritten));
-
-                if (report.FailedSegments > 0)
-                    report.Warnings.Add(string.Format(
-                        "共 {0} 个过渡段规划失败 (未插过渡点), 明细见上方警告", report.FailedSegments));
-            }
-            catch (OperationCanceledException)
-            {
-                _log("\n[中止] 用户停止了规划 — 已插入的Via保留，机器人姿态将恢复");
-                report.Warnings.Add("规划被用户中止");
-            }
-            finally
-            {
-                foreach (var w in worldCache.Values)
+                catch (OperationCanceledException)
                 {
-                    report.CollisionQueries += w.QueryCount;
-                    if (QueryCacheEnabled) _log("  [性能] " + w.CacheStats);
-                    w.Dispose();  // 恢复机器人姿态 + 删除探针 (必做, 与干涉集去留无关)
+                    _log("\n[中止] 用户停止了规划 — 已插入的Via保留，机器人姿态将恢复");
+                    report.Warnings.Add("规划被用户中止");
                 }
-                foreach (var cs in setCache.Values)
+                finally
                 {
-                    // v4.10: 干涉集持久化 — 规划完不删除, 便于用户复用与在
-                    // Collision Viewer 中检视。规划采用附着模式, 只会复用现有干涉集,
-                    // 不会新建 (找不到则跳过该操作)。这里的 cs 都是复用来的。
-                    cs.KeepPairOnDispose = true;
-                    cs.Dispose(); // 只释放引用, 不 Delete 碰撞对
+                    foreach (var w in worldCache.Values)
+                    {
+                        report.CollisionQueries += w.QueryCount;
+                        if (QueryCacheEnabled) _log("  [性能] " + w.CacheStats);
+                        w.Dispose();  // 恢复机器人姿态 + 删除探针 (必做, 与干涉集去留无关)
+                    }
+                    foreach (var cs in setCache.Values)
+                    {
+                        // v4.10: 干涉集持久化 — 规划完不删除, 便于用户复用与在
+                        // Collision Viewer 中检视。规划采用附着模式, 只会复用现有干涉集,
+                        // 不会新建 (找不到则跳过该操作)。这里的 cs 都是复用来的。
+                        cs.KeepPairOnDispose = true;
+                        cs.Dispose(); // 只释放引用, 不 Delete 碰撞对
+                    }
+                    sw.Stop();
+                    report.Elapsed = sw.Elapsed;
+                    _log(string.Format("耗时 {0:F1}s, 碰撞查询 {1} 次",
+                        sw.Elapsed.TotalSeconds, report.CollisionQueries));
+                    try { TxApplication.RefreshDisplay(); } catch { }
                 }
-                sw.Stop();
-                report.Elapsed = sw.Elapsed;
-                _log(string.Format("耗时 {0:F1}s, 碰撞查询 {1} 次",
-                    sw.Elapsed.TotalSeconds, report.CollisionQueries));
-                try { TxApplication.RefreshDisplay(); } catch { }
-            }
 
-            return report;
+                return report;
+
+            }
         }
 
         /// <summary>

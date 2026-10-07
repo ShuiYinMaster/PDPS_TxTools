@@ -1,4 +1,4 @@
-// TxTools.Agent / Core / Multi / PsRpcServer.cs
+﻿// TxTools.Agent / Core / Multi / PsRpcServer.cs
 //
 // 执行器:跑在【每个】PDPS 进程里，通过命名管道接收工具调用。
 //
@@ -220,7 +220,7 @@ namespace TxTools.Agent.Core
             var input = req["input"] as JObject ?? new JObject();
 
             // 【主被控互访】允许远程调用全部工具(含写操作)。
-            // 写工具在目标进程内执行，仍受其自身 undo 保护；场景安全靠本窗口可见 + Ctrl+Z。
+            // 撤销能力取决于目标工具；场景历史属于目标 PS 工程，文件/外部应用副作用不受 PS Undo 保护。
             string output;
             try
             {

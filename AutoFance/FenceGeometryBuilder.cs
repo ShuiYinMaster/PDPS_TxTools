@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Tecnomatix.Engineering;
@@ -22,7 +22,7 @@ namespace TxTools.FenceBuilder
 
     /// <summary>
     /// 围栏几何创建器。
-    /// 
+    ///
     /// 资源层级:
     ///   Fence_yyyyMMdd_HHmmss (Resource, TxComponent)
     ///     ├── 所有 TxSolid 直接挂在 Resource 下(立柱/底板/方管/薄板)
@@ -40,9 +40,9 @@ namespace TxTools.FenceBuilder
             FenceLayout layout,
             FenceParameters p,
             string textureFilePath,
-            Action<string> log)
+            Action<string> log, BuildResult result = null)
         {
-            BuildResult result = new BuildResult();
+            result = result ?? new BuildResult();
             if (layout == null || layout.Posts.Count + layout.Panels.Count == 0)
             {
                 log?.Invoke("[Builder] 空布局,跳过");

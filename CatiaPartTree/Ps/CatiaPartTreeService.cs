@@ -1,4 +1,4 @@
-// TxTools.CatiaPartTree / Ps / CatiaPartTreeService.cs
+﻿// TxTools.CatiaPartTree / Ps / CatiaPartTreeService.cs
 // 服务层：读 CATIA 树 / 在 PS 零件树创建 CompoundPart 层级 / 把已导入零件归类进对应容器。
 // 复用 Agent 的 CatiaTreeReader（读树）与 PsCompoundHelper（建 CompoundPart）。
 // 所有 PS SDK 调用必须在 PS 主线程；本服务由窗体在 PS 主线程调用。
@@ -60,6 +60,7 @@ namespace TxTools.CatiaPartTree.Ps
 
             var result = new BuildResult();
             var um = OpenUndo("从 CATIA 树创建零件树", log);
+            using ((TxTools.Common.SceneUndoScope)um)
             try
             {
                 if (includeRoot && root.Include)
@@ -341,6 +342,8 @@ namespace TxTools.CatiaPartTree.Ps
 
         private static bool TrySaveAndReload(Action<string> log)
         {
+            if (TxTools.Common.SceneUndoScope.HasActiveTransaction)
+            { log("[刷新] 外层场景事务尚未结束，已跳过保存/重载，以保护撤销历史。"); return false; }
             var doc = TxApplication.ActiveDocument;
             if (doc == null) { log("[刷新] 无活动文档，跳过保存/重载。"); return false; }
             var prov = doc.PlatformGlobalServicesProvider;
@@ -350,7 +353,13 @@ namespace TxTools.CatiaPartTree.Ps
             if (string.IsNullOrEmpty(path))
             { log("[刷新] 未找到研究保存路径 (FinalDestination 为空)，跳过保存/重载。"); return false; }
 
-            try { prov.SaveDataToFile(path, TxExportStudyAttributesMode.AllAttributes); }
+            try
+            {
+                if (System.IO.File.Exists(path))
+                    System.IO.File.Copy(path, path + ".before-tree-" + Guid.NewGuid().ToString("N") + ".bak", false);
+                log("[刷新] 即将保存并重载：磁盘变更不受 Ctrl+Z 保护，原工程已备份（如存在）。");
+                prov.SaveDataToFile(path, TxExportStudyAttributesMode.AllAttributes);
+            }
             catch (Exception ex) { log("[刷新] 保存失败: " + ex.Message); return false; }
             log("[刷新] 已保存研究: " + path);
 
@@ -622,45 +631,18 @@ namespace TxTools.CatiaPartTree.Ps
 
         private static object OpenUndo(string name, Action<string> log)
         {
-            try
-            {
-                dynamic um = TxApplication.ActiveUndoManager;
-                if (um == null) return null;
-                try { um.OpenUndoTransaction(name); return um; } catch { }
-                try { um.OpenTransaction(name); return um; } catch { }
-                try { um.StartTransaction(name); return um; } catch { }
-                try { um.BeginUndoTransaction(name); return um; } catch { }
-            }
-            catch { }
-            log("[Undo] 未开启事务（PS 仍可 Ctrl+Z）");
-            return null;
+            return TxTools.Common.SceneUndoScope.Begin(name);
         }
 
         private static void CommitUndo(object um, Action<string> log)
         {
-            if (um == null) return;
-            try
-            {
-                dynamic d = um;
-                try { d.CommitUndoTransaction(); return; } catch { }
-                try { d.CommitTransaction(); return; } catch { }
-                try { d.Commit(); return; } catch { }
-            }
-            catch { }
+            if (um != null) ((TxTools.Common.SceneUndoScope)um).Dispose();
         }
 
         private static void AbortUndo(object um, Action<string> log)
         {
-            if (um == null) return;
-            try
-            {
-                dynamic d = um;
-                try { d.AbortUndoTransaction(); return; } catch { }
-                try { d.AbortTransaction(); return; } catch { }
-                try { d.Rollback(); return; } catch { }
-            }
-            catch { }
-            log("[Undo] 已尝试回滚");
+            if (um != null) ((TxTools.Common.SceneUndoScope)um).Dispose();
+            log("[Undo] 执行未完整完成，已关闭撤销分组；如已有部分场景变更，请在当前 PS 工程按 Ctrl+Z 撤销本批次。未自动回滚。");
         }
 
         private static string SafeName(ITxObject o)

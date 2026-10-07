@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.DataTypes;
@@ -165,47 +165,70 @@ namespace TxTools.WeldPointMatrix
         internal static void MovePoint(ITxObject sourceOperation, ITxObject targetOperation,
             ITxObject location, ITxObject predecessor)
         {
-            if (sourceOperation == null || targetOperation == null || location == null)
-                throw new ArgumentException("拖放的操作或点位无效。");
-            if (!(location is ITxOperation))
-                throw new InvalidOperationException("所选点位不是可移动的操作节点。");
-            if (predecessor != null && !(predecessor is ITxOperation))
-                throw new InvalidOperationException("目标位置不是操作节点。");
-            if (Same(location, predecessor)) return;
-
-            bool sameOperation = Same(sourceOperation, targetOperation);
-            var sourceBefore = Read(sourceOperation, s => { }).Ordered;
-            if (IndexOf(sourceBefore, location) < 0)
-                throw new InvalidOperationException("原操作已不包含该点位，请刷新列表后重试。");
-            var targetBefore = sameOperation ? sourceBefore : Read(targetOperation, s => { }).Ordered;
-            if (predecessor != null && IndexOf(targetBefore, predecessor) < 0)
-                throw new InvalidOperationException("目标操作中找不到放置位置，请刷新列表后重试。");
-
-            var ordered = targetOperation as ITxOrderedObjectCollection;
-            if (ordered == null)
-                throw new InvalidOperationException("目标操作不支持点位排序。");
-            try
+            using (var undoScope = TxTools.Common.SceneUndoScope.Begin("矩阵移动点位"))
             {
-                if (sameOperation)
-                {
-                    try { ordered.MoveChildAfter(location, predecessor); }
-                    catch { ordered.AddObjectAfter(location, predecessor as ITxOperation); }
-                }
-                else
-                {
-                    // AddObjectAfter 会将原始 location 节点移到目标操作，而非复制焊点。
-                    ordered.AddObjectAfter(location, predecessor as ITxOperation);
-                }
+                if (sourceOperation == null || targetOperation == null || location == null)
+                    throw new ArgumentException("拖放的操作或点位无效。");
+                if (!(location is ITxOperation))
+                    throw new InvalidOperationException("所选点位不是可移动的操作节点。");
+                if (predecessor != null && !(predecessor is ITxOperation))
+                    throw new InvalidOperationException("目标位置不是操作节点。");
+                if (Same(location, predecessor)) return;
 
-                var targetAfter = Read(targetOperation, s => { }).Ordered;
-                int expected = predecessor == null ? 0 : IndexOf(targetAfter, predecessor) + 1;
-                int actual = IndexOf(targetAfter, location);
-                if (actual < 0 || actual != expected)
-                    throw new InvalidOperationException("PS 未按目标顺序放置点位，请检查操作树。");
-                if (!sameOperation && IndexOf(Read(sourceOperation, s => { }).Ordered, location) >= 0)
-                    throw new InvalidOperationException("点位仍保留在原操作中，请检查操作树。");
+                bool sameOperation = Same(sourceOperation, targetOperation);
+                var sourceBefore = Read(sourceOperation, s => { }).Ordered;
+                int originalIndex = IndexOf(sourceBefore, location);
+                if (originalIndex < 0)
+                    throw new InvalidOperationException("原操作已不包含该点位，请刷新列表后重试。");
+                var originalPredecessor = originalIndex == 0 ? null : sourceBefore[originalIndex - 1].LocOp;
+                var targetBefore = sameOperation ? sourceBefore : Read(targetOperation, s => { }).Ordered;
+                if (predecessor != null && IndexOf(targetBefore, predecessor) < 0)
+                    throw new InvalidOperationException("目标操作中找不到放置位置，请刷新列表后重试。");
+
+                var ordered = targetOperation as ITxOrderedObjectCollection;
+                if (ordered == null)
+                    throw new InvalidOperationException("目标操作不支持点位排序。");
+                try
+                {
+                    if (sameOperation)
+                    {
+                        try { ordered.MoveChildAfter(location, predecessor); }
+                        catch { ordered.AddObjectAfter(location, predecessor as ITxOperation); }
+                    }
+                    else
+                    {
+                        // AddObjectAfter 会将原始 location 节点移到目标操作，而非复制焊点。
+                        ordered.AddObjectAfter(location, predecessor as ITxOperation);
+                    }
+
+                    var targetAfter = Read(targetOperation, s => { }).Ordered;
+                    int expected = predecessor == null ? 0 : IndexOf(targetAfter, predecessor) + 1;
+                    int actual = IndexOf(targetAfter, location);
+                    if (actual < 0 || actual != expected)
+                        throw new InvalidOperationException("PS 未按目标顺序放置点位，请检查操作树。");
+                    if (!sameOperation && IndexOf(Read(sourceOperation, s => { }).Ordered, location) >= 0)
+                        throw new InvalidOperationException("点位仍保留在原操作中，请检查操作树。");
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        var source = sourceOperation as ITxOrderedObjectCollection;
+                        if (source == null) throw new InvalidOperationException("源操作不支持恢复顺序");
+                        source.AddObjectAfter(location, originalPredecessor as ITxOperation);
+                        if (IndexOf(Read(sourceOperation, s => { }).Ordered, location) != originalIndex)
+                            throw new InvalidOperationException("源点位顺序未恢复");
+                    }
+                    catch (Exception restore)
+                    {
+                        throw new InvalidOperationException("点位移动失败，原位置恢复也失败：" + restore.Message +
+                            "。请在当前 PS 工程按 Ctrl+Z 撤销本批次。", ex);
+                    }
+                    throw;
+                }
+                finally { TxApplication.RefreshDisplay(); }
+
             }
-            finally { TxApplication.RefreshDisplay(); }
         }
 
         private static int IndexOf(System.Collections.Generic.IList<SpotData> points, ITxObject location)
@@ -225,93 +248,97 @@ namespace TxTools.WeldPointMatrix
         internal static ITxObject CreatePoint(ITxObject operation, ITxObject predecessor,
             bool weld, string name, double[] matrix)
         {
-            if (operation == null || matrix == null || matrix.Length != 16)
-                throw new ArgumentException("操作或点位姿态无效。");
-            if (weld && !IsWeldOperation(operation))
-                throw new InvalidOperationException("连续点操作不支持直接创建焊点，请选择焊接操作。");
-            TxTransformation transform = PsReader.ArrToTxPublic(matrix);
-            if (!weld)
+            using (var undoScope = TxTools.Common.SceneUndoScope.Begin("矩阵新增点位"))
             {
-                var data = new TxRoboticViaLocationOperationCreationData(name);
-                TxRoboticViaLocationOperation via = null;
-                var continuous = operation as TxContinuousRoboticOperation;
-                try
+                if (operation == null || matrix == null || matrix.Length != 16)
+                    throw new ArgumentException("操作或点位姿态无效。");
+                if (weld && !IsWeldOperation(operation))
+                    throw new InvalidOperationException("连续点操作不支持直接创建焊点，请选择焊接操作。");
+                TxTransformation transform = PsReader.ArrToTxPublic(matrix);
+                if (!weld)
                 {
-                    if (continuous != null)
-                        via = continuous.CreateRoboticViaLocationOperationAfter(data, predecessor as ITxOperation);
-                    else
-                        via = ((dynamic)operation).CreateRoboticViaLocationOperationAfter(data, predecessor);
-                }
-                catch
-                {
-                    // 旧版容器没有 After 接口时，在下方用追加+重排。
-                }
-                if (via == null)
-                {
-                    via = continuous != null
-                        ? continuous.CreateRoboticViaLocationOperation(data)
-                        : ((dynamic)operation).CreateRoboticViaLocationOperation(data);
-                    if (via != null)
+                    var data = new TxRoboticViaLocationOperationCreationData(name);
+                    TxRoboticViaLocationOperation via = null;
+                    var continuous = operation as TxContinuousRoboticOperation;
+                    try
                     {
-                        try
+                        if (continuous != null)
+                            via = continuous.CreateRoboticViaLocationOperationAfter(data, predecessor as ITxOperation);
+                        else
+                            via = ((dynamic)operation).CreateRoboticViaLocationOperationAfter(data, predecessor);
+                    }
+                    catch
+                    {
+                        // 旧版容器没有 After 接口时，在下方用追加+重排。
+                    }
+                    if (via == null)
+                    {
+                        via = continuous != null
+                            ? continuous.CreateRoboticViaLocationOperation(data)
+                            : ((dynamic)operation).CreateRoboticViaLocationOperation(data);
+                        if (via != null)
                         {
-                            var ordered = operation as ITxOrderedObjectCollection;
-                            if (ordered == null)
-                                throw new InvalidOperationException("操作不支持点位排序。");
-                            ordered.AddObjectAfter(via, predecessor as ITxOperation);
-                        }
-                        catch
-                        {
-                            try { ((dynamic)via).Delete(); } catch { }
-                            TxApplication.RefreshDisplay();
-                            throw;
+                            try
+                            {
+                                var ordered = operation as ITxOrderedObjectCollection;
+                                if (ordered == null)
+                                    throw new InvalidOperationException("操作不支持点位排序。");
+                                ordered.AddObjectAfter(via, predecessor as ITxOperation);
+                            }
+                            catch
+                            {
+                                try { ((dynamic)via).Delete(); } catch { }
+                                TxApplication.RefreshDisplay();
+                                throw;
+                            }
                         }
                     }
+                    if (via == null) throw new InvalidOperationException("创建过渡点返回空对象。");
+                    try
+                    {
+                        ((ITxLocatableObject)via).AbsoluteLocation = transform;
+                        TxApplication.RefreshDisplay();
+                        return via;
+                    }
+                    catch
+                    {
+                        try { ((dynamic)via).Delete(); } catch { }
+                        TxApplication.RefreshDisplay();
+                        throw;
+                    }
                 }
-                if (via == null) throw new InvalidOperationException("创建过渡点返回空对象。");
+
+                var position = transform.Translation;
+                var wpData = TxMfgCreationDataFactory.CreateWeldPointCreationData(name,
+                    new TxVector(position.X, position.Y, position.Z));
+                var weldData = new TxWeldLocationOperationCreationData
+                {
+                    Name = name,
+                    WeldPointCreationData = wpData,
+                    ProjectedLocation = transform
+                };
+                TxWeldLocationOperation weldLocation =
+                    ((dynamic)operation).CreateWeldLocationOperation(weldData) as TxWeldLocationOperation;
+                if (weldLocation == null)
+                    throw new InvalidOperationException("创建焊点返回空对象。");
                 try
                 {
-                    ((ITxLocatableObject)via).AbsoluteLocation = transform;
+                    weldLocation.WeldPoint.AbsoluteLocation = transform;
+                    var ordered = operation as ITxOrderedObjectCollection;
+                    if (ordered == null)
+                        throw new InvalidOperationException("操作不支持点位排序。");
+                    ordered.AddObjectAfter(weldLocation, predecessor as ITxOperation);
                     TxApplication.RefreshDisplay();
-                    return via;
+                    return weldLocation;
                 }
                 catch
                 {
-                    try { ((dynamic)via).Delete(); } catch { }
+                    // 创建已成功但后续设置失败时，避免留下位置错误或顺序错误的焊点。
+                    try { ((dynamic)weldLocation).Delete(); } catch { }
                     TxApplication.RefreshDisplay();
                     throw;
                 }
-            }
 
-            var position = transform.Translation;
-            var wpData = TxMfgCreationDataFactory.CreateWeldPointCreationData(name,
-                new TxVector(position.X, position.Y, position.Z));
-            var weldData = new TxWeldLocationOperationCreationData
-            {
-                Name = name,
-                WeldPointCreationData = wpData,
-                ProjectedLocation = transform
-            };
-            TxWeldLocationOperation weldLocation =
-                ((dynamic)operation).CreateWeldLocationOperation(weldData) as TxWeldLocationOperation;
-            if (weldLocation == null)
-                throw new InvalidOperationException("创建焊点返回空对象。");
-            try
-            {
-                weldLocation.WeldPoint.AbsoluteLocation = transform;
-                var ordered = operation as ITxOrderedObjectCollection;
-                if (ordered == null)
-                    throw new InvalidOperationException("操作不支持点位排序。");
-                ordered.AddObjectAfter(weldLocation, predecessor as ITxOperation);
-                TxApplication.RefreshDisplay();
-                return weldLocation;
-            }
-            catch
-            {
-                // 创建已成功但后续设置失败时，避免留下位置错误或顺序错误的焊点。
-                try { ((dynamic)weldLocation).Delete(); } catch { }
-                TxApplication.RefreshDisplay();
-                throw;
             }
         }
     }
