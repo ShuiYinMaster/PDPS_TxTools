@@ -183,7 +183,7 @@ TxAgent：
 
 ## 十一、许可与联系方式
 - 授权：MIT（详见 LICENSE 文件）。  
-- 欢迎在仓库中提交 Issue 与 PR： https://github.com/ShuiYinMaster/TxTools
+- 欢迎在 [PDPS_TxTools 仓库](https://github.com/ShuiYinMaster/PDPS_TxTools) 中提交 Issue 与 PR。
 
 ---
 
@@ -215,6 +215,7 @@ TxAgent：
 - **焊点标注显示恢复**：新增窗口独立的 `DisplaySession`，替代 `PsReader` 中旧的布尔快照逻辑；保留 `None / Partial / All`，恢复父子可见关系，校验白名单 ID、文档身份及撤销事务，失败保留恢复依据。
 - **构建与维护**：主项目/MCP 桥默认 SDK 与输出路径调整到 G 盘；修正 32 位 MSBuild 调用资源检查时误用 32 位 PowerShell，以及覆盖输出目录时 JT 解码器未按预期复制的问题。新增桌宠组件下载/校验说明及回归工具，下载组件、本地工作树和编译产物不进入提交。
 - **文档**：更新全部模块 README，补齐已有 `WeldPointMatrix` 的说明；修正 TxAgent 旧配方说明、主项目语言配置、解决方案入口及 MCP 产物路径；保留 DeviceZAligner 的既有运行问题标记。
+- **仓库地址**：GitHub 仓库已更名为 `ShuiYinMaster/PDPS_TxTools`，项目链接使用新地址。
 
 验证结果：配方控件 108 项、配方分享 39 项、拾取焦点 369 项、显示会话 17 个场景、启动响应 8 项，以及配方侧栏/快捷窗口/Markdown JavaScript 回归全部通过。完整 Release 构建通过，包含 TxTools、MCP 桥和 JT 解码器，14 份嵌入配方资源与源码一致；仍有 COM 封送、重复编译项及未使用成员等既有警告。PS、CATIA、Excel 的实际工程操作及在线模型服务未在本次运行验证。
 
