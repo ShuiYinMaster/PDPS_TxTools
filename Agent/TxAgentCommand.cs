@@ -31,27 +31,67 @@ namespace TxTools.Agent
         private static string _petError;
         private static RecipeQuickForm _quickRecipes;
 
-        // ── 多 PDPS 无界面执行器:插件一加载就启动 ──
-        // PS 反射扫描命令类注册按钮时会触发静态构造,趁这时把 RPC 执行器跑起来。
-        // 这样被控端 PDPS 什么都不用点,主控端就能发现并调用它。
+        private static System.Windows.Forms.Timer _startupDelay;
+        private static int _backgroundStartup;
+        private static volatile bool _startupExiting;
+
+        // Native PS message loops do not necessarily raise WinForms Application.Idle.
+        // A WinForms timer uses the host's window messages without doing any file/SDK work at registration.
         static TxAgentCommand()
+        {
+            _startupDelay = new System.Windows.Forms.Timer { Interval = 5000 };
+            _startupDelay.Tick += OnStartupDelay;
+            Application.ApplicationExit += OnStartupExit;
+            _startupDelay.Start();
+        }
+
+        private static void OnStartupDelay(object sender, EventArgs e)
         {
             try
             {
-                TxAgentService.StudyNameGetter = () =>
-                {
-                    try { return TxApplication.ActiveDocument.CurrentStudy.Name; }
-                    catch { return null; }
-                };
-                PsRpcServer.SystemRootGetter = () =>
-                {
-                    try { return TxApplication.SystemRootDirectory; }
-                    catch { return null; }
-                };
-                TxAgentService.Start(BuildToolRegistry());
+                if (_startupExiting || Process.GetCurrentProcess().MainWindowHandle == IntPtr.Zero) return;
+                _startupDelay.Stop(); _startupDelay.Dispose(); _startupDelay = null;
+                PsContext.CaptureFromMainThread();
+                StartBackgroundServices();
             }
-            catch { /* 服务起不来不影响窗口本身 */ }
-            InitializePet();
+            catch (Exception ex) { Debug.WriteLine("[TxAgent] 延后启动失败: " + ex.Message); }
+        }
+
+        private static void OnStartupExit(object sender, EventArgs e)
+        {
+            _startupExiting = true;
+            _startupDelay?.Stop(); _startupDelay?.Dispose(); _startupDelay = null;
+        }
+
+        private static void StartBackgroundServices()
+        {
+            if (Interlocked.CompareExchange(ref _backgroundStartup, 1, 0) != 0) return;
+            var ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var elapsed = Stopwatch.StartNew();
+                bool petVisible = true;
+                try { petVisible = UserPrefsStore.Load().DesktopPetVisible; } catch { }
+                try
+                {
+                    // SDK reads must still marshal to the captured PS UI thread.
+                    TxAgentService.StudyNameGetter = () => PsContext.Current.Run(() =>
+                    {
+                        try { return TxApplication.ActiveDocument?.CurrentStudy.Name; } catch { return null; }
+                    });
+                    PsRpcServer.SystemRootGetter = () => PsContext.Current.Run(() =>
+                    {
+                        try { return TxApplication.SystemRootDirectory; } catch { return null; }
+                    });
+                    TxAgentService.Start(BuildToolRegistry());
+                    try { AuditLog.Write("[info] [Startup] 后台工具/服务初始化 " + elapsed.ElapsedMilliseconds + " ms"); } catch { }
+                }
+                catch (Exception ex) { Debug.WriteLine("[TxAgent] 后台服务启动失败: " + ex.Message); }
+                finally
+                {
+                    try { ui.Post(_ => { if (_startupExiting) return; InitializePet(petVisible); }, null); } catch { }
+                }
+            });
         }
 
         public override string Name { get { return "TxAgent"; } }
@@ -104,14 +144,13 @@ namespace TxTools.Agent
             try { TxApplication.StatusBarMessage = "TxTools.Agent 已启动"; } catch { }
         }
 
-        private static void InitializePet()
+        private static void InitializePet(bool? visible = null)
         {
             if (_petController != null) return;
             try
             {
-                // The command is registered on the PS UI thread during plugin loading.
-                // Queue startup so it runs after registration, outside the type initializer.
-                var controller = new DshPetController(UserPrefsStore.Load().DesktopPetVisible,
+                // Called after deferred background initialization or an explicit user action.
+                var controller = new DshPetController(visible ?? UserPrefsStore.Load().DesktopPetVisible,
                     UserPrefsStore.UpdateDesktopPetVisible, () =>
                     {
                         _quickRecipes?.Hide();
@@ -434,6 +473,7 @@ namespace TxTools.Agent
         private string _task;
         private bool _enabled;
         private bool _disposed;
+        private bool _starting;
         public event EventHandler Changed;
         public event Action<string> Failed;
         public bool Enabled { get { lock (_gate) return _enabled; } }
@@ -477,31 +517,39 @@ namespace TxTools.Agent
             Changed?.Invoke(this, EventArgs.Empty);
         }
 
-        private void EnsurePet()
+        private async void EnsurePet()
         {
             lock (_gate)
             {
-                if (_disposed || !_enabled || (_host != null && !_host.IsDisposed)) return;
-                try
+                if (_disposed || !_enabled || _starting || (_host != null && !_host.IsDisposed)) return;
+                _starting = true;
+            }
+            DshPetHost host = null;
+            try
+            {
+                // File checks, snapshots and Process.Start may be slow on antivirus/networked disks.
+                // Only dispatcher/event wiring belongs on the PS UI thread.
+                host = await System.Threading.Tasks.Task.Run(() => new DshPetHost(_dispatcher));
+                if (host.IsDisposed) throw new InvalidOperationException("桌宠在启动时退出，请查看日志：" + host.LogPath);
+                lock (_gate)
                 {
-                    var host = new DshPetHost(_dispatcher);
-                    host.OpenAssistantRequested += (s, e) => _openAssistant();
-                    host.OpenRecipesRequested += anchor => _openRecipes?.Invoke(anchor);
-                    host.HideRequested += (s, e) =>
+                    if (_disposed || !_enabled) { host.Dispose(); return; }
+                    var active = host;
+                    active.OpenAssistantRequested += (s, e) => _openAssistant();
+                    active.OpenRecipesRequested += anchor => _openRecipes?.Invoke(anchor);
+                    active.HideRequested += (s, e) => { if (ReferenceEquals(_host, active)) SetEnabled(false); };
+                    active.Failed += message => Failed?.Invoke(message);
+                    active.Closed += (s, e) =>
                     {
-                        if (ReferenceEquals(_host, host)) SetEnabled(false);
-                    };
-                    host.Failed += message => Failed?.Invoke(message);
-                    host.Closed += (s, e) =>
-                    {
-                        lock (_gate) { if (ReferenceEquals(_host, host)) _host = null; }
+                        lock (_gate) { if (ReferenceEquals(_host, active)) _host = null; }
                         Changed?.Invoke(this, EventArgs.Empty);
                     };
-                    _host = host;
-                    host.SetState(_state, _task);
+                    _host = active;
+                    if (_state != null || _task != null) active.SetState(_state, _task);
                 }
-                catch (Exception ex) { Failed?.Invoke(ex.Message); }
             }
+            catch (Exception ex) { host?.Dispose(); Failed?.Invoke(ex.Message); }
+            finally { lock (_gate) _starting = false; }
         }
 
         public void SetState(string state, string task = null)

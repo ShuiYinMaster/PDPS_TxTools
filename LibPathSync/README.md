@@ -35,3 +35,9 @@
 - `LibPathTargets.cs`：注册表键和值的集中配置。
 - `SyncLibPathCommand.cs`：同步到 System Root。
 - `SyncToSelectedComponentCommand.cs`：同步到所选组件。
+
+## 2026-10-07 更新与源码核对
+
+核对系统库根与所选组件目录的同步入口。本次该模块业务源码未修改；同步会写入当前 Windows 用户的 PS 注册表配置，使用前确认目标目录。
+
+本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。

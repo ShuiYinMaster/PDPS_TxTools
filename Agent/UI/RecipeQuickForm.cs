@@ -141,7 +141,8 @@ namespace TxTools.Agent.UI
                         SendList(seq);
                         break;
                     case "recipe.list": SendList(seq); break;
-                    case "recipe.pickSelection": Send(seq, RecipeUiActions.PickSelection((bool?)msg["multi"] == true)); break;
+                    case "recipe.objectTypes": Send(seq, Visible ? RecipeUiActions.ObjectTypes(msg) : RecipeUiActions.Error("recipe.objectTypes.result", "请先打开快捷配方。")); break;
+                    case "recipe.pickSelection": Send(seq, RecipeUiActions.PickSelection(msg)); break;
                     case "recipe.favorite":
                         string id = (string)msg["recipeId"];
                         if (RecipeStore.Get(id) == null) throw new InvalidOperationException("配方不存在。");
@@ -174,7 +175,12 @@ namespace TxTools.Agent.UI
             Send(seq, RecipeUiActions.List());
         }
 
-        private void NotifyChanged() { Send(0, new JObject { ["type"] = "quick.refresh" }); }
+        private void NotifyChanged()
+        {
+            if (IsDisposed || !IsHandleCreated) return;
+            if (InvokeRequired) { try { BeginInvoke(new Action(NotifyChanged)); } catch (InvalidOperationException) { } return; }
+            if (Visible) Send(0, new JObject { ["type"] = "quick.refresh" });
+        }
 
         private void Send(int seq, JObject data)
         {

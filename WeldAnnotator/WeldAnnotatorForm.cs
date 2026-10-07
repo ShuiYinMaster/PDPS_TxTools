@@ -28,14 +28,14 @@ using WF = System.Windows.Forms;
 
 namespace TxTools.WeldAnnotator
 {
-    public partial class WeldAnnotatorForm : TxForm
+    public partial class WeldAnnotatorForm : PickAwareTxForm
     {
         // ════════════════════════════════════════════════════════════════
         //  UI 控件字段
         // ════════════════════════════════════════════════════════════════
 
         // 卡片①：显示控制
-        private WF.Button _btnSnap, _btnRestore, _btnShowOnly, _btnShowAll;
+        private WF.Button _btnSnap, _btnRestore, _btnShowOnly;
         private WF.Label  _lblSnapStatus;
         // 卡片②/③：导出设置
         private WF.Label    _lblCount;
@@ -88,7 +88,7 @@ namespace TxTools.WeldAnnotator
         private List<WeldAnnotationPoint> _points         = new List<WeldAnnotationPoint>();
         private string                    _selOpName;
         private ITxObject                 _selOpObj;
-        private List<Tuple<ITxObject, bool>> _dispSnapshot;
+        private readonly DisplaySession _displaySession;
         private AnnotationStyle           _style          = new AnnotationStyle();
         private Dictionary<int, string>   _categories     = new Dictionary<int, string>();
         private HashSet<int>              _categoriesManuallyEdited = new HashSet<int>();
@@ -102,6 +102,7 @@ namespace TxTools.WeldAnnotator
         // ════════════════════════════════════════════════════════════════
         public WeldAnnotatorForm()
         {
+            _displaySession = new DisplaySession(s => Log("INFO", s));
             SemiModal = false;
             FormUiKit.InitStandardForm(this, "焊点标注截图导出",
                 _myDefaultSize, _myMinimumSize);
@@ -147,14 +148,11 @@ namespace TxTools.WeldAnnotator
         {
             try
             {
-                bool hasHide = PsReader.HasUnrestoredHide;
-                bool hasSnap = _dispSnapshot != null && _dispSnapshot.Count > 0;
-                if (!hasHide && !hasSnap) return;
+                if (!_displaySession.HasPendingChanges) return;
 
                 string msg =
                     "检测到场景中存在本插件产生的未恢复显示状态：\n\n" +
-                    (hasHide ? "  • 有对象被'仅显示操作外观'隐藏，未恢复\n" : "") +
-                    (hasSnap ? "  • 有已拍摄的快照，未恢复\n" : "") +
+                    "  • 有本窗口产生的显示/隐藏变更，未恢复\n" +
                     "\n关闭窗口前是否恢复？\n" +
                     "  [是] 恢复显示后关闭\n" +
                     "  [否] 直接关闭（场景保持当前状态）\n" +
@@ -165,15 +163,19 @@ namespace TxTools.WeldAnnotator
                 if (r == DialogResult.Cancel) { e.Cancel = true; return; }
                 if (r == DialogResult.Yes)
                 {
-                    if (hasSnap)
-                        PsReader.RestoreDisplayStates(_dispSnapshot, s => Log("INFO", s));
-                    else
-                        PsReader.RestoreFromLastHide(s => Log("INFO", s));
+                    if (!_displaySession.Restore())
+                    {
+                        e.Cancel = true;
+                        SetStatus("部分显示状态恢复失败，请查看日志后重试");
+                    }
+                    UpdateDisplayControls();
                 }
             }
             catch (Exception ex)
             {
+                e.Cancel = true;
                 Log("ERR", "关闭前恢复检查异常：" + ex.Message);
+                SetStatus("关闭前恢复失败：" + ex.Message);
             }
         }
 
@@ -239,45 +241,28 @@ namespace TxTools.WeldAnnotator
             SetStatus("拍摄快照中...");
             try
             {
-                _dispSnapshot = PsReader.SnapshotDisplayStates(s => Log("INFO", s));
-                int cnt = _dispSnapshot?.Count ?? 0;
-                if (cnt == 0)
-                {
-                    _lblSnapStatus.Text = "快照为空";
-                    _lblSnapStatus.ForeColor = D.Color.Gray;
-                    _btnRestore.Enabled = false;
-                    SetStatus("快照为空");
-                    return;
-                }
+                int cnt = _displaySession.CaptureSnapshot();
                 _lblSnapStatus.Text      = $"已记录 {cnt} 对象";
                 _lblSnapStatus.ForeColor = D.Color.DarkGreen;
                 _btnRestore.Enabled      = true;
                 SetStatus($"快照完成，记录 {cnt} 个对象显示状态");
             }
             catch (Exception ex) { Log("ERR", "拍摄快照失败：" + ex.Message); SetStatus("快照失败：" + ex.Message); }
+            finally { UpdateDisplayControls(); }
         }
 
         private void BtnRestore_Click(object sender, EventArgs e)
         {
-            SetStatus("恢复快照中...");
+            SetStatus("恢复显示状态中...");
             try
             {
-                if (_dispSnapshot != null && _dispSnapshot.Count > 0)
-                {
-                    PsReader.RestoreDisplayStates(_dispSnapshot, s => Log("INFO", s));
-                    _lblSnapStatus.Text = "已恢复快照";
-                    _lblSnapStatus.ForeColor = D.Color.DarkGreen;
-                    SetStatus("快照已恢复");
-                }
-                else
-                {
-                    PsReader.RestoreFromLastHide(s => Log("INFO", s));
-                    _lblSnapStatus.Text = "已恢复本次隐藏";
-                    _lblSnapStatus.ForeColor = D.Color.Gray;
-                    SetStatus("已恢复本次被隐藏的对象");
-                }
+                bool ok = _displaySession.Restore();
+                _lblSnapStatus.Text = ok ? "已恢复显示状态" : "部分恢复失败，可重试";
+                _lblSnapStatus.ForeColor = ok ? D.Color.DarkGreen : Theme.StatusWarn;
+                SetStatus(ok ? "已恢复显示状态" : "部分显示状态恢复失败，请查看日志");
             }
             catch (Exception ex) { Log("ERR", "恢复失败：" + ex.Message); SetStatus("恢复失败：" + ex.Message); }
+            finally { UpdateDisplayControls(); }
         }
 
         private void BtnShowOnly_Click(object sender, EventArgs e)
@@ -325,7 +310,7 @@ namespace TxTools.WeldAnnotator
                 if (pi?.AllAppearances == null) continue;
                 foreach (var ar in pi.AllAppearances)
                 {
-                    if (ar?.RawObject != null) { whitelist.Add(ar.RawObject); boundCount++; }
+                    if (ar?.RawObject is ITxDisplayableObject) { whitelist.Add(ar.RawObject); boundCount++; }
                 }
             }
 
@@ -344,20 +329,20 @@ namespace TxTools.WeldAnnotator
             SetStatus("设置仅显示操作外观...");
             try
             {
-                PsReader.HideAllExcept(whitelist, s => Log("INFO", s));
-                _btnRestore.Enabled      = true;
-                _lblSnapStatus.Text       = "已隐藏其他对象";
+                bool ok = _displaySession.ShowOnly(whitelist);
+                _lblSnapStatus.Text       = ok ? "已隐藏其他对象" : "部分显示/隐藏失败";
                 _lblSnapStatus.ForeColor  = Theme.StatusWarn;
-                SetStatus("已仅显示操作绑定外观");
+                SetStatus(ok ? "已仅显示操作绑定外观（操作节点和点位均隐藏）" : "部分显示/隐藏未达目标，请查看日志");
             }
             catch (InvalidOperationException iex) { Log("WARN", iex.Message); TxMessageBox.ShowModal(iex.Message, "无法执行", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
             catch (Exception ex) { Log("ERR", "操作失败：" + ex.Message); SetStatus("失败：" + ex.Message); }
+            finally { UpdateDisplayControls(); }
         }
 
-        private void BtnShowAll_Click(object sender, EventArgs e)
+        private void UpdateDisplayControls()
         {
-            try { PsReader.ShowAllDevices(s => Log("INFO", s)); SetStatus("已恢复全部显示"); }
-            catch (Exception ex) { Log("ERR", "失败：" + ex.Message); SetStatus("失败：" + ex.Message); }
+            _btnRestore.Enabled = _displaySession.CanRestore;
+            _btnRestore.Text = _displaySession.HasSnapshot ? "恢复快照" : "恢复显示";
         }
 
         // ════════════════════════════════════════════════════════════════

@@ -36,3 +36,11 @@ Process Simulate 操作录像插件，用于把选定操作的仿真过程批量
 - `AutoRecorderForm.cs`：操作列表、参数和视角设置界面。
 - `RecordingService.cs`：录制队列、播放器、相机关键帧和输出流程。
 - `PsReader.cs`：PS 对象与点位信息读取辅助。
+
+## 2026-10-07 更新与源码核对
+
+自动录屏窗口接入 `PickAwareTxForm`。操作列表拾取中按 Esc 保留已选操作并退出拾取；录制与编码流程沿用现有实现。
+
+本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
+
+公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。

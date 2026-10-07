@@ -1,10 +1,24 @@
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Explicit items let Visual Studio detect new migration versions even when
+       the project was opened before those files were added to the source tree. -->
   <ItemGroup>
-    <EmbeddedResource Include="$(MSBuildThisFileDirectory)..\recipes\defaults\*.md">
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)..\recipes\defaults\default_geometry_weld_points.md;$(MSBuildThisFileDirectory)..\recipes\defaults\default_number_objects.md;$(MSBuildThisFileDirectory)..\recipes\defaults\default_object_coordinates.md;$(MSBuildThisFileDirectory)..\recipes\defaults\default_set_color.md;$(MSBuildThisFileDirectory)..\recipes\defaults\default_visibility.md">
       <LogicalName>TxTools.Agent.DefaultRecipes.%(Filename)%(Extension)</LogicalName>
+      <WithCulture>false</WithCulture>
     </EmbeddedResource>
-    <EmbeddedResource Include="$(MSBuildThisFileDirectory)recipe-migrations\*.md">
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)recipe-migrations\default_geometry_weld_points.v1.md;$(MSBuildThisFileDirectory)recipe-migrations\default_geometry_weld_points.v2.md;$(MSBuildThisFileDirectory)recipe-migrations\default_geometry_weld_points.v3.md;$(MSBuildThisFileDirectory)recipe-migrations\default_number_objects.v1.md;$(MSBuildThisFileDirectory)recipe-migrations\default_object_coordinates.v1.md;$(MSBuildThisFileDirectory)recipe-migrations\default_set_color.v1.md;$(MSBuildThisFileDirectory)recipe-migrations\default_set_color.v2.md;$(MSBuildThisFileDirectory)recipe-migrations\default_visibility.v1.md;$(MSBuildThisFileDirectory)recipe-migrations\default_visibility.v2.md">
       <LogicalName>TxTools.Agent.LegacyRecipes.%(Filename)%(Extension)</LogicalName>
+      <WithCulture>false</WithCulture>
     </EmbeddedResource>
   </ItemGroup>
+  <!-- Check the actual DLL, rather than treating a successful compile as proof
+       that Visual Studio embedded the current definitions and migration baselines. -->
+  <PropertyGroup>
+    <!-- A 32-bit MSBuild must use Sysnative to inspect the x64 plugin DLL. -->
+    <RecipeValidationPowerShell Condition="'$(RecipeValidationPowerShell)' == '' and Exists('$(SystemRoot)\Sysnative\WindowsPowerShell\v1.0\powershell.exe')">$(SystemRoot)\Sysnative\WindowsPowerShell\v1.0\powershell.exe</RecipeValidationPowerShell>
+    <RecipeValidationPowerShell Condition="'$(RecipeValidationPowerShell)' == ''">$(SystemRoot)\System32\WindowsPowerShell\v1.0\powershell.exe</RecipeValidationPowerShell>
+  </PropertyGroup>
+  <Target Name="ValidateRecipeResources" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT' and '$(TargetFrameworkIdentifier)' == '.NETFramework' and '$(DesignTimeBuild)' != 'true'">
+    <Exec Command="&quot;$(RecipeValidationPowerShell)&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)VerifyRecipeResources.ps1&quot; -AssemblyPath &quot;$(TargetPath)&quot;" />
+  </Target>
 </Project>

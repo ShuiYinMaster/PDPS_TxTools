@@ -25,7 +25,7 @@ namespace TxTools.WeldSpotAllocator
 {
     using Theme = TxTools.Common.FormUiKit.Theme;
 
-    public class AllocatorForm : TxForm
+    public class AllocatorForm : PickAwareTxForm
     {
         private static AllocatorForm _inst;
         private SynchronizationContext _ctx;

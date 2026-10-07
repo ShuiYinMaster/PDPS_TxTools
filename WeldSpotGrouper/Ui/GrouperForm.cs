@@ -22,7 +22,7 @@ namespace TxTools.WeldSpotGrouper
 {
     using Theme = TxTools.Common.FormUiKit.Theme;
 
-    public class GrouperForm : TxForm
+    public class GrouperForm : PickAwareTxForm
     {
         private TxObjGridCtrl _scopeGrid;
         private TextBox _prefix;

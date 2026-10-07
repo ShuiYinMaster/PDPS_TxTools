@@ -97,3 +97,11 @@ TxTools 套件中的 Process Simulate 2402 插件，用于在焊接操作之间*
 4. 按需勾「复制旋转姿态 / 复制轨迹参数 / 挪动焊点」。
 5. 点「预览匹配」，核对预览表的配对与距离。
 6. 确认无误点「执行写入」，检查生成的 `_Mapped` 轨迹；如需可「导出Excel」留档。
+
+## 2026-10-07 更新与源码核对
+
+焊点分配窗口接入 `PickAwareTxForm`。参考集、目标集拾取中按 Esc 保留已选操作并退出；三种分配模式及匹配、镜像和写入规则未在本次修改。
+
+本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
+
+公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。

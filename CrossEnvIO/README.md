@@ -37,3 +37,11 @@
 - `Core/WeldPointIO.cs`：焊点 TSV 导出和重建。
 - `Core/ComponentIO.cs`、`Core/CojtTransfer.cs`：组件插入和库文件传输。
 - `Core/EnvLibrary.cs`：跨实例环境与库根发现。
+
+## 2026-10-07 更新与源码核对
+
+跨环境窗口接入 `PickAwareTxForm`，坐标原点控件接入 `PickFocus`。资源、焊点操作及原点拾取均可用 Esc 退出并保留选择；结构导入导出与重建流程沿用现有实现。
+
+本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
+
+公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。

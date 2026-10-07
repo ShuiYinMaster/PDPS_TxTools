@@ -18,7 +18,7 @@ using Label = System.Windows.Forms.Label;
 
 namespace TxTools.CrossEnvIO
 {
-    public class CrossEnvIOForm : TxForm
+    public class CrossEnvIOForm : PickAwareTxForm
     {
         internal static CrossEnvIOForm Instance;
 
@@ -221,6 +221,7 @@ namespace TxTools.CrossEnvIO
                 ListenToPick = true,
                 Margin = new Padding(0, 0, 4, 0)
             };
+            PickFocus.Wire(_frameOrigin);
             try { _frameOrigin.PickLevel = TxPickLevel.Entity; } catch { }
             _frameOrigin.ValidFrameSet += OnOriginFrameSet;
             _frameOrigin.InvalidFrameSet += (s, e) => { _originX = 0; _originY = 0; _originZ = 0; };

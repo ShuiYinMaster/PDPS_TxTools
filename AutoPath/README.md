@@ -110,3 +110,11 @@
 
 --- 
 感谢使用 AutoPath —— 目标是把“可用、可靠、节拍友好”的自动过渡点生成带到焊接工艺工程师的日常流程中。
+
+## 2026-10-07 更新与源码核对
+
+路径规划窗口接入 `PickAwareTxForm`。操作列表拾取中按 Esc 退出拾取并保留已选操作，便于继续调整规划参数。本次未修改 RRT、动态碰撞校验及焊序优化算法。
+
+本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
+
+公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。

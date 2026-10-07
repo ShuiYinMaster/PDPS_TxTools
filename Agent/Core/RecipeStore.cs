@@ -26,6 +26,20 @@ using Newtonsoft.Json;
 
 namespace TxTools.Agent.Core
 {
+    public sealed class RecipeChoice
+    {
+        [JsonProperty("label")] public string Label { get; set; }
+        [JsonProperty("value")] public string Value { get; set; }
+    }
+
+    /// <summary>执行同一份代码时覆盖的标量参数。对象仍由当前研究选取。</summary>
+    public sealed class RecipeAction
+    {
+        [JsonProperty("id")] public string Id { get; set; }
+        [JsonProperty("label")] public string Label { get; set; }
+        [JsonProperty("args")] public Dictionary<string, string> Args { get; set; } = new Dictionary<string, string>();
+    }
+
     /// <summary>配方的一个参数声明。</summary>
     public sealed class RecipeParam
     {
@@ -44,6 +58,8 @@ namespace TxTools.Agent.Core
         public bool Required { get; set; }
         public string Default { get; set; }
         public string Help { get; set; }
+        public List<RecipeChoice> Choices { get; set; }
+        public bool ObjectFilter { get; set; }
 
         public RecipeParam()
         {
@@ -60,6 +76,7 @@ namespace TxTools.Agent.Core
         public string Lang { get; set; }            // csharp / python
         public string Code { get; set; }
         public List<RecipeParam> Params { get; set; }
+        public List<RecipeAction> Actions { get; set; } = new List<RecipeAction>();
 
         /// <summary>来源片段名，便于回溯与后续 patch。</summary>
         public string SourceSnippet { get; set; }
@@ -133,10 +150,10 @@ namespace TxTools.Agent.Core
                         using (var stream = assembly.GetManifestResourceStream(resource))
                         using (var reader = new StreamReader(stream, Encoding.UTF8)) text = reader.ReadToEnd();
                         var recipe = FromDoc(MarkdownDoc.Parse(text));
-                        if (recipe == null || !IsIdentifier(recipe.Id) || ValidateParams(recipe.Params) != null)
+                        if (recipe == null || !IsIdentifier(recipe.Id) || ValidateDefinition(recipe) != null)
                             throw new InvalidOperationException("默认配方定义无效：" + resource);
                         string path = Path.Combine(folder, recipe.Id + ".md");
-                        UpgradeGeometryDefault(assembly, path, recipe);
+                        UpgradeBundledDefault(assembly, path, recipe);
                         if (installed.Contains(recipe.Id)) continue;
                         if (!File.Exists(path))
                         {
@@ -162,14 +179,14 @@ namespace TxTools.Agent.Core
         }
 
         // Upgrade only the exact original definition; user edits and deletions stay intact.
-        private static void UpgradeGeometryDefault(Assembly assembly, string path, Recipe replacement)
+        private static void UpgradeBundledDefault(Assembly assembly, string path, Recipe replacement)
         {
-            if (replacement.Id != "default_geometry_weld_points" || !File.Exists(path)) return;
+            if (!File.Exists(path)) return;
             var current = FromDoc(MarkdownDoc.Load(path));
             if (current == null || current.Id != replacement.Id) return;
             bool original = false;
             foreach (string resource in assembly.GetManifestResourceNames().Where(n =>
-                n.StartsWith("TxTools.Agent.LegacyRecipes.default_geometry_weld_points.", StringComparison.Ordinal)
+                n.StartsWith("TxTools.Agent.LegacyRecipes." + replacement.Id + ".", StringComparison.Ordinal)
                 && n.EndsWith(".md", StringComparison.Ordinal)))
             {
                 Recipe legacy;
@@ -179,7 +196,8 @@ namespace TxTools.Agent.Core
                 if (legacy != null && current.Name == legacy.Name && current.Lang == legacy.Lang
                     && current.SourceSnippet == legacy.SourceSnippet
                     && current.Description == legacy.Description && current.Code == legacy.Code
-                    && JsonConvert.SerializeObject(current.Params) == JsonConvert.SerializeObject(legacy.Params))
+                    && JsonConvert.SerializeObject(current.Params) == JsonConvert.SerializeObject(legacy.Params)
+                    && JsonConvert.SerializeObject(current.Actions) == JsonConvert.SerializeObject(legacy.Actions))
                 { original = true; break; }
             }
             if (!original) return;
@@ -189,12 +207,12 @@ namespace TxTools.Agent.Core
             replacement.LastRunUtc = current.LastRunUtc;
             replacement.SourceSnippet = current.SourceSnippet;
             string temporary = path + ".upgrade-" + Guid.NewGuid().ToString("N");
-            string backup = path + ".before-keyword-" + Guid.NewGuid().ToString("N");
+            string backup = path + (replacement.Id == "default_geometry_weld_points" ? ".before-keyword-" : ".before-controls-") + Guid.NewGuid().ToString("N");
             try
             {
                 File.WriteAllText(temporary, ToDoc(replacement).ToString(), new UTF8Encoding(false));
                 File.Replace(temporary, path, backup);
-                AuditLog.Write("[info] [Recipe] 已升级标记几何焊点配方，原文件备份：" + backup);
+                AuditLog.Write("[info] [Recipe] 已升级默认配方“" + replacement.Name + "”，原文件备份：" + backup);
             }
             finally { if (File.Exists(temporary)) File.Delete(temporary); }
         }
@@ -236,7 +254,7 @@ namespace TxTools.Agent.Core
             if (string.IsNullOrWhiteSpace(r.Code))
                 return "配方代码不能为空。";
 
-            var bad = ValidateParams(r.Params);
+            var bad = ValidateDefinition(r);
             if (bad != null) return bad;
 
             if (string.IsNullOrWhiteSpace(r.Id)) r.Id = Slug(r.Name);
@@ -289,6 +307,10 @@ namespace TxTools.Agent.Core
             catch (Exception ex) { error = "参数区不是合法 JSON 数组: " + ex.Message; return false; }
             error = ValidateParams(ps);
             if (error != null) return false;
+            List<RecipeAction> actions;
+            if (!TryReadActions(doc.Body, out actions, out error)) return false;
+            error = ValidateDefinition(new Recipe { Params = ps, Actions = actions });
+            if (error != null) return false;
 
             var existing = All();
             var displayName = name;
@@ -299,7 +321,7 @@ namespace TxTools.Agent.Core
             {
                 Id = "import_" + Guid.NewGuid().ToString("N"), Name = displayName,
                 Description = SectionBefore(doc.Body, ParamHeader).Trim(),
-                Lang = lang, Code = code, Params = ps, CreatedUtc = DateTime.UtcNow
+                Lang = lang, Code = code, Params = ps, Actions = actions, CreatedUtc = DateTime.UtcNow
             };
             var saved = Upsert(rnew);
             if (!saved.StartsWith("已保存配方: ", StringComparison.Ordinal))
@@ -394,12 +416,73 @@ namespace TxTools.Agent.Core
                     return "参数名重复: " + n;
 
                 var k = (p.Kind ?? "").Trim().ToLowerInvariant();
-                if (k != "object" && k != "objects" && k != "number" && k != "text" && k != "bool")
+                if (k != "object" && k != "objects" && k != "number" && k != "text" && k != "bool" && k != "color")
                     return "参数 " + n + " 的 kind 非法: \"" + p.Kind
-                         + "\"，只能是 object / objects / number / text / bool。";
+                         + "\"，只能是 object / objects / number / text / bool / color。";
                 p.Kind = k;
                 p.Name = n;
+                if (n == "__recipe_action") return "参数名 __recipe_action 为配方执行按钮保留。";
+                if ((k == "object" || k == "objects") && !string.IsNullOrEmpty(p.Default))
+                    return "对象参数不能保存默认绑定，请在当前研究中重新选取。";
+                if (p.ObjectFilter && k != "object" && k != "objects") return "只有对象参数可以启用类型和名称筛选。";
+                if (k == "color" && !string.IsNullOrEmpty(p.Default))
+                {
+                    var colorError = ValidateValue(p, p.Default);
+                    if (colorError != null) return colorError;
+                }
+                if (p.Choices != null && p.Choices.Count > 0)
+                {
+                    if (k != "text" && k != "number") return "只有文本或数字参数可以设置选项。";
+                    var values = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var choice in p.Choices)
+                    {
+                        if (choice == null || choice.Value == null || string.IsNullOrWhiteSpace(choice.Label)
+                            || !values.Add(choice.Value)) return "参数 " + n + " 的选项须有标签且值不能重复。";
+                        var valueError = ValidateValue(p, choice.Value);
+                        if (valueError != null) return valueError;
+                    }
+                    if (!string.IsNullOrEmpty(p.Default) && !values.Contains(p.Default))
+                        return "参数 " + n + " 的默认值不在选项中。";
+                }
             }
+            return null;
+        }
+
+        public static string ValidateDefinition(Recipe recipe)
+        {
+            var error = ValidateParams(recipe.Params);
+            if (error != null) return error;
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var action in recipe.Actions ?? new List<RecipeAction>())
+            {
+                if (action == null || !IsIdentifier(action.Id) || !ids.Add(action.Id)
+                    || string.IsNullOrWhiteSpace(action.Label)) return "执行按钮须有唯一英文标识和中文标签。";
+                foreach (var pair in action.Args ?? new Dictionary<string, string>())
+                {
+                    var p = (recipe.Params ?? new List<RecipeParam>()).FirstOrDefault(x => x.Name == pair.Key);
+                    if (p == null) return "执行按钮引用了不存在的参数: " + pair.Key;
+                    if (p.Kind == "object" || p.Kind == "objects") return "执行按钮不能保存对象绑定。";
+                    error = ValidateValue(p, pair.Value);
+                    if (error != null) return error;
+                    if (p.Required && string.IsNullOrWhiteSpace(pair.Value)) return "执行按钮的必填参数不能为空: " + pair.Key;
+                }
+            }
+            return null;
+        }
+
+        public static string ValidateValue(RecipeParam p, string value)
+        {
+            if (p.Choices != null && p.Choices.Count > 0 && !p.Choices.Any(c => c != null && c.Value == value))
+                return "参数“" + (p.Label ?? p.Name) + "”请选择列表中的值。";
+            if (p.Kind == "color" && !System.Text.RegularExpressions.Regex.IsMatch(value ?? "", "^#[0-9a-fA-F]{6}$"))
+                return "参数“" + (p.Label ?? p.Name) + "”请选择有效颜色。";
+            double number;
+            if (p.Kind == "number" && (!double.TryParse(value, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out number) || double.IsNaN(number) || double.IsInfinity(number)))
+                return "参数“" + (p.Label ?? p.Name) + "”须为有限数字。";
+            if (p.Kind == "bool" && value != "1" && value != "0" && !string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(value, "false", StringComparison.OrdinalIgnoreCase) && !string.Equals(value, "on", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(value, "off", StringComparison.OrdinalIgnoreCase)) return "布尔参数值须为 true 或 false。";
             return null;
         }
 
@@ -422,6 +505,20 @@ namespace TxTools.Agent.Core
 
         private const string ParamHeader = "## 参数";
         private const string CodeHeader = "## 代码";
+        private const string ActionHeader = "## 执行按钮";
+
+        private static bool TryReadActions(string body, out List<RecipeAction> actions, out string error)
+        {
+            actions = new List<RecipeAction>(); error = null;
+            if (FindHeader(body ?? "", ActionHeader) < 0) return true;
+            try
+            {
+                actions = JsonConvert.DeserializeObject<List<RecipeAction>>(FencedAfter(body, ActionHeader));
+                if (actions == null) throw new FormatException("须为 JSON 数组。");
+                return true;
+            }
+            catch (Exception ex) { error = "执行按钮区不是合法 JSON 数组: " + ex.Message; return false; }
+        }
 
         private static MarkdownDoc ToDoc(Recipe r)
         {
@@ -449,6 +546,16 @@ namespace TxTools.Agent.Core
                                                       Formatting.Indented));
             sb.AppendLine("```");
             sb.AppendLine();
+
+            if (r.Actions != null && r.Actions.Count > 0)
+            {
+                sb.AppendLine(ActionHeader);
+                sb.AppendLine();
+                sb.AppendLine("```json");
+                sb.AppendLine(JsonConvert.SerializeObject(r.Actions, Formatting.Indented));
+                sb.AppendLine("```");
+                sb.AppendLine();
+            }
 
             sb.AppendLine(CodeHeader);
             sb.AppendLine();
@@ -506,6 +613,20 @@ namespace TxTools.Agent.Core
                 }
             }
 
+            string error;
+            List<RecipeAction> actions;
+            if (!TryReadActions(body, out actions, out error))
+            {
+                try { AuditLog.Write("[warn] [Recipe] " + key + ": " + error); } catch { }
+                return null;
+            }
+            r.Actions = actions;
+            error = ValidateDefinition(r);
+            if (error != null)
+            {
+                try { AuditLog.Write("[warn] [Recipe] " + key + ": " + error); } catch { }
+                return null;
+            }
             if (string.IsNullOrWhiteSpace(r.Code)) return null;
             return r;
         }
@@ -575,7 +696,7 @@ namespace TxTools.Agent.Core
             var s = sb.ToString().Trim('_');
             // 全中文名会 slug 成空串 —— 退回哈希，保证文件名唯一且稳定
             if (s.Length == 0)
-                s = "r_" + Math.Abs((name ?? "").GetHashCode()).ToString("D10");
+                s = Recipe.ToApiSafeName(name);
             return s;
         }
 

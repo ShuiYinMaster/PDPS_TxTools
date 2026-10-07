@@ -32,3 +32,9 @@
 
 - `SelectPointsCmds.cs`：三类点位收集、去重和选择集写入。
 - `OpenResourceFolderCmd.cs`：资源路径解析和 Explorer 调用。
+
+## 2026-10-07 更新与源码核对
+
+核对焊点、过渡点、连续点和资源目录四类快捷命令。本次该模块业务源码未修改；选点命令按当前所选操作范围递归收集并去重。
+
+本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。

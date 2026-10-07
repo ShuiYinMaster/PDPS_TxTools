@@ -388,6 +388,13 @@ x86/
 packages/
 *.nupkg
 
+# Downloaded desktop pet components (restored by Install-DshPetComponents.ps1)
+/Agent/UI/pet/dsh-pet/electron/
+/Agent/UI/pet/dsh-pet/assets/
+
+# Local assistant worktrees
+/.claude/
+
 # 日志/临时
 *.log
 *.tmp

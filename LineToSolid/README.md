@@ -129,3 +129,11 @@ PS 2402 的 `TxArcFeature` 实际属性需要在 IntelliSense 中确认；首次
 - 圆弧只支持平面圆弧；如果是螺旋线一类的特征，需要扩展 PolylineReader
 - 后续可加"颜色选择"下拉给生成的零件着色
 - 后续可加"段过短跳过阈值"暴露到 UI（当前固定 1e-6）
+
+## 2026-10-07 更新与源码核对
+
+曲线转实体窗口接入 `PickAwareTxForm`。曲线列表拾取中按 Esc 保留已选特征并退出拾取；截面、圆弧细分及几何构建流程沿用现有实现。
+
+本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
+
+公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。

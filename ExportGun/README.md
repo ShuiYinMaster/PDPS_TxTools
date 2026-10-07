@@ -32,3 +32,11 @@
 - `ExportGunCmd.cs`：PS 命令入口。
 - `ExportGunForm.cs`：设备、坐标、点云和输出选项界面。
 - 其余导出辅助类负责 PS 对象读取、CATIA 写出及数据转换。
+
+## 2026-10-07 更新与源码核对
+
+导插枪窗口接入 `PickAwareTxForm`，TCP 与参考坐标系下拉控件接入 `PickFocus`。拾取中按 Esc 保留已选值并退出，重新进入控件可继续拾取。CATIA 写出和坐标转换流程沿用现有实现。
+
+本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
+
+公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。

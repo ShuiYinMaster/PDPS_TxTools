@@ -7,24 +7,22 @@ run_count: 0
 fail_count: 0
 ---
 
-给绑定的零件、资源或几何体设置统一颜色。
-
-### 用法
-
-1. 在 PS 中选择目标，再点击 **取当前选择**。
-2. 填写十六进制颜色，例如蓝色 `#4F83CC`、红色 `#E45B5B`、绿色 `#49A879`。
-3. 默认同时修改目标及其下属可显示对象；取消勾选可只修改目标本身。
-
-重叠范围自动去重，逐项报告结果。更改纳入配方的撤销记录。
+用色盘选择颜色；可取当前选择，或按类型和名称查找对象。默认包含下属对象。
 
 ## 参数
 
 ```json
 [
-  {"Name":"targets","Label":"修改对象","Kind":"objects","Required":true},
-  {"Name":"color_hex","Label":"颜色（#RRGGBB）","Kind":"text","Required":true,"Default":"#4F83CC","Help":"例如蓝色 `#4F83CC`、红色 `#E45B5B`、绿色 `#49A879`。"},
+  {"Name":"targets","Label":"目标对象","Kind":"objects","TypeHint":"ITxDisplayableObject","ObjectFilter":true,"Required":true},
+  {"Name":"color_hex","Label":"颜色","Kind":"color","Required":true,"Default":"#4F83CC"},
   {"Name":"include_children","Label":"包含下属对象","Kind":"bool","Required":false,"Default":"true"}
 ]
+```
+
+## 执行按钮
+
+```json
+[{"id":"custom","label":"应用颜色","args":{}}]
 ```
 
 ## 代码

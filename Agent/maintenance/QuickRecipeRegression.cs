@@ -124,9 +124,16 @@ public class QuickRecipeRegression
 }
 
 namespace Tecnomatix.Engineering {
+    public interface ITxObject { string Id {get;} string Name {get;} }
+    public interface ITxObjectCollection { List<ITxObject> GetAllDescendants(TxTypeFilter filter); }
+    public class TxTypeFilter { public TxTypeFilter(Type type){} }
+    public class TxComponent : Item {} public class TxRobot : Item {} public class TxTool : Item {}
+    public class TxFrame : Item {} public class TxSolid : Item {} public class TxSurface : Item {}
+    public class TxWeldPoint : Item {} public class TxGroup : Item {}
+    public class Collection : ITxObjectCollection { public List<ITxObject> GetAllDescendants(TxTypeFilter filter)=>new List<ITxObject>(); }
     public class Study { public string Name {get;set;}="研究 A"; }
-    public class Document { public Study CurrentStudy {get;}=new Study(); }
-    public class Item {public string Id {get;set;} public string Name {get;set;} }
+    public class Document { public Study CurrentStudy {get;}=new Study(); public Collection PhysicalRoot {get;}=new Collection(); }
+    public class Item : ITxObject {public string Id {get;set;} public string Name {get;set;} }
     public class Selection { public List<Item> GetItems()=>new List<Item>{new Item{Id="3,57,2,1",Name="焊点 01"},new Item{Id="3,57,2,2",Name="焊点 02"}}; }
     public static class TxApplication {public static Document ActiveDocument=new Document();public static Selection ActiveSelection=new Selection();}
 }
@@ -142,7 +149,10 @@ namespace TxTools.Agent.Core {
         public static Recipe Get(string id)=>id==Item.Id?Item:null;
         public static void RecordRun(string id,bool ok){if(ok)Item.RunCount++;else Item.FailCount++;Item.LastRunUtc=DateTime.UtcNow;RecipesChanged?.Invoke();}
     }
-    public static class RecipeRunner {public static string BuildCode(Recipe r,IDictionary<string,string> args,out string error){error=null;return r.Code;} }
+    public static class RecipeRunner {
+        public static string BuildCode(Recipe r,IDictionary<string,string> args,out string error){error=null;return r.Code;}
+        public static string BuildCode(Recipe r,IDictionary<string,string> args,string actionId,out string error){error=null;return r.Code;}
+    }
     public static class SnippetStore {public static string NormalizeLang(string lang)=>lang;}
     public class PsContext {public static PsContext Current=new PsContext();public void Run(Action run)=>run();}
     public static class AuditLog {public static void Write(string text){} }

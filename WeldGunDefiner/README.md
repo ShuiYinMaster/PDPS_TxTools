@@ -37,3 +37,11 @@
 - `Core/Rprrbuilder.cs`：RPRR 运动学结构和公式生成。
 - `Core/PsSdkHelper.cs`：PS SDK 对象、Frame、Joint 和 Link 辅助。
 - `Math/GunMechanism.cs`：几何和机构计算。
+
+## 2026-10-07 更新与源码核对
+
+运动学向导接入 `PickAwareTxForm`，TCP 对象框接入 `PickFocus`。各步骤拾取中按 Esc 保留已有选择并退出；机构参数、关节和驱动公式生成逻辑沿用现有实现。
+
+本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
+
+公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。

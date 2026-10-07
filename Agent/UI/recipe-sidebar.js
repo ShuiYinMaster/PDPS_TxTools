@@ -31,6 +31,7 @@
         bindings: {},          // recipeId -> { paramName: {id,name,type,study} }
         open: {},              // recipeId -> 是否展开
         running: {},           // recipeId -> 是否执行中
+        queries: {},          // recipeId:param -> session-only type/name conditions
         picking: {},           // "recipeId:param" -> 是否正在取选择
         pickError: {}          // "recipeId:param" -> 最近一次取选择的错误文本
     };
@@ -93,6 +94,7 @@
                 if (r2 && r2.ok !== false) {
                     state.recipes = r2.recipes || state.recipes;
                     state.candidates = r2.candidates || state.candidates;
+                    state.hostBusy = !!r2.busy;
                     render();
                 }
             });
@@ -115,9 +117,18 @@
     function refresh() {
         send('recipe.list', {}, function (r) {
             if (!r || r.ok === false) { renderError(r && r.error); return; }
+            if (state.study !== (r.study || null)) state.bindings = {};
             state.recipes = r.recipes || [];
             state.candidates = r.candidates || [];
             state.study = r.study || null;
+            state.hostBusy = !!r.busy;
+            state.savedArgs = r.savedArgs || {};
+            state.schemas = state.schemas || {};
+            state.recipes.forEach(function (rec) {
+                var schema = JSON.stringify([(rec.params || []).map(function(p){ var copy = Object.assign({}, p); delete copy.objectTypes; delete copy.objectTypesLoaded; delete copy.typesLoading; return copy; }), rec.actions || []]);
+                if (state.schemas[rec.id] && state.schemas[rec.id] !== schema) delete state.bindings[rec.id];
+                state.schemas[rec.id] = schema;
+            });
             render();
         });
     }
@@ -143,17 +154,35 @@
         }
     }
 
-    function readyToRun(rec) {
+    function scalarValue(rec, p, action) {
+        if (action && Object.prototype.hasOwnProperty.call(action.args || {}, p.name)) return action.args[p.name];
+        var b = bindingOf(rec.id, p.name);
+        if (b && b.value !== undefined) return b.value;
+        var saved = (state.savedArgs || {})[rec.id] || {};
+        if (saved[p.name] !== undefined) return saved[p.name];
+        return p.def != null ? p.def : (p.kind === 'bool' ? false : '');
+    }
+
+    function fixedByActions(rec, p) {
+        return (rec.actions || []).length > 0 && rec.actions.every(function (a) {
+            return Object.prototype.hasOwnProperty.call(a.args || {}, p.name);
+        });
+    }
+
+    function readyToRun(rec, action) {
         var ps = rec.params || [];
         for (var i = 0; i < ps.length; i++) {
             var p = ps[i];
-            if (!p.required) continue;
             if (isObjectKind(p.kind)) {
+                if (!p.required) continue;
                 var b = bindingOf(rec.id, p.name);
                 if (!b || b.stale) return false;
             } else {
-                var b2 = bindingOf(rec.id, p.name);
-                if (!b2 || b2.value === '' || b2.value === undefined) return false;
+                var value = scalarValue(rec, p, action);
+                if (String(value).trim() === '') { if (p.required) return false; else continue; }
+                if (p.kind === 'number' && !isFinite(Number(value))) return false;
+                if (p.kind === 'color' && !/^#[0-9a-f]{6}$/i.test(String(value))) return false;
+                if ((p.choices || []).length && !p.choices.some(function (c) { return c.value === String(value); })) return false;
             }
         }
         return true;
@@ -173,6 +202,7 @@
 
     // 任一配方在执行中(执行/取选择期间冻结其它按钮,避免并行占用 PS)
     function anyRecipeRunning() {
+        if (state.hostBusy) return true;
         for (var k in state.running) if (state.running[k]) return true;
         return false;
     }
@@ -305,19 +335,36 @@
         if (rec.description) body.appendChild(renderDescription('rcp-desc', rec.description));
 
         (rec.params || []).forEach(function (p) {
-            body.appendChild(renderParam(rec, p));
+            if (!fixedByActions(rec, p)) body.appendChild(renderParam(rec, p, function () { card.updateRunButtons(); }));
         });
+
+        var reset = el('button', 'rcp-btn rcp-reset', '恢复默认值');
+        reset.disabled = anyRecipeRunning();
+        reset.onclick = function () {
+            (rec.params || []).forEach(function (p) {
+                if (!isObjectKind(p.kind)) setBinding(rec.id, p.name, { value: p.def != null ? p.def : (p.kind === 'bool' ? false : '') });
+            });
+            render();
+        };
+        if ((rec.params || []).some(function (p) { return !isObjectKind(p.kind) && !fixedByActions(rec, p); })) body.appendChild(reset);
 
         // 底部动作
         var act = el('div', 'rcp-actions');
         var running = !!state.running[rec.id];
-        var runBtn = el('button', 'rcp-run' + (running ? ' rcp-running' : ''), running ? '执行中…' : '执行');
-        runBtn.disabled = anyRecipeRunning() || !readyToRun(rec);
-        runBtn.title = anyRecipeRunning()
-            ? '已有配方在执行中，等它完成'
-            : (readyToRun(rec) ? '执行' : '还有必填参数未选取');
-        runBtn.onclick = function () { run(rec); };
-        act.appendChild(runBtn);
+        var runButtons = [];
+        ((rec.actions || []).length ? rec.actions : [null]).forEach(function (action) {
+            var runBtn = el('button', 'rcp-run' + (running ? ' rcp-running' : ''), running ? '执行中…' : (action ? action.label : '执行'));
+            runBtn.onclick = function () { run(rec, action); };
+            runButtons.push({ button: runBtn, action: action });
+            act.appendChild(runBtn);
+        });
+        card.updateRunButtons = function () {
+            runButtons.forEach(function (item) {
+                item.button.disabled = anyRecipeRunning() || !readyToRun(rec, item.action);
+                item.button.title = anyRecipeRunning() ? '已有配方在执行中，等它完成' : (readyToRun(rec, item.action) ? '执行' : '请选取对象并检查参数');
+            });
+        };
+        card.updateRunButtons();
 
         var stat = el('span', 'rcp-stat');
         if ((rec.runCount || 0) + (rec.failCount || 0) > 0) {
@@ -359,13 +406,35 @@
         return card;
     }
 
-    function renderParam(rec, p) {
+    function loadObjectTypes(rec, p) {
+        if (p.typesLoading || anyRecipeRunning()) return;
+        p.typesLoading = true;
+        var study = state.study, finished = false;
+        var timer = setTimeout(function () { if (finished) return; finished = true; p.typesLoading = false; p.objectTypesLoaded = true; notice(false, '读取类型超时，可点击刷新类型重试。'); render(); }, 5000);
+        send('recipe.objectTypes', {recipeId:rec.id, param:p.name, study:study}, function (msg) {
+            if (finished) return; finished = true; clearTimeout(timer); p.typesLoading = false;
+            if (study !== state.study || !state.recipes.some(function(r){ return r === rec; })) return;
+            p.objectTypesLoaded = true;
+            if (!msg || !msg.ok) { notice(false, msg && msg.error || '读取场景类型失败。'); render(); return; }
+            p.objectTypes = msg.objectTypes || [{label:'全部类型',value:'all'}];
+            var query = objectQuery(rec,p);
+            if (!p.objectTypes.some(function(c){ return c.value === query.type; })) { query.type = 'all'; setBinding(rec.id,p.name,null); }
+            render();
+        });
+    }
+
+    function objectQuery(rec, p) {
+        var key = rec.id + ':' + p.name;
+        return state.queries[key] || (state.queries[key] = { type: 'all', name: '' });
+    }
+
+    function renderParam(rec, p, updateButtons) {
         var wrap = el('div', 'rcp-param');
 
         var lab = el('label', 'rcp-param-label');
         lab.appendChild(document.createTextNode(p.label || p.name));
         if (p.required) lab.appendChild(el('span', 'rcp-req', '*'));
-        if (p.typeHint) lab.appendChild(el('span', 'rcp-hint', '(' + p.typeHint + ')'));
+        lab.title = p.help || '';
         wrap.appendChild(lab);
 
         if (isObjectKind(p.kind)) {
@@ -403,26 +472,77 @@
                 row.appendChild(clr);
             }
             wrap.appendChild(row);
+            if (p.objectFilter) {
+                var query = objectQuery(rec, p);
+                var filters = el('div', 'rcp-object-filters');
+                var typeLabel = el('label', 'rcp-filter-label', '对象类型');
+                var type = el('select', 'rcp-input'); type.id = 'rcp-type-' + rec.id + '-' + p.name; typeLabel.htmlFor = type.id;
+                (p.objectTypes && p.objectTypes.length ? p.objectTypes : [{label:'全部类型',value:'all'}]).forEach(function (choice) {
+                    var option = el('option', null, choice.label); option.value = choice.value; type.appendChild(option);
+                }); type.value = query.type; type.disabled = busy || picking;
+                var nameLabel = el('label', 'rcp-filter-label', '名称包含');
+                var name = el('input', 'rcp-input'); name.type = 'text'; name.id = 'rcp-name-' + rec.id + '-' + p.name; nameLabel.htmlFor = name.id;
+                name.value = query.name; name.placeholder = '输入名称关键词，可留空'; name.maxLength = 200; name.disabled = busy || picking;
+                var search = el('button', 'rcp-btn rcp-search', '按条件查找');
+                search.disabled = busy || picking || (query.type === 'all' && !query.name.trim());
+                function changeQuery() {
+                    query.type = type.value; query.name = name.value;
+                    setBinding(rec.id, p.name, null); delete state.pickError[key];
+                    slot.textContent = '未选取'; slot.className = 'rcp-slot rcp-unset'; slot.title = '';
+                    search.disabled = busy || picking || (query.type === 'all' && !query.name.trim());
+                    updateButtons();
+                }
+                type.onchange = changeQuery; name.oninput = changeQuery;
+                search.onclick = function () { beginPick(rec, p, true); };
+                filters.appendChild(typeLabel); filters.appendChild(type); filters.appendChild(nameLabel); filters.appendChild(name); filters.appendChild(search);
+                var refreshTypes = el('button', 'rcp-btn rcp-search', p.typesLoading ? '读取类型中…' : '刷新类型');
+                refreshTypes.disabled = busy || picking || !!p.typesLoading; refreshTypes.onclick = function(){ loadObjectTypes(rec,p); render(); };
+                filters.appendChild(refreshTypes);
+                filters.appendChild(el('div', 'rcp-filter-help', '类型来自当前场景；名称按关键词匹配。'));
+                if (p.objectTypesLoaded === false && state.open[rec.id] && !root.classList.contains('rcp-collapsed') && !busy && !p.typesLoading) setTimeout(function(){ if (state.open[rec.id] && !root.classList.contains("rcp-collapsed") && state.recipes.indexOf(rec) >= 0) loadObjectTypes(rec,p); }, 0);
+                wrap.appendChild(filters);
+            }
         } else {
-            var cur = bindingOf(rec.id, p.name);
-            var inp = el('input', 'rcp-input');
-            inp.type = (p.kind === 'number') ? 'number' : 'text';
-            if (p.kind === 'bool') inp.type = 'checkbox';
+            var value = scalarValue(rec, p);
+            var choices = p.choices || [];
+            var inp = el(choices.length ? 'select' : 'input', 'rcp-input' + (p.kind === 'color' ? ' rcp-color' : ''));
+            if (p.kind === 'color' && !/^#[0-9a-f]{6}$/i.test(String(value))) { value = p.def || '#4F83CC'; setBinding(rec.id, p.name, { value: value }); }
+            inp.id = 'rcp-param-' + rec.id + '-' + p.name;
+            lab.htmlFor = inp.id;
+            if (!choices.length) {
+                inp.type = p.kind === 'color' ? 'color' : (p.kind === 'number') ? 'number' : (p.kind === 'bool' ? 'checkbox' : 'text');
+                if (p.kind === 'number') inp.step = 'any';
+            }
+            if (choices.length) {
+                inp.appendChild(el('option', null, '请选择…'));
+                inp.children[0].value = '';
+                choices.forEach(function (choice) {
+                    var option = el('option', null, choice.label); option.value = choice.value; inp.appendChild(option);
+                });
+            }
             inp.placeholder = p.help || '';
             if (anyRecipeRunning()) inp.disabled = true;
-            if (cur && cur.value !== undefined) {
-                if (p.kind === 'bool') inp.checked = !!cur.value;
-                else inp.value = cur.value;
-            } else if (p.def !== undefined && p.def !== null && p.def !== '') {
-                if (p.kind === 'bool') inp.checked = (p.def === true || p.def === 'true');
-                else inp.value = p.def;
-                setBinding(rec.id, p.name, { value: p.kind === 'bool' ? inp.checked : p.def });
-            }
-            inp.onchange = function () {
+            if (p.kind === 'bool') inp.checked = /^(true|1|on)$/i.test(String(value));
+            else inp.value = value;
+            inp.oninput = inp.onchange = function () {
                 setBinding(rec.id, p.name, { value: p.kind === 'bool' ? inp.checked : inp.value });
-                render();
+                updateButtons();
             };
             wrap.appendChild(inp);
+            if (p.kind === 'color') {
+                var hex = el('span', 'rcp-color-value', String(value).toUpperCase());
+                wrap.appendChild(hex);
+                var palette = el('div', 'rcp-palette');
+                ['#4F83CC','#E45B5B','#49A879','#F0BC4D','#AD73D4','#F28D4B','#FFFFFF','#333333'].forEach(function (color) {
+                    var swatch = el('button', 'rcp-swatch'); swatch.type = 'button'; swatch.style.backgroundColor = color;
+                    swatch.title = color; swatch.setAttribute('aria-label', '选择颜色 ' + color); swatch.disabled = anyRecipeRunning();
+                    swatch.onclick = function () { inp.value = color; inp.oninput(); };
+                    palette.appendChild(swatch);
+                });
+                var saveColor = inp.oninput;
+                inp.oninput = inp.onchange = function () { saveColor(); hex.textContent = inp.value.toUpperCase(); };
+                wrap.appendChild(palette);
+            }
         }
 
         if (p.help && !isObjectKind(p.kind)) {
@@ -493,16 +613,15 @@
 
     // ── 执行 ──
 
-    function run(rec) {
-        if (state.running[rec.id]) return;   // 防双击/超时后重复执行(宿主侧另有在飞标志兜底)
+    function run(rec, action) {
+        if (anyRecipeRunning() || !readyToRun(rec, action)) return;
 
         var args = {};
         var b = state.bindings[rec.id] || {};
         (rec.params || []).forEach(function (p) {
             var v = b[p.name];
-            if (!v) return;
-            if (isObjectKind(p.kind)) { if (!v.stale) args[p.name] = v.id; }
-            else args[p.name] = v.value;
+            if (isObjectKind(p.kind)) { if (v && !v.stale) args[p.name] = v.id; }
+            else args[p.name] = scalarValue(rec, p, action);
         });
 
         state.running[rec.id] = true;
@@ -510,10 +629,13 @@
         if (state.lastResult) delete state.lastResult[rec.id];
         render();
 
-        send('recipe.run', { recipeId: rec.id, study: state.study, args: args }, function (r) {
+        send('recipe.run', { recipeId: rec.id, study: state.study, args: args, actionId: action ? action.id : null }, function (r) {
             clearTimeout(_runTimers[rec.id]);
             delete _runTimers[rec.id];
             state.running[rec.id] = false;
+            state.hostBusy = false;
+            state.savedArgs = state.savedArgs || {};
+            state.savedArgs[rec.id] = args;
             var ok = !!(r && r.ok);
             flash(rec.id, ok, (r && (r.text || r.error)) || (ok ? '执行完成。' : '执行失败。'));
             state.open[rec.id] = true;       // 保持展开，让结果消息留在卡片里
@@ -523,6 +645,7 @@
                 if (r2 && r2.ok !== false) {
                     state.recipes = r2.recipes || state.recipes;
                     state.candidates = r2.candidates || state.candidates;
+                    state.hostBusy = !!r2.busy;
                     render();
                 }
             });
@@ -543,18 +666,22 @@
         }, 600000);
     }
 
-    function beginPick(rec, p) {
+    function beginPick(rec, p, search) {
+        if (anyRecipeRunning()) return;
+        var query = objectQuery(rec, p);
+        var signature = JSON.stringify(query);
         var key = rec.id + ':' + p.name;
         state.picking[key] = true;
         delete state.pickError[key];
         render();
 
         send('recipe.pickSelection',
-            { recipeId: rec.id, param: p.name, multi: p.kind === 'objects' },
+            { recipeId: rec.id, param: p.name, multi: p.kind === 'objects', study: state.study, search: !!search, objectType: query.type, objectName: query.name },
             function (r) {
                 clearTimeout(_pickTimers[key]);
                 delete _pickTimers[key];
                 delete state.picking[key];
+                if (signature !== JSON.stringify(objectQuery(rec, p))) { render(); return; }
                 if (!r || r.ok === false) {
                     state.pickError[key] = (r && r.error) || '取选择失败。';
                 } else if ((r.study || null) !== state.study) {
@@ -669,6 +796,7 @@
             var collapsed = root.classList.contains('rcp-collapsed');
             toggle.textContent = collapsed ? '⟨' : '⟩';
             notifySidebarLayout(!collapsed);
+            if (!collapsed) render();
         };
         container.appendChild(toggle);
 

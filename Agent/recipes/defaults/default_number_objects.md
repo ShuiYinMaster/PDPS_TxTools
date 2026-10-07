@@ -7,9 +7,7 @@ run_count: 0
 fail_count: 0
 ---
 
-把绑定对象改为 **前缀 + 序号**，例如 `Part_001`、`Part_002`。
-
-按“取当前选择”得到的对象顺序编号，只修改绑定对象，不遍历下属对象。重叠对象自动去重；不能重命名的对象会跳过，并输出新旧名称。
+按选择顺序将对象命名为“前缀＋序号”，例如 Part_001；不包含下属对象。
 
 ## 参数
 
@@ -18,7 +16,7 @@ fail_count: 0
   {"Name":"targets","Label":"编号对象","Kind":"objects","Required":true},
   {"Name":"name_prefix","Label":"名称前缀","Kind":"text","Required":true,"Default":"Part_"},
   {"Name":"start_number","Label":"起始序号","Kind":"number","Required":true,"Default":"1"},
-  {"Name":"number_digits","Label":"序号最少位数","Kind":"number","Required":true,"Default":"3","Help":"`3` 表示 001；超过三位的序号正常保留。"}
+  {"Name":"number_digits","Label":"序号最少位数","Kind":"number","Required":true,"Default":"3","Help":"例如 3 位显示为 001。","Choices":[{"label": "1 位", "value": "1"}, {"label": "2 位", "value": "2"}, {"label": "3 位", "value": "3"}, {"label": "4 位", "value": "4"}, {"label": "5 位", "value": "5"}, {"label": "6 位", "value": "6"}, {"label": "7 位", "value": "7"}, {"label": "8 位", "value": "8"}, {"label": "9 位", "value": "9"}]}
 ]
 ```
 

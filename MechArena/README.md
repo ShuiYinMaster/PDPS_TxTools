@@ -49,3 +49,9 @@ TxTools.MechArena/
 - Boss 阵型只做了"血量翻倍 + 相位错开 120°"，没做本体位置调整。
   想更 dramatic 可以在 `BossFormation.TryActivate` 里改机器人 `AbsoluteLocation`
   排成三角形围绕原点（注意 Dispose 时恢复）。
+
+## 2026-10-07 更新与源码核对
+
+核对当前机械对战模块的使用与实现说明。本次该模块业务源码未修改；运行依赖 PS 宿主，窗口和场景行为以现有实现为准。
+
+本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。

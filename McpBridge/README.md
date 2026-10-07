@@ -24,12 +24,13 @@ Tecnomatix 任何 API，纯 .NET Framework 4.8 + Newtonsoft.Json。
 
 ## 编译
 
+当前 Debug / Release 的默认输出目录均为 `G:\Program Files\Tecnomatix_2402\eMPower\DotNetCommands\TxTools\`，可用 `OutputPath` / `OutDir` 覆盖。使用 VS 的 MSBuild 单独编译到本地目录：
+
 ```powershell
-# 需要 VS 的 MSBuild（本仓库 Debug 版 TxTools.csproj 直接输出到 PS 安装目录）
-& "D:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" McpBridge\McpBridge.csproj /p:Configuration=Debug
+MSBuild.exe McpBridge\McpBridge.csproj /p:Configuration=Release /p:OutputPath=bin\Release\
 ```
 
-产物：`McpBridge\bin\Debug\TxToolsMcpBridge.exe`
+单独编译示例产物：`McpBridge\bin\Release\TxToolsMcpBridge.exe`。主项目联动构建时使用主项目的 `OutDir`，与 `TxTools.dll` 放在一起。
 
 > ⚠️ `PsRpcServer.list_tools` 的增强（返回 description / inputSchema）需要
 > **重新编译 TxTools.dll 并重启 Process Simulate** 才会生效。否则桥仍能工作，
@@ -60,7 +61,7 @@ TxToolsMcpBridge.exe --readonly
   "mcp": {
     "tx-tools": {
       "type": "local",
-      "command": ["D:/Program Files/Tecnomatix_2402/eMPower/DotNetCommands/TxTools/TxToolsMcpBridge.exe"]
+      "command": ["G:/Program Files/Tecnomatix_2402/eMPower/DotNetCommands/TxTools/TxToolsMcpBridge.exe"]
     }
   }
 }
@@ -69,13 +70,13 @@ TxToolsMcpBridge.exe --readonly
 ### Claude Code
 
 ```bash
-claude mcp add tx-tools -- "D:/Program Files/Tecnomatix_2402/eMPower/DotNetCommands/TxTools/TxToolsMcpBridge.exe"
+claude mcp add tx-tools -- "G:/Program Files/Tecnomatix_2402/eMPower/DotNetCommands/TxTools/TxToolsMcpBridge.exe"
 ```
 
 ### Codex CLI
 
 ```bash
-codex mcp add tx-tools -- "D:/Program Files/Tecnomatix_2402/eMPower/DotNetCommands/TxTools/TxToolsMcpBridge.exe"
+codex mcp add tx-tools -- "G:/Program Files/Tecnomatix_2402/eMPower/DotNetCommands/TxTools/TxToolsMcpBridge.exe"
 ```
 
 ### 通用（mcp.json / .mcp.json 等支持 stdio 的客户端）
@@ -84,7 +85,7 @@ codex mcp add tx-tools -- "D:/Program Files/Tecnomatix_2402/eMPower/DotNetComman
 {
   "mcpServers": {
     "tx-tools": {
-      "command": "D:/Program Files/Tecnomatix_2402/eMPower/DotNetCommands/TxTools/TxToolsMcpBridge.exe",
+      "command": "G:/Program Files/Tecnomatix_2402/eMPower/DotNetCommands/TxTools/TxToolsMcpBridge.exe",
       "args": []
     }
   }
@@ -111,3 +112,8 @@ McpBridge/
   PipeClient.cs       命名管道客户端（帧协议与 PsRpcServer 对齐）
   McpServer.cs        MCP stdio server（JSON-RPC 2.0 / tools / ping / shutdown）
 ```
+## 2026-10-07 更新
+
+更新两种构建配置的默认输出路径，并修正文档中的产物目录。协议和命令行行为沿用原实现；TxAgent 实例服务现在延后到宿主消息循环就绪后在后台初始化，PS 启动阶段短暂不可达时可稍后重试。
+
+完整环境与更新日志见 [项目 README](../README.md)。

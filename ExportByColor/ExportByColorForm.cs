@@ -14,7 +14,7 @@ using Label = System.Windows.Forms.Label;
 
 namespace TxTools.ExportByColor
 {
-    public class ExportByColorForm : TxForm
+    public class ExportByColorForm : PickAwareTxForm
     {
         internal static ExportByColorForm Instance;
 
@@ -181,6 +181,7 @@ namespace TxTools.ExportByColor
                 ListenToPick = true,
                 Margin = new Padding(2, 1, 0, 0)
             };
+            PickFocus.Wire(_objOrigin);
             _objOrigin.Picked += OnOriginPicked;
             rowOrigin.Controls.Add(_objOrigin);
             content.Controls.Add(rowOrigin);

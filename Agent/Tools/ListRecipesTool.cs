@@ -35,6 +35,7 @@ namespace TxTools.Agent.Tools
                     display = apiName + " (显示名: " + r.Name + ")";
 
                 sb.Append("• ").Append(display)
+                  .Append(" [id: ").Append(r.Id).Append("]")
                   .Append(" <").Append(SnippetStore.NormalizeLang(r.Lang)).Append("> — ")
                   .Append(r.Description ?? "");
                 if (r.Params != null && r.Params.Count > 0)
@@ -55,6 +56,8 @@ namespace TxTools.Agent.Tools
                     sb.Append(" 跑过 ").Append(r.RunCount + r.FailCount)
                       .Append(" 次, 成功 ").Append(r.RunCount)
                       .Append(", 失败 ").Append(r.FailCount);
+                if (r.Actions != null && r.Actions.Count > 0)
+                    sb.Append(" [执行按钮: ").Append(string.Join(", ", r.Actions.ConvertAll(a => a.Id + "(" + a.Label + ")"))).Append("]");
                 sb.AppendLine();
             }
             return sb.ToString().TrimEnd();

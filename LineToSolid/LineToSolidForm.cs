@@ -24,7 +24,7 @@ namespace TxTools.LineToSolid
     ///   · 状态联动：拐弯半径仅在勾选"拐角过渡"时可编辑；间距/排列仅在根数 > 1 时可编辑。
     ///   · 底部日志卡保持可折叠。
     /// </summary>
-    public class LineToSolidForm : TxForm
+    public class LineToSolidForm : PickAwareTxForm
     {
         // ── 工具条 ──────────────────────────────────────────────────────
         private TxToolStrip _toolStrip;

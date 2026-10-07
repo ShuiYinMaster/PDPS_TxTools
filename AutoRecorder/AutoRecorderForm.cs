@@ -30,7 +30,7 @@ namespace TxTools.AutoRecorder
     ///   · 保持 600 宽窄竖条 + 右上角定位（不遮挡 3D 主视口拾取的设计意图不变）。
     ///   · 录制服务、关键帧编辑、批量任务等业务逻辑零改动。
     /// </summary>
-    public class AutoRecorderForm : TxForm
+    public class AutoRecorderForm : PickAwareTxForm
     {
         // ===== 根布局 =====
         private TableLayoutPanel _mainSplit;   // 外两层：左（参数/日志）+ 右（视角关键帧）

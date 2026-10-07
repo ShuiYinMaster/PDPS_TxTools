@@ -22,7 +22,7 @@ using CheckBox = System.Windows.Forms.CheckBox;
 
 namespace TxTools.WeldGunDefiner.UI
 {
-    public class WeldGunWizardForm : TxForm
+    public class WeldGunWizardForm : PickAwareTxForm
     {
         // ── 单例 ──────────────────────────────────────────────────────────
         private static WeldGunWizardForm _inst;
@@ -406,6 +406,7 @@ namespace TxTools.WeldGunDefiner.UI
             miscLayout.Controls.Add(new Label { Text = "焊钳TCP:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(0, 0, 6, 0) }, 0, mrow);
             _tcpEditBox = new TxFrameEditBoxCtrl { Dock = DockStyle.Fill };
             try { _tcpEditBox.ListenToPick = true; } catch { }
+            PickFocus.Wire(_tcpEditBox);
             try { _tcpEditBox.PickLevel = TxPickLevel.Entity; } catch { }
             _tcpEditBox.ValidFrameSet += (s, e) =>
             {

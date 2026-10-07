@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
@@ -13,7 +13,7 @@
     <LangVersion>8.0</LangVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
-    <ProcessSimulateDllDir>E:\ProcessSimulatePlugin\Process Simulate\2402dll</ProcessSimulateDllDir>
+    <ProcessSimulateDllDir>G:\Program Files\Tecnomatix_2402\eMPower</ProcessSimulateDllDir>
     <NuGetPackageImportStamp>
     </NuGetPackageImportStamp>
   </PropertyGroup>
@@ -21,7 +21,7 @@
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
-    <OutputPath>E:\ProcessSimulatePlugin\Process Simulate\bin\</OutputPath>
+    <OutputPath>G:\Program Files\Tecnomatix_2402\eMPower\DotNetCommands\TxTools\</OutputPath>
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
@@ -33,7 +33,7 @@
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
-    <OutputPath>E:\ProcessSimulatePlugin\Process Simulate\bin\</OutputPath>
+    <OutputPath>G:\Program Files\Tecnomatix_2402\eMPower\DotNetCommands\TxTools\</OutputPath>
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
@@ -500,8 +500,13 @@
     <Compile Include="ExportByColor\MeshExport.cs" />
     <Compile Include="ExportByColor\FbxExport.cs" />
     <Compile Include="SRC\FormUiKit.cs" />
+    <Compile Include="SRC\PickFocus.cs" />
+    <Compile Include="SRC\PickAwareTxForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="SRC\PsReader.cs" />
     <Compile Include="WeldAnnotator\AnnotationStyle.cs" />
+    <Compile Include="WeldAnnotator\DisplaySession.cs" />
     <Compile Include="WeldAnnotator\AnnotationStyleForm.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -1479,7 +1484,7 @@
   <Import Project="Agent\maintenance\DefaultRecipes.Build.targets" />
   <Import Project="Agent\maintenance\DshPet.Build.targets" />
   <Target Name="BuildJtDirectCs" AfterTargets="Build">
-    <MSBuild Projects="$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\Worker.csproj" Targets="Build" Properties="Configuration=Release;Platform=AnyCPU" />
+    <MSBuild Projects="$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\Worker.csproj" Targets="Build" Properties="Configuration=Release;Platform=AnyCPU" RemoveProperties="OutputPath;OutDir" />
     <ItemGroup>
       <JtDecoderFiles Include="$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\TxTools.JtDecoder.exe*;$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\*.dll;$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\LICENSE.JTReader;$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\THIRD-PARTY-NOTICES.txt" />
     </ItemGroup>

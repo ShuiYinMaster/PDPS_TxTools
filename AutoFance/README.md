@@ -99,3 +99,11 @@ FenceBuilder/
   - `System.Windows.Forms`
   - `System.Drawing`
 - 输出:DLL,放入 PS 插件目录;`Resources/mesh_pattern.png` 一起打包到 DLL 同级 `Resources` 子目录
+
+## 2026-10-07 更新与源码核对
+
+围栏基线拾取窗口接入 `PickAwareTxForm`。基线拾取中按 Esc 退出拾取并保留已选基线；重新点击拾取控件可继续选取。围栏布局、网片和立柱生成算法沿用现有实现。
+
+本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。
+
+公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。

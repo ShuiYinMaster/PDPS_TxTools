@@ -35,3 +35,9 @@
 - `CatiaPartTreeForm.cs`：读取、编辑和执行界面。
 - `Core/`：CATIA 树模型和读取逻辑。
 - `Ps/`：PS `CompoundPart` 创建、归类和重载逻辑。
+
+## 2026-10-07 更新与源码核对
+
+核对 CATIA 产品树读取、名称与实例信息展示的现有说明。本次该模块业务源码未修改；仍需本机 CATIA COM 环境，随主项目编译和注册。
+
+本模块随 `TxTools.csproj` 构建。环境、注册方式和本次完整更新日志见 [项目 README](../README.md)。

@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <OutputPath>../../../artifacts/recipe-review/</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <StartupObject>RecipeControlsRegression</StartupObject>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The SDK ships Json.NET; this isolated suite needs no downloaded packages or PS SDK. -->
+    <Reference Include="Newtonsoft.Json"><HintPath>$(MSBuildBinPath)/Newtonsoft.Json.dll</HintPath></Reference>
+    <Compile Include="HostStubs.cs" />
+    <Compile Include="RecipeControlsRegression.cs" />
+    <Compile Include="../RecipeSharingRegression.cs" />
+    <Compile Include="../../Core/RecipeStore.cs" />
+    <Compile Include="../../Core/RecipeRunner.cs" />
+    <Compile Include="../../Core/RecipeTool.cs" />
+    <Compile Include="../../Core/RecipeUiActions.cs" />
+    <Compile Include="../../Core/UserPrefsStore.cs" />
+    <Compile Include="../../Core/ToolRegistry.cs" />
+    <Compile Include="../../Core/ITxAgentTool.cs" />
+    <Compile Include="../../Core/MarkdownDoc.cs" />
+    <Compile Include="../../Core/MdStore.cs" />
+    <Compile Include="../../Tools/SaveRecipeTool.cs" />
+    <Compile Include="../../Tools/ListRecipesTool.cs" />
+  </ItemGroup>
+  <Import Project="../DefaultRecipes.Build.targets" />
+</Project>
