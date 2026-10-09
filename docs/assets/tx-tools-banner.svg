@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="370" viewBox="0 0 1240 370" role="img" aria-labelledby="title desc">
+  <title id="title">TxTools — Process Simulate 工程插件集</title>
+  <desc id="desc">用于机器人焊接仿真和离线编程的插件集合。涵盖路径规划、工程工具、AI 配方与跨环境交付。右侧为机器人与路径的示意图。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#eff6ff"/><stop offset="1" stop-color="#f0fdfa"/>
+    </linearGradient>
+    <linearGradient id="arm" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#2563eb"/><stop offset="1" stop-color="#0d9488"/>
+    </linearGradient>
+    <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse">
+      <path d="M 28 0 H 0 V 28" fill="none" stroke="#dce8ee" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1240" height="370" rx="20" fill="url(#bg)"/>
+  <rect x="738" y="32" width="470" height="306" rx="16" fill="url(#grid)"/>
+  <g font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, Arial, sans-serif">
+    <rect x="46" y="45" width="4" height="24" rx="2" fill="#0d9488"/>
+    <text x="63" y="63" font-size="16" font-weight="600" fill="#456070" letter-spacing="2">ROBOTICS · WELDING · AUTOMATION</text>
+    <text x="44" y="165" font-size="88" font-weight="750" fill="#102a43" letter-spacing="-3">TxTools</text>
+    <text x="48" y="211" font-size="27" font-weight="600" fill="#294962">让 Process Simulate 工程操作更顺手</text>
+    <text x="48" y="245" font-size="17" fill="#516b7b">机器人焊接仿真与离线编程 · 工具、配方与 AI 协作</text>
+    <g font-size="14" font-weight="600" text-anchor="middle">
+      <rect x="48" y="284" width="125" height="34" rx="17" fill="#dbeafe"/>
+      <text x="110" y="306" fill="#1e40af">23 个功能模块</text>
+      <rect x="185" y="284" width="121" height="34" rx="17" fill="#ccfbf1"/>
+      <text x="245" y="306" fill="#115e59">PS 2402 SDK</text>
+      <rect x="318" y="284" width="114" height="34" rx="17" fill="#e2e8f0"/>
+      <text x="375" y="306" fill="#334155">C# · x64</text>
+      <rect x="444" y="284" width="119" height="34" rx="17" fill="#e2e8f0"/>
+      <text x="503" y="306" fill="#334155">AI · MCP</text>
+    </g>
+    <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M 782 287 L 990 337 L 1192 270 L 986 225 Z" fill="#e2edf2" stroke="#c1d5e1" stroke-width="2"/>
+      <path d="M 1009 287 L 1080 305 L 1158 279 L 1088 262 Z" fill="#f8fafc" stroke="#a7bcc9" stroke-width="2"/>
+      <path d="M 866 279 L 866 244 L 913 169 L 1019 131 L 1070 183" stroke="#d1e3ef" stroke-width="32"/>
+      <path d="M 866 279 L 866 244 L 913 169 L 1019 131 L 1070 183" stroke="url(#arm)" stroke-width="16"/>
+      <path d="M 839 291 H 897 L 889 274 H 847 Z" fill="#294962" stroke="#294962" stroke-width="3"/>
+      <circle cx="866" cy="244" r="12" fill="#f8fafc" stroke="#2563eb" stroke-width="5"/>
+      <circle cx="913" cy="169" r="12" fill="#f8fafc" stroke="#2563eb" stroke-width="5"/>
+      <circle cx="1019" cy="131" r="12" fill="#f8fafc" stroke="#0d9488" stroke-width="5"/>
+      <path d="M 1070 182 L 1091 191 L 1080 215 L 1063 204 Z" fill="#294962" stroke="#294962" stroke-width="2"/>
+      <path d="M 1071 214 L 1061 238 L 1076 254 M 1085 219 L 1096 241 L 1082 258" stroke="#294962" stroke-width="5"/>
+      <path d="M 1060 278 C 1016 248 1033 208 1116 221 S 1174 257 1142 271" stroke="#0d9488" stroke-width="3" stroke-dasharray="5 7"/>
+      <circle cx="1060" cy="278" r="5" fill="#0d9488" stroke="#f8fafc" stroke-width="2"/>
+      <circle cx="1116" cy="221" r="5" fill="#0d9488" stroke="#f8fafc" stroke-width="2"/>
+      <circle cx="1142" cy="271" r="5" fill="#0d9488" stroke="#f8fafc" stroke-width="2"/>
+    </g>
+    <rect x="1041" y="63" width="134" height="32" rx="8" fill="#fff"/>
+    <text x="1108" y="85" text-anchor="middle" font-size="14" font-weight="600" fill="#115e59">Via · Path · Check</text>
+    <text x="787" y="351" font-size="12" fill="#648094">机器人 / 路径示意 · 非工程仿真截图</text>
+  </g>
+</svg>

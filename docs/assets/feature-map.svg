@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="530" viewBox="0 0 1240 530" role="img" aria-labelledby="title desc">
+  <title id="title">TxTools 功能地图</title>
+  <desc id="desc">六类工程任务：机器人与路径、焊点与工艺、几何与布局、跨环境与交付、AI 与工程配方、运行与界面。全部 23 个模块的链接见 README 插件索引。</desc>
+  <rect width="1240" height="530" rx="18" fill="#f6f8fb"/>
+  <g font-family="Segoe UI, Microsoft YaHei, Noto Sans CJK SC, Arial, sans-serif">
+    <text x="34" y="47" font-size="24" font-weight="700" fill="#17324d">从工程任务出发，找到对应工具</text>
+    <text x="34" y="75" font-size="16" fill="#587086">功能分组示意 · 详细前置条件与操作方法见各插件 README</text>
+    <g transform="translate(28 100)">
+      <rect width="382" height="192" rx="14" fill="#fff" stroke="#dce4ee"/>
+      <rect x="18" y="20" width="38" height="38" rx="11" fill="#dbeafe"/>
+      <text x="37" y="46" text-anchor="middle" font-size="18" font-weight="700" fill="#1d4ed8">01</text>
+      <text x="70" y="47" font-size="23" font-weight="700" fill="#17324d">机器人与路径</text>
+      <text x="22" y="89" font-size="17" fill="#587086">规划过渡点，核对可达性与基座</text>
+      <text x="22" y="125" font-size="16" fill="#1d4ed8">AutoPath · RobotReachabilityChecker</text>
+      <text x="22" y="155" font-size="16" fill="#1d4ed8">RobotBaseChecker · WeldGunDefiner</text>
+    </g>
+    <g transform="translate(429 100)">
+      <rect width="382" height="192" rx="14" fill="#fff" stroke="#dce4ee"/>
+      <rect x="18" y="20" width="38" height="38" rx="11" fill="#ccfbf1"/>
+      <text x="37" y="46" text-anchor="middle" font-size="18" font-weight="700" fill="#0f766e">02</text>
+      <text x="70" y="47" font-size="23" font-weight="700" fill="#17324d">焊点与工艺</text>
+      <text x="22" y="89" font-size="17" fill="#587086">分配、分组与矩阵编辑，生成评审标注</text>
+      <text x="22" y="125" font-size="16" fill="#0f766e">WeldSpotAllocator · WeldSpotGrouper</text>
+      <text x="22" y="155" font-size="16" fill="#0f766e">WeldPointMatrix · WeldAnnotator</text>
+    </g>
+    <g transform="translate(830 100)">
+      <rect width="382" height="192" rx="14" fill="#fff" stroke="#dce4ee"/>
+      <rect x="18" y="20" width="38" height="38" rx="11" fill="#fef3c7"/>
+      <text x="37" y="46" text-anchor="middle" font-size="18" font-weight="700" fill="#a16207">03</text>
+      <text x="70" y="47" font-size="23" font-weight="700" fill="#17324d">几何与布局</text>
+      <text x="22" y="89" font-size="17" fill="#587086">沿曲线建模，生成围栏，校正设备高度</text>
+      <text x="22" y="125" font-size="16" fill="#a16207">LineToSolid · AutoFance</text>
+      <text x="22" y="155" font-size="16" fill="#a16207">DeviceZAligner</text>
+    </g>
+    <g transform="translate(28 309)">
+      <rect width="382" height="192" rx="14" fill="#fff" stroke="#dce4ee"/>
+      <rect x="18" y="20" width="38" height="38" rx="11" fill="#e0e7ff"/>
+      <text x="37" y="46" text-anchor="middle" font-size="18" font-weight="700" fill="#4338ca">04</text>
+      <text x="70" y="47" font-size="23" font-weight="700" fill="#17324d">跨环境与交付</text>
+      <text x="22" y="89" font-size="17" fill="#587086">导出 CATIA / Excel，迁移并重建结构</text>
+      <text x="22" y="125" font-size="16" fill="#4338ca">ExportGun · ExportByColor</text>
+      <text x="22" y="155" font-size="16" fill="#4338ca">CrossEnvIO · CatiaPartTree</text>
+    </g>
+    <g transform="translate(429 309)">
+      <rect width="382" height="192" rx="14" fill="#fff" stroke="#dce4ee"/>
+      <rect x="18" y="20" width="38" height="38" rx="11" fill="#f3e8ff"/>
+      <text x="37" y="46" text-anchor="middle" font-size="18" font-weight="700" fill="#7e22ce">05</text>
+      <text x="70" y="47" font-size="23" font-weight="700" fill="#17324d">AI 与工程配方</text>
+      <text x="22" y="89" font-size="17" fill="#587086">查询场景，把验证过的步骤保存为配方</text>
+      <text x="22" y="125" font-size="16" fill="#7e22ce">TxAgent · C# / Python Recipes</text>
+      <text x="22" y="155" font-size="16" fill="#7e22ce">McpBridge · 多 PDPS 实例</text>
+    </g>
+    <g transform="translate(830 309)">
+      <rect width="382" height="192" rx="14" fill="#fff" stroke="#dce4ee"/>
+      <rect x="18" y="20" width="38" height="38" rx="11" fill="#e2e8f0"/>
+      <text x="37" y="46" text-anchor="middle" font-size="18" font-weight="700" fill="#475569">06</text>
+      <text x="70" y="47" font-size="23" font-weight="700" fill="#17324d">运行与界面</text>
+      <text x="22" y="89" font-size="17" fill="#587086">录制仿真，管理路径、拾取和主题</text>
+      <text x="22" y="125" font-size="16" fill="#475569">AutoRecorder · LibPathSync</text>
+      <text x="22" y="155" font-size="16" fill="#475569">SelectButton · ThemeTuner · 演示模块</text>
+    </g>
+  </g>
+</svg>
