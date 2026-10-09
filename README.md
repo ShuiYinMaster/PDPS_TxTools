@@ -1,228 +1,245 @@
-﻿# TxTools — Tecnomatix Process Simulate Plugins / PDPS 二次开发插件
+﻿# TxTools — Tecnomatix Process Simulate / PDPS 工程插件集
 
-[中文使用与开发手册](#一项目概述) · [English overview](README.en.md) · [安装与注册](#三快速安装与注册) · [全部插件](#四主要插件与功能简介) · [更新日志](#十三更新日志)
+[English](README.en.md) · [功能地图](#一项目概述) · [安装与注册](#三快速安装与注册) · [23 个插件](#四主要插件与功能简介) · [使用流程](#五典型使用流程示例) · [更新日志](#十三更新日志)
 
-面向 **Siemens Tecnomatix Process Simulate（PDPS）** 的 C# 二次开发插件集，用于机器人焊接仿真与离线编程：焊接路径规划、机器人可达性检查、焊点分配、CATIA / Excel 导出，以及 TxAgent AI 助手与 MCP 桥接。
+![TxTools：机器人焊接仿真与离线编程工具集，机器人图形为示意](docs/assets/tx-tools-banner.svg)
 
-**C# plugins for Siemens Tecnomatix Process Simulate (PDPS)**, supporting robotic welding and offline programming: weld path planning, robot reachability checks, weld spot allocation, CATIA / Excel export, an in-process AI agent and an MCP stdio bridge.
+面向 **Siemens Tecnomatix Process Simulate（PDPS）** 的 C# 插件集合，把焊接路径规划、机器人检查、焊点编辑、几何建模和 CATIA / Excel 交付串成日常工程流程；也可通过 **TxAgent、可复用配方与 MCP** 查询和操作场景。
+
+**C# plugins for Siemens Tecnomatix Process Simulate (PDPS)** — robotic welding, offline programming, weld path planning, reachability checks, CATIA / Excel export, AI recipes and MCP integration.
+
+**23 个模块** · **PS 2402 SDK** · **.NET Framework 4.8 / x64** · **[MIT](LICENSE)**
+
+文档更新：2026-10-09。界面图为当前源码生成的示例预览；工程效果以实际 PS 环境为准。
 
 ## 常用任务 / Common workflows
 
-| 工程任务 / Task | 插件与说明 / Documentation |
+| 我想完成什么 | 从这里开始 |
 |---|---|
-| 自动生成焊接过渡路径 / Robot weld path planning | [AutoPath](AutoPath/README.md) |
-| 检查机器人焊点可达性 / Robot reachability checks | [RobotReachabilityChecker](RobotReachabilityChecker/README.md) |
-| 更新、分配或镜像焊点 / Weld spot allocation | [WeldSpotAllocator](WeldSpotAllocator/README.md) |
-| 导出焊枪与布局至 CATIA / CATIA export | [ExportGun](ExportGun/README.md) · [ExportByColor](ExportByColor/README.md) |
-| 生成 Excel 焊点截图与标注 / Excel weld-point annotation | [WeldAnnotator](WeldAnnotator/README.md) |
-| 用 AI 查询场景并复用工程配方 / AI-assisted scene tools and recipes | [TxAgent](Agent/README.md) |
-| 通过 MCP 接入外部智能体 / Process Simulate MCP integration | [McpBridge](McpBridge/README.md) |
-
-主要宿主：Process Simulate 2402 · 主插件：.NET Framework 4.8 / x64 · 源码许可：[MIT](LICENSE)。首次使用请按下文配置 SDK、依赖与命令注册；各插件的前置条件见对应说明。
-
-版本：2026-10-07
-说明：本文件基于当前仓库代码整理，面向插件使用者与二次开发者。`Agent/` 为当前版本已纳入主项目的 TxAgent 实现，详细设计说明见 [`Agent/README.md`](Agent/README.md)。
-
----
+| 为焊接操作生成进出枪点和过渡路径 | [AutoPath](AutoPath/README.md)：准备干涉集，按操作生成 Via，查看失败段与警告 |
+| 检查机器人焊点可达性和轴余量 | [RobotReachabilityChecker](RobotReachabilityChecker/README.md)：可达性、限位、静态干涉检查 |
+| 更新、分配、镜像或分组焊点 | [WeldSpotAllocator](WeldSpotAllocator/README.md) · [WeldSpotGrouper](WeldSpotGrouper/README.md) · [WeldPointMatrix](WeldPointMatrix/README.md) |
+| 从曲线建模，或沿基线生成围栏 | [LineToSolid](LineToSolid/README.md) · [AutoFance](AutoFance/README.md) |
+| 导出焊枪、颜色几何和评审资料 | [ExportGun](ExportGun/README.md) · [ExportByColor](ExportByColor/README.md) · [WeldAnnotator](WeldAnnotator/README.md) |
+| 迁移工程结构、组件和焊点 | [CrossEnvIO](CrossEnvIO/README.md) · [CatiaPartTree](CatiaPartTree/README.md) |
+| 用 AI 查询场景，把重复操作保存为配方 | [TxAgent](Agent/README.md)：只读查询 → 核对变更 → 保存配方 → 界面复用 |
+| 让外部 MCP 客户端调用 PS 工具 | [McpBridge](McpBridge/README.md)：stdio 桥接到指定 PDPS 实例 |
 
 ## 一、项目概述
-TxTools 是面向机器人焊接工艺的 Process Simulate（Tecnomatix）二次开发插件集合。基于 `Tecnomatix.Engineering` SDK，提供一组常用功能以辅助焊接仿真与后处理，包括：焊枪/焊点导出、焊点可视化（点球）、机器人可达性检查、由曲线生成实体、沿线生成围栏，以及可在 PS 进程内直接查询和操作场景的 TxAgent 智能助手。
 
-设计要点：
-- 在不同 PS 版本下采用防御式 API 探测（dynamic + 多路径 try/catch）。
-- 统一的 GUI 风格：基于 TxForm + TxFlexGrid 的卡片式面板与日志。
-- 需要撤销保障的场景写入使用撤销事务分组；文件、CATIA、Excel 和配置写入使用各自恢复方式，详见 [撤销与恢复说明](docs/undo-safety.md)。
-- 对外部系统（如 CATIA）使用桥接层以集中管理 COM 互操作。
-- TxAgent 的 PS 调用统一经过 `PsContext` / `PsAgentHost` 回到 UI 主线程，变更工具默认需要审批并记录审计日志。
-- 记忆、配方和知识库使用可读的 Markdown 文件保存，方便查看、版本控制和迁移。
+![TxTools 功能地图：机器人与路径、焊点与工艺、几何与布局、跨环境与交付、AI 与工程配方、运行与界面](docs/assets/feature-map.svg)
 
----
+TxTools 基于 `Tecnomatix.Engineering` SDK。单项工具可以直接使用；TxAgent 和配方适合组合查询、批量操作与交付步骤。所有功能的前置条件、参数和限制都在对应模块 README 中。
+
+| 能力 | 对工程使用的意义 |
+|---|---|
+| 工具与日志 | 围绕当前对象、操作和机器人执行，保留可核对的结果与失败明细 |
+| 统一拾取 | 已接入的窗口支持 Esc 退出拾取并保留选择，便于继续填写参数 |
+| 配方复用 | 将验证过的 C# / Python 步骤保存成带参数、执行按钮的 Markdown 配方 |
+| 场景撤销 | 支持撤销的写入按批次分组；失败不等于自动恢复，详见 [撤销与恢复](docs/undo-safety.md) |
+| 主线程封送 | TxAgent 的 PS SDK 调用经 `PsContext` / `PsAgentHost` 回到宿主 UI 主线程 |
 
 ## 二、环境与依赖
-- Process Simulate：推荐 2402（其它版本可能可用但未全面测试）。
-- .NET Framework：4.8（与 PS 宿主匹配）。
-- C# 语言：主项目 `LangVersion=8.0`；PS 脚本及运行时代码片段保持 C# 7.3 兼容。
-- Visual Studio：使用支持 .NET Framework 4.8 的 VS/MSBuild；仓库提供 `TxTools.slnx`，旧版 VS 可直接打开 `TxTools.csproj`。
-- 可选：CATIA V5（用于 CATIA 相关功能的桥接）。
-- TxAgent UI：WebView2（聊天面板）；`run_python` 需要目标机器提供可用的 Python 环境。
-- TxAgent 网络模型：DeepSeek、Kimi、千问、OpenAI，或本机 Ollama；也支持添加 OpenAI 兼容的自定义提供商。
 
-编译时常用引用：
-- Tecnomatix.Engineering.dll
-- Tecnomatix.Engineering.Ui.dll
-- System.Windows.Forms、System.Drawing 等
-
-构建配置：Release / AnyCPU；主插件输出为 x64 DLL，连同资源部署到 PS 插件目录。JT 解码器的 `Dependencies/` 还需准备未纳入 Git 的第三方 DLL，详见 [ExportByColor 构建依赖](ExportByColor/README.md#jt-解码器构建依赖)。
-
----
+| 项目 | 要求或说明 |
+|---|---|
+| 宿主 | Process Simulate **2402**；其他版本未全面验证 |
+| 主插件 | .NET Framework **4.8**，实际输出为 **x64** DLL |
+| 开发工具 | 支持 .NET Framework 4.8 的 Visual Studio / MSBuild；可打开 `TxTools.csproj`，支持 `.slnx` 的版本也可打开 `TxTools.slnx` |
+| C# | 主项目 `LangVersion=8.0`；PS 脚本和运行时代码片段保持 **C# 7.3** 兼容 |
+| SDK 与包 | 本机 PS SDK、`packages.config` 的 NuGet 依赖；SDK DLL 不随仓库分发 |
+| CATIA 功能 | 本机 CATIA V5 与对应 COM 类型库；不使用相关功能时不需要启动 CATIA |
+| TxAgent | WebView2；在线模型需配置端点和 Key，本机模型可使用 Ollama；`run_python` 需可用 Python 环境 |
+| JT 解码器 | 第三方 DLL 需另行准备，见 [ExportByColor 构建依赖](ExportByColor/README.md#jt-解码器构建依赖) |
 
 ## 三、快速安装与注册
-1. 克隆仓库并在支持 `.slnx` 的 Visual Studio 中打开 `TxTools.slnx`，或直接打开 `TxTools.csproj`；先还原 `packages.config` 中的 NuGet 依赖。
-2. 配置 `ProcessSimulateDllDir` 为实际 PS SDK 目录；当前默认是 `G:\Program Files\Tecnomatix_2402\eMPower`。CATIA COM 引用还需要本机对应类型库。
-3. 选择 Release / AnyCPU 配置生成；主项目实际 `PlatformTarget=x64`。默认直接输出至 G 盘 PS 插件目录，检查或独立构建时建议覆盖 `OutputPath` / `OutDir`。
-4. 将生成的插件文件夹（DLL + Resources）复制到：  
-   `<Tecnomatix 安装目录>\eMPower\DotNetCommands\<PluginName>\`  
-5. 进入 `<Tecnomatix 安装目录>\eMPower\`，运行 `CommandReg.exe`：  
-   - Assembly：选择插件 DLL。  
-   - Class(es)：勾选要注册的 `TxButtonCommand` 类（如 ExportGunCmd、LineToSolidCommand 等）。  
-   - Product(s)：通常勾选 Process Simulate。  
-   - File：选择或新建 XML（例如 TxTools.xml），点击 Register。  
-6. 启动 Process Simulate → Customize → 将新命令拖到工具栏。  
-卸载：再次运行 CommandReg.exe，选择相同 XML，点击 Unregister。
 
----
+```mermaid
+flowchart LR
+    A[取得源码] --> B[配置 SDK 与依赖]
+    B --> C[Release 构建]
+    C --> D[部署并注册命令]
+    D --> E[在 PS 添加工具栏]
+```
+
+1. 克隆仓库，打开解决方案或主项目，并还原 `packages.config` 中的 NuGet 依赖。
+
+   ```powershell
+   git clone https://github.com/ShuiYinMaster/PDPS_TxTools.git
+   cd PDPS_TxTools
+   ```
+
+2. 将 `ProcessSimulateDllDir` 配置为本机 PS 的 `eMPower` SDK 目录，检查 CATIA COM 引用及 JT 解码器依赖。
+3. 使用 `Release / AnyCPU` 构建。**AnyCPU 是配置名称，主插件实际目标为 x64。** 当前工程默认直接输出到 G 盘安装目录，建议先构建到独立目录。
+
+   在 VS Developer PowerShell 中运行，按本机路径修改 `$psSdk`：
+
+   ```powershell
+   $psSdk = 'G:\Program Files\Tecnomatix_2402\eMPower'
+   $buildOut = Join-Path (Get-Location) 'artifacts\release'
+   MSBuild.exe TxTools.csproj /t:Build /p:Configuration=Release "/p:ProcessSimulateDllDir=$psSdk" "/p:OutputPath=$buildOut/" "/p:OutDir=$buildOut/"
+   ```
+
+4. 将主 DLL、依赖及资源部署到 `<Tecnomatix 安装目录>\eMPower\DotNetCommands\TxTools\`。保留构建生成的相对目录结构。
+5. 运行 `eMPower\CommandReg.exe`，Assembly 选择 `TxTools.dll`，勾选需要的 `TxButtonCommand` 类和 **Process Simulate** 产品，选择或创建注册 XML，然后点击 **Register**。
+6. 启动或重启 PS，通过 **Customize** 把已注册命令加入工具栏。
+
+卸载命令时，在 CommandReg 中选择同一注册 XML，点击 **Unregister**。完整构建回归入口见 [配方与启动验证说明](Agent/maintenance/recipe-controls-tests/README.md)。
 
 ## 四、主要插件与功能简介
 
-以下为全部 23 个模块的使用说明入口；“本次变化”包含源码同步及本轮撤销修复。
+### TxAgent：把重复工程操作变成可复用配方
 
-| 模块 | 用途 | 本次变化 |
+<p align="center">
+  <img src="docs/assets/recipe-controls-preview.png" width="640" alt="TxAgent 配方侧栏和快捷配方预览：示例对象选取、动态类型筛选、显示隐藏按钮、置顶和最近使用配方">
+</p>
+
+*图：当前 `Agent/UI` 代码与内置配方渲染的浏览器预览。示例对象和执行结果为模拟数据，未连接 PS 工程。*
+
+- **配方侧栏**：选择对象、按场景类型与名称筛选，填写参数，然后使用对应执行按钮。
+- **快捷配方**：搜索、收藏与最近使用入口，让已验证的操作更容易再次执行。
+- **AI 与代码**：支持 DeepSeek、Kimi、千问、OpenAI、Ollama 和自定义兼容端点；提供场景查询、代码片段、知识库、工作区和多实例工具。
+
+详见 [TxAgent 使用与开发说明](Agent/README.md)。图像来源和更新方法见 [图片资源说明](docs/assets/README.md)。
+
+### 全部 23 个模块
+
+| 类别 | 模块 | 工程用途 |
 |---|---|---|
-| [TxAgent](Agent/README.md) | 进程内 AI、工具与配方 | 真实场景事务、快照校验、Python 关闭失败报告 |
-| [ExportGun](ExportGun/README.md) | 导插枪、坐标与 CATIA 导出 | 对象/TCP/参考系拾取退出 |
-| [ExportByColor](ExportByColor/README.md) | 按颜色导出 CGR 和网格 | 资源与原点拾取退出 |
-| [WeldAnnotator](WeldAnnotator/README.md) | 焊点截图及 Excel 标注 | 独立显示会话、三态恢复与事务保护 |
-| [AutoPath](AutoPath/README.md) | 自动过渡点与路径规划 | 路径与多机器人干涉集撤销分组、工程切换检查 |
-| [AutoFance](AutoFance/README.md) | 沿基线生成围栏 | 多基线批次记录、按 ID 清理、既有及后加内容保护 |
-| [LineToSolid](LineToSolid/README.md) | 曲线生成实体 | 批量几何撤销分组、失败空容器清理 |
-| [AutoRecorder](AutoRecorder/README.md) | 仿真自动录屏 | 操作拾取退出 |
-| [CrossEnvIO](CrossEnvIO/README.md) | 跨 PS 环境传输和重建 | 重建撤销分组、复制清理保护、显式保存重载 |
-| [RobotReachabilityChecker](RobotReachabilityChecker/README.md) | 机器人可达性检查 | 操作节点拾取退出 |
-| [WeldGunDefiner](WeldGunDefiner/README.md) | X 枪运动学向导 | 机构所有权检查、生成与 TCPF/定义统一分组 |
-| [WeldSpotAllocator](WeldSpotAllocator/README.md) | 焊点更新、分配与镜像 | 替换无效事务接口、明确部分失败恢复方式 |
-| [WeldSpotGrouper](WeldSpotGrouper/README.md) | 按绑定零件分组焊点 | 真实事务、失败新空父节点清理 |
-| [McpBridge](McpBridge/README.md) | 外部 Agent 的 MCP stdio 桥 | 明确目标实例与外部副作用的撤销边界 |
-| [WeldPointMatrix](WeldPointMatrix/README.md) | 多操作点位矩阵与插入 | 点位事务、移动失败补偿、激活刷新 |
-| [CatiaPartTree](CatiaPartTree/README.md) | CATIA 产品树 | 真实事务、保存重载默认关闭、覆盖前备份 |
-| [RobotBaseChecker](RobotBaseChecker/README.md) | BASE0 检查与校正 | 同步全部 BASE0 纳入同一场景撤销批次 |
-| [DeviceZAligner](DeviceZAligner/README.md) | 设备 Z 向对齐 | 真实事务、几何与偏移刷新；最低点算法待实机核验 |
-| [LibPathSync](LibPathSync/README.md) | PS 库目录同步 | 核对文档，业务源码未变 |
-| [SelectButton](SelectButton/README.md) | 快捷选点与资源目录 | 核对文档，业务源码未变 |
-| [ThemeTuner](ThemeTuner/README.md) | 统一主题配色 | 核对文档，业务源码未变 |
-| [SnakeGame](SnakeGame/README.md) | 场景贪吃蛇 | 核对文档，业务源码未变 |
-| [MechArena](MechArena/README.md) | 机械对战演示 | 核对文档，业务源码未变 |
-
-- ExportGun（导插枪）  
-  将焊枪与焊点数据从 PS 导出到 CATIA（CGR 放置）或 Excel，便于下游工艺校验与可视化。包含 PsReader 风格的数据提取与 CatiaBridge（CATIA COM 互操作）。
-
-- DotBall（点球）  
-  在焊点处生成球形几何，便于在 CATIA 等系统中直观显示焊点位置。
-
-- RobotReachabilityChecker（可达性验证）  
-  基于机器人模型、焊接操作点与关节限位，分析可达性、是否超限、是否满足 TCP 余量等。
-
-- LineToSolid（曲线转实体）  
-  将场景中的 Polyline / Line / Arc 拆分成段，并按用户指定截面（矩形/圆形）为每段生成独立 Solid（每段为一个零件）。支持圆弧自适应细分以满足最大弦高设置。
-
-- FenceBuilder / AutoFance（围栏生成）  
-  根据直线或折线基线按参数生成网片 + 立柱 + 可选底板。优先采用“单薄板 + 纹理”策略以显著降低 Solid 数量并保证可视效果，提供降级路径以适配不同 PS 版本的纹理 API。
-
-- TxAgent（`Agent/`）  
-  在 Process Simulate 进程内提供带工具调用的 AI 助手。支持场景查询、对象搜索/选中、操作与焊点分析、机器人与 TCP 信息、可达性摘要、碰撞组查询、对象位置和仿真控制；支持焊点/对象清单导出 Excel、CATIA 产品树读取与焊枪导出、视口/窗口截图与图像分析，以及 CEE/PLC 资源操作。
-
-  TxAgent 还提供以下工程化能力：
-  - 多模型与路由：DeepSeek、Kimi、千问、OpenAI、Ollama 和自定义 OpenAI 兼容端点；按视觉、长上下文和轻量任务选择合适模型。
-  - 记忆与知识：多对话历史、Facts/Gotchas、可复用代码片段、Markdown 知识库和语义检索；数据优先保存在插件目录，不可写时回退到 `%LOCALAPPDATA%`。
-  - 配方与计划：把经过验证的多步操作保存为带参数的可复用配方，并用计划工具管理复杂任务。
-  - 源码工作区：在限定的工作区内读取、搜索、创建、精确修改、回滚和编译 C# 源码；修改类操作需要审批并自动保留备份。
-  - 安全与并发：只读/变更工具分级、变更审批、场景撤销分组、恢复快照与审计日志；支持多个 PDPS 实例之间发现、只读执行和结果对比。
-
-- CrossEnvIO（`CrossEnvIO/`）  
-  提供跨环境结构、组件、焊点和数学数据的导入导出及重建辅助。
-- McpBridge（`McpBridge/`）  
-  将 PS 工具通过 stdio 暴露给外部 Agent；主项目构建时会联动编译该子项目（存在其项目文件时）。
-
-仓库还包含：AutoRecorder、DeviceZAligner、WeldAnnotator、WeldSpotAllocator、SelectButton 等模块（详见各子目录）。
-
----
+| 机器人与路径 | [AutoPath](AutoPath/README.md) | 进出枪点、Via、碰撞校验与可选焊点顺序优化 |
+| 机器人与路径 | [RobotReachabilityChecker](RobotReachabilityChecker/README.md) | 可达性、关节限位余量、TCP 余量与静态干涉检查 |
+| 机器人与路径 | [RobotBaseChecker](RobotBaseChecker/README.md) | BASE0 检查与批量同步 |
+| 机器人与路径 | [WeldGunDefiner](WeldGunDefiner/README.md) | X 枪运动学、TCPF、姿态与焊钳定义 |
+| 焊点与工艺 | [WeldSpotAllocator](WeldSpotAllocator/README.md) | 焊点更新、分配、参数复制与镜像 |
+| 焊点与工艺 | [WeldSpotGrouper](WeldSpotGrouper/README.md) | 按绑定零件归组，创建操作并迁移焊点 |
+| 焊点与工艺 | [WeldPointMatrix](WeldPointMatrix/README.md) | 多操作点位矩阵、新增与移动点位 |
+| 焊点与工艺 | [WeldAnnotator](WeldAnnotator/README.md) | PS 视口截图、焊点标注与 Excel 评审资料 |
+| 几何与布局 | [LineToSolid](LineToSolid/README.md) | 曲线生成矩形或圆形截面实体 |
+| 几何与布局 | [AutoFance](AutoFance/README.md) | 沿基线生成网片、立柱和可选底板 |
+| 几何与布局 | [DeviceZAligner](DeviceZAligner/README.md) | 设备 Z 向落地对齐；最低点算法需实机核验 |
+| 跨环境与交付 | [ExportGun](ExportGun/README.md) | 焊枪、焊点坐标与 CATIA / Excel 导出 |
+| 跨环境与交付 | [ExportByColor](ExportByColor/README.md) | 按颜色拆分几何，导出 CGR 与网格 |
+| 跨环境与交付 | [CrossEnvIO](CrossEnvIO/README.md) | 结构、组件、焊点与数学数据的导出和重建 |
+| 跨环境与交付 | [CatiaPartTree](CatiaPartTree/README.md) | 读取 CATIA 产品树，在 PS 建树并归类 |
+| AI 与配方 | [TxAgent](Agent/README.md) | 进程内 AI、场景工具、C# / Python 配方与多实例协作 |
+| AI 与配方 | [McpBridge](McpBridge/README.md) | 外部 MCP 客户端与目标 PDPS 实例之间的 stdio 桥 |
+| 运行与界面 | [AutoRecorder](AutoRecorder/README.md) | 仿真自动录屏 |
+| 运行与界面 | [LibPathSync](LibPathSync/README.md) | PS 库目录配置同步 |
+| 运行与界面 | [SelectButton](SelectButton/README.md) | 快捷选点与资源目录导航 |
+| 运行与界面 | [ThemeTuner](ThemeTuner/README.md) | 统一主题配色 |
+| 演示 | [SnakeGame](SnakeGame/README.md) | 场景贪吃蛇演示 |
+| 演示 | [MechArena](MechArena/README.md) | 机械对战演示 |
 
 ## 五、典型使用流程（示例）
-LineToSolid：
-1. 在 PS 中选中一个或多个曲线特征。  
-2. 菜单 → TxTools → LineToSolid，点【从选择添加】加入特征列表。  
-3. 选择截面类型（矩形/圆形）、输入尺寸（mm），如有圆弧调整“最大弦高”。  
-4. 点击【生成几何体】，操作包裹在 UndoScope 中，支持 Ctrl+Z 撤销。
 
-FenceBuilder（围栏）：
-1. 在场景准备直线或多段线基线（首端 Z 作为地面）。  
-2. 菜单 → TxTools → 围栏生成器，选择基线并调整参数（网片宽/高、立柱尺寸、间隙、底板、纹理）。  
-3. 点击【生成围栏】；若不满意在 PS 中使用 Ctrl+Z，或用【清理上次生成】清理该批生成物。
+```mermaid
+flowchart LR
+    A[准备工程与对象] --> B[拾取并填写参数]
+    B --> C[执行工具或配方]
+    C --> D[查看日志与异常项]
+    D --> E[复核场景或导出交付]
+```
 
-ExportGun：
-1. 在插件窗体加载或选择焊点集合/焊枪对象。  
-2. 选择导出目标（Excel / CATIA），配置输出选项并执行导出。
+| 场景 | 操作顺序 | 复核重点 |
+|---|---|---|
+| 焊接路径 | 准备干涉集 → 加入已绑定机器人的焊接操作 → 规划 → 检查日志与 Via | 失败段、碰撞、工艺顺序与机器人姿态；中止会保留已完成 Via |
+| 曲线实体 | 选中曲线 → 从选择添加 → 设置截面与尺寸 → 生成 | 截面、姿态与圆弧离散；支持撤销的场景变更按批次处理 |
+| 围栏布局 | 准备基线 → 设置网片、立柱、底板和间隙 → 生成 | 多基线结果与既有资源；“清理上次生成”只处理记录的生成物 |
+| 导出交付 | 选取焊枪、点位或几何 → 设置参考系和导出目标 → 导出 | 坐标系、单位、文件和 CATIA / Excel 结果 |
+| AI 配方 | 查询实际场景 → 核对变更参数或代码 → 执行 → 保存已验证配方 | 目标工程、工具结果、参数绑定与外部副作用 |
 
-TxAgent：
-1. 在 PS 中注册并打开 `TxAgent` 命令，首次使用时按所选模型提供 API Key；API Key 使用 Windows DPAPI 加密保存。  
-2. 先用只读工具查询真实场景数据，例如 `query_scene`、`find_objects`、`list_operations`、`check_reachability` 或 `api_lookup`。  
-3. 需要修改场景时，检查审批对话框中的工具参数或生成代码；通过审批后执行，支持撤销的操作可使用 Ctrl+Z 回滚。  
-4. 复杂任务可先使用 `update_plan`，将验证过的步骤保存为配方；需要导出时使用 `export_table`、`export_points_excel`、`export_object_list` 或文档导出工具。
-
----
+**撤销与恢复**：执行失败不等于自动回滚。如已有部分场景变更，在目标 PS 工程图形窗口按 Ctrl+Z；输入框和远程实例的撤销作用域不同。文件、CATIA、Excel、配置与保存重载使用各自恢复方式，见 [13 项修复清单与宿主验收说明](docs/undo-safety.md)。
 
 ## 六、TxAgent 重要约定
 
-- `Agent/TxAgentCommand.cs` 是 TxAgent 的 PS 命令入口；工具注册、窗口生命周期和多 PDPS 无界面执行器都从这里接入。
-- `Agent/Core/Harness/` 提供与宿主解耦的 Agent 循环，`PsAgentHost` 负责 PS 主线程封送，`TxAgentToolAdapter` 负责把 TxTools 工具接入通用 harness。
-- `Agent/Core/MdStore.cs` 是 Markdown 存储底座；知识库按 `##` / `###` 小节解析，目录摘要常驻提示词，正文按需检索，避免一次性占满上下文。
-- `Agent/Core/ModelRouter.cs` 按 Chat、Vision、Cheap、LongContext 等任务场景选择模型；主对话模型仍以用户在界面中的选择为准。
-- `run_csharp`、`run_python` 和源码变更工具属于高风险路径：执行前应先查 API/片段库并审阅代码，不能在后台线程直接访问 PS SDK。
+外部客户端通过 MCP 桥接到目标 PS 实例；SDK 调用仍在进程内执行：
+
+```mermaid
+flowchart LR
+    A[外部 MCP 客户端] -->|stdio| B[TxToolsMcpBridge.exe]
+    B -->|命名管道 RPC| C[目标 PS 的 TxAgent]
+    C -->|主线程封送| D[Tecnomatix SDK]
+```
+
+- **先查询再变更**：先确认真实对象、操作、机器人和 API，再审阅工具参数或生成代码。
+- **目标实例明确**：远程执行的场景历史属于目标 PDPS 工程，发起端的 Ctrl+Z 不能撤销另一实例。
+- **模型配置明确**：主对话模型以界面选择为准；其他任务按已配置能力选择候选，不能假定任意端点都支持视觉或工具调用。
+- **SDK 调用留在主线程**：工具内不得另起后台线程直接访问 PS 工程对象。
+
+入口：[Agent/README.md](Agent/README.md) · [Harness 接入](Agent/Core/Harness/README_Harness接入.md) · [MCP 配置](McpBridge/README.md)。
 
 ## 七、实现细节与重要约定
-- 圆弧离散（LineToSolid）：给定半径 r 与最大弦高 s，分段角度 θ = 2·arccos(1 - s/r)，总扫掠角 / θ 向上取整得到段数 n，然后等分生成点与直线段。  
-- 姿态对齐：段方向 dir = normalize(End - Start) 作为局部 Z；选取不共线的辅助轴以生成局部 X、Y，组装 4×4 变换赋给几何的 AbsoluteLocation。  
-- 围栏几何约定（FenceBuilder）：强制水平投影、立柱两端放置与段内定间距生成、角点合并规则、网片宽度按中心距减去立柱与间隙计算等。  
-- 纹理/颜色设置采用分级回退：若纹理 API 不可用则退为半透明纯色；颜色构造尝试多种构造形式以兼容不同 PS 版本接口。
 
----
+<details>
+<summary>展开几何与 SDK 实现说明</summary>
+
+- 曲线圆弧按半径和最大弦高离散：θ = 2 × arccos(1 − s / r)，再按总扫掠角确定分段数。
+- 线段方向用作实体局部 Z 轴，配合不共线辅助轴建立姿态矩阵。
+- 围栏按水平投影、柱距、角点合并和网片间隙规则生成；纹理不可用时尝试纯色显示。
+- SDK 成员存在版本差异。不确定的类型和成员先查文档或探测，再实现受控回退；撤销层使用已核验的真实 Start/End 接口。
+
+具体算法和参数见 [LineToSolid](LineToSolid/README.md)、[AutoFance](AutoFance/README.md)、[AutoPath](AutoPath/README.md)。
+
+</details>
 
 ## 八、常见问题与排查建议
-1. 找不到或无法访问 PS API 成员：检查当前引用的 PS SDK 版本，使用 IntelliSense 确认实际类型/成员名；首次运行观察日志以确定实际生效的探测路径。  
-2. 插件未在 PS 中出现：确认 CommandReg 注册成功、选择的 XML 与产品是否正确、PS 是否重启。  
-3. TxTransformation 或几何姿态异常：尝试不同的矩阵构造路径（ctor、SetMatrix、Matrix 属性等），并观察日志中回退路径。  
-4. 纹理无法加载或颜色异常：检查资源是否随 DLL 部署或嵌入资源是否正确解包，纹理 API 有多级降级逻辑。  
-5. 圆弧顶点/属性读取失败：模块尝试多种候选属性名（Center、Radius、Start/End、Normal/Axis、SweepAngle 等），请以日志为准固化正确字段。  
-调试建议：在小场景下快速验证几何与姿态，再扩展到大场景；启用并审阅内置日志以判断探测路径与 API 调用结果。
 
----
+| 现象 | 优先检查 |
+|---|---|
+| 插件没有出现在 PS | 部署目录、CommandReg 中的 DLL / 类 / 产品 / XML，以及是否已重启 PS |
+| 构建找不到 SDK 或 COM 引用 | `ProcessSimulateDllDir`、本机 PS 版本、CATIA 类型库和 JT 解码器依赖 |
+| 几何方向、颜色或纹理异常 | 小场景下检查参考系、资源部署和模块日志，再扩大范围 |
+| AI 或配方没有执行 | 模型端点与 Key、对象绑定、必填参数、审批或共享执行状态 |
+| 路径规划跳过操作 | 操作的机器人绑定、干涉集、HOME / 工具数据及日志警告 |
+| Ctrl+Z 没有恢复预期结果 | 图形窗口焦点、实际目标实例、是否发生保存重载，以及操作是否属于外部文件或应用 |
+
+提交问题时请附 PS 版本、模块名称、最小复现步骤与相关日志；在工程副本中复现更便于核对。
 
 ## 九、打包与发布建议
-- 资源（如 mesh_pattern.png）可随 DLL 同目录下的 Resources 文件夹一起发布，或嵌入并在运行时正确解包。  
-- 插件发布前在对应 PS 版本上做回归测试（测量 Solid 数量与生成耗时），以避免在生产场景中出现性能问题。  
-- 对于 CATIA 交互功能，确保目标机器上已安装所需的 CATIA COM 组件并做好权限/COM 注册验证。
 
----
+- 保留主 DLL、依赖及资源的相对目录结构；CATIA 相关功能还依赖目标机器的 COM 环境。
+- 发布前在目标 PS 版本验收实际工程操作，包括拾取、几何、Undo/Redo、导出和长任务停止。
+- 本仓库的回归与构建结果代表已记录的测试范围，不能替代 PS / CATIA / Excel 实机验证。
 
 ## 十、开发与贡献要点
-- 主项目当前编译配置为 C# 8.0；PS 脚本与运行时代码片段遵守 C# 7.3 兼容约定。贡献指南中的 7.3 约定应与该运行时限制一起理解。
-- 所有不确定的外部 API 都应优先用 dynamic + try/catch 多路径探测，稳定后可替换为强类型以提升性能。  
-- 每个 `TxButtonCommand` 的 GUID 顶部注解请确保为合法 GUID（使用 VS Create GUID 工具生成）。  
-- 贡献前请阅读并遵守仓库根目录的 CONTRIBUTING.md。欢迎 Issues 与 PR。
 
----
+遵守 [贡献指南](CONTRIBUTING.md)：主项目当前为 C# 8.0 配置，运行时代码片段与 PS 脚本保持 C# 7.3 兼容；不猜测 SDK 成员，不将 SDK DLL、API Key、下载的运行组件或构建产物提交到仓库。
+
+相关验证入口：[配方与启动](Agent/maintenance/recipe-controls-tests/README.md) · [拾取焦点](Tests/PickFocus/PickFocus.csproj) · [显示会话](WeldAnnotator/README.md) · [撤销安全](docs/undo-safety.md#已完成验证)。
 
 ## 十一、许可与联系方式
-- 授权：MIT（详见 LICENSE 文件）。  
-- 欢迎在 [PDPS_TxTools 仓库](https://github.com/ShuiYinMaster/PDPS_TxTools) 中提交 Issue 与 PR。
 
----
+源码采用 [MIT License](LICENSE)。欢迎通过 [Issues](https://github.com/ShuiYinMaster/PDPS_TxTools/issues) 提交问题或通过 [Pull Requests](https://github.com/ShuiYinMaster/PDPS_TxTools/pulls) 贡献改进。
 
 ## 十二、附录：仓库中应关注的模块与文件（供开发者快速定位）
-- ExportGun/：导出相关实现（PsReader、ExportGunForm、CatiaBridge 等）。  
-- LineToSolid/：曲线离散、几何构建、姿态对齐的实现。  
-- AutoFance/（FenceBuilder）：围栏布局、几何构建、纹理处理。  
-- RobotReachabilityChecker/：可达性检查逻辑。  
-- Agent/：TxAgent 入口、harness、模型路由、工具、记忆/知识库、配方和 UI。  
-- CrossEnvIO/：跨环境对象、组件、焊点和结构数据处理。  
-- McpBridge/：面向外部 Agent 的 stdio 桥接程序。  
-- 共享工具与资源：Common/、Image/、SRC/、Resources 等。
 
----
+<details>
+<summary>展开源码目录导览</summary>
 
-（文档由当前仓库代码、`Agent/README.md` 与子模块说明整理而成）
+| 目录 / 文件 | 职责 |
+|---|---|
+| `Agent/` | AI、工具、配方、知识库、模型路由、UI 与进程内 RPC |
+| `McpBridge/` | 独立 stdio 桥接程序 |
+| `AutoPath/` | 路径规划、碰撞校验、RRT 与顺序优化 |
+| `ExportGun/` / `ExportByColor/` | 导出、CATIA 桥与几何后处理 |
+| `CrossEnvIO/` / `CatiaPartTree/` | 跨环境结构数据与产品树 |
+| `SRC/` / `Common/` | 共享 UI、拾取、场景事务、生成批次和工程快照 |
+| `Tests/` / `Agent/maintenance/` | 回归工具与维护说明 |
+| `docs/` / `Image/` | 恢复与验收说明、首页图片、命令图标 |
+| `TxTools.csproj` | 主构建入口；14 份配方资源在构建后校验 |
 
+</details>
 
 ## 十三、更新日志
+
+### 2026-10-09 — 主 README 图文首页
+
+- 新增 SVG 项目首屏、六类任务功能地图，以及当前源码生成的配方侧栏 / 快捷配方界面预览。
+- 按工程任务整理入口与全部 23 个模块，加入安装、使用与 MCP 调用流程图，缩短重复说明。
+- 保留既有文档锚点、历史更新日志和撤销边界；界面预览明确标注示例对象与模拟执行。
+- 本次为文档与图片更新，核对本地链接、锚点、图片和页面排版；未重新运行插件构建或宿主回归。
+
+以下条目记录对应日期的源码同步和测试范围。
 
 ### 2026-10-07 — Ctrl+Z 撤销与恢复修复
 
