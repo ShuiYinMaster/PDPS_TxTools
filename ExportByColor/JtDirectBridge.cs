@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -21,6 +21,32 @@ namespace TxTools.ExportByColor
         {
             public readonly List<float[]> Vertices = new List<float[]>();
             public readonly List<Triangle> Faces = new List<Triangle>();
+        }
+        // Each call owns its decoder process, mesh, output file and log callback.
+        // Callers must provide detached placement data and a unique output path.
+        public static void ConvertToCgr(string source, string directory, string worker,
+            string output, double[] placement, Action<string> log)
+        {
+            var mesh = Convert(source, directory, worker, 300000);
+            Place(mesh, placement);
+            var faces = new List<CgrWriter.Face>(mesh.Faces.Count);
+            foreach (var face in mesh.Faces)
+                faces.Add(new CgrWriter.Face { Idx=face.Indices, R=face.R, G=face.G, B=face.B,
+                    Surface=face.Surface, Nx=face.Normal[0], Ny=face.Normal[1], Nz=face.Normal[2] });
+            CgrWriter.BuildFile(mesh.Vertices, faces, output, CgrBackend.Compact, 20000, log, true);
+        }
+
+        public static int ConversionWorkers
+        {
+            get
+            {
+                // A 32-bit PS host has limited address space; default to two on 64-bit.
+                int limit = Environment.Is64BitProcess ? Math.Min(4, Environment.ProcessorCount) : 1;
+                int requested;
+                if (!int.TryParse(Environment.GetEnvironmentVariable("TXTOOLS_JT_WORKERS"), out requested)
+                    || requested < 1) requested = 2;
+                return Math.Max(1, Math.Min(limit, requested));
+            }
         }
         public static string ResolveFile(string source)
         {
