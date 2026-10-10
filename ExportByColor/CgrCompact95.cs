@@ -49,7 +49,7 @@ namespace TxTools.ExportByColor
             var groups=new Dictionary<Tuple<int,int>,List<Face>>();var order=new List<List<Face>>();
             foreach(var f in faces)
             {
-                var key=Tuple.Create(f.Surface,f.R|(f.G<<8)|(f.B<<16));List<Face> group;
+                var key=Tuple.Create(f.Surface,f.R|(f.G<<8)|(f.B<<16)|((f.Opacity??255)<<24));List<Face> group;
                 if(!groups.TryGetValue(key,out group)){group=new List<Face>();groups.Add(key,group);order.Add(group);}group.Add(f);
             }
             int[] all=new int[vertices.Count];for(int i=0;i<all.Length;i++)all[i]=i;var global=Bounds(vertices,all);
@@ -101,6 +101,9 @@ namespace TxTools.ExportByColor
                     double ab=0,ac=0,dot=0;
                     for(int j=0;j<3;j++){double u=(double)b[j]-a[j],v=(double)c[j]-a[j];ab+=u*u;ac+=v*v;dot+=u*v;}
                     angles[i][k]=Math.Acos(Math.Max(-1,Math.Min(1,dot/Math.Sqrt(ab*ac))));
+                    // A valid slender triangle can round cosine to 1. Preserve its tiny
+                    // corner weight instead of producing a zero shading normal.
+                    if(angles[i][k]==0)angles[i][k]=Math.Atan2(areas[i],dot);
                     long key=EdgeKey(ids[i][k],ids[i][(k+1)%3]);List<int> edge;
                     if(!edges.TryGetValue(key,out edge)){edge=new List<int>();edges.Add(key,edge);}edge.Add(i*3+k);
                 }
@@ -234,7 +237,7 @@ namespace TxTools.ExportByColor
                 w.Write(normalMap);w.Write(.2f);w.Write(new byte[]{0,1,2,10});Compact(w,1);w.Write(new byte[]{1,65});
                 Compact(w,(uint)faces.Count);Compact(w,(uint)checked(faces.Count*3));
                 foreach(var tri in faces)foreach(int j in tri)Index(w,remap[j],vs.Count>255);
-                w.Write(new byte[]{32,4,4,255,255,color.B,color.G,color.R});payload=ms.ToArray();
+                w.Write(new byte[]{32,4,4,color.Opacity??255,255,color.B,color.G,color.R});payload=ms.ToArray();
             }
             var bounds=Bounds(vs,order.ToArray());var header=(byte[])Leaf95.Clone();
             Float(header,17,bounds[9]+Math.Max(.2,bounds[9]*1e-6));for(int k=0;k<3;k++)Float(header,25+4*k,bounds[k]);LE(header,2,checked(header.Length+payload.Length-1));

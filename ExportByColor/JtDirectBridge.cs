@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -13,7 +13,7 @@ namespace TxTools.ExportByColor
         public sealed class Triangle
         {
             public int[] Indices;
-            public byte R,G,B;
+            public byte R,G,B; public byte Alpha = 255;
             public int Surface;
             public float[] Normal;
         }
@@ -32,7 +32,7 @@ namespace TxTools.ExportByColor
             var faces = new List<CgrWriter.Face>(mesh.Faces.Count);
             foreach (var face in mesh.Faces)
                 faces.Add(new CgrWriter.Face { Idx=face.Indices, R=face.R, G=face.G, B=face.B,
-                    Surface=face.Surface, Nx=face.Normal[0], Ny=face.Normal[1], Nz=face.Normal[2] });
+                    Surface=face.Surface, Opacity=face.Alpha, Nx=face.Normal[0], Ny=face.Normal[1], Nz=face.Normal[2] });
             CgrWriter.BuildFile(mesh.Vertices, faces, output, CgrBackend.Compact, 20000, log, true);
         }
 
@@ -103,20 +103,22 @@ namespace TxTools.ExportByColor
         public static Mesh Read(string path,string source)
         {
             using(var r=new BinaryReader(File.OpenRead(path))) {
-                if(Encoding.ASCII.GetString(r.ReadBytes(8))!="JTMESH01"||r.ReadUInt32()!=1)throw new InvalidDataException("JT mesh 协议不支持");
+                string magic=Encoding.ASCII.GetString(r.ReadBytes(8)); uint version=r.ReadUInt32();
+                bool rgba=magic=="JTMESH02"&&version==2;
+                if(!rgba && !(magic=="JTMESH01"&&version==1))throw new InvalidDataException("JT mesh 协议不支持");
                 byte[] expected=r.ReadBytes(32),actual;
                 using(var h=SHA256.Create())using(var s=File.OpenRead(source))actual=h.ComputeHash(s);
                 if(expected.Length!=32)throw new InvalidDataException("摘要截断");
                 for(int i=0;i<32;i++)if(expected[i]!=actual[i])throw new InvalidDataException("JT 文件已变化或网格来源不匹配");
                 uint nv=r.ReadUInt32(),nf=r.ReadUInt32();
-                if(nv==0||nf==0||nv>5000000||nf>5000000||r.BaseStream.Length!=52L+nv*12L+nf*31L)
+                if(nv==0||nf==0||nv>5000000||nf>5000000||r.BaseStream.Length!=52L+nv*12L+nf*(rgba?32L:31L))
                     throw new InvalidDataException("网格数量、长度或 500 万限制不符合要求");
                 var mesh=new Mesh();
                 for(uint i=0;i<nv;i++)mesh.Vertices.Add(new[]{Finite(r.ReadSingle()),Finite(r.ReadSingle()),Finite(r.ReadSingle())});
                 for(uint i=0;i<nf;i++) {
                     int[] ids={r.ReadInt32(),r.ReadInt32(),r.ReadInt32()};
                     foreach(int id in ids)if(id<0||id>=nv)throw new InvalidDataException("网格索引越界");
-                    var face=new Triangle{Indices=ids,R=r.ReadByte(),G=r.ReadByte(),B=r.ReadByte(),Surface=r.ReadInt32(),
+                    var face=new Triangle{Indices=ids,R=r.ReadByte(),G=r.ReadByte(),B=r.ReadByte(),Alpha=rgba?r.ReadByte():(byte)255,Surface=r.ReadInt32(),
                         Normal=new[]{Finite(r.ReadSingle()),Finite(r.ReadSingle()),Finite(r.ReadSingle())}};
                     if(face.Surface<=0)throw new InvalidDataException("缺少 Shape 面域");mesh.Faces.Add(face);
                 }

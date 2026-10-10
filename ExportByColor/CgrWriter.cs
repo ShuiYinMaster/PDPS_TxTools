@@ -9,14 +9,14 @@ namespace TxTools.ExportByColor
     // Experimental R7-R12 standalone encoding. Opaque metadata/ID allocation remain experimental.
     public static partial class CgrWriter
     {
-        public const string Version="CGR-20261008-R41-jt-visible-faces";
+        public const string Version="CGR-20261010-R42-jt-rgba";
         // Compact and CFV3-compatible output retain their established chunk size.
         public const int MaxVertsPerChunk=40960;
         // Feature CGR uses unsigned 16-bit indices and can address 65,536 vertices.
         // The larger limit avoids artificial topology cuts in that separate backend.
         private const int MaxFeatureVertsPerChunk=65536;
         private const int MaxFacesPerChunk=20000;
-        public struct Face { public float Nx,Ny,Nz; public int[] Idx; public byte R,G,B; public int Surface; }
+        public struct Face { public float Nx,Ny,Nz; public int[] Idx; public byte R,G,B; public byte? Opacity; public int Surface; }
         private sealed class Entry
         {
             public int Type,Offset,Count; public byte[] Data;
@@ -96,6 +96,8 @@ namespace TxTools.ExportByColor
         {
             if(vertices==null||faces==null||faces.Count==0||maxFacesPerBlock<1) throw new ArgumentException("Empty mesh or invalid block size");
             backend=ResolveBackend(backend);
+            if(faces.Exists(f => (f.Opacity ?? 255) != 255) && (backend != CgrBackend.Compact || !preserveSourceWinding))
+                throw new NotSupportedException("RGBA requires compact CGR with source winding retained");
             bool features=backend==CgrBackend.LineFace||backend==CgrBackend.LineFacePlanar;
             var watch=Stopwatch.StartNew();int inputFaces=faces.Count;
             if(progress!=null) progress("[CGR] 编码器 "+Version+"；方案="+backend+"；DLL="+typeof(CgrWriter).Assembly.Location+"；批量="+(Environment.GetEnvironmentVariable("TXTOOLS_CGR_BATCH_LISTS")!="0")+"；边="+(features||Environment.GetEnvironmentVariable("TXTOOLS_CGR_WRITE_EDGES")=="1")+"；背面="+(!preserveSourceWinding&&Environment.GetEnvironmentVariable("TXTOOLS_CGR_DUPLICATE_BACKFACES")!="0"));
