@@ -55,12 +55,43 @@ class Program
             if (r.BaseStream.Position != r.BaseStream.Length) throw new InvalidDataException("Trailing LSG bytes");
         }
     }
+    // RangeLOD children are alternative representations, not assembly components.
+    // Segment type 7 contains the highest-detail triangle data loaded by this worker.
+    static bool HasTriangle(int id, bool requireLoaded, HashSet<int> path)
+    {
+        if (path.Count > 1000 || !path.Add(id)) throw new InvalidDataException("Cyclic JT LOD graph");
+        Node n;
+        if (!nodes.TryGetValue(id, out n)) throw new InvalidDataException("Missing JT LOD node: " + id);
+        bool found = false;
+        if (n.Type == "10dd1077")
+        {
+            Segment s;
+            if (n.Segment == Guid.Empty || !segments.TryGetValue(n.Segment, out s))
+                throw new InvalidDataException("Missing shape binding in LOD node: " + id);
+            found = !requireLoaded || (s.Type == 7 && s.Data != null);
+        }
+        if (!found) found = n.Children.Any(child => HasTriangle(child, requireLoaded, path));
+        path.Remove(id);
+        return found;
+    }
     static void Walk(int id, double[] matrix, double[] rgba, uint final, HashSet<int> path)
     {
         if (path.Count > 1000 || !path.Add(id)) throw new InvalidDataException("Cyclic JT graph"); var n = nodes[id]; rgba = (double[])rgba.Clone();
         foreach (int attr in n.Attributes) { var a = nodes[attr]; if (a.RGBA != null && (a.State & 4) == 0) { uint allowed = ~a.Inhibit & ((a.State & 2) != 0 ? uint.MaxValue : ~final); if ((allowed & 64) != 0) Array.Copy(a.RGBA, rgba, 3); if ((allowed & 128) != 0) rgba[3] = a.RGBA[3]; final |= a.Final & allowed; } if (a.Matrix != null) { if (n.Type != "10dd102a") throw new InvalidDataException("Transform on non-instance node"); matrix = Multiply(a.Matrix, matrix); } }
         if (n.Type == "10dd1077") { Segment s; if (n.Segment == Guid.Empty || !segments.TryGetValue(n.Segment, out s)) throw new InvalidDataException("Missing shape binding"); if (rgba.Take(3).Any(double.IsNaN) || rgba[3] != 1) throw new InvalidDataException("Missing/transparent shape material"); Rigid(matrix); bindings.Add(new Binding { Segment = s, Matrix = matrix, RGBA = rgba }); }
-        foreach (int child in n.Children) Walk(child, matrix, rgba, final, path); path.Remove(id);
+        var selectedChildren = n.Children;
+        if (n.Type == "10dd104c" && n.Children.Length > 1)
+        {
+            selectedChildren = n.Children.Where(child => HasTriangle(child, true, new HashSet<int>())).ToArray();
+            if (selectedChildren.Length > 1)
+                throw new NotSupportedException("Ambiguous highest-detail triangle LOD at node " + id);
+            if (selectedChildren.Length == 0 && HasTriangle(id, false, new HashSet<int>()))
+                throw new NotSupportedException("No supported highest-detail triangle LOD at node " + id);
+            Console.WriteLine("LOD node=" + id + " alternatives=" + n.Children.Length +
+                " selected=" + (selectedChildren.Length == 0 ? "non-triangle" : selectedChildren[0].ToString()));
+        }
+        foreach (int child in selectedChildren) Walk(child, matrix, rgba, final, path);
+        path.Remove(id);
     }
     static void Decode(Binding binding, int surface, JTFile file)
     {
@@ -68,18 +99,18 @@ class Program
         // Read topology separately so unsupported vertex layouts fail before decoding.
         var deg = new List<int[]>(); for (int i = 0; i < 8; i++) deg.Add(Int32CDP.ReadVecI32(reader, PredictorType.PredNull).ToArray());
         var val = Int32CDP.ReadVecI32(reader, PredictorType.PredNull); var groups = Int32CDP.ReadVecI32(reader, PredictorType.PredNull); var flags = Int32CDP.ReadVecI32(reader, PredictorType.PredLag1);
-        var masks = new List<int[]>(); for (int i = 0; i < 8; i++) masks.Add(Int32CDP.ReadVecI32(reader, PredictorType.PredNull).ToArray()); var next = Int32CDP.ReadVecI32(reader, PredictorType.PredNull); var high = reader.ReadVecU32().Select(v => (long)v).ToArray(); var splits = Int32CDP.ReadVecI32(reader, PredictorType.PredLag1); var positions = Int32CDP.ReadVecI32(reader, PredictorType.PredNull); reader.ReadU32(); long vertexPos = reader.Position; if (reader.ReadU64() != 10) throw new InvalidDataException("Only JT bindings 0xA supported"); if (reader.ReadU8() != 0) throw new InvalidDataException("Quantized coordinates unsupported"); reader.Position = vertexPos;
+        var masks = new List<int[]>(); for (int i = 0; i < 8; i++) masks.Add(Int32CDP.ReadVecI32(reader, PredictorType.PredNull).ToArray()); var next = Int32CDP.ReadVecI32(reader, PredictorType.PredNull); var high = reader.ReadVecU32().Select(v => (long)v).ToArray(); var splits = Int32CDP.ReadVecI32(reader, PredictorType.PredLag1); var positions = Int32CDP.ReadVecI32(reader, PredictorType.PredNull); reader.ReadU32(); long vertexPos = reader.Position; ulong vertexBindings = reader.ReadU64(); if (vertexBindings != 0xA && vertexBindings != 0x4A) throw new NotSupportedException("Unsupported JT vertex bindings 0x" + vertexBindings.ToString("X")); if (vertexBindings == 0x4A) Console.WriteLine("VERTEX_FLAGS surface=" + surface + " bindings=0x4A"); if (reader.ReadU8() != 0) throw new InvalidDataException("Quantized coordinates unsupported"); reader.Position = vertexPos;
         var records = new TopologicallyCompressedVertexRecords(reader); var driver = new MeshCoderDriver(); driver.setInputData(val, deg, groups, flags, masks, next, null, high, splits, positions); driver.decode(); var mesh = driver.DecodedMesh;
         var xyz = records.compressedVertexCoordinateArray.vertexCoordinates; var normals = records.compressedVertexNormalArray.normalCoordinates; int offset = vertices.Count; var local = new List<double[]>(); for (int i = 0; i < xyz.Count; i += 3) local.Add(Transform(new[] { (double)xyz[i], xyz[i + 1], xyz[i + 2] }, binding.Matrix, true)); vertices.AddRange(local); byte[] rgb = binding.RGBA.Take(3).Select(v => (byte)Math.Round(v * 255)).ToArray();
-        for (int f = 0; f < mesh.numFaces(); f++) { int nv = mesh.faceNumVts(f); for (int k = 1; k < nv - 1; k++) { int[] ids = { mesh.faceVtx(f, 0), mesh.faceVtx(f, k), mesh.faceVtx(f, k + 1) }; if (ids.Any(i => i < 0 || i >= local.Count)) throw new InvalidDataException("Invalid vertex index"); var geo = Cross(local[ids[0]], local[ids[1]], local[ids[2]]); var original = ids.Select(i => new[] { (double)xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2] }).ToArray(); var sourceGeo = Cross(original[0], original[1], original[2]); if (Math.Sqrt(sourceGeo.Sum(v => v * v)) <= 1e-12) continue; var sum = new double[3];  foreach (int i in ids) { int ni = mesh.faceVtxAttr(f, i);  if (ni < 0) continue; if (ni * 3 + 2 >= normals.Count) throw new InvalidDataException("Invalid normal index"); var norm = Normalize(Transform(new[] { (double)normals[ni * 3], normals[ni * 3 + 1], normals[ni * 3 + 2] }, binding.Matrix, false)); for (int j = 0; j < 3; j++) sum[j] += norm[j]; }  sum = Normalize(sum); if (Enumerable.Range(0, 3).Sum(j => sum[j] * geo[j]) < 0) sum = sum.Select(v => -v).ToArray(); faces.Add(new Face { Ids = ids.Select(i => i + offset).ToArray(), RGB = rgb, Surface = surface, Normal = sum }); } }
-        if (vertices.Count > 5000000 || faces.Count > 5000000) throw new InvalidDataException("Mesh size limit"); Console.WriteLine("Shape " + surface + " vertices=" + local.Count + " totalFaces=" + faces.Count);
+        int correctedWinding = 0, hiddenTriangles = 0; for (int f = 0; f < mesh.numFaces(); f++) { int nv = mesh.faceNumVts(f); if (mesh.faceGrp(f) < 0) { hiddenTriangles += Math.Max(0, nv - 2); continue; } for (int k = 1; k < nv - 1; k++) { int[] ids = { mesh.faceVtx(f, 0), mesh.faceVtx(f, k), mesh.faceVtx(f, k + 1) }; if (ids.Any(i => i < 0 || i >= local.Count)) throw new InvalidDataException("Invalid vertex index"); var geo = Cross(local[ids[0]], local[ids[1]], local[ids[2]]); var original = ids.Select(i => new[] { (double)xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2] }).ToArray(); var sourceGeo = Cross(original[0], original[1], original[2]); if (Math.Sqrt(sourceGeo.Sum(v => v * v)) <= 1e-12) continue; var sum = new double[3];  foreach (int i in ids) { int ni = mesh.faceVtxAttr(f, i);  if (ni < 0) continue; if (ni * 3 + 2 >= normals.Count) throw new InvalidDataException("Invalid normal index"); var norm = Normalize(Transform(new[] { (double)normals[ni * 3], normals[ni * 3 + 1], normals[ni * 3 + 2] }, binding.Matrix, false)); for (int j = 0; j < 3; j++) sum[j] += norm[j]; }  sum = Normalize(sum); if (Enumerable.Range(0, 3).Sum(j => sum[j] * geo[j]) < 0) { int swap = ids[1]; ids[1] = ids[2]; ids[2] = swap; correctedWinding++; } if (sum.Sum(v => v * v) < 0.5) sum = Normalize(geo); faces.Add(new Face { Ids = ids.Select(i => i + offset).ToArray(), RGB = rgb, Surface = surface, Normal = sum }); } }
+        if (vertices.Count > 5000000 || faces.Count > 5000000) throw new InvalidDataException("Mesh size limit"); Console.WriteLine("Shape " + surface + " vertices=" + local.Count + " totalFaces=" + faces.Count + " sourceNormalWindingCorrections=" + correctedWinding + " hiddenTopologyTriangles=" + hiddenTriangles);
     }
     static float F(double v) { float f = (float)v; if (float.IsNaN(f) || float.IsInfinity(f)) throw new InvalidDataException("Nonfinite mesh"); return f; }
     static void ValidateHeader(BinaryReader r,string input)
     {
         string header=Encoding.ASCII.GetString(Bytes(r,80)).TrimEnd('\0',' ','\r','\n');
         byte order=r.ReadByte();
-        Console.WriteLine("DECODER=TxTools.JtDecoder version-routing-v2");
+        Console.WriteLine("DECODER=TxTools.JtDecoder visible-faces-v5");
         Console.WriteLine("INPUT="+input);
         Console.WriteLine("JT_HEADER="+header+" BYTE_ORDER="+order);
         var version=System.Text.RegularExpressions.Regex.Match(header,@"^Version\s+(\d+)\.(\d+)\s+JT(?:\s|$)");

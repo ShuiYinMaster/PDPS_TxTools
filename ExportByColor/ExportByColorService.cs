@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -480,10 +480,28 @@ namespace TxTools.ExportByColor
             return generated;
         }
 
+        private sealed class PendingJtConversion
+        {
+            // PS reference is used only by the coordinator for compatibility collection.
+            internal ITxObject Source;
+            internal Task<EncodedDevice> Task;
+            internal List<string> Logs;
+        }
+
+        private static Task<EncodedDevice> StartJtConversion(EncodedDevice result,
+            string directory, string decoder, double[] placement, List<string> logs)
+        {
+            return Task.Run(() =>
+            {
+                try { JtDirectBridge.ConvertToCgr(result.SourcePath, directory, decoder, result.Path, placement, logs.Add); }
+                catch (Exception ex) { result.Error = ex; }
+                return result;
+            });
+        }
+
         /// <summary>
-        /// Production JT route: resolve the selected Process Simulate resource's
-        /// backing JT file, encode the native loaded representation as CGR, and
-        /// insert that CGR into the active CATIA Product document.
+        /// Snapshot resource metadata on PS, convert detached JT data in bounded workers,
+        /// and insert completed CGRs from a single CATIA STA coordinator.
         /// </summary>
         public void RunJtToCgrAsync(List<ITxObject> picked,
                                     Action<string> onLog,
@@ -493,6 +511,7 @@ namespace TxTools.ExportByColor
             var thread = new Thread(() =>
             {
                 int ok = 0, failed = 0;
+                var pending = new Queue<PendingJtConversion>();
                 string workDir = Path.Combine(Path.GetTempPath(),
                     "TxTools_JT_CGR_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" +
                     Guid.NewGuid().ToString("N").Substring(0, 8));
@@ -513,101 +532,103 @@ namespace TxTools.ExportByColor
                     });
                     if (devices.Count == 0) throw new InvalidOperationException("没有可转换的设备");
                     var progress = new ExportProgressState(devices.Count);
+                    int workers = JtDirectBridge.ConversionWorkers;
+                    string decoder = Path.Combine(Path.GetDirectoryName(typeof(ExportByColorService).Assembly.Location),
+                        "JtDirectCs", "TxTools.JtDecoder.exe");
                     progress.Report(onProgress, "JT 准备", null);
-                    SafeLog(onLog, "[JT→CGR] " + devices.Count + " 个资源；输出目录：" + workDir);
+                    SafeLog(onLog, "[JT→CGR parallel] workers=" + workers + "; resources=" + devices.Count + "; output=" + workDir);
+                    SafeLog(onLog, "[JT 直接保色] 使用 JT 文件内姿态和颜色，应用资源整体放置；未采集 PS 运动部件当前姿态");
                     var names = new ExportNames();
-                    foreach (var device in devices)
+                    Action<PendingJtConversion> finish = item =>
                     {
-                        string name = names.Next(OnPs(() => device.Name));
-                        progress.Report(onProgress, "解析 JT", name);
+                        var result = item.Task.GetAwaiter().GetResult();
+                        foreach (string message in item.Logs) DetailLog(onLog, "[" + result.ExportName + "] " + message);
                         try
                         {
-                            string jtPath = null, trace = null;
-                            bool resolved = OnPs(() => JtResourceResolver.TryResolve(device, out jtPath, out trace));
-                            if (!resolved || string.IsNullOrWhiteSpace(jtPath))
-                                throw new FileNotFoundException("未能从资源解析 JT 文件或 COJT 目录（" + trace + "）", jtPath);
-                            if (!SysFile.Exists(jtPath) && !Directory.Exists(jtPath))
-                                throw new FileNotFoundException("JT 文件或 COJT 资源目录不存在", jtPath);
-                            SafeLog(onLog, "[JT] " + name + " ← " + jtPath + "（" + trace + "）");
-
+                            var unsupported = result.Error as NotSupportedException;
+                            if (unsupported != null)
                             {
-                                var placement = OnPs(() =>
-                                {
-                                    var located = device as ITxLocatableObject;
-                                    if (located == null) throw new InvalidOperationException("资源没有可读取的放置坐标");
-                                    var loc = located.AbsoluteLocation;
-                                    var o = loc.Transform(new TxVector(0, 0, 0));
-                                    var x = loc.Transform(new TxVector(1, 0, 0));
-                                    var y = loc.Transform(new TxVector(0, 1, 0));
-                                    var z = loc.Transform(new TxVector(0, 0, 1));
-                                    return new double[] { x.X-o.X,x.Y-o.Y,x.Z-o.Z,0,
-                                        y.X-o.X,y.Y-o.Y,y.Z-o.Z,0,z.X-o.X,z.Y-o.Y,z.Z-o.Z,0,o.X,o.Y,o.Z,1 };
-                                });
-                                string decoder = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(typeof(ExportByColorService).Assembly.Location),
-                                    "JtDirectCs", "TxTools.JtDecoder.exe");
-                                SafeLog(onLog, "[JT 直接保色] 使用 JT 文件内姿态和颜色，应用资源整体放置；未采集 PS 运动部件当前姿态");
-                                progress.Report(onProgress, "JT 直接解码", name);
-                                var directTreePath = OnPs(() => GetTreePath(device, onLog));
-                                JtDirectBridge.Mesh mesh;
+                                SafeLog(onLog, "[JT compatibility] " + unsupported.Message);
+                                SafeLog(onLog, "[JT compatibility] Using loaded PS geometry/design colors and current PS pose; direct JT face-color decoder is not used.");
+                                progress.Report(onProgress, "PS compatibility collection", result.ExportName);
+                                var nativeData = CollectDeviceGroups(new List<ITxObject> { item.Source }, null, onLog, true);
+                                if (nativeData == null || nativeData.Count == 0)
+                                    throw new InvalidOperationException("Native JT compatibility found no loaded PS geometry; " + unsupported.Message);
+                                var nativeGroups = new List<ColorGroup>();
                                 try
                                 {
-                                    mesh = JtDirectBridge.Convert(jtPath, workDir, decoder, 300000);
+                                    foreach (var data in nativeData) nativeGroups.AddRange(data.Colors);
+                                    if (nativeGroups.Count == 0) throw new InvalidOperationException("Native PS compatibility found no triangles");
+                                    // Detached native groups are encoded off PS too. This coordinator
+                                    // blocks until ready, while other direct conversion workers continue.
+                                    result.Path = Task.Run(() => BuildCgr(nativeGroups, result.ExportName, workDir,
+                                        message => DetailLog(onLog, "[" + result.ExportName + "] " + message), CgrBackend.Compact))
+                                        .GetAwaiter().GetResult();
+                                    result.Error = null;
                                 }
-                                catch (NotSupportedException unsupported)
+                                finally
                                 {
-                                    SafeLog(onLog, "[JT compatibility] " + unsupported.Message);
-                                    SafeLog(onLog, "[JT compatibility] Using loaded PS geometry/design colors and current PS pose; direct JT face-color decoder is not used.");
-                                    progress.Report(onProgress, "PS compatibility collection", name);
-                                    var nativeData = CollectDeviceGroups(new List<ITxObject> { device }, null, onLog, true);
-                                    if (nativeData == null || nativeData.Count == 0)
-                                        throw new InvalidOperationException("Native JT compatibility found no loaded PS geometry; " + unsupported.Message);
-                                    var nativeGroups = new List<ColorGroup>();
-                                    try
-                                    {
-                                        foreach (var data in nativeData) nativeGroups.AddRange(data.Colors);
-                                        if (nativeGroups.Count == 0)
-                                            throw new InvalidOperationException("Native PS compatibility found no triangles");
-                                        string nativeCgr = BuildCgr(nativeGroups, name, workDir,
-                                            message => DetailLog(onLog, "[" + name + "] " + message), CgrBackend.Compact);
-                                        progress.Collected++;
-                                        FinishExport(new EncodedDevice { Device = new DeviceData { Name = name, Path = directTreePath },
-                                            ExportName = name, Path = nativeCgr, SourcePath = jtPath },
-                                            "CGR", null, onLog, progress, onProgress, ref ok, ref failed);
-                                    }
-                                    finally
-                                    {
-                                        nativeGroups.Clear();
-                                        foreach (var data in nativeData) data.Colors.Clear();
-                                    }
-                                    continue;
+                                    nativeGroups.Clear();
+                                    foreach (var data in nativeData) data.Colors.Clear();
                                 }
-                                JtDirectBridge.Place(mesh, placement);
-                                var directFaces = new List<CgrWriter.Face>();
-                                foreach (var face in mesh.Faces)
-                                    directFaces.Add(new CgrWriter.Face { Idx=face.Indices,R=face.R,G=face.G,B=face.B,Surface=face.Surface,
-                                        Nx=face.Normal[0],Ny=face.Normal[1],Nz=face.Normal[2] });
-                                string directCgr = System.IO.Path.Combine(workDir, name + ".cgr");
-                                CgrWriter.BuildFile(mesh.Vertices,directFaces,directCgr,CgrBackend.Compact,20000,
-                                    message => DetailLog(onLog,"["+name+"] "+message));
-                                progress.Collected++;
-                                FinishExport(new EncodedDevice { Device=new DeviceData { Name=name,Path=directTreePath },ExportName=name,
-                                    Path=directCgr,SourcePath=jtPath },"CGR",null,onLog,progress,onProgress,ref ok,ref failed);
-                                continue;
                             }
+                            FinishExport(result, "CGR", null, onLog, progress, onProgress, ref ok, ref failed);
                         }
                         catch (Exception ex)
                         {
-                            failed++;
+                            failed++; progress.Completed++; progress.Failed++;
+                            progress.Report(onProgress, "JT 失败", result.ExportName);
+                            SafeLog(onLog, "[JT 失败] " + result.ExportName + ": " + ex.Message);
+                            DetailLog(onLog, "[JT 失败详情] " + ex);
+                        }
+                    };
+                    foreach (var device in devices)
+                    {
+                        // Drain before the next snapshot: at most 'workers' meshes in flight.
+                        // FIFO publication preserves selection order in CATIA.
+                        if (pending.Count >= workers) finish(pending.Dequeue());
+                        string name = null;
+                        try
+                        {
+                            string jtPath = null, trace = null;
+                            double[] placement = null;
+                            DeviceData snapshot = OnPs(() =>
+                            {
+                                name = names.Next(device.Name);
+                                if (!JtResourceResolver.TryResolve(device, out jtPath, out trace) || string.IsNullOrWhiteSpace(jtPath))
+                                    throw new FileNotFoundException("未能从资源解析 JT 文件或 COJT 目录（" + trace + "）", jtPath);
+                                var located = device as ITxLocatableObject;
+                                if (located == null) throw new InvalidOperationException("资源没有可读取的放置坐标");
+                                var loc = located.AbsoluteLocation;
+                                var o = loc.Transform(new TxVector(0, 0, 0));
+                                var x = loc.Transform(new TxVector(1, 0, 0));
+                                var y = loc.Transform(new TxVector(0, 1, 0));
+                                var z = loc.Transform(new TxVector(0, 0, 1));
+                                placement = new double[] { x.X-o.X,x.Y-o.Y,x.Z-o.Z,0,
+                                    y.X-o.X,y.Y-o.Y,y.Z-o.Z,0,z.X-o.X,z.Y-o.Y,z.Z-o.Z,0,o.X,o.Y,o.Z,1 };
+                                return new DeviceData { Name=name, Path=GetTreePath(device, onLog) };
+                            });
+                            if (!SysFile.Exists(jtPath) && !Directory.Exists(jtPath))
+                                throw new FileNotFoundException("JT 文件或 COJT 资源目录不存在", jtPath);
+                            SafeLog(onLog, "[JT] " + name + " ← " + jtPath + "（" + trace + "）");
+                            var logs = new List<string>();
+                            // The worker closure captures only strings, a matrix and detached data.
+                            var result = new EncodedDevice { Device=snapshot, ExportName=name,
+                                Path=Path.Combine(workDir, name + ".cgr"), SourcePath=jtPath };
+                            var task = StartJtConversion(result, workDir, decoder, placement, logs);
+                            pending.Enqueue(new PendingJtConversion { Source=device, Task=task, Logs=logs });
                             progress.Collected++;
-                            progress.Completed++;
-                            progress.Failed++;
+                            progress.Report(onProgress, "JT 并行转码", name);
+                        }
+                        catch (Exception ex)
+                        {
+                            failed++; progress.Collected++; progress.Completed++; progress.Failed++;
                             progress.Report(onProgress, "JT 失败", name);
                             SafeLog(onLog, "[JT 失败] " + name + ": " + ex.Message);
                             DetailLog(onLog, "[JT 失败详情] " + ex);
                         }
                     }
-                    progress.Collected = progress.Total;
-                    progress.Completed = progress.Total;
+                    while (pending.Count > 0) finish(pending.Dequeue());
                     progress.Failed = failed;
                     progress.Report(onProgress, failed == 0 ? "JT→CGR 完成" : "JT→CGR 结束，存在失败", null);
                     SafeComplete(onComplete, ok > 0 && failed == 0,
@@ -615,7 +636,9 @@ namespace TxTools.ExportByColor
                 }
                 catch (Exception ex)
                 {
-                    SafeLog(onLog, "[JT→CGR 详细错误] " + ex.ToString());
+                    // Wait for owned workers before reporting completion or abandoning this batch.
+                    while (pending.Count > 0) pending.Dequeue().Task.GetAwaiter().GetResult();
+                    SafeLog(onLog, "[JT→CGR 详细错误] " + ex);
                     SafeComplete(onComplete, false, ex.Message + "；恢复目录: " + workDir);
                 }
             });
