@@ -188,8 +188,8 @@ namespace TxTools.ExportByColor
 
             _exportTabs = new TabControl { Width = 340, Height = 190, Font = FormUiKit.BaseFont };
             var cgrTab = new TabPage("3DXML / CGR");
-            _cgrMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Left = 12, Top = 12, Width = 285 };
-            _cgrMode.Items.AddRange(new object[] { "直出 3DXML（推荐）", "直出 3DXML（R38线面几何·试用）", "CGR → CATIA（原方案）", "CGR → CATIA（线面压缩·试用）", "CGR → CATIA（逐平面兼容）", "读取 JT → CGR → CATIA" });
+            _cgrMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Left = 12, Top = 12, Width = 285, DropDownWidth = 460 };
+            _cgrMode.Items.AddRange(new object[] { "直出 3DXML（推荐）", "直出 3DXML（R38线面几何·试用）", "CGR → CATIA（原方案）", "CGR → CATIA（线面压缩·试用）", "CGR → CATIA（逐平面兼容）", "读取 JT → CGR → CATIA", "读取 JT → CGR → CATIA（线面压缩·试用）", "读取 JT → CGR → CATIA（逐平面兼容·试用）" });
             _cgrMode.SelectedIndex = 0;
             cgrTab.Controls.Add(_cgrMode);
             cgrTab.Controls.Add(new Label
@@ -369,7 +369,7 @@ namespace TxTools.ExportByColor
             }
             string origin = GetOriginName();
             string format = _exportTabs.SelectedIndex == 0
-                ? (_cgrMode.SelectedIndex <= 1 ? "3DXML" : (_cgrMode.SelectedIndex == 5 ? "JT_CGR" : "CGR"))
+                ? (_cgrMode.SelectedIndex <= 1 ? "3DXML" : (_cgrMode.SelectedIndex >= 5 ? "JT_CGR" : "CGR"))
                 : new[] { "STL", "OBJ", "PLY", "FBX_BINARY", "FBX_ASCII" }[_meshFormat.SelectedIndex];
             CgrBackend cgrBackend = format == "3DXML"
                 ? (_cgrMode.SelectedIndex == 1 ? CgrBackend.LineFace : CgrBackend.Compact)
@@ -427,7 +427,7 @@ namespace TxTools.ExportByColor
             if (format == "JT_CGR")
             {
                 Log("JT 模式：从资源 StorageObject/表示属性解析 JT 文件，再生成 CGR 并插入 CATIA。");
-                _svc.RunJtToCgrAsync(picked, Log, SetProgress, complete);
+                _svc.RunJtToCgrAsync(picked, Log, SetProgress, complete, _cgrMode.SelectedIndex == 6 ? CgrBackend.LineFace : _cgrMode.SelectedIndex == 7 ? CgrBackend.LineFacePlanar : CgrBackend.Compact);
             }
             else
             {

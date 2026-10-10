@@ -1,0 +1,8 @@
+using System;using System.IO;using System.Linq;using System.Collections.Generic;using System.Diagnostics;using System.Threading.Tasks;
+class FeatureBatch {
+ static readonly string[] Names={"5156","9261+8251","9251+8151","5254+8452","5253","5154+8352","5153"};
+ static int Main(string[] args){Directory.CreateDirectory(args[1]);var tasks=new Queue<Task<bool>>();int failed=0;foreach(var code in Names){if(tasks.Count>=2&&!tasks.Dequeue().Result)failed++;string name="BP-60-T13J-"+code+"-20240501";string input=Path.Combine(args[0],name+".cojt",name+".jt"),dir=Path.Combine(args[1],code);tasks.Enqueue(Task.Run(()=>Run(input,dir,args[2])));}while(tasks.Count>0)if(!tasks.Dequeue().Result)failed++;Console.WriteLine("BATCH_TOTAL=7 FAILED="+failed);return failed==0?0:1;}
+ static bool Run(string input,string dir,string bin){Directory.CreateDirectory(dir);Console.WriteLine("START "+Path.GetFileName(input));var info=new ProcessStartInfo(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"FeatureRegression.exe"),"\""+input+"\" \""+dir+"\" \""+bin+"\""){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
+  using(var log=new StreamWriter(Path.Combine(dir,"validation.log")))using(var p=new Process{StartInfo=info}){object gate=new object();DataReceivedEventHandler read=(s,e)=>{if(e.Data!=null)lock(gate)log.WriteLine(e.Data);};p.OutputDataReceived+=read;p.ErrorDataReceived+=read;p.Start();p.BeginOutputReadLine();p.BeginErrorReadLine();if(!p.WaitForExit(300000)){p.Kill();p.WaitForExit();Console.WriteLine("TIMEOUT "+input);return false;}p.WaitForExit();Console.WriteLine("END "+Path.GetFileName(input)+" EXIT="+p.ExitCode);return p.ExitCode==0;}
+ }
+}

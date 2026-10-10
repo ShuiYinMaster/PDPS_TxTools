@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -27,13 +27,21 @@ namespace TxTools.ExportByColor
         public static void ConvertToCgr(string source, string directory, string worker,
             string output, double[] placement, Action<string> log)
         {
+            ConvertToCgr(source, directory, worker, output, placement, CgrBackend.Compact, log);
+        }
+
+        public static void ConvertToCgr(string source, string directory, string worker,
+            string output, double[] placement, CgrBackend backend, Action<string> log)
+        {
+            if (backend != CgrBackend.Compact && backend != CgrBackend.LineFace && backend != CgrBackend.LineFacePlanar)
+                throw new ArgumentException("JT output requires an explicit compact or line/face backend", "backend");
             var mesh = Convert(source, directory, worker, 300000);
             Place(mesh, placement);
             var faces = new List<CgrWriter.Face>(mesh.Faces.Count);
             foreach (var face in mesh.Faces)
                 faces.Add(new CgrWriter.Face { Idx=face.Indices, R=face.R, G=face.G, B=face.B,
                     Surface=face.Surface, Opacity=face.Alpha, Nx=face.Normal[0], Ny=face.Normal[1], Nz=face.Normal[2] });
-            CgrWriter.BuildFile(mesh.Vertices, faces, output, CgrBackend.Compact, 20000, log, true);
+            CgrWriter.BuildFile(mesh.Vertices, faces, output, backend, 20000, log, true);
         }
 
         public static int ConversionWorkers

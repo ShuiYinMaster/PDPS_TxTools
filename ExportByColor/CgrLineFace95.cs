@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 
@@ -46,7 +46,7 @@ namespace TxTools.ExportByColor
             var groups=new Dictionary<Tuple<int,int>,List<Face>>();var order=new List<List<Face>>();
             foreach(var f in faces)
             {
-                var key=Tuple.Create(f.Surface,f.R|(f.G<<8)|(f.B<<16));List<Face> group;
+                var key=Tuple.Create(f.Surface,f.R|(f.G<<8)|(f.B<<16)|((f.Opacity??255)<<24));List<Face> group;
                 if(!groups.TryGetValue(key,out group)){group=new List<Face>();groups.Add(key,group);order.Add(group);}
                 group.Add(f);
             }
@@ -183,7 +183,7 @@ namespace TxTools.ExportByColor
                     bounds.Add(Bounds(vs,indices));
                     w.Write(CompressFeaturePacket95(triangles,domain,wide));
                 }
-                foreach(var domain in domains)w.Write(new byte[]{48,4,4,255,255,color.B,color.G,color.R});
+                foreach(var domain in domains)w.Write(new byte[]{48,4,4,color.Opacity??255,255,color.B,color.G,color.R});
                 w.Write(new byte[]{1,1});Compact(w,checked((uint)boundary.Count));
                 foreach(var edge in boundary)
                 {
