@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Diagnostics;
@@ -9,7 +9,7 @@ namespace TxTools.ExportByColor
     // Experimental R7-R12 standalone encoding. Opaque metadata/ID allocation remain experimental.
     public static partial class CgrWriter
     {
-        public const string Version="CGR-20261010-R44-jt8-strips";
+        public const string Version="CGR-20261010-R45-jt-line-face";
         // Compact and CFV3-compatible output retain their established chunk size.
         public const int MaxVertsPerChunk=40960;
         // Feature CGR uses unsigned 16-bit indices and can address 65,536 vertices.
@@ -96,13 +96,14 @@ namespace TxTools.ExportByColor
         {
             if(vertices==null||faces==null||faces.Count==0||maxFacesPerBlock<1) throw new ArgumentException("Empty mesh or invalid block size");
             backend=ResolveBackend(backend);
-            if(faces.Exists(f => (f.Opacity ?? 255) != 255) && (backend != CgrBackend.Compact || !preserveSourceWinding))
-                throw new NotSupportedException("RGBA requires compact CGR with source winding retained");
+            if(faces.Exists(f => (f.Opacity ?? 255) != 255) && (!preserveSourceWinding || (backend != CgrBackend.Compact && backend != CgrBackend.LineFace && backend != CgrBackend.LineFacePlanar)))
+                throw new NotSupportedException("RGBA requires compact or line/face CGR with source winding retained");
             bool features=backend==CgrBackend.LineFace||backend==CgrBackend.LineFacePlanar;
             var watch=Stopwatch.StartNew();int inputFaces=faces.Count;
             if(progress!=null) progress("[CGR] 编码器 "+Version+"；方案="+backend+"；DLL="+typeof(CgrWriter).Assembly.Location+"；批量="+(Environment.GetEnvironmentVariable("TXTOOLS_CGR_BATCH_LISTS")!="0")+"；边="+(features||Environment.GetEnvironmentVariable("TXTOOLS_CGR_WRITE_EDGES")=="1")+"；背面="+(!preserveSourceWinding&&Environment.GetEnvironmentVariable("TXTOOLS_CGR_DUPLICATE_BACKFACES")!="0"));
             faces=FilterZeroArea(vertices,faces,progress);
-            if(features) WeldFeatureVertices(ref vertices,ref faces);
+            // JT index identities preserve disconnected/coincident sheets and source adjacency.
+            if(features && !preserveSourceWinding) WeldFeatureVertices(ref vertices,ref faces);
             if(preserveSourceWinding)
             {
                 if(progress!=null) progress("[CGR] JT source winding retained; no synthetic reverse faces; triangles="+faces.Count);

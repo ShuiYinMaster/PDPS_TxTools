@@ -14,7 +14,7 @@ class RgbaCompatibilityRegression {
    var leaf=t.GetMethod("ParseLeaf",BindingFlags.NonPublic|BindingFlags.Static).Invoke(null,new object[]{copy,r});int n=((int[])F(leaf,"Indices")).Length/3;int old;counts.TryGetValue(a,out old);counts[a]=old+n;
   }
   if(counts.Count!=3||counts[0]!=1||counts[128]!=1||counts[255]!=2)throw new Exception("Opacity groups merged or skinny triangle lost");
-  try { CgrWriter.BuildFile(vs,fs,output+".unsupported",CgrBackend.LineFace,20000,null,true);throw new Exception("Unsupported backend silently dropped alpha"); }catch(NotSupportedException){}
+  try { CgrWriter.BuildFile(vs,fs,output+".unsupported",CgrBackend.Legacy,20000,null,true);throw new Exception("Unsupported backend silently dropped alpha"); }catch(NotSupportedException){}
   var mesh=JtDirectBridge.Read(args[2],args[3]);if(mesh.Faces.Any(f=>f.Alpha!=255))throw new Exception("Legacy mesh opacity changed");
   for(int i=0;i<4;i++){string f="sample_"+i+".cgr";if(Hash(Path.Combine(args[4],f))!=Hash(Path.Combine(args[5],f)))throw new Exception("Opaque production output changed: "+f);}
   Console.WriteLine("PASS opacity separation, alpha zero, slender triangle, unsupported backend guard, JTMESH01 read compatibility, four opaque CGRs byte-identical to previous production");

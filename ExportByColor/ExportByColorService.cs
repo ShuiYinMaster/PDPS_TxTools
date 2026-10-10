@@ -489,11 +489,11 @@ namespace TxTools.ExportByColor
         }
 
         private static Task<EncodedDevice> StartJtConversion(EncodedDevice result,
-            string directory, string decoder, double[] placement, List<string> logs)
+            string directory, string decoder, double[] placement, List<string> logs, CgrBackend backend)
         {
             return Task.Run(() =>
             {
-                try { JtDirectBridge.ConvertToCgr(result.SourcePath, directory, decoder, result.Path, placement, logs.Add); }
+                try { JtDirectBridge.ConvertToCgr(result.SourcePath, directory, decoder, result.Path, placement, backend, logs.Add); }
                 catch (Exception ex) { result.Error = ex; }
                 return result;
             });
@@ -506,7 +506,7 @@ namespace TxTools.ExportByColor
         public void RunJtToCgrAsync(List<ITxObject> picked,
                                     Action<string> onLog,
                                     Action<ExportProgressInfo> onProgress,
-                                    Action<bool, string> onComplete)
+                                    Action<bool, string> onComplete, CgrBackend backend = CgrBackend.Compact)
         {
             var thread = new Thread(() =>
             {
@@ -536,7 +536,7 @@ namespace TxTools.ExportByColor
                     string decoder = Path.Combine(Path.GetDirectoryName(typeof(ExportByColorService).Assembly.Location),
                         "JtDirectCs", "TxTools.JtDecoder.exe");
                     progress.Report(onProgress, "JT 准备", null);
-                    SafeLog(onLog, "[JT→CGR parallel] workers=" + workers + "; resources=" + devices.Count + "; output=" + workDir);
+                    SafeLog(onLog, "[JT→CGR parallel] workers=" + workers + "; backend=" + backend + "; resources=" + devices.Count + "; output=" + workDir);
                     SafeLog(onLog, "[JT 直接保色] 使用 JT 文件内姿态和颜色，应用资源整体放置；未采集 PS 运动部件当前姿态");
                     var names = new ExportNames();
                     Action<PendingJtConversion> finish = item =>
@@ -562,7 +562,7 @@ namespace TxTools.ExportByColor
                                     // Detached native groups are encoded off PS too. This coordinator
                                     // blocks until ready, while other direct conversion workers continue.
                                     result.Path = Task.Run(() => BuildCgr(nativeGroups, result.ExportName, workDir,
-                                        message => DetailLog(onLog, "[" + result.ExportName + "] " + message), CgrBackend.Compact))
+                                        message => DetailLog(onLog, "[" + result.ExportName + "] " + message), backend))
                                         .GetAwaiter().GetResult();
                                     result.Error = null;
                                 }
@@ -615,7 +615,7 @@ namespace TxTools.ExportByColor
                             // The worker closure captures only strings, a matrix and detached data.
                             var result = new EncodedDevice { Device=snapshot, ExportName=name,
                                 Path=Path.Combine(workDir, name + ".cgr"), SourcePath=jtPath };
-                            var task = StartJtConversion(result, workDir, decoder, placement, logs);
+                            var task = StartJtConversion(result, workDir, decoder, placement, logs, backend);
                             pending.Enqueue(new PendingJtConversion { Source=device, Task=task, Logs=logs });
                             progress.Collected++;
                             progress.Report(onProgress, "JT 并行转码", name);
