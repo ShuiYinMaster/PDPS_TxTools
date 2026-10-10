@@ -189,7 +189,7 @@ namespace TxTools.ExportByColor
             _exportTabs = new TabControl { Width = 340, Height = 190, Font = FormUiKit.BaseFont };
             var cgrTab = new TabPage("3DXML / CGR");
             _cgrMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Left = 12, Top = 12, Width = 285, DropDownWidth = 460 };
-            _cgrMode.Items.AddRange(new object[] { "直出 3DXML（推荐）", "直出 3DXML（R38线面几何·试用）", "CGR → CATIA（原方案）", "CGR → CATIA（线面压缩·试用）", "CGR → CATIA（逐平面兼容）", "读取 JT → CGR → CATIA", "读取 JT → CGR → CATIA（线面压缩·试用）", "读取 JT → CGR → CATIA（逐平面兼容·试用）", "读取 JT → 圆孔重建 CGR → CATIA（试用）" });
+            _cgrMode.Items.AddRange(new object[] { "直出 3DXML（推荐）", "直出 3DXML（R38线面几何·试用）", "CGR → CATIA（原方案）", "CGR → CATIA（线面压缩·试用）", "CGR → CATIA（逐平面兼容）", "读取 JT → CGR → CATIA", "读取 JT → CGR → CATIA（线面压缩·试用）", "读取 JT → CGR → CATIA（逐平面兼容·试用）", "读取 JT → 内外圆柱重建 CGR → CATIA（试用）" });
             _cgrMode.SelectedIndex = 0;
             cgrTab.Controls.Add(_cgrMode);
             cgrTab.Controls.Add(new Label

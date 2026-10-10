@@ -12,12 +12,12 @@ namespace TxTools.ExportByColor
     {
         public sealed class Options
         {
-            // Some JT counterbores use ten samples for the smaller through-hole.
-            // It must be fitted too; otherwise it limits the visible silhouette
-            // even after the larger, finer bore has been reconstructed.
-            public int MinimumSegments = 10;
+            // Coarse JT circles can have only eight samples. Full rings, radial
+            // wall evidence and paired boundaries are still required to replace them.
+            public int MinimumSegments = 8;
             public double AbsoluteTolerance = 0.01;
             public double RelativeTolerance = 0.001;
+            public bool IncludeExternalCylinders;
         }
         public sealed class Hole
         {
@@ -25,6 +25,7 @@ namespace TxTools.ExportByColor
             public double[] Center, Axis, RimA, RimB;
             public double Radius, Depth, MaximumError;
             public bool PairedRims;
+            public bool ExternalCylinder;
             public int[] WallTriangles;
             public double[][] RimPointsA, RimPointsB;
         }
@@ -40,6 +41,7 @@ namespace TxTools.ExportByColor
             internal int Segments;
             internal int WallComponent, WallTriangleCount;
             internal List<double[]> Points;
+            internal bool ExternalCylinder;
         }
         public static List<Hole> Find(List<float[]> vertices, List<CgrWriter.Face> faces, Options options = null)
         {
@@ -95,11 +97,11 @@ namespace TxTools.ExportByColor
             // Only manifold sharp joins may form rims. Open seams and ambiguous joins are excluded.
             var sharp=new List<Edge>();var links=new Dictionary<int,List<int>>();
             var parent=new int[normals.Count];for(int i=0;i<parent.Length;i++)parent[i]=i;
-            foreach(var edge in edges.Values)if(edge.Faces.Count==2&&Dot(normals[edge.Faces[0]],normals[edge.Faces[1]])>Math.Cos(Math.PI/4))parent[Root(parent,edge.Faces[0])]=Root(parent,edge.Faces[1]);
+            foreach(var edge in edges.Values)if(edge.Faces.Count==2&&Dot(normals[edge.Faces[0]],normals[edge.Faces[1]])>(Math.Cos(Math.PI/3)+1e-7))parent[Root(parent,edge.Faces[0])]=Root(parent,edge.Faces[1]);
             var components=new Dictionary<int,List<int>>();for(int i=0;i<parent.Length;i++){int root=Root(parent,i);List<int> component;if(!components.TryGetValue(root,out component))components.Add(root,component=new List<int>());component.Add(i);}
             foreach(var edge in edges.Values)
             {
-                if(edge.Faces.Count!=2||Dot(normals[edge.Faces[0]],normals[edge.Faces[1]])>Math.Cos(Math.PI/4))continue;
+                if(edge.Faces.Count!=2||Dot(normals[edge.Faces[0]],normals[edge.Faces[1]])>(Math.Cos(Math.PI/3)+1e-7))continue;
                 int id=sharp.Count;sharp.Add(edge);
                 foreach(int endpoint in new[]{edge.A,edge.B}){List<int> incident;if(!links.TryGetValue(endpoint,out incident))links.Add(endpoint,incident=new List<int>());incident.Add(id);}
             }
@@ -118,16 +120,21 @@ namespace TxTools.ExportByColor
                 }
                 if(!closed||points.Count<options.MinimumSegments)continue;
                 Rim rim;if(!Fit(points,options,out rim))continue;
-                int inward=0;var wallComponents=new HashSet<int>();
+                int inward=0,outward=0;var wallComponents=new HashSet<int>();
                 foreach(var edge in ring)
                 {
                     var mid=new[]{(vertices[edge.A][0]+vertices[edge.B][0])/2,(vertices[edge.A][1]+vertices[edge.B][1])/2,(vertices[edge.A][2]+vertices[edge.B][2])/2};
                     var radial=Unit(Sub(mid,rim.Center));if(radial==null)continue;
                     var a=normals[edge.Faces[0]];var b=normals[edge.Faces[1]];
-                    if(Math.Abs(Dot(a,rim.Axis))>0.95&&Math.Abs(Dot(b,rim.Axis))<0.15&&Dot(b,radial)<-0.90){inward++;wallComponents.Add(Root(parent,edge.Faces[1]));}
-                    else if(Math.Abs(Dot(b,rim.Axis))>0.95&&Math.Abs(Dot(a,rim.Axis))<0.15&&Dot(a,radial)<-0.90){inward++;wallComponents.Add(Root(parent,edge.Faces[0]));}
+                    double direction=0;int wall=-1;
+                    if(Math.Abs(Dot(a,rim.Axis))>0.95&&Math.Abs(Dot(b,rim.Axis))<0.15){direction=Dot(b,radial);wall=edge.Faces[1];}
+                    else if(Math.Abs(Dot(b,rim.Axis))>0.95&&Math.Abs(Dot(a,rim.Axis))<0.15){direction=Dot(a,radial);wall=edge.Faces[0];}
+                    if(direction<-.90){inward++;wallComponents.Add(Root(parent,wall));}
+                    else if(options.IncludeExternalCylinders&&direction>.90){outward++;wallComponents.Add(Root(parent,wall));}
                 }
-                if(inward<(int)Math.Ceiling(ring.Count*0.90))continue; // Reject external cylinders, round bosses and unsupported bevels.
+                int required=(int)Math.Ceiling(ring.Count*.90);
+                if(inward<required&&outward<required)continue;
+                rim.ExternalCylinder=outward>=required;
                 if(wallComponents.Count!=1)continue;
                 foreach(int component in wallComponents)rim.WallComponent=component;
                 bool cylinder=true;double tolerance=Math.Max(options.AbsoluteTolerance,rim.Radius*options.RelativeTolerance);
@@ -146,14 +153,14 @@ namespace TxTools.ExportByColor
                 if(paired[i])continue;var a=rims[i];int match=-1;double depth=double.PositiveInfinity;
                 for(int j=i+1;j<rims.Count;j++)
                 {
-                    if(paired[j])continue;var b=rims[j];if(a.WallComponent!=b.WallComponent)continue;double tolerance=Math.Max(options.AbsoluteTolerance,Math.Max(a.Radius,b.Radius)*options.RelativeTolerance);
+                    if(paired[j])continue;var b=rims[j];if(a.WallComponent!=b.WallComponent||a.ExternalCylinder!=b.ExternalCylinder)continue;double tolerance=Math.Max(options.AbsoluteTolerance,Math.Max(a.Radius,b.Radius)*options.RelativeTolerance);
                     if(Math.Abs(a.Radius-b.Radius)>tolerance||Math.Abs(Dot(a.Axis,b.Axis))<0.9999)continue;
                     var delta=Sub(b.Center,a.Center);double axial=Math.Abs(Dot(delta,a.Axis));double offset=Length(Cross(delta,a.Axis));
                     if(offset>tolerance||axial<=tolerance||axial>=depth)continue;
                     match=j;depth=axial;
                 }
                 // Pairing alone does not prove a through hole: a blind-hole bottom can also be circular.
-                paired[i]=true;var h=new Hole{Surface=surface,Center=(double[])a.Center.Clone(),Axis=(double[])a.Axis.Clone(),RimA=(double[])a.Center.Clone(),Radius=a.Radius,MaximumError=a.Error,Segments=a.Segments,WallTriangleCount=a.WallTriangleCount};
+                paired[i]=true;var h=new Hole{Surface=surface,Center=(double[])a.Center.Clone(),Axis=(double[])a.Axis.Clone(),RimA=(double[])a.Center.Clone(),Radius=a.Radius,MaximumError=a.Error,Segments=a.Segments,WallTriangleCount=a.WallTriangleCount,ExternalCylinder=a.ExternalCylinder};
                 if(match>=0){var b=rims[match];paired[match]=true;h.PairedRims=true;h.RimB=(double[])b.Center.Clone();h.Depth=depth;h.MaximumError=Math.Max(h.MaximumError,b.Error);h.Segments+=b.Segments;h.Radius=(a.Radius+b.Radius)/2;for(int k=0;k<3;k++)h.Center[k]=(a.Center[k]+b.Center[k])/2;}
                 // Validate the final common axis/average radius, not just each independent rim fit.
                 foreach(int f in components[a.WallComponent])foreach(int id in triangles[f])h.MaximumError=Math.Max(h.MaximumError,Math.Abs(Length(Cross(Sub(vertices[id],h.Center),h.Axis))-h.Radius));
@@ -179,8 +186,8 @@ namespace TxTools.ExportByColor
             double error=0;var angles=new List<double>();
             foreach(var p in points){var delta=Sub(p,center);double plane=Math.Abs(Dot(delta,axis)),x=Dot(delta,u),y=Dot(delta,v);double radial=Math.Abs(Math.Sqrt(x*x+y*y)-radius);error=Math.Max(error,Math.Max(plane,radial));angles.Add(Math.Atan2(y,x));}
             if(error>tolerance)return false;
-            double winding=0;int sign=0;for(int i=0;i<angles.Count;i++){double turn=angles[(i+1)%angles.Count]-angles[i];while(turn<=-Math.PI)turn+=2*Math.PI;while(turn>Math.PI)turn-=2*Math.PI;if(Math.Abs(turn)<1e-6||Math.Abs(turn)>Math.PI/4+1e-6)return false;int s=turn>0?1:-1;if(sign!=0&&sign!=s)return false;sign=s;winding+=turn;}if(Math.Abs(Math.Abs(winding)-2*Math.PI)>1e-5)return false;
-            angles.Sort();double maxGap=0;for(int i=0;i<angles.Count;i++){double gap=(i+1<angles.Count?angles[i+1]:angles[0]+2*Math.PI)-angles[i];if(gap<1e-6)return false;maxGap=Math.Max(maxGap,gap);}if(maxGap>Math.PI/4+1e-6)return false;
+            double winding=0;int sign=0;for(int i=0;i<angles.Count;i++){double turn=angles[(i+1)%angles.Count]-angles[i];while(turn<=-Math.PI)turn+=2*Math.PI;while(turn>Math.PI)turn-=2*Math.PI;if(Math.Abs(turn)<1e-6||Math.Abs(turn)>Math.PI/4+Math.Max(1e-6,2*tolerance/radius))return false;int s=turn>0?1:-1;if(sign!=0&&sign!=s)return false;sign=s;winding+=turn;}if(Math.Abs(Math.Abs(winding)-2*Math.PI)>1e-5)return false;
+            angles.Sort();double maxGap=0;for(int i=0;i<angles.Count;i++){double gap=(i+1<angles.Count?angles[i+1]:angles[0]+2*Math.PI)-angles[i];if(gap<1e-6)return false;maxGap=Math.Max(maxGap,gap);}if(maxGap>Math.PI/4+Math.Max(1e-6,2*tolerance/radius))return false;
             rim=new Rim{Center=center,Axis=axis,Radius=radius,Error=error,Segments=points.Count,Points=points};return true;
         }
         public static void WriteCsv(string path,List<Hole> holes)
@@ -188,7 +195,7 @@ namespace TxTools.ExportByColor
             using(var w=new StreamWriter(path,false,new UTF8Encoding(true)))
             {
                 w.WriteLine("shape,kind,cx,cy,cz,ax,ay,az,radius,diameter,depth,max_fit_error,rim_segments,rim_a_x,rim_a_y,rim_a_z,rim_b_x,rim_b_y,rim_b_z");
-                foreach(var h in holes){var row=new List<string>{h.Surface.ToString(CultureInfo.InvariantCulture),h.PairedRims?"paired_circular_rims":"single_circular_rim"};foreach(double d in h.Center)row.Add(d.ToString("R",CultureInfo.InvariantCulture));foreach(double d in h.Axis)row.Add(d.ToString("R",CultureInfo.InvariantCulture));foreach(double d in new[]{h.Radius,h.Radius*2,h.Depth,h.MaximumError,(double)h.Segments})row.Add(d.ToString("R",CultureInfo.InvariantCulture));foreach(double d in h.RimA)row.Add(d.ToString("R",CultureInfo.InvariantCulture));for(int k=0;k<3;k++)row.Add(h.RimB==null?"":h.RimB[k].ToString("R",CultureInfo.InvariantCulture));w.WriteLine(string.Join(",",row));}
+                foreach(var h in holes){var row=new List<string>{h.Surface.ToString(CultureInfo.InvariantCulture),h.ExternalCylinder?(h.PairedRims?"paired_external_cylinder":"single_external_rim"):(h.PairedRims?"paired_circular_rims":"single_circular_rim")};foreach(double d in h.Center)row.Add(d.ToString("R",CultureInfo.InvariantCulture));foreach(double d in h.Axis)row.Add(d.ToString("R",CultureInfo.InvariantCulture));foreach(double d in new[]{h.Radius,h.Radius*2,h.Depth,h.MaximumError,(double)h.Segments})row.Add(d.ToString("R",CultureInfo.InvariantCulture));foreach(double d in h.RimA)row.Add(d.ToString("R",CultureInfo.InvariantCulture));for(int k=0;k<3;k++)row.Add(h.RimB==null?"":h.RimB[k].ToString("R",CultureInfo.InvariantCulture));w.WriteLine(string.Join(",",row));}
             }
         }
     }

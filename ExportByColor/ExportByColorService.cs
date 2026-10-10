@@ -579,7 +579,7 @@ namespace TxTools.ExportByColor
                             }
                             if (result.Error == null && reconstructRoundHoles && result.Holes != null)
                             {
-                                SafeLog(onLog, "[圆孔 CGR] 原生圆柱面替换="+result.Holes.Count+"；孔壁与孔口已直接编码到单个 CGR；其余保留源网格");
+                                SafeLog(onLog, "[圆柱 CGR] 内孔="+result.Holes.FindAll(h=>!h.ExternalCylinder).Count+"，外圆柱="+result.Holes.FindAll(h=>h.ExternalCylinder).Count+"；圆柱壁与圆形端边已直接编码到单个 CGR；其余保留源网格");
                             }
                             FinishExport(result, "CGR", null, onLog, progress, onProgress, ref ok, ref failed);
                         }
