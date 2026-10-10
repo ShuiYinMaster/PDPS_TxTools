@@ -53,13 +53,17 @@ namespace TxTools.ExportByColor
             foreach (var face in mesh.Faces)
                 faces.Add(new CgrWriter.Face { Idx=face.Indices, R=face.R, G=face.G, B=face.B,
                     Surface=face.Surface, Opacity=face.Alpha, Nx=face.Normal[0], Ny=face.Normal[1], Nz=face.Normal[2] });
-            CgrWriter.BuildFile(mesh.Vertices, faces, output, backend, 20000, log, true);
-            if (!reconstruct) return null;
+            if (!reconstruct){CgrWriter.BuildFile(mesh.Vertices, faces, output, backend, 20000, log, true);return null;}
+            if(backend!=CgrBackend.LineFace)throw new ArgumentException("Cylindrical hole reconstruction requires line/face CGR");
             var holes = RoundHoleReconstruction.Find(mesh.Vertices, faces);
             string csv = output + ".holes.csv";
             RoundHoleReconstruction.WriteCsv(csv, holes);
             if (log != null) log("[JT circular holes] candidates=" + holes.Count + "; parameters=" + csv + "; tessellation fit, not original CAD feature history");
-            return holes;
+            var replacement=RoundHoleCgrMesh.Replace(mesh.Vertices,faces,holes,log);
+            if(replacement.Cylinders.Count==0)CgrWriter.BuildFile(mesh.Vertices,faces,output,backend,20000,log,true);
+            else CgrWriter.BuildFileWithCylinders(replacement.Vertices,replacement.Faces,output,replacement.Cylinders,log);
+            var accepted=new HashSet<double[]>();foreach(var cylinder in replacement.Cylinders.Values)accepted.Add(cylinder.Center);
+            return holes.FindAll(h=>accepted.Contains(h.Center));
         }
 
         public static int ConversionWorkers

@@ -1,0 +1,4 @@
+using System;using System.IO;using System.Linq;
+class CgrCanonicalCodecRegression {
+ static int Main(string[] args){try{int records=0;foreach(var file in args){var b=File.ReadAllBytes(file);int count=0;for(int p=0;p+28<=b.Length;p++){if(b[p]!=26||b[p+1]!=0||b[p+2]!=0x33||b[p+3]!=0x33)continue;var cylinder=CgrCanonicalCylinderCodec.Decode(b,p);var rebuilt=CgrCanonicalCylinderCodec.Encode(cylinder);if(!rebuilt.SequenceEqual(b.Skip(p).Take(28)))throw new Exception("Canonical byte roundtrip mismatch: "+file);count++;}if(count!=2)throw new Exception("Expected two cylindrical face attributes in axis probe: "+file);records+=count;Console.WriteLine("PASS native attribute byte roundtrip "+file);}if(records!=10)throw new Exception("Expected 5 independent axis probe files");Console.WriteLine("PASS 10 native cylinder attribute roundtrips; production writer untouched");return 0;}catch(Exception e){Console.Error.WriteLine(e);return 1;}}
+}

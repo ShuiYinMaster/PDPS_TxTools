@@ -488,6 +488,15 @@
     <Compile Include="ExportByColor\JtResourceResolver.cs" />
     <Compile Include="ExportByColor\JtDirectBridge.cs" />
     <Compile Include="ExportByColor\RoundHoleReconstruction.cs" />
+    <Compile Include="ExportByColor\RoundHoleCgrMesh.cs" />
+    <Compile Include="ExportByColor\RoundHoleCgrPlanarCaps.cs" />
+    <Compile Include="ExportByColor\Vendor\EarCut\EarCutDouble.cs" />
+    <Compile Include="ExportByColor\Vendor\EarCut\NodeDouble.cs" />
+    <Compile Include="ExportByColor\Vendor\EarCut\DoubleExtensions.cs" />
+    <EmbeddedResource Include="ExportByColor\Vendor\EarCut\LICENSE">
+      <LogicalName>TxTools.ExportByColor.Vendor.EarCut.LICENSE</LogicalName>
+    </EmbeddedResource>
+    <Compile Include="ExportByColor\CgrCanonical95.cs" />
     <Compile Include="ExportByColor\RoundHoleCatiaWriter.cs" />
     <Compile Include="ExportByColor\CgrWriter.cs" />
     <Compile Include="ExportByColor\CgrCompact95.cs" />

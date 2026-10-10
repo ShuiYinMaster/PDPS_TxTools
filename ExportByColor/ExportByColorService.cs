@@ -138,7 +138,6 @@ namespace TxTools.ExportByColor
             public string Path;
             public string SourcePath;
             public List<RoundHoleReconstruction.Hole> Holes;
-            public string HoleReferencePath;
             public ThreeDXmlWriter.PartTicket PackagePart;
             public Cfv3EncodingStats Cfv3Stats;
             public Exception Error;
@@ -384,23 +383,9 @@ namespace TxTools.ExportByColor
                     }
                     int before = current.Count;
                     string deviceName = GetUniqueChildName(current, SafeFileName(result.Device.Name));
-                    if (string.IsNullOrEmpty(result.HoleReferencePath))
-                    {
-                        current.AddComponentsFromFiles(new object[] { result.Path }, "All");
-                        if (current.Count != before + 1) throw new InvalidOperationException("CATIA 未添加预期的单个组件");
-                        current.Item(before + 1).set_PartNumber(deviceName);
-                    }
-                    else
-                    {
-                        var resource = current.AddNewProduct(deviceName);
-                        try
-                        {
-                            resource.Products.AddComponentsFromFiles(new object[] { result.Path, result.HoleReferencePath }, "All");
-                            if (resource.Products.Count != 2) throw new InvalidOperationException("CATIA 未添加 CGR 与圆孔参考组件");
-                            SafeLog(onLog, "[圆孔参考] 单独 CATPart 可测圆径/孔轴；未替换原 CGR；" + result.HoleReferencePath);
-                        }
-                        catch { current.Remove(before + 1); throw; }
-                    }
+                    current.AddComponentsFromFiles(new object[] { result.Path }, "All");
+                    if (current.Count != before + 1) throw new InvalidOperationException("CATIA 未添加预期的单个 CGR 组件");
+                    current.Item(before + 1).set_PartNumber(deviceName);
                 }
                 else if (format == "3DXML")
                 {
@@ -594,13 +579,7 @@ namespace TxTools.ExportByColor
                             }
                             if (result.Error == null && reconstructRoundHoles && result.Holes != null)
                             {
-                                if (result.Holes.Count == 0) SafeLog(onLog, "[圆孔重建] 没有满足圆孔校验条件的候选；保留原 CGR");
-                                else
-                                {
-                                    progress.Report(onProgress, "CATIA 圆孔参考重建", result.ExportName);
-                                    result.HoleReferencePath = result.Path + ".holes.CATPart";
-                                    RoundHoleCatiaWriter.WritePart(_catia, result.Holes, result.HoleReferencePath, false, onLog);
-                                }
+                                SafeLog(onLog, "[圆孔 CGR] 原生圆柱面替换="+result.Holes.Count+"；孔壁与孔口已直接编码到单个 CGR；其余保留源网格");
                             }
                             FinishExport(result, "CGR", null, onLog, progress, onProgress, ref ok, ref failed);
                         }

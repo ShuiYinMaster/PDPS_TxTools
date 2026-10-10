@@ -41,7 +41,7 @@ namespace TxTools.ExportByColor
             vertices=output;faces=result;
         }
 
-        private static void BuildLineFace95(List<float[]> vertices,List<Face> faces,string path,int faceLimit,Action<string> progress,bool smoothDomains)
+        private static void BuildLineFace95(List<float[]> vertices,List<Face> faces,string path,int faceLimit,Action<string> progress,bool smoothDomains,Dictionary<int,RoundHoleCgrMesh.Cylinder> cylinders=null)
         {
             var groups=new Dictionary<Tuple<int,int>,List<Face>>();var order=new List<List<Face>>();
             foreach(var f in faces)
@@ -60,7 +60,8 @@ namespace TxTools.ExportByColor
                     CompactFeatureVertices95(ref vs,ref ns,ref tris);
                     encodedVertices+=vs.Count;
                     int nf,ne;byte[] payload,pick;
-                    BuildFeaturePayload95(vs,ns,tris,topology,color,nextId,smoothDomains,out payload,out pick,out nf,out ne);
+                    RoundHoleCgrMesh.Cylinder cylinder=null;if(cylinders!=null)cylinders.TryGetValue(color.Surface,out cylinder);
+                    BuildFeaturePayload95(vs,ns,tris,topology,color,nextId,smoothDomains,out payload,out pick,out nf,out ne,cylinder);
                     nextId=checked(nextId+(uint)nf+(uint)ne);
                     children.Add(WrapFeature95(vs,payload,checked((uint)picks.Position)));
                     picks.Write(pick,0,pick.Length);domains+=nf;edgeCount+=ne;
@@ -69,7 +70,7 @@ namespace TxTools.ExportByColor
                 // carried separately, so a shading split never becomes a missing adjacency.
                 foreach(var group in order)
                     CompactGroup95(vertices,group,children,picks,ref changed,ref vertexCount,write,faceLimit,
-                        smoothDomains?MaxFeatureVertsPerChunk:MaxVertsPerChunk);
+                        smoothDomains?MaxFeatureVertsPerChunk:MaxVertsPerChunk,cylinders!=null&&cylinders.ContainsKey(group[0].Surface));
                 byte[] scene;
                 using(var ms=new MemoryStream())using(var w=new BinaryWriter(ms))
                 {
@@ -100,7 +101,7 @@ namespace TxTools.ExportByColor
         }
 
         private static void BuildFeaturePayload95(List<float[]> vs,List<float[]> ns,List<int[]> triangles,List<int[]> topology,
-            Face color,uint firstId,bool smoothDomains,out byte[] payload,out byte[] pick,out int faceCount,out int edgeCount)
+            Face color,uint firstId,bool smoothDomains,out byte[] payload,out byte[] pick,out int faceCount,out int edgeCount,RoundHoleCgrMesh.Cylinder cylinder=null)
         {
             if(vs.Count>65536||triangles.Count!=topology.Count||ns.Count!=vs.Count)
                 throw new InvalidDataException("Invalid line/face block");
@@ -167,7 +168,7 @@ namespace TxTools.ExportByColor
             }
             if(smoothDomains)
             {
-                boundary=ChainFeatureEdges95(boundary,vs);
+                boundary=ChainFeatureEdges95(boundary,vs,cylinder!=null);
                 ReorderFeatureDomains95(ref domains,boundary);
             }
             bool wide=vs.Count>255;
@@ -198,12 +199,13 @@ namespace TxTools.ExportByColor
                 w.Write((byte)255);w.Write(0);w.Write(PacketPrefix);
                 for(int i=0;i<domains.Count;i++)
                 {
-                    w.Write(checked(firstId+(uint)i));w.Write(FaceReserved);
+                    w.Write(checked(firstId+(uint)i));if(cylinder==null)w.Write(FaceReserved);else WriteCanonicalCylinder95(w,cylinder);
                     foreach(double x in bounds[i])w.Write(Finite(x));w.Write(FaceSuffix);
                 }
                 for(int i=0;i<boundary.Count;i++)
                 {
-                    var edge=boundary[i];w.Write((byte)96);w.Write(checked(firstId+(uint)domains.Count+(uint)i));w.Write(EdgeReserved);
+                    var edge=boundary[i];w.Write((byte)96);w.Write(checked(firstId+(uint)domains.Count+(uint)i));
+                    if(cylinder==null||!WriteCanonicalCircle95(w,cylinder,edge,vs))w.Write(EdgeReserved);
                     Compact(w,(uint)edge.Face);Compact(w,edge.Other<0?uint.MaxValue:(uint)edge.Other);
                 }
                 pick=ms.ToArray();LE(pick,1,pick.Length);
