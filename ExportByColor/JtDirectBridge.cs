@@ -33,6 +33,18 @@ namespace TxTools.ExportByColor
         public static void ConvertToCgr(string source, string directory, string worker,
             string output, double[] placement, CgrBackend backend, Action<string> log)
         {
+            ConvertToCgrCore(source, directory, worker, output, placement, backend, log, false);
+        }
+
+        public static List<RoundHoleReconstruction.Hole> ConvertToCgrWithHoles(string source, string directory,
+            string worker, string output, double[] placement, CgrBackend backend, Action<string> log)
+        {
+            return ConvertToCgrCore(source, directory, worker, output, placement, backend, log, true);
+        }
+
+        private static List<RoundHoleReconstruction.Hole> ConvertToCgrCore(string source, string directory,
+            string worker, string output, double[] placement, CgrBackend backend, Action<string> log, bool reconstruct)
+        {
             if (backend != CgrBackend.Compact && backend != CgrBackend.LineFace && backend != CgrBackend.LineFacePlanar)
                 throw new ArgumentException("JT output requires an explicit compact or line/face backend", "backend");
             var mesh = Convert(source, directory, worker, 300000);
@@ -42,6 +54,12 @@ namespace TxTools.ExportByColor
                 faces.Add(new CgrWriter.Face { Idx=face.Indices, R=face.R, G=face.G, B=face.B,
                     Surface=face.Surface, Opacity=face.Alpha, Nx=face.Normal[0], Ny=face.Normal[1], Nz=face.Normal[2] });
             CgrWriter.BuildFile(mesh.Vertices, faces, output, backend, 20000, log, true);
+            if (!reconstruct) return null;
+            var holes = RoundHoleReconstruction.Find(mesh.Vertices, faces);
+            string csv = output + ".holes.csv";
+            RoundHoleReconstruction.WriteCsv(csv, holes);
+            if (log != null) log("[JT circular holes] candidates=" + holes.Count + "; parameters=" + csv + "; tessellation fit, not original CAD feature history");
+            return holes;
         }
 
         public static int ConversionWorkers

@@ -1,0 +1,6 @@
+using System;using System.IO;using System.Linq;using System.Collections.Generic;using System.Runtime.InteropServices;using System.Reflection;using TxTools.ExportByColor;
+class RoundHoleCatiaRegression
+{
+ [STAThread]static int Main(string[] args){AppDomain.CurrentDomain.AssemblyResolve+=(s,e)=>{var p=Path.Combine(@"E:\ProcessSimulatePlugin\Process Simulate\bin",new AssemblyName(e.Name).Name+".dll");return File.Exists(p)?Assembly.LoadFrom(p):null;};try{Run(args);return 0;}catch(Exception e){Console.Error.WriteLine(e);return 1;}}
+ static void Run(string[] args){var mesh=JtDirectBridge.Read(args[1],args[0]);var faces=mesh.Faces.Select(f=>new CgrWriter.Face{Idx=f.Indices,Surface=f.Surface}).ToList();var holes=RoundHoleReconstruction.Find(mesh.Vertices,faces).Where(h=>h.PairedRims).OrderByDescending(h=>h.WallTriangleCount).Take(12).ToList();if(holes.Count!=12)throw new Exception("Insufficient paired circular rims");INFITF.Application app=(INFITF.Application)Marshal.GetActiveObject("CATIA.Application");var report=RoundHoleCatiaWriter.WritePart(app,holes,args[2],true,Console.WriteLine);if(report.Circles!=24||report.Cylinders!=12)throw new Exception("Native hole reference count mismatch");Console.WriteLine("PASS CATIA analytic circles, axes and cylinder surfaces; radius and axis length measured through SPA");}
+}

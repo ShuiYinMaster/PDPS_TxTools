@@ -487,6 +487,8 @@
     <Compile Include="ExportByColor\ExportByColorService.cs" />
     <Compile Include="ExportByColor\JtResourceResolver.cs" />
     <Compile Include="ExportByColor\JtDirectBridge.cs" />
+    <Compile Include="ExportByColor\RoundHoleReconstruction.cs" />
+    <Compile Include="ExportByColor\RoundHoleCatiaWriter.cs" />
     <Compile Include="ExportByColor\CgrWriter.cs" />
     <Compile Include="ExportByColor\CgrCompact95.cs" />
     <Compile Include="ExportByColor\CgrLineFace95.cs" />

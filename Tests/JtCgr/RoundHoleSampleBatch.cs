@@ -1,0 +1,10 @@
+using System;using System.IO;using System.Linq;using System.Diagnostics;using System.Globalization;
+class RoundHoleSampleBatch
+{
+ static string Quote(string v){return "\""+v+"\"";}
+ static int Main(string[] args){if(args.Length!=4){Console.Error.WriteLine("fixture-parent mesh-batch-directory new-output-directory production-bin");return 1;}try{Directory.CreateDirectory(args[2]);using(var summary=new StreamWriter(Path.Combine(args[2],"summary.csv"))){summary.WriteLine("sample,candidates,paired_rims,max_vertex_fit_error");foreach(var code in new[]{"5156","9261+8251","9251+8151","5254+8452","5253","5154+8352","5153"}){
+  string name="BP-60-T13J-"+code+"-20240501",source=Path.Combine(args[0],name+".cojt",name+".jt"),mesh=Directory.GetFiles(Path.Combine(args[1],code),"*.jtmesh").Single(),csv=Path.GetFullPath(Path.Combine(args[2],code+".csv"));
+  using(var log=new StreamWriter(Path.Combine(args[2],code+".log")))using(var p=new Process()){p.StartInfo=new ProcessStartInfo(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"RoundHoleRegression.exe"),string.Join(" ",new[]{source,mesh,csv,args[3]}.Select(Quote))){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};object gate=new object();DataReceivedEventHandler read=(s,e)=>{if(e.Data!=null)lock(gate)log.WriteLine(e.Data);};p.OutputDataReceived+=read;p.ErrorDataReceived+=read;p.Start();p.BeginOutputReadLine();p.BeginErrorReadLine();if(!p.WaitForExit(300000)){p.Kill();p.WaitForExit();throw new TimeoutException(code);}p.WaitForExit();if(p.ExitCode!=0)throw new Exception("Fitting failed: "+code);}
+  var rows=File.ReadAllLines(csv).Skip(1).Select(l=>l.Split(',')).ToArray();int paired=rows.Count(r=>r[1]=="paired_circular_rims");double error=rows.Max(r=>double.Parse(r[11],CultureInfo.InvariantCulture));summary.WriteLine(code+","+rows.Length+","+paired+","+error.ToString("R",CultureInfo.InvariantCulture));Console.WriteLine("PASS "+code+" candidates="+rows.Length+" paired="+paired+" maximum_vertex_error="+error);
+ }}return 0;}catch(Exception e){Console.Error.WriteLine(e);return 1;}}
+}

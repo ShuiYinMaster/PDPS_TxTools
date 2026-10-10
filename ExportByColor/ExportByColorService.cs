@@ -137,6 +137,8 @@ namespace TxTools.ExportByColor
             public string ExportName;
             public string Path;
             public string SourcePath;
+            public List<RoundHoleReconstruction.Hole> Holes;
+            public string HoleReferencePath;
             public ThreeDXmlWriter.PartTicket PackagePart;
             public Cfv3EncodingStats Cfv3Stats;
             public Exception Error;
@@ -382,9 +384,23 @@ namespace TxTools.ExportByColor
                     }
                     int before = current.Count;
                     string deviceName = GetUniqueChildName(current, SafeFileName(result.Device.Name));
-                    current.AddComponentsFromFiles(new object[] { result.Path }, "All");
-                    if (current.Count != before + 1) throw new InvalidOperationException("CATIA 未添加预期的单个组件");
-                    current.Item(before + 1).set_PartNumber(deviceName);
+                    if (string.IsNullOrEmpty(result.HoleReferencePath))
+                    {
+                        current.AddComponentsFromFiles(new object[] { result.Path }, "All");
+                        if (current.Count != before + 1) throw new InvalidOperationException("CATIA 未添加预期的单个组件");
+                        current.Item(before + 1).set_PartNumber(deviceName);
+                    }
+                    else
+                    {
+                        var resource = current.AddNewProduct(deviceName);
+                        try
+                        {
+                            resource.Products.AddComponentsFromFiles(new object[] { result.Path, result.HoleReferencePath }, "All");
+                            if (resource.Products.Count != 2) throw new InvalidOperationException("CATIA 未添加 CGR 与圆孔参考组件");
+                            SafeLog(onLog, "[圆孔参考] 单独 CATPart 可测圆径/孔轴；未替换原 CGR；" + result.HoleReferencePath);
+                        }
+                        catch { current.Remove(before + 1); throw; }
+                    }
                 }
                 else if (format == "3DXML")
                 {
@@ -489,11 +505,15 @@ namespace TxTools.ExportByColor
         }
 
         private static Task<EncodedDevice> StartJtConversion(EncodedDevice result,
-            string directory, string decoder, double[] placement, List<string> logs, CgrBackend backend)
+            string directory, string decoder, double[] placement, List<string> logs, CgrBackend backend, bool reconstructRoundHoles)
         {
             return Task.Run(() =>
             {
-                try { JtDirectBridge.ConvertToCgr(result.SourcePath, directory, decoder, result.Path, placement, backend, logs.Add); }
+                try
+                {
+                    if (reconstructRoundHoles) result.Holes = JtDirectBridge.ConvertToCgrWithHoles(result.SourcePath, directory, decoder, result.Path, placement, backend, logs.Add);
+                    else JtDirectBridge.ConvertToCgr(result.SourcePath, directory, decoder, result.Path, placement, backend, logs.Add);
+                }
                 catch (Exception ex) { result.Error = ex; }
                 return result;
             });
@@ -506,7 +526,7 @@ namespace TxTools.ExportByColor
         public void RunJtToCgrAsync(List<ITxObject> picked,
                                     Action<string> onLog,
                                     Action<ExportProgressInfo> onProgress,
-                                    Action<bool, string> onComplete, CgrBackend backend = CgrBackend.Compact)
+                                    Action<bool, string> onComplete, CgrBackend backend = CgrBackend.Compact, bool reconstructRoundHoles = false)
         {
             var thread = new Thread(() =>
             {
@@ -546,7 +566,7 @@ namespace TxTools.ExportByColor
                         try
                         {
                             var unsupported = result.Error as NotSupportedException;
-                            if (unsupported != null)
+                            if (unsupported != null && !reconstructRoundHoles)
                             {
                                 SafeLog(onLog, "[JT compatibility] " + unsupported.Message);
                                 SafeLog(onLog, "[JT compatibility] Using loaded PS geometry/design colors and current PS pose; direct JT face-color decoder is not used.");
@@ -570,6 +590,16 @@ namespace TxTools.ExportByColor
                                 {
                                     nativeGroups.Clear();
                                     foreach (var data in nativeData) data.Colors.Clear();
+                                }
+                            }
+                            if (result.Error == null && reconstructRoundHoles && result.Holes != null)
+                            {
+                                if (result.Holes.Count == 0) SafeLog(onLog, "[圆孔重建] 没有满足圆孔校验条件的候选；保留原 CGR");
+                                else
+                                {
+                                    progress.Report(onProgress, "CATIA 圆孔参考重建", result.ExportName);
+                                    result.HoleReferencePath = result.Path + ".holes.CATPart";
+                                    RoundHoleCatiaWriter.WritePart(_catia, result.Holes, result.HoleReferencePath, false, onLog);
                                 }
                             }
                             FinishExport(result, "CGR", null, onLog, progress, onProgress, ref ok, ref failed);
@@ -615,7 +645,7 @@ namespace TxTools.ExportByColor
                             // The worker closure captures only strings, a matrix and detached data.
                             var result = new EncodedDevice { Device=snapshot, ExportName=name,
                                 Path=Path.Combine(workDir, name + ".cgr"), SourcePath=jtPath };
-                            var task = StartJtConversion(result, workDir, decoder, placement, logs, backend);
+                            var task = StartJtConversion(result, workDir, decoder, placement, logs, backend, reconstructRoundHoles);
                             pending.Enqueue(new PendingJtConversion { Source=device, Task=task, Logs=logs });
                             progress.Collected++;
                             progress.Report(onProgress, "JT 并行转码", name);
