@@ -11,10 +11,11 @@ using Reader = DLAT.JTReader.StreamReader;
 // Standalone .NET Framework worker. PS objects never enter this process.
 class Program
 {
-    sealed class Segment { public Guid Id; public int Ordinal, Type; public byte[] Data; }
+    sealed class Segment { public Guid Id; public int Ordinal, Type; public byte[] Data; public Element Legacy; }
     sealed class Node { public string Type, Text; public int Id; public int[] Attributes = new int[0], Children = new int[0]; public Guid Segment; public double[] Matrix, RGBA; public uint Inhibit, Final; public byte State; }
     sealed class Binding { public Segment Segment; public double[] Matrix, RGBA; }
     sealed class Face { public int[] Ids; public byte[] RGB; public byte Alpha; public int Surface; public double[] Normal; }
+    static int sourceMajor, sourceMinor, defaultMaterialShapes;
     static Dictionary<int, Node> nodes = new Dictionary<int, Node>();
     static Dictionary<Guid, Segment> segments = new Dictionary<Guid, Segment>();
     static List<Binding> bindings = new List<Binding>();
@@ -40,7 +41,7 @@ class Program
             if (new[] { "10dd103e", "10dd101b", "10dd102c", "10dd104c", "10dd10f3", "ce357245", "ce357244" }.Contains(type)) { b.ReadByte(); int count = Count(b); n.Children = Enumerable.Range(0, count).Select(_ => b.ReadInt32()).ToArray(); }
             else if (type == "10dd102a") { b.ReadByte(); n.Children = new[] { b.ReadInt32() }; }
             else if (type == "10dd1083") { b.BaseStream.Position = 10; b.ReadByte(); ushort mask = b.ReadUInt16(); int count = Enumerable.Range(0, 16).Count(i => (mask & (0x8000 >> i)) != 0); bool wide = body.Length - 13 > count * 6; n.Matrix = Identity(); for (int i = 0; i < 16; i++) if ((mask & (0x8000 >> i)) != 0) n.Matrix[i] = wide ? b.ReadDouble() : b.ReadSingle(); }
-            else if (type == "10dd1030") { if (body.Length != 93 || body[10] != 1) throw new InvalidDataException("Unsupported material layout"); b.BaseStream.Position = 1; n.State = b.ReadByte(); n.Inhibit = b.ReadUInt32(); n.Final = b.ReadUInt32(); b.BaseStream.Position = 29; n.RGBA = Enumerable.Range(0, 4).Select(_ => (double)b.ReadSingle()).ToArray(); if (n.RGBA.Any(v => double.IsNaN(v) || v < 0 || v > 1)) throw new InvalidDataException("Invalid RGBA"); }
+            else if (type == "10dd1030") { if (body.Length < 11 || body[10] != 1 || (body[0] != 1 && body[0] != 2) || body.Length != (body[0] == 2 ? 93 : 89)) throw new NotSupportedException("Unsupported material layout at node " + id); b.BaseStream.Position = 1; n.State = b.ReadByte(); n.Inhibit = b.ReadUInt32(); n.Final = b.ReadUInt32(); b.BaseStream.Position = 29; n.RGBA = Enumerable.Range(0, 4).Select(_ => (double)b.ReadSingle()).ToArray(); if (n.RGBA.Any(v => double.IsNaN(v) || v < 0 || v > 1)) throw new InvalidDataException("Invalid RGBA"); }
             else if (type == "10dd106e") { b.BaseStream.Position = 6; int count = Count(b); n.Text = Encoding.Unicode.GetString(Bytes(b, Math.Min(count * 2, (int)(b.BaseStream.Length - b.BaseStream.Position)))).TrimEnd('\0'); }
             else if (baseType == 8) { b.BaseStream.Position = 6; n.Segment = GuidAt(b); }
         }
@@ -77,8 +78,8 @@ class Program
     static void Walk(int id, double[] matrix, double[] rgba, uint final, HashSet<int> path)
     {
         if (path.Count > 1000 || !path.Add(id)) throw new InvalidDataException("Cyclic JT graph"); var n = nodes[id]; rgba = (double[])rgba.Clone();
-        foreach (int attr in n.Attributes) { var a = nodes[attr]; if (a.RGBA != null && (a.State & 4) == 0) { uint allowed = ~a.Inhibit & ((a.State & 2) != 0 ? uint.MaxValue : ~final); if ((allowed & 64) != 0) Array.Copy(a.RGBA, rgba, 3); if ((allowed & 128) != 0) rgba[3] = a.RGBA[3]; final |= a.Final & allowed; } if (a.Matrix != null) { if (n.Type != "10dd102a") throw new InvalidDataException("Transform on non-instance node"); matrix = Multiply(a.Matrix, matrix); } }
-        if (n.Type == "10dd1077") { Segment s; if (n.Segment == Guid.Empty || !segments.TryGetValue(n.Segment, out s)) throw new InvalidDataException("Missing shape binding"); if (rgba.Take(3).Any(double.IsNaN)) throw new InvalidDataException("Missing shape diffuse RGB at node " + id); Rigid(matrix); bindings.Add(new Binding { Segment = s, Matrix = matrix, RGBA = rgba }); }
+        foreach (int attr in n.Attributes) { var a = nodes[attr]; if (a.RGBA != null && (a.State & 4) == 0) { uint allowed = ~a.Inhibit & ((a.State & 2) != 0 ? uint.MaxValue : ~final); if ((allowed & 64) != 0) Array.Copy(a.RGBA, rgba, 3); if ((allowed & 128) != 0) rgba[3] = a.RGBA[3]; final |= a.Final & allowed; } if (a.Matrix != null) { if (sourceMajor != 8 && n.Type != "10dd102a") throw new InvalidDataException("Transform on non-instance node"); matrix = Multiply(a.Matrix, matrix); } }
+        if (n.Type == "10dd1077") { Segment s; if (n.Segment == Guid.Empty || !segments.TryGetValue(n.Segment, out s)) throw new InvalidDataException("Missing shape binding"); if (rgba.Take(3).Any(double.IsNaN)) { for(int i=0;i<3;i++)if(double.IsNaN(rgba[i]))rgba[i]=0.8; defaultMaterialShapes++; Console.WriteLine("MATERIAL_DEFAULT node="+id+" RGB=204,204,204; application neutral default for undefined diffuse RGB"); } Rigid(matrix); bindings.Add(new Binding { Segment = s, Matrix = matrix, RGBA = rgba }); }
         var selectedChildren = n.Children;
         if (n.Type == "10dd104c" && n.Children.Length > 1)
         {
@@ -105,29 +106,117 @@ class Program
         int correctedWinding = 0, hiddenTriangles = 0; for (int f = 0; f < mesh.numFaces(); f++) { int nv = mesh.faceNumVts(f); if (mesh.faceGrp(f) < 0) { hiddenTriangles += Math.Max(0, nv - 2); continue; } for (int k = 1; k < nv - 1; k++) { int[] ids = { mesh.faceVtx(f, 0), mesh.faceVtx(f, k), mesh.faceVtx(f, k + 1) }; if (ids.Any(i => i < 0 || i >= local.Count)) throw new InvalidDataException("Invalid vertex index"); var geo = Cross(local[ids[0]], local[ids[1]], local[ids[2]]); var original = ids.Select(i => new[] { (double)xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2] }).ToArray(); var sourceGeo = Cross(original[0], original[1], original[2]); if (Math.Sqrt(sourceGeo.Sum(v => v * v)) <= 1e-12) continue; var sum = new double[3];  foreach (int i in ids) { int ni = mesh.faceVtxAttr(f, i);  if (ni < 0) continue; if (ni * 3 + 2 >= normals.Count) throw new InvalidDataException("Invalid normal index"); var norm = Normalize(Transform(new[] { (double)normals[ni * 3], normals[ni * 3 + 1], normals[ni * 3 + 2] }, binding.Matrix, false)); for (int j = 0; j < 3; j++) sum[j] += norm[j]; }  sum = Normalize(sum); if (Enumerable.Range(0, 3).Sum(j => sum[j] * geo[j]) < 0) { int swap = ids[1]; ids[1] = ids[2]; ids[2] = swap; correctedWinding++; } if (sum.Sum(v => v * v) < 0.5) sum = Normalize(geo); faces.Add(new Face { Ids = ids.Select(i => i + offset).ToArray(), RGB = rgb, Alpha = (byte)Math.Round(binding.RGBA[3] * 255), Surface = surface, Normal = sum }); } }
         if (vertices.Count > 5000000 || faces.Count > 5000000) throw new InvalidDataException("Mesh size limit"); Console.WriteLine("Shape " + surface + " vertices=" + local.Count + " totalFaces=" + faces.Count + " sourceNormalWindingCorrections=" + correctedWinding + " hiddenTopologyTriangles=" + hiddenTriangles);
     }
+    static Guid LegacyGuid(GUID id) { return Guid.ParseExact(id.ToString().Replace("-", ""), "N"); }
+    static void ParseLegacyFile(string input)
+    {
+        // JT 8 uses 32-bit TOC offsets, body object IDs, zlib LSG and strip LODs.
+        var file = new JTFile(input);
+        int ordinal = 0;
+        foreach (var segment in file.segments.Values)
+        {
+            var result = new Segment { Id=LegacyGuid(segment.segmentID), Type=segment.segmentType, Ordinal=ordinal++ };
+            if (segment.segmentType==7)
+            {
+                var lods=segment.elements.Where(e=>e.elementType==typeof(Tri_StripSetShapeLODData)).ToArray();
+                if(lods.Length>1)throw new NotSupportedException("Multiple JT8 highest-detail payloads");
+                if(lods.Length==1){result.Legacy=lods[0];result.Data=new byte[0];}
+            }
+            segments.Add(result.Id,result);
+        }
+        foreach (var entry in file.elements)
+        {
+            var element=entry.Value;
+            var n=new Node { Id=entry.Key, Type=element.objectTypeID.ToString().Substring(0,8).ToLowerInvariant() };
+            var data=element.elementData;
+            var node=data as BaseNodeData;
+            if(node!=null)n.Attributes=(int[])node.attributeObjectID.Clone();
+            var group=data as GroupNodeData;
+            if(group!=null)n.Children=(int[])group.childNodeObjectID.Clone();
+            var instance=data as InstanceNodeData;
+            if(instance!=null)n.Children=new[]{instance.childNodeObjectID};
+            var transform=data as GeometricTransformAttributeData;
+            if(transform!=null)n.Matrix=(double[])transform.matrix.raw.Clone();
+            var material=data as MaterialAttributeData;
+            if(material!=null)
+            {
+                n.State=material.stateFlags;
+                // JT8 material diffuse RGB and alpha share field-inhibit bit 1.
+                n.Inhibit=(material.fieldInhibitFlags&2)!=0?192U:0U;
+                n.Final=(material.stateFlags&1)!=0?192U:0U;
+                var color=material.diffuseColor;
+                n.RGBA=new[]{(double)color.r,color.g,color.b,color.a};
+                if(n.RGBA.Take(3).All(v=>v==-1)) { n.Inhibit|=64; for(int k=0;k<3;k++)n.RGBA[k]=0; Console.WriteLine("MATERIAL_UNDEFINED node="+n.Id+" RGB=-1,-1,-1; inherit diffuse RGB"); }
+                if(n.RGBA.Any(v=>double.IsNaN(v)||double.IsInfinity(v)||v<0||v>1))throw new InvalidDataException("Invalid JT8 RGBA node="+n.Id+" flags="+material.dataFlags+" values="+string.Join(",",n.RGBA));
+            }
+            var text=data as StringPropertyAtomData;
+            if(text!=null)n.Text=text.value;
+            var late=data as LateLoadedPropertyAtomData;
+            if(late!=null)n.Segment=LegacyGuid(late.segmeentID);
+            nodes.Add(n.Id,n);
+        }
+        if(file.propertyTable.versionNumber!=1)throw new NotSupportedException("JT8 property table version");
+        foreach(var table in file.propertyTable.nodePropertyTable)
+            foreach(var property in table.Value.propertyAtomObjectID)
+                if(nodes[property.Key].Text=="JT_LLPROP_SHAPEIMPL")nodes[table.Key].Segment=nodes[property.Value].Segment;
+    }
+    static void DecodeLegacy(Binding binding,int surface)
+    {
+        var lod=(Tri_StripSetShapeLODData)binding.Segment.Legacy.elementData;
+        var rep=lod.vertexBasedShapeData;
+        if(rep==null || rep.parameters.bitsPerVertex!=0 || rep.colorBinding!=0 || rep.textureCoordBinding!=0 || rep.normalBinding>1)
+            throw new NotSupportedException("Unsupported JT8 strip vertex layout at shape "+surface);
+        var xyz=rep.GetVertices();var normals=rep.GetNormals();var strips=rep.indices;
+        if(xyz.Count%3!=0 || (rep.normalBinding==1 && normals.Count!=xyz.Count) || strips.Count<2 || strips[0]!=0 || strips[strips.Count-1]!=xyz.Count/3)
+            throw new InvalidDataException("Invalid JT8 strip arrays");
+        for(int i=1;i<strips.Count;i++)if(strips[i]<strips[i-1])throw new InvalidDataException("Unordered JT8 strip boundaries");
+        var local=new List<double[]>();int offset=vertices.Count;
+        for(int i=0;i<xyz.Count;i+=3)local.Add(Transform(new[]{(double)xyz[i],xyz[i+1],xyz[i+2]},binding.Matrix,true));
+        vertices.AddRange(local);
+        var rgb=binding.RGBA.Take(3).Select(v=>(byte)Math.Round(v*255)).ToArray();
+        int corrected=0,degenerate=0,triangles=0;
+        for(int strip=1;strip<strips.Count;strip++)for(int j=strips[strip-1];j<strips[strip]-2;j++)
+        {
+            triangles++;int[] ids=(j-strips[strip-1])%2==0?new[]{j,j+1,j+2}:new[]{j+1,j,j+2};
+            var original=ids.Select(i=>new[]{(double)xyz[3*i],xyz[3*i+1],xyz[3*i+2]}).ToArray();
+            var sourceGeo=Cross(original[0],original[1],original[2]);
+            if(Math.Sqrt(sourceGeo.Sum(v=>v*v))<=1e-12){degenerate++;continue;}
+            var geo=Cross(local[ids[0]],local[ids[1]],local[ids[2]]);var sum=new double[3];
+            if(rep.normalBinding==1)foreach(int i in ids)
+            {
+                var normal=Normalize(Transform(new[]{(double)normals[3*i],normals[3*i+1],normals[3*i+2]},binding.Matrix,false));
+                for(int k=0;k<3;k++)sum[k]+=normal[k];
+            }
+            sum=Normalize(sum);
+            if(Enumerable.Range(0,3).Sum(k=>sum[k]*geo[k])<0){int temp=ids[1];ids[1]=ids[2];ids[2]=temp;corrected++;}
+            if(sum.Sum(v=>v*v)<0.5)sum=Normalize(geo);
+            faces.Add(new Face { Ids=ids.Select(i=>i+offset).ToArray(), RGB=rgb, Alpha=(byte)Math.Round(binding.RGBA[3]*255), Surface=surface, Normal=sum });
+        }
+        if(vertices.Count>5000000||faces.Count>5000000)throw new InvalidDataException("Mesh size limit");
+        Console.WriteLine("JT8_STRIPS shape="+surface+" strips="+(strips.Count-1)+" triangles="+triangles+" degenerate="+degenerate+" sourceNormalWindingCorrections="+corrected);
+    }
     static float F(double v) { float f = (float)v; if (float.IsNaN(f) || float.IsInfinity(f)) throw new InvalidDataException("Nonfinite mesh"); return f; }
     static void ValidateHeader(BinaryReader r,string input)
     {
         string header=Encoding.ASCII.GetString(Bytes(r,80)).TrimEnd('\0',' ','\r','\n');
         byte order=r.ReadByte();
-        Console.WriteLine("DECODER=TxTools.JtDecoder visible-faces-rgba-v6");
+        Console.WriteLine("DECODER=TxTools.JtDecoder jt8.0-10.0-10.6-rgba-v8");
         Console.WriteLine("INPUT="+input);
         Console.WriteLine("JT_HEADER="+header+" BYTE_ORDER="+order);
         var version=System.Text.RegularExpressions.Regex.Match(header,@"^Version\s+(\d+)\.(\d+)\s+JT(?:\s|$)");
         if(!version.Success)throw new InvalidDataException("Invalid JT header: "+header);
-        int major=int.Parse(version.Groups[1].Value),minor=int.Parse(version.Groups[2].Value);
+        int major=int.Parse(version.Groups[1].Value),minor=int.Parse(version.Groups[2].Value); sourceMajor=major; sourceMinor=minor;
         if(order>1)throw new InvalidDataException("Invalid JT byte-order marker: "+order);
-        if(order!=0||major!=10||minor!=6)
+        if(order!=0||!((major==10&&(minor==0||minor==6))||(major==8&&minor==0)))
             throw new NotSupportedException("Direct decoder does not support JT "+major+"."+minor+
                 " byteOrder="+order+"; use the loaded PS native representation. Source: "+input);
     }
     static void Run(string input, string output)
     {
-        byte[] bytes = File.ReadAllBytes(input), hash; using (var h = SHA256.Create()) hash = h.ComputeHash(bytes); using (var r = R(bytes)) { ValidateHeader(r,input); r.ReadInt32(); long toc = r.ReadInt64(); r.BaseStream.Position = toc; int count = Count(r); for (int i = 0; i < count; i++) { Guid id = GuidAt(r); long offset = r.ReadInt64(); int len = Count(r); r.ReadUInt32(); long back = r.BaseStream.Position; r.BaseStream.Position = offset + 16; int type = r.ReadInt32(); if (r.ReadInt32() != len) throw new InvalidDataException("Segment length mismatch"); byte[] data = Bytes(r, len - 24); if (type == 1) { using (var cr = R(data)) { if (cr.ReadInt32() != 3) throw new InvalidDataException("LSG codec unsupported"); int cl = Count(cr); if (cr.ReadByte() != 3) throw new InvalidDataException("LSG codec unsupported"); using (var xz = CODEC.DecompressLZMA(new MemoryStream(Bytes(cr, cl - 1)))) { if (xz.Length > 512 * 1024 * 1024) throw new InvalidDataException("LSG size limit"); using (var br = new BinaryReader(xz)) data = br.ReadBytes((int)xz.Length); } } } else if (type == 7) { using (var er = R(data)) { int el = Count(er); Guid g = GuidAt(er); er.ReadByte(); er.ReadInt32(); data = Type(g) == "10dd10ab" ? Bytes(er, el - 21) : null; } } else data = null; segments.Add(id, new Segment { Id = id, Type = type, Ordinal = i, Data = data }); r.BaseStream.Position = back; } }
-        var lsg = segments.Values.Single(s => s.Type == 1); ParseLSG(lsg.Data); var root = nodes.Values.Single(n => n.Type == "10dd103e"); Walk(root.Id, Identity(), new[] { double.NaN, double.NaN, double.NaN, 1.0 }, 0, new HashSet<int>());
-        var expected = new HashSet<Guid>(segments.Values.Where(s => s.Type == 7 && s.Data != null).Select(s => s.Id)); if (!expected.SetEquals(bindings.Select(b => b.Segment.Id))) throw new InvalidDataException("Unreferenced/unsupported triangle LOD"); Console.WriteLine("MATERIAL_ALPHA " + string.Join("; ", bindings.GroupBy(b => (byte)Math.Round(b.RGBA[3] * 255)).OrderBy(g => g.Key).Select(g => "alpha=" + g.Key + " shapes=" + g.Count()))); var file = Blank<JTFile>(); file.majorVersion = 10; file.minorVersion = 6; int surface = 0; foreach (var b in bindings.OrderBy(b => b.Segment.Ordinal)) Decode(b, ++surface, file); if (vertices.Count == 0 || faces.Count == 0) throw new InvalidDataException("Empty JT mesh"); using (var h = SHA256.Create()) using (var s = File.OpenRead(input)) if (!hash.SequenceEqual(h.ComputeHash(s))) throw new InvalidDataException("JT changed during conversion");
+        byte[] bytes = File.ReadAllBytes(input), hash; using (var h = SHA256.Create()) hash = h.ComputeHash(bytes); using (var r = R(bytes)) ValidateHeader(r,input); if(sourceMajor==8) ParseLegacyFile(input); else using (var r = R(bytes)) { r.BaseStream.Position=81; r.ReadInt32(); long toc = r.ReadInt64(); r.BaseStream.Position = toc; int count = Count(r); for (int i = 0; i < count; i++) { Guid id = GuidAt(r); long offset = r.ReadInt64(); int len = Count(r); r.ReadUInt32(); long back = r.BaseStream.Position; r.BaseStream.Position = offset + 16; int type = r.ReadInt32(); if (r.ReadInt32() != len) throw new InvalidDataException("Segment length mismatch"); byte[] data = Bytes(r, len - 24); if (type == 1) { using (var cr = R(data)) { if (cr.ReadInt32() != 3) throw new InvalidDataException("LSG codec unsupported"); int cl = Count(cr); if (cr.ReadByte() != 3) throw new InvalidDataException("LSG codec unsupported"); using (var xz = CODEC.DecompressLZMA(new MemoryStream(Bytes(cr, cl - 1)))) { if (xz.Length > 512 * 1024 * 1024) throw new InvalidDataException("LSG size limit"); using (var br = new BinaryReader(xz)) data = br.ReadBytes((int)xz.Length); } } } else if (type == 7) { using (var er = R(data)) { int el = Count(er); Guid g = GuidAt(er); er.ReadByte(); er.ReadInt32(); data = Type(g) == "10dd10ab" ? Bytes(er, el - 21) : null; } } else data = null; segments.Add(id, new Segment { Id = id, Type = type, Ordinal = i, Data = data }); r.BaseStream.Position = back; } }
+        var lsg = segments.Values.Single(s => s.Type == 1); if(sourceMajor!=8)ParseLSG(lsg.Data); var root = nodes.Values.Single(n => n.Type == "10dd103e"); Walk(root.Id, Identity(), new[] { double.NaN, double.NaN, double.NaN, 1.0 }, 0, new HashSet<int>());
+        var expected = new HashSet<Guid>(segments.Values.Where(s => s.Type == 7 && s.Data != null).Select(s => s.Id)); if (!expected.SetEquals(bindings.Select(b => b.Segment.Id))) throw new InvalidDataException("Unreferenced/unsupported triangle LOD"); Console.WriteLine("MATERIAL_ALPHA " + string.Join("; ", bindings.GroupBy(b => (byte)Math.Round(b.RGBA[3] * 255)).OrderBy(g => g.Key).Select(g => "alpha=" + g.Key + " shapes=" + g.Count()))); var file = Blank<JTFile>(); file.majorVersion = sourceMajor; file.minorVersion = sourceMinor; int surface = 0; foreach (var b in bindings.OrderBy(b => b.Segment.Ordinal)) { if(sourceMajor==8)DecodeLegacy(b, ++surface); else Decode(b, ++surface, file); } if (vertices.Count == 0 || faces.Count == 0) throw new InvalidDataException("Empty JT mesh"); using (var h = SHA256.Create()) using (var s = File.OpenRead(input)) if (!hash.SequenceEqual(h.ComputeHash(s))) throw new InvalidDataException("JT changed during conversion");
         string tmp = output + ".tmp"; try { using (var w = new BinaryWriter(File.Create(tmp))) { w.Write(Encoding.ASCII.GetBytes("JTMESH02")); w.Write(2); w.Write(hash); w.Write(vertices.Count); w.Write(faces.Count); foreach (var p in vertices) foreach (double v in p) w.Write(F(v)); foreach (var f in faces) { foreach (int i in f.Ids) w.Write(i); w.Write(f.RGB); w.Write(f.Alpha); w.Write(f.Surface); foreach (double v in f.Normal) w.Write(F(v)); } } File.Move(tmp, output); } finally { if (File.Exists(tmp)) File.Delete(tmp); }
-        Console.WriteLine("PASS vertices=" + vertices.Count + " faces=" + faces.Count + " shapes=" + surface + " colors=" + faces.Select(f => BitConverter.ToString(f.RGB)).Distinct().Count());
+        Console.WriteLine("PASS defaultMaterialShapes=" + defaultMaterialShapes + " vertices=" + vertices.Count + " faces=" + faces.Count + " shapes=" + surface + " colors=" + faces.Select(f => BitConverter.ToString(f.RGB)).Distinct().Count());
     }
     static int Main(string[] args) { try { if (args.Length != 2) throw new ArgumentException("Usage: TxTools.JtDecoder input.jt output.jtmesh"); Run(Path.GetFullPath(args[0]), Path.GetFullPath(args[1])); return 0; } catch (NotSupportedException e) { Console.WriteLine("COMPAT_REQUIRED "+e.Message); return 2; } catch (Exception e) { Console.Error.WriteLine(e); return 1; } }
 }
