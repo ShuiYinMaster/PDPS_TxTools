@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -18,16 +18,16 @@ namespace TxTools.ExportByColor
         sealed class CapPlane {internal double[] Axis,Origin;}
         static int Root(int[] parents,int x){while(parents[x]!=x){parents[x]=parents[parents[x]];x=parents[x];}return x;}
         static List<CapPatch> BuildCapPatches(List<float[]> vertices,List<CgrWriter.Face> faces,
-            Dictionary<int,Plan> walls,Dictionary<int,List<RimEdge>> caps,Func<int,double[],int> id,List<double[]> points)
+            Dictionary<int,Plan> walls,Dictionary<int,List<RimEdge>> caps,Func<int,double[],int> id,List<double[]> points,HashSet<int> joins)
         {
             var result=new List<CapPatch>();var eligible=new HashSet<int>(caps.Keys.Select(i=>faces[i].Surface));
-            var groups=Enumerable.Range(0,faces.Count).Where(i=>eligible.Contains(faces[i].Surface)&&!walls.ContainsKey(i))
+            var groups=Enumerable.Range(0,faces.Count).Where(i=>eligible.Contains(faces[i].Surface)&&!walls.ContainsKey(i)&&!joins.Contains(i))
                 .GroupBy(i=>Tuple.Create(faces[i].Surface,faces[i].R,faces[i].G,faces[i].B,faces[i].Opacity??255));
             foreach(var group in groups)
             {
                 var indices=group.ToArray();var parents=Enumerable.Range(0,indices.Length).ToArray();
                 // Float32 coordinate-scale tolerance, capped at 0.01 mm.
-                double capTolerance=Math.Max(.001,Math.Min(.01,indices.SelectMany(i=>faces[i].Idx).Max(v=>vertices[v].Max((float c)=>Math.Abs((double)c)))*2/8388608));
+                double capTolerance=Math.Max(.001,Math.Min(.01,indices.SelectMany(i=>faces[i].Idx).Max((int v)=>vertices[v].Max((float c)=>Math.Abs((double)c)))*2/8388608));
                 var local=new int[indices.Length][];var normals=new double[indices.Length][];
                 var planes=new List<CapPlane>();var planeIds=new int[indices.Length];
                 foreach(int fi in indices){List<RimEdge> hits;if(!caps.TryGetValue(fi,out hits))continue;foreach(var e in hits){var axis=e.Plan.Hole.Axis;var origin=e.Ring==0?e.Plan.Hole.RimA:e.Plan.Hole.RimB;if(!planes.Any(p=>Math.Abs(Dot(p.Axis,axis))>.999999&&Math.Abs(Dot(Sub(origin,p.Origin),p.Axis))<.001))planes.Add(new CapPlane{Axis=axis,Origin=origin});}}
@@ -120,21 +120,32 @@ namespace TxTools.ExportByColor
             double expectedArea=loops.Sum(area);if(expectedArea<=1e-10)return null;
             var polygons=outers.ToDictionary(l=>l,l=>new List<List<int>>{l});
             foreach(var inner in inners){var parent=outers.Where(o=>inner.All(v=>InsideCapLoop(xy(v),o,xy))).OrderBy(o=>area(o)).FirstOrDefault();if(parent==null){failure="cap-hole-outside";return null;}polygons[parent].Add(inner);}
-            failure="cap-triangulation";var triangles=new List<int[]>();
-            foreach(var polygon in polygons.Values)
+            // A hole bridge can become collinear with another contour in one
+            // projection frame. Retry rigid rotations of that same plane only;
+            // vertices, dimensions and all acceptance checks remain unchanged.
+            foreach(double rotation in new[]{0,.31,.73,1.19})
             {
-                var flattened=new List<int>();var holes=new List<int>();var coordinates=new List<double>();
-                foreach(var loop in polygon){if(flattened.Count>0)holes.Add(flattened.Count);foreach(int v in loop){flattened.Add(v);coordinates.AddRange(xy(v));}}
-                var decoded=Vendor.EarCut.EarCut.Calculate(coordinates.ToArray(),holes.ToArray());if(decoded.Count==0||decoded.Count%3!=0)return null;
-                for(int i=0;i<decoded.Count;i+=3){var t=new[]{flattened[decoded[i]],flattened[decoded[i+1]],flattened[decoded[i+2]]};if(Dot(Normal(vertices,t),patch.Normal)<0){int s=t[1];t[1]=t[2];t[2]=s;}triangles.Add(t);}
+                failure="cap-triangulation";var triangles=new List<int[]>();bool valid=true;double cosine=Math.Cos(rotation),sine=Math.Sin(rotation);
+                foreach(var polygon in polygons.Values)
+                {
+                    var flattened=new List<int>();var holes=new List<int>();var coordinates=new List<double>();
+                    foreach(var loop in polygon){if(flattened.Count>0)holes.Add(flattened.Count);foreach(int v in loop){flattened.Add(v);var q=xy(v);coordinates.Add(q[0]*cosine-q[1]*sine);coordinates.Add(q[0]*sine+q[1]*cosine);}}
+                    var decoded=Vendor.EarCut.EarCut.Calculate(coordinates.ToArray(),holes.ToArray());if(decoded.Count==0||decoded.Count%3!=0){valid=false;break;}
+                    for(int i=0;i<decoded.Count;i+=3){var t=new[]{flattened[decoded[i]],flattened[decoded[i+1]],flattened[decoded[i+2]]};if(Dot(Normal(vertices,t),patch.Normal)<0){int s=t[1];t[1]=t[2];t[2]=s;}triangles.Add(t);}
+                }
+                if(!valid)continue;
+                // Collinear hole-bridge nodes can emit zero-area internal
+                // triangles. Discard only exact zeros; the complete boundary
+                // and two-sided internal-edge checks below must still pass.
+                triangles.RemoveAll(t=>Dot(Normal(vertices,t),patch.Normal)==0);
+                // Restore every omitted boundary sample, including collinear ones.
+                failure="cap-boundary";string boundaryFailure;if(!RestoreCapBoundary(triangles,loops,vertices,patch.Normal,out boundaryFailure)){failure+=" "+boundaryFailure;continue;}
+                failure="cap-degenerate";double actualArea=0;foreach(var t in triangles){double a=Dot(Normal(vertices,t),patch.Normal)/2;if(a<=0){valid=false;break;}actualArea+=a;}
+                if(!valid)continue;
+                failure="cap-area";if(Math.Abs(actualArea-expectedArea)>Math.Max(1e-6,expectedArea*1e-7))continue;
+                return triangles;
             }
-            // EarCut can omit collinear boundary vertices. Reinsert them so adjacent
-            // untouched surfaces and the new cylinder retain exactly the same edges.
-            failure="cap-boundary";if(!RestoreCapBoundary(triangles,loops,vertices,patch.Normal))return null;
-            failure="cap-degenerate";double actualArea=0;foreach(var t in triangles){double a=Dot(Normal(vertices,t),patch.Normal)/2;if(a<=1e-12)return null;actualArea+=a;}
-            failure="cap-area";
-            if(Math.Abs(actualArea-expectedArea)>Math.Max(1e-6,expectedArea*1e-7))return null;
-            return triangles;
+            return null;
         }
         static bool InsideCapLoop(double[] point,List<int> loop,Func<int,double[]> xy)
         {
@@ -145,15 +156,16 @@ namespace TxTools.ExportByColor
                 if((a[1]>point[1])!=(b[1]>point[1])&&point[0]<(b[0]-a[0])*(point[1]-a[1])/(b[1]-a[1])+a[0])inside=!inside;
             }return inside;
         }
-        static bool RestoreCapBoundary(List<int[]> triangles,List<List<int>> loops,List<float[]> vertices,double[] normal)
+        static bool RestoreCapBoundary(List<int[]> triangles,List<List<int>> loops,List<float[]> vertices,double[] normal,out string failure)
         {
+            failure="duplicate-boundary";
             var expected=new HashSet<long>();foreach(var loop in loops)for(int i=0;i<loop.Count;i++)if(!expected.Add(Edge(loop[i],loop[(i+1)%loop.Count])))return false;
             for(int pass=0;pass<=expected.Count;pass++)
             {
                 var actual=new Dictionary<long,List<int>>();for(int i=0;i<triangles.Count;i++)for(int k=0;k<3;k++){long e=Edge(triangles[i][k],triangles[i][(k+1)%3]);List<int> a;if(!actual.TryGetValue(e,out a))actual.Add(e,a=new List<int>());a.Add(i);}
-                if(actual.Values.Any(a=>a.Count>2))return false;
+                failure="nonmanifold-triangulation";if(actual.Values.Any(a=>a.Count>2))return false;
                 var missing=actual.FirstOrDefault(e=>e.Value.Count==1&&!expected.Contains(e.Key));
-                if(missing.Value==null)return expected.All(e=>actual.ContainsKey(e)&&actual[e].Count==1);
+                if(missing.Value==null){failure="missing-expected-edge";return expected.All(e=>actual.ContainsKey(e)&&actual[e].Count==1);}
                 int first=(int)(missing.Key>>32),last=(int)missing.Key;List<int> chain=null;
                 foreach(var loop in loops)
                 {
@@ -167,10 +179,10 @@ namespace TxTools.ExportByColor
                     }
                     if(chain!=null)break;
                 }
-                if(chain==null)return false;int index=missing.Value[0];int opposite=triangles[index].First(v=>v!=first&&v!=last);triangles.RemoveAt(index);
+                if(chain==null){failure="unmatched-chord";return false;}int index=missing.Value[0];int opposite=triangles[index].First(v=>v!=first&&v!=last);triangles.RemoveAt(index);
                 for(int i=0;i<chain.Count-1;i++){var t=new[]{chain[i],chain[i+1],opposite};if(Dot(Normal(vertices,t),normal)<0){int s=t[1];t[1]=t[2];t[2]=s;}triangles.Add(t);}
             }
-            return false;
+            failure="iteration-limit";return false;
         }
     }
 }

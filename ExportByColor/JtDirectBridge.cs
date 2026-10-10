@@ -56,7 +56,7 @@ namespace TxTools.ExportByColor
             if (!reconstruct){CgrWriter.BuildFile(mesh.Vertices, faces, output, backend, 20000, log, true);return null;}
             if(backend!=CgrBackend.LineFace)throw new ArgumentException("Cylinder reconstruction requires line/face CGR");
             var holes = RoundHoleReconstruction.Find(mesh.Vertices, faces,
-                new RoundHoleReconstruction.Options { IncludeExternalCylinders = true });
+                new RoundHoleReconstruction.Options { IncludeExternalCylinders = true, IncludeTransitionRims = true });
             string csv = output + ".holes.csv";
             RoundHoleReconstruction.WriteCsv(csv, holes);
             if (log != null) log("[JT cylinders] candidates=" + holes.Count + "; parameters=" + csv + "; tessellation fit, not original CAD feature history");
@@ -64,7 +64,10 @@ namespace TxTools.ExportByColor
             if(replacement.Cylinders.Count==0)CgrWriter.BuildFile(mesh.Vertices,faces,output,backend,20000,log,true);
             else CgrWriter.BuildFileWithCylinders(replacement.Vertices,replacement.Faces,output,replacement.Cylinders,log);
             var accepted=new HashSet<double[]>();foreach(var cylinder in replacement.Cylinders.Values)accepted.Add(cylinder.Center);
-            return holes.FindAll(h=>accepted.Contains(h.Center));
+            var rebuilt=holes.FindAll(h=>accepted.Contains(h.Center));
+            RoundHoleReconstruction.WriteCsv(output+".cylinders.csv",rebuilt);
+            File.WriteAllLines(output+".cylinders.log",replacement.Diagnostics);
+            return rebuilt;
         }
 
         public static int ConversionWorkers
