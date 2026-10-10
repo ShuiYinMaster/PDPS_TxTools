@@ -12,7 +12,10 @@ namespace TxTools.ExportByColor
     {
         public sealed class Options
         {
-            public int MinimumSegments = 12;
+            // Some JT counterbores use ten samples for the smaller through-hole.
+            // It must be fitted too; otherwise it limits the visible silhouette
+            // even after the larger, finer bore has been reconstructed.
+            public int MinimumSegments = 10;
             public double AbsoluteTolerance = 0.01;
             public double RelativeTolerance = 0.001;
         }
@@ -22,6 +25,8 @@ namespace TxTools.ExportByColor
             public double[] Center, Axis, RimA, RimB;
             public double Radius, Depth, MaximumError;
             public bool PairedRims;
+            public int[] WallTriangles;
+            public double[][] RimPointsA, RimPointsB;
         }
         private sealed class Edge
         {
@@ -42,15 +47,15 @@ namespace TxTools.ExportByColor
             options = options ?? new Options();
             if (options.MinimumSegments < 8 || !Positive(options.AbsoluteTolerance) || !Positive(options.RelativeTolerance)
                 || options.RelativeTolerance > 0.05) throw new ArgumentException("Invalid circle fitting options");
-            var groups = new Dictionary<int, List<CgrWriter.Face>>();
-            foreach (var face in faces)
+            var groups = new Dictionary<int, List<int>>();
+            for(int faceIndex=0;faceIndex<faces.Count;faceIndex++)
             {
-                List<CgrWriter.Face> group;
-                if (!groups.TryGetValue(face.Surface, out group)) groups.Add(face.Surface, group = new List<CgrWriter.Face>());
-                group.Add(face);
+                var face=faces[faceIndex];List<int> group;
+                if (!groups.TryGetValue(face.Surface, out group)) groups.Add(face.Surface, group = new List<int>());
+                group.Add(faceIndex);
             }
             var result = new List<Hole>();
-            foreach (var group in groups) AnalyzeShape(vertices, group.Value, group.Key, options, result);
+            foreach (var group in groups) AnalyzeShape(vertices, faces,group.Value, group.Key, options, result);
             return result;
         }
         private static bool Positive(double v) { return v > 0 && !double.IsNaN(v) && !double.IsInfinity(v); }
@@ -63,12 +68,14 @@ namespace TxTools.ExportByColor
         private static void Canonical(double[] axis) { int k=0;for(int j=1;j<3;j++)if(Math.Abs(axis[j])>Math.Abs(axis[k]))k=j;if(axis[k]<0)for(int j=0;j<3;j++)axis[j]=-axis[j]; }
         private static int Root(int[] parent,int i) { while(parent[i]!=i){parent[i]=parent[parent[i]];i=parent[i];}return i; }
 
-        private static void AnalyzeShape(List<float[]> source,List<CgrWriter.Face> faces,int surface,Options options,List<Hole> result)
+        private static void AnalyzeShape(List<float[]> source,List<CgrWriter.Face> faces,List<int> sourceIndices,int surface,Options options,List<Hole> result)
         {
             var positions=new Dictionary<Tuple<float,float,float>,int>();var vertices=new List<double[]>();
             var edges=new Dictionary<long,Edge>();var normals=new List<double[]>();var triangles=new List<int[]>();
-            foreach(var face in faces)
+            var originalIndices=new List<int>();
+            foreach(int sourceIndex in sourceIndices)
             {
+                var face=faces[sourceIndex];
                 if(face.Idx==null||face.Idx.Length!=3)throw new ArgumentException("Expected triangle");
                 int[] ids=new int[3];
                 for(int k=0;k<3;k++)
@@ -82,7 +89,7 @@ namespace TxTools.ExportByColor
                 }
                 var normal=Unit(Cross(Sub(vertices[ids[1]],vertices[ids[0]]),Sub(vertices[ids[2]],vertices[ids[0]])));
                 if(normal==null)continue;
-                int f=normals.Count;normals.Add(normal);triangles.Add(ids);
+                int f=normals.Count;normals.Add(normal);triangles.Add(ids);originalIndices.Add(sourceIndex);
                 for(int k=0;k<3;k++){int a=ids[k],b=ids[(k+1)%3];long key=Key(a,b);Edge edge;if(!edges.TryGetValue(key,out edge))edges.Add(key,edge=new Edge{A=a,B=b});edge.Faces.Add(f);}
             }
             // Only manifold sharp joins may form rims. Open seams and ambiguous joins are excluded.
@@ -152,6 +159,8 @@ namespace TxTools.ExportByColor
                 foreach(int f in components[a.WallComponent])foreach(int id in triangles[f])h.MaximumError=Math.Max(h.MaximumError,Math.Abs(Length(Cross(Sub(vertices[id],h.Center),h.Axis))-h.Radius));
                 foreach(var rim in match>=0?new[]{a,rims[match]}:new[]{a})foreach(var point in rim.Points)h.MaximumError=Math.Max(h.MaximumError,Math.Abs(Dot(Sub(point,rim.Center),h.Axis)));
                 if(h.MaximumError>Math.Max(options.AbsoluteTolerance,h.Radius*options.RelativeTolerance))continue;
+                h.WallTriangles=components[a.WallComponent].ConvertAll(f=>originalIndices[f]).ToArray();
+                h.RimPointsA=a.Points.ToArray();if(match>=0)h.RimPointsB=rims[match].Points.ToArray();
                 result.Add(h);
             }
         }

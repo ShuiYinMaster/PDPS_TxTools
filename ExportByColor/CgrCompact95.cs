@@ -75,7 +75,7 @@ namespace TxTools.ExportByColor
             if(progress!=null)progress("[CGR95] "+groups.Count+" 个源几何/颜色组，"+leaves.Count+" 块，"+vertexCount+" 顶点；平滑角点 "+changed+"；文件 "+new FileInfo(path).Length+" 字节");
         }
         private static void CompactGroup95(List<float[]> source,List<Face> faces,List<byte[]> leaves,MemoryStream picks,ref long changed,ref int vertexCount,
-            Action<List<float[]>,List<float[]>,List<int[]>,List<int[]>,Face> featureWriter=null,int featureFaceLimit=int.MaxValue,int featureVertexLimit=MaxVertsPerChunk)
+            Action<List<float[]>,List<float[]>,List<int[]>,List<int[]>,Face> featureWriter=null,int featureFaceLimit=int.MaxValue,int featureVertexLimit=MaxVertsPerChunk,bool fittedCylinder=false)
         {
             int count=faces.Count;var positions=new List<float[]>();var map=new Dictionary<Tuple<float,float,float>,int>();
             var ids=new int[count][];var normals=new double[count][];var angles=new double[count][];var areas=new double[count];
@@ -149,7 +149,7 @@ namespace TxTools.ExportByColor
                             if(pair.Key!=pb&&CurvatureContinues95(normals[pair.Key],normals[pa],normals[pb])&&(double.IsNaN(ca)||Math.Abs(pair.Value-angle)<Math.Abs(ca-angle)))ca=pair.Value;
                         if(neighbors.TryGetValue(pb,out adj))foreach(var pair in adj)
                             if(pair.Key!=pa&&CurvatureContinues95(normals[pa],normals[pb],normals[pair.Key])&&(double.IsNaN(cb)||Math.Abs(pair.Value-angle)<Math.Abs(cb-angle)))cb=pair.Value;
-                        if(!SmoothAdaptive95(angle,ca,cb))continue;
+                        if(!fittedCylinder&&!SmoothAdaptive95(angle,ca,cb))continue;
                         if(matches[i]!=-1){matches[i]=-2;break;}matches[i]=j;
                     }
                 }

@@ -7,6 +7,11 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="$(EncoderDir)/CgrWriter.cs" Link="CgrWriter.cs" />
+    <Compile Include="$(EncoderDir)/CgrCanonical95.cs" Link="CgrCanonical95.cs" />
+    <Compile Include="$(EncoderDir)/RoundHoleReconstruction.cs" Link="RoundHoleReconstruction.cs" />
+    <Compile Include="$(EncoderDir)/RoundHoleCgrMesh.cs" Link="RoundHoleCgrMesh.cs" />
+    <Compile Include="$(EncoderDir)/RoundHoleCgrPlanarCaps.cs" Link="RoundHoleCgrPlanarCaps.cs" />
+    <Compile Include="$(EncoderDir)/Vendor/EarCut/*.cs" Link="Vendor/EarCut/%(Filename)%(Extension)" />
     <Compile Include="$(EncoderDir)/CgrCompact95.cs" Link="CgrCompact95.cs" />
     <Compile Include="$(EncoderDir)/CgrTemplate.cs" Link="CgrTemplate.cs" />
     <Compile Include="$(EncoderDir)/CgrSurfaceOrientation.cs" Link="CgrSurfaceOrientation.cs" />
