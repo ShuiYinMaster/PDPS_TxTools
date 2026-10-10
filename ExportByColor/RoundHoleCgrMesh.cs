@@ -13,6 +13,7 @@ namespace TxTools.ExportByColor
             public int Surface,SourceSurface;
             public double[] Center,Axis,RimA,RimB;
             public double Radius,Depth;
+            public bool ExternalCylinder;
         }
         public sealed class Result
         {
@@ -25,6 +26,7 @@ namespace TxTools.ExportByColor
         {
             internal RoundHoleReconstruction.Hole Hole;internal double[] U,V;
             internal bool Rejected;internal readonly List<RimEdge> Edges=new List<RimEdge>();
+            internal string Failure;
             internal List<double> Angles;internal int[][] Rings;internal Cylinder Cylinder;
         }
         sealed class RimEdge
@@ -96,7 +98,9 @@ namespace TxTools.ExportByColor
                 var hits=new List<RimEdge>();for(int k=0;k<3;k++){RimEdge e;if(local[k]>=0&&local[(k+1)%3]>=0&&edges.TryGetValue(Edge(local[k],local[(k+1)%3]),out e))hits.Add(e);}
                 if(hits.Count==0)continue;
                 var normal=Unit(Normal(source,f.Idx));
-                foreach(var hit in hits){if(hit.Cap>=0){hit.Plan.Rejected=true;continue;}hit.Cap=fi;if(Math.Abs(Dot(normal,hit.Plan.Hole.Axis))<.99999)hit.Plan.Rejected=true;}
+                // Float32 sliver triangles can have unstable geometric normals.
+                // Test their points against the fitted rim plane as well as orientation.
+                foreach(var hit in hits){if(hit.Cap>=0){hit.Plan.Rejected=true;continue;}hit.Cap=fi;var plane=hit.Ring==0?hit.Plan.Hole.RimA:hit.Plan.Hole.RimB;double tolerance=Math.Max(.001,Math.Min(.01,f.Idx.Max(v=>source[v].Max((float c)=>Math.Abs((double)c)))*2/8388608));if(Math.Abs(Dot(normal,hit.Plan.Hole.Axis))<.5||f.Idx.Any(v=>Math.Abs(Dot(Sub(D(source[v]),plane),hit.Plan.Hole.Axis))>tolerance)){hit.Plan.Rejected=true;hit.Plan.Failure="cap-not-planar";}}
                 capEdges.Add(fi,hits);
             }
             foreach(var p in plans)if(p.Edges.Any(e=>e.Cap<0))p.Rejected=true;
@@ -112,7 +116,7 @@ namespace TxTools.ExportByColor
                 double step=Math.Min(2*Math.PI/96,2*Math.Acos(Math.Max(-1,1-.002/p.Hole.Radius)));
                 if(step<2*Math.PI/2048){p.Rejected=true;continue;}
                 p.Angles=new List<double>();for(int i=0;i<unique.Count;i++){double a=unique[i],b=i+1<unique.Count?unique[i+1]:unique[0]+2*Math.PI;int count=(int)Math.Ceiling((b-a)/step);for(int k=0;k<count;k++)p.Angles.Add((a+(b-a)*k/count)%(2*Math.PI));}p.Angles.Sort();
-                p.Cylinder=new Cylinder{SourceSurface=p.Hole.Surface,Surface=checked(++nextSurface),Center=p.Hole.Center,Axis=p.Hole.Axis,Radius=p.Hole.Radius,Depth=p.Hole.Depth};
+                p.Cylinder=new Cylinder{SourceSurface=p.Hole.Surface,Surface=checked(++nextSurface),Center=p.Hole.Center,Axis=p.Hole.Axis,Radius=p.Hole.Radius,Depth=p.Hole.Depth,ExternalCylinder=p.Hole.ExternalCylinder};
                 var centerA=p.Hole.Center.Select((c,k)=>c+Dot(Sub(p.Hole.RimA,p.Hole.Center),p.Hole.Axis)*p.Hole.Axis[k]).ToArray();var centerB=p.Hole.Center.Select((c,k)=>c+Dot(Sub(p.Hole.RimB,p.Hole.Center),p.Hole.Axis)*p.Hole.Axis[k]).ToArray();p.Cylinder.RimA=centerA;p.Cylinder.RimB=centerB;
                 p.Rings=new int[2][];int ring=0;foreach(var center in new[]{centerA,centerB}){p.Rings[ring]=new int[p.Angles.Count];for(int i=0;i<p.Angles.Count;i++){double a=p.Angles[i];var point=new float[3];for(int k=0;k<3;k++)point[k]=(float)(center[k]+p.Hole.Radius*(Math.Cos(a)*p.U[k]+Math.Sin(a)*p.V[k]));p.Rings[ring][i]=result.Vertices.Count;result.Vertices.Add(point);}ring++;}
                 foreach(var e in p.Edges)e.Arc=Arc(p,e.Ring,Angle(p,points[e.A]),Angle(p,points[e.B]));
@@ -127,8 +131,8 @@ namespace TxTools.ExportByColor
                 foreach(var patch in patches)
                 {
                     var active=patch.Plans.Where(p=>!p.Rejected).ToList();if(active.Count==0)continue;
-                    var triangulated=TriangulateCapPatch(patch,source,result.Vertices,faces,edges,points,snaps);
-                    if(triangulated==null){foreach(var p in active)p.Rejected=true;retry=true;continue;}
+                    string failure;var triangulated=TriangulateCapPatch(patch,source,result.Vertices,faces,edges,points,snaps,out failure);
+                    if(triangulated==null){foreach(var p in active){p.Rejected=true;p.Failure=failure;}retry=true;continue;}
                     foreach(int fi in patch.Faces)capTriangles.Add(fi,new List<int[]>());
                     capTriangles[patch.Faces[0]]=triangulated;
                 }
@@ -144,9 +148,10 @@ namespace TxTools.ExportByColor
             foreach(var p in plans.Where(p=>!p.Rejected))
             {
                 var color=faces[p.Hole.WallTriangles[0]];color.Surface=p.Cylinder.Surface;
-                for(int i=0;i<p.Angles.Count;i++){int j=(i+1)%p.Angles.Count;foreach(var t in new[]{new[]{p.Rings[0][i],p.Rings[0][j],p.Rings[1][j]},new[]{p.Rings[0][i],p.Rings[1][j],p.Rings[1][i]}}){var middle=D(result.Vertices[t[0]]);var radial=Sub(middle,p.Hole.Center);double axial=Dot(radial,p.Hole.Axis);for(int k=0;k<3;k++)radial[k]-=axial*p.Hole.Axis[k];var n=Normal(result.Vertices,t);if(Dot(n,radial)>0){int swap=t[1];t[1]=t[2];t[2]=swap;}n=Unit(Normal(result.Vertices,t));color.Nx=(float)n[0];color.Ny=(float)n[1];color.Nz=(float)n[2];result.Faces.Add(Triangle(color,t[0],t[1],t[2]));result.AddedWallTriangles++;}}
+                for(int i=0;i<p.Angles.Count;i++){int j=(i+1)%p.Angles.Count;foreach(var t in new[]{new[]{p.Rings[0][i],p.Rings[0][j],p.Rings[1][j]},new[]{p.Rings[0][i],p.Rings[1][j],p.Rings[1][i]}}){var middle=D(result.Vertices[t[0]]);var radial=Sub(middle,p.Hole.Center);double axial=Dot(radial,p.Hole.Axis);for(int k=0;k<3;k++)radial[k]-=axial*p.Hole.Axis[k];var n=Normal(result.Vertices,t);if(Dot(n,radial)*(p.Hole.ExternalCylinder?-1:1)>0){int swap=t[1];t[1]=t[2];t[2]=swap;}n=Unit(Normal(result.Vertices,t));color.Nx=(float)n[0];color.Ny=(float)n[1];color.Nz=(float)n[2];result.Faces.Add(Triangle(color,t[0],t[1],t[2]));result.AddedWallTriangles++;}}
             }
             if(log!=null)log("[CGR cylindrical replacement] accepted="+result.Cylinders.Count+" eligible="+plans.Count+" removedWalls="+result.RemovedWallTriangles+" replacedCaps="+result.ReplacedCapTriangles+" addedWalls="+result.AddedWallTriangles+" addedCaps="+result.AddedCapTriangles+" displaySag<=0.002mm; ambiguous caps retained");
+            if(log!=null){foreach(var g in plans.Where(p=>p.Rejected).GroupBy(p=>p.Failure??"rim-topology"))log("[CGR cylinder guard] reason="+g.Key+" count="+g.Count()+" exampleShapes="+string.Join(",",g.Take(8).Select(p=>p.Hole.Surface)));log("[CGR cylinder directions] inner="+result.Cylinders.Values.Count(c=>!c.ExternalCylinder)+" outer="+result.Cylinders.Values.Count(c=>c.ExternalCylinder));}
             return result;
         }
     }

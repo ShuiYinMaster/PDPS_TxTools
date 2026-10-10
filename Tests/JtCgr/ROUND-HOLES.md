@@ -1,85 +1,84 @@
-# R47 单个 CGR 内的圆柱孔壁重建
+# R48 单个 CGR 内的内外圆柱重建
 
-生产试用模式：**读取 JT → 圆孔重建 CGR → CATIA（试用）**。
-版本标识：`CGR-20261010-R47-cgr-canonical-holes`。
-JT 路径和资源放置矩阵在 PS 线程获取；解码、孔识别、端面重建、CGR 编码
-在有界工作线程执行。CATIA 装配插入仍在 STA 线程完成。
-实现为 .NET Framework 4.8 C#，不需要 Python、CAA SDK 或运行时 NuGet 包。
+生产试用模式：**读取 JT → 内外圆柱重建 CGR → CATIA（试用）**。
+版本标识：`CGR-20261010-R48-inner-outer-cylinders`。
+正式源码位于 TxTools 项目，Release 输出到 `E:\ProcessSimulatePlugin\Process Simulate\bin`。
+JT 路径和资源放置矩阵在 PS 线程获取；解码、识别、重建、CGR 编码在有界工作线程执行。
+CATIA 装配插入在 STA 线程完成。纯 .NET Framework 4.8 C#，无需 Python、CAA SDK 或运行时 NuGet 包。
 
-## 输出内容
+## 修复原因与实现
 
-每个资源只插入一个 CGR。重建孔壁替换原孔壁三角形，并重新三角化相连的
-平面端面区域；圆孔两端与孔壁共用细分边界。原始颜色和透明度保持一致。
-不同 Shape、材质和不相连端面分别处理，不通过复制共面面片叠加颜色。
+R47 只接受向内的圆柱壁。低分段 JT 圆环还会受到最小 10 点和 45° 相邻面分组阈值限制。
+另一类漏检来自端面的细长三角片：float32 坐标误差放大了几何法向误差，同一个平面被拆成多个
+不闭合片区；旧边界算法也将多个轮廓在同一顶点相接的情形整体拒绝。
 
-CGR type-13 面属性写入 CATIA 原生圆柱中心、单位轴方向和半径参数，
-圆边属性写入圆心、半径。参数格式以 CATIA 自己导出的五个不同轴向圆柱
-CGR 为对照验证。测量属性与显示网格同时生成，不附加 CATPart 或参考轴线。
-这种 CGR 仍以显示三角网格绘制，不是具有建模历史的 CATPart BRep。
-CATIA 各交互捕捉工具是否使用这些属性，由实机操作验收；仅有记录和成功
-打开文档不能证明所有工具已识别圆柱轴。
+R48 将最小完整圆环调整为 8 点，允许粗分段圆柱壁连续分组，继续检查单次 360° 环绕、圆拟合残差、
+两端同轴同半径和完整墙面组件。端面分组使用拟合圆环平面及坐标尺度容差，同时检查原始面朝向；
+容差限制在 0.001～0.01 mm。带分支的端面按有向边走闭合轮廓，分别关联外轮廓和其内部孔环。
+EarCut 在每个带孔区域内三角化，恢复被省略的共线边界顶点，检查面积及边的邻接次数。
 
+向外的法向证据识别外圆柱，生成壁面使用相反绕向。内外壁共用端面时一次重建整个端面区域，
+避免旧端面挡住新圆孔或与新增圆柱叠加。默认 `Find` 仍仅分析内孔；生产重建入口明确开启
+`Options.IncludeExternalCylinders`。其他 JT→CGR 模式不会自动启用重建。
+
+## CGR 内容和适用范围
+
+每个资源输出一个 CGR，重建壁面替换原壁面三角形，圆形端边与相邻端面共用细分顶点。
+Shape、材质和不相连的片区分别处理，保留原始颜色与透明度。
+圆弧理论弦高不超过 0.002 mm，至少 96、最多 2048 段；实际精度也受源网格拟合和 float32 坐标影响。
+拟合容差为 `max(0.01, radius * 0.001)`，沿用生产毫米坐标。
+
+CGR type-13 面属性保存 CATIA 原生圆柱中心、单位轴方向和半径，圆边属性保存圆心与半径。
+参数格式对照 CATIA 自行导出的五个不同轴向圆柱验证。显示网格和测量属性同时生成，不附加 CATPart 或参考轴线。
 参照 [Dassault CAA CATSurfacicRep 示例](https://www.maruf.ca/files/caadoc/CAAVisUseCases/CAAVisSampleCATSurfacicRep.htm)
-中曲面显示几何与持久化 `CATVisMeasurableGP.SetCylinder` 的组合。
+中显示几何与 `CATVisMeasurableGP.SetCylinder` 的组合。
 
-## 算法与边界校验
+CGR 显示仍使用三角网格，不具有 CATPart 的建模历史或 BRep。不同 CATIA 捕捉工具是否使用
+这些圆柱属性，需由用户实际操作验收；属性记录和成功打开文档不能证明所有工具都已识别轴线。
+本算法从离散网格拟合，不能证明原 CAD 的设计意图；规则多边形也可能与低分段圆采样无法区分。
+当前覆盖完整圆周、两端有可连接平面区域的圆柱壁；锥面、局部圆弧壁、开放边界、颜色混合壁面等保留原几何。
+壁面及相连端面原子接受或回退，不用叠加新表面掩盖失败。
 
-1. 按 JT Shape 建立分析拓扑，只在分析数据中合并完全相同的坐标。
-2. 识别完整圆环并拟合圆心、半径和法向，要求至少 10 个采样点、单次环绕，
-   检查平面及径向残差。排除椭圆、锥孔、凸台、开放边和非流形连接。
-3. 两端圆环必须属于同一个连续向内圆柱壁，重新校验公共轴、半径及深度。
-   单孔口候选不会被赋予孔深，也不会替换。
-4. 合并两端接近的采样角，相邻圆弧的理论弦高不超过 0.002 mm，至少 96 段，
-   最多 2048 段。实际精度还受源网格拟合残差和 float32 坐标精度影响。
-5. 按相连、同色、同向且共面的区域构建端面外轮廓与全部内环；用随源码
-   编译的 MIT EarCut 重建带孔多边形。保留未识别孔的原始内环。
-6. 还原三角化省略的共线边界顶点，检查有向面积、非退化三角形、内部边
-   二次邻接和每条边界一次邻接。孔壁与两个端面作为一个整体接受或回退。
+## 2026-10-10 正式 DLL 验证
 
-拟合容差为 `max(0.01, radius * 0.001)`，坐标单位沿用生产毫米网格。
-拟合参数不是原 CAD 尺寸证明，规则多边形也可能与圆采样难以区分。
-颜色不同、边界不完整或端面三角化未通过校验时，保留原始孔壁。
-`*.cgr.holes.csv` 保存全部拟合候选；返回值和日志的替换数量仅统计实际
-进入 CGR 的圆柱孔壁。数量不等于人工标注的真实孔数。
-
-## 2026-10-10 生产 DLL 验证
-
-| 样本 | JT 版本 | 拟合候选 | 双孔口候选 | 实际替换 | CGR 圆柱属性 | 圆边属性 |
+| 样本 | JT 版本 | R47 内孔 | R48 内孔 | R48 外圆柱 | R48 输出三角形 | 原生圆柱/圆边属性 |
 |---|---|---:|---:|---:|---:|---:|
-| T1E24MY-9156 | 10.6 | 1118 | 710 | 642 | 642 | 1284 |
-| T13J-5156 | 10.0 | 1094 | 689 | 548 | 548 | 1096 |
-| T13J-5153 | 8.0 | 830 | 478 | 377 | 377 | 754 |
+| T1E24MY-9156 | 10.6 | 642 | 788 | 636 | 1,314,769 | 1424 / 2848 |
+| T13J-5156 | 10.0 | 548 | 932 | 462 | 1,553,796 | 1394 / 2788 |
+| T13J-5153 | 8.0 | 377 | 649 | 295 | 976,983 | 944 / 1888 |
 
-三份完整模型独立回读的有向 XYZ + RGBA 多重集合差异均为零，分别为
-946,631、1,183,862、724,591 个三角形。T1E24MY 的生产 JT 解码入口输出
-与独立回读文件 SHA256 相同，28,393,591 字节，已作为单 CGR 插入 CATIA，
-整模型和孔口局部均保持打开。710 个双孔口候选中有 68 个保留原始几何。
-局部实机发现原来的 12 点门槛漏掉阶梯孔的 10 点内层小孔；将门槛调整为
-10 点后同时替换两级孔壁及共用端面，正面显示的十边形轮廓变为细分圆形。
-该问题另有合成阶梯孔回归，检查内层孔附近的轴向射线不会再被旧端面遮挡。
+三份完整 CGR 经独立解码回读，有向 XYZ + RGBA 多重集合差异均为零。
+T1E24MY 的正式 JT 解码入口输出与独立验证 CGR SHA256 相同，34,284,721 字节；
+已作为单 CGR 插入 CATIA 新建验证文档。整模、恢复内孔的 Shape 1749 和外圆柱 Shape 1679
+局部均已打开；Shape 1749 在 R47 没有成功替换，R48 替换了 8 个内孔。
 
-回归还覆盖圆孔的旋转/大坐标平移、透明度、源数据不变、独立 Shape 隔离，
-以及椭圆、外圆柱、锥孔、六角孔、破口、非平面环等拒绝案例。
-线面编码的 105 个压缩数据案例、6 个边链案例、3 个面索引置换，以及
-独立重合面、细长三角形和 alpha 0/128/255 校验通过。
+T1E24MY 共 1870 个拟合候选，其中 1504 个具备双圆环；1477 个满足颜色、深度等替换预条件。
+实际替换 1424 个，剩余 53 个的原因：端面不符合拟合平面 25、端面轮廓拓扑 5、边界恢复 15、
+非流形 4、平面漂移 2、开放边界 1、内环包含关系 1。回退原因及示例 Shape 会写入日志。
+`*.cgr.holes.csv` 保存所有拟合候选，`kind` 区分内孔与外圆柱；返回值和替换日志只统计实际输出的圆柱。
+这些数量不是人工标注的真实孔数，也不代表所有可见圆孔已覆盖。
 
-## 可复现测试
+## 回归和复现
 
-`RoundHoleCgrMeshRegression.cs` 与 `DirectHoleCgrRegression.cs` 引用生产
-TxTools.dll 编译；后者还编译 `FeatureTestDecoder.cs`，该独立回读器不调用
-CGR 编码器解码。`RoundHoleDirectRegression.cs` 编译时链接 INFITF 和
-ProductStructureTypeLib interop，使用 STA，输出单 CGR 并留在 CATIA 中。
-`RoundHoleCounterboreRegression.cs` 覆盖 10 点阶梯孔与共用环形端面。
+`RoundCylinderRegression.cs` 覆盖 8/16 分段实心外圆柱、共用端面的空心圆柱、任意轴向和大坐标；
+检查封闭模型每条边恰好两次邻接、内外绕向、半径/长度、RGBA 与输入不变，并拒绝外椭圆、锥面和破口。
+已有回归覆盖十点阶梯孔两级壁面与共用环形端面、圆孔旋转/平移、Shape 隔离、单孔口不赋深度，
+以及椭圆、六角孔、非平面环、双环绕星形、重叠网格等拒绝案例。
+线面压缩的 105 个有向数据包、6 个边链、3 个面索引置换及 alpha 0/128/255 拓扑检查通过。
+五个 CATIA 原生轴向探针的 10 个圆柱属性逐字节往返通过。
+
+`RoundHoleCgrMeshRegression.cs`、`RoundCylinderRegression.cs` 与 `DirectHoleCgrRegression.cs`
+引用生产 TxTools.dll 编译；最后一个还编译独立的 `FeatureTestDecoder.cs`。
+`RoundHoleDirectRegression.cs` 链接 INFITF 与 ProductStructureTypeLib interop，在 STA 中运行正式转换并插入 CATIA。
 
 ```powershell
 rtk proxy .\RoundHoleRegression.exe production-bin
 rtk proxy .\RoundHoleCgrMeshRegression.exe production-bin
 rtk proxy .\RoundHoleCounterboreRegression.exe production-bin
-rtk proxy .\DirectHoleCgrRegression.exe source.jt matching.jtmesh new-output-directory analyze production-bin
+rtk proxy .\RoundCylinderRegression.exe production-bin
 rtk proxy .\DirectHoleCgrRegression.exe source.jt matching.jtmesh new-output-directory all production-bin
 rtk proxy .\RoundHoleDirectRegression.exe source.jt new-output-directory production-bin verified.cgr
 rtk proxy dotnet run --project Tests/CgrLineFace/CgrLineFace.csproj -c Release -- --self-test
 ```
 
-`RoundHoleCatiaWriter.cs` 和旧 CATPart 参考测试保留作独立实验工具，不参与
-R47 生产试用模式。客户 JT、输出 CGR/CATProduct 和截图不进入 Git。
+旧 CATPart 参考工具仅保留为独立实验，不参与 R48 生产模式。客户 JT、输出 CGR/CATProduct 和截图不进入 Git。
