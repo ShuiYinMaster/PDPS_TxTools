@@ -1,4 +1,4 @@
-﻿# ExportByColor — CATIA CGR and Mesh Export / 按颜色导出
+# ExportByColor — CATIA CGR and Mesh Export / 按颜色导出
 
 Export Process Simulate resources to CATIA CGR or mesh formats, with color grouping and coordinate-origin options.
 
@@ -14,6 +14,7 @@ Export Process Simulate resources to CATIA CGR or mesh formats, with color group
 - 支持 STL、OBJ、PLY、FBX 等网格格式导出。
 - 可设置导出坐标原点、合并策略、边线显示和输出目录。
 - CGR 导出包含面方向、颜色、模板及紧凑写出逻辑，适合大批量布局资源。
+- 提供直接 JT → CGR → CATIA 模式，以及试用的内外圆柱重建模式；重建参数写入 CGR 原生圆柱/圆边属性，不生成附属 CATPart 或参考轴线。
 - 网格导出提供通用网格写出和 FBX 专用写出路径。
 
 ## 基本用法
@@ -32,6 +33,17 @@ Export Process Simulate resources to CATIA CGR or mesh formats, with color group
 ## 相关文档
 
 - [ExportByColor 技术审查](TECHNICAL_REVIEW.md)
+- [JT → CGR 内外圆柱重建与回归记录](../Tests/JtCgr/ROUND-HOLES.md)
+
+## 2026-10-11：直接 JT 转换与 R53 圆柱重建
+
+资源的 JT 路径及放置矩阵在 PS 主线程取得；独立 C# 解码器、圆柱识别、网格重建和 CGR 写出在有界工作线程执行，CATIA 插入在 STA 线程完成。选择多个资源时可并行转码；几何转换无需 PS 网格采集，也不依赖 Python。
+
+生产版本为 `CGR-20261011-R53-punctured-cylinder-boundaries`。圆柱重建支持完整源开口环、跨 Shape 精确端面连接、倒角连接及非平面裁剪端口。孔壁圆弧显示弦高目标为 0.002 mm，仍受源拟合精度与 Float32 坐标限制；裁剪端口不伪装成平面圆边。
+
+相交圆柱的壁面若带横向孔，保留其原壁面分片并附加原生圆柱属性，避免完整圆筒封住横向孔，再按原端面分片重建孔壁。保留壁面的细分密度尚未提高。近似平面的多分片孔口按逐片裁剪处理，台阶环面按实际填充侧选择整体重建；不能证明连接正确、混色或透明的候选继续保留原几何。
+
+正式源码已编译到 `E:\ProcessSimulatePlugin\Process Simulate\bin`，9156 完整 JT 转换及 CATIA 插入通过：2554 段圆柱（1723 内孔、831 外圆柱），较 R52 增加 14 段内孔，旧版 2540 段源参数均保留。五组几何回归与三组实际片区回归通过；本轮未做 CGR 独立回读。CGR 显示网格及测量属性不等同于 CATPart BRep，捕捉中心轴线的效果由用户在 CATIA 中验收。
 
 ## 主要文件
 

@@ -31,8 +31,10 @@ namespace TxTools.ExportByColor
         {
             if(edge.Polyline==null||edge.Polyline.Count<4||edge.Polyline[0]!=edge.Polyline[edge.Polyline.Count-1])return false;
             double[] center=null;
-            foreach(var rim in new[]{cylinder.RimA,cylinder.RimB})
+            for(int ring=0;ring<2;ring++)
             {
+                if(ring==0?cylinder.TrimmedRimA:cylinder.TrimmedRimB)continue;
+                var rim=ring==0?cylinder.RimA:cylinder.RimB;
                 bool valid=true;foreach(int id in edge.Polyline)
                 {
                     var p=vertices[id];double dx=p[0]-rim[0],dy=p[1]-rim[1],dz=p[2]-rim[2];
