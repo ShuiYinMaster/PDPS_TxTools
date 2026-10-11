@@ -1,4 +1,4 @@
-﻿# TxTools — Tecnomatix Process Simulate / PDPS 工程插件集
+# TxTools — Tecnomatix Process Simulate / PDPS 工程插件集
 
 [English](README.en.md) · [功能地图](#一项目概述) · [安装与注册](#三快速安装与注册) · [23 个插件](#四主要插件与功能简介) · [使用流程](#五典型使用流程示例) · [更新日志](#十三更新日志)
 

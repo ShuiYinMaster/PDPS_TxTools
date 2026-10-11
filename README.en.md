@@ -13,6 +13,8 @@ TxTools is a C# plugin collection for **Siemens Tecnomatix Process Simulate (PDP
 - **Excel annotation:** export viewport screenshots and weld-point labels with [WeldAnnotator](WeldAnnotator/README.md).
 - **AI and automation:** query actual scene data and run reusable recipes with [TxAgent](Agent/README.md); expose its tools to MCP clients with [McpBridge](McpBridge/README.md).
 
+## October 11, 2026 update
+
 ## Requirements
 
 - Windows and a licensed Process Simulate installation. The primary target is **Process Simulate 2402**; other versions require validation.

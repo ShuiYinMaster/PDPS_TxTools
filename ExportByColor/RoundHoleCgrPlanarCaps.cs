@@ -28,9 +28,10 @@ namespace TxTools.ExportByColor
                 var indices=group.ToArray();var parents=Enumerable.Range(0,indices.Length).ToArray();
                 // Float32 coordinate-scale tolerance, capped at 0.01 mm.
                 double capTolerance=Math.Max(.001,Math.Min(.01,indices.SelectMany(i=>faces[i].Idx).Max((int v)=>vertices[v].Max((float c)=>Math.Abs((double)c)))*2/8388608));
+                if(indices.Any(fi=>caps.ContainsKey(fi)&&caps[fi].Any(e=>e.Ring==0?e.Plan.Hole.TrimmedRimA:e.Plan.Hole.TrimmedRimB)))capTolerance=.01;
                 var local=new int[indices.Length][];var normals=new double[indices.Length][];
                 var planes=new List<CapPlane>();var planeIds=new int[indices.Length];
-                foreach(int fi in indices){List<RimEdge> hits;if(!caps.TryGetValue(fi,out hits))continue;foreach(var e in hits){var axis=e.Plan.Hole.Axis;var origin=e.Ring==0?e.Plan.Hole.RimA:e.Plan.Hole.RimB;if(!planes.Any(p=>Math.Abs(Dot(p.Axis,axis))>.999999&&Math.Abs(Dot(Sub(origin,p.Origin),p.Axis))<.001))planes.Add(new CapPlane{Axis=axis,Origin=origin});}}
+                foreach(int fi in indices){List<RimEdge> hits;if(!caps.TryGetValue(fi,out hits))continue;foreach(var e in hits){bool trimmed=e.Ring==0?e.Plan.Hole.TrimmedRimA:e.Plan.Hole.TrimmedRimB;var axis=trimmed?Unit(Normal(vertices,faces[fi].Idx)):e.Plan.Hole.Axis;var origin=trimmed?D(vertices[faces[fi].Idx[0]]):e.Ring==0?e.Plan.Hole.RimA:e.Plan.Hole.RimB;if(!planes.Any(p=>Math.Abs(Dot(p.Axis,axis))>.999999&&Math.Abs(Dot(Sub(origin,p.Origin),p.Axis))<.001))planes.Add(new CapPlane{Axis=axis,Origin=origin});}}
                 var adjacent=new Dictionary<long,List<int>>();
                 for(int i=0;i<indices.Length;i++)
                 {
@@ -50,7 +51,7 @@ namespace TxTools.ExportByColor
                 for(int i=0;i<indices.Length;i++)
                 {
                     int root=Root(parents,i);CapPatch p;if(!patches.TryGetValue(root,out p))patches.Add(root,p=new CapPatch{Normal=normals[i]});
-                    p.Faces.Add(indices[i]);List<RimEdge> hits;if(caps.TryGetValue(indices[i],out hits)){foreach(var e in hits)p.Plans.Add(e.Plan);var axis=hits[0].Plan.Hole.Axis;if(normals[i]!=null)p.Normal=axis.Select(x=>Dot(normals[i],axis)>0?x:-x).ToArray();}
+                    p.Faces.Add(indices[i]);List<RimEdge> hits;if(caps.TryGetValue(indices[i],out hits)){foreach(var e in hits)p.Plans.Add(e.Plan);bool trimmed=hits[0].Ring==0?hits[0].Plan.Hole.TrimmedRimA:hits[0].Plan.Hole.TrimmedRimB;var axis=trimmed?(planeIds[i]>=0?planes[planeIds[i]].Axis:normals[i]):hits[0].Plan.Hole.Axis;if(normals[i]!=null)p.Normal=axis.Select(x=>Dot(normals[i],axis)>0?x:-x).ToArray();}
                     var face=faces[indices[i]];for(int k=0;k<3;k++)if(!p.OriginalVertices.ContainsKey(local[i][k]))p.OriginalVertices.Add(local[i][k],face.Idx[k]);
                 }
                 foreach(var pair in adjacent)
@@ -113,6 +114,22 @@ namespace TxTools.ExportByColor
                 for(int i=loop.Count-1;i>=0;i--)if(loop.Count>1&&loop[i]==loop[(i+1)%loop.Count])loop.RemoveAt(i);
                 if(loop.Count<3)return null;loops.Add(loop);
             }
+            // Curved source trims may cross several planar tessellation patches.
+            // Retriangulate each whole patch, not each original triangle: an arc
+            // can intersect an old internal diagonal. Keep its source plane and
+            // reject generated points drifting farther than the 0.01 mm budget.
+            var sourceOrigin=D(source[faces[patch.Faces[0]].Idx[0]]);
+            if(patch.Plans.Any(p=>!p.Rejected&&(p.Hole.TrimmedRimA||p.Hole.TrimmedRimB)))
+            {
+                var distances=patch.OriginalVertices.Values.Select(v=>Dot(Sub(D(source[v]),sourceOrigin),patch.Normal))
+                    .Concat(loops.SelectMany(l=>l).Select(v=>Dot(Sub(D(vertices[v]),sourceOrigin),patch.Normal))).ToList();
+                double middle=(distances.Min()+distances.Max())/2;
+                // Center the validation slab; do not project or move any point.
+                // Its half-thickness stays within the existing 0.01 mm budget.
+                if(distances.Max()-distances.Min()>.02){failure="cap-generated-plane-drift";return null;}
+                sourceOrigin=sourceOrigin.Select((c,k)=>c+middle*patch.Normal[k]).ToArray();
+            }
+            if(loops.SelectMany(l=>l).Any(v=>Math.Abs(Dot(Sub(D(vertices[v]),sourceOrigin),patch.Normal))>.01)){failure="cap-generated-plane-drift";return null;}
             var origin=D(vertices[loops[0][0]]);var u=Unit(Cross(patch.Normal,Math.Abs(patch.Normal[0])<.8?new[]{1d,0d,0d}:new[]{0d,1d,0d}));var w=Cross(patch.Normal,u);
             Func<int,double[]> xy=v=>{var d=Sub(D(vertices[v]),origin);return new[]{Dot(d,u),Dot(d,w)};};
             Func<List<int>,double> area=loop=>{double a=0;for(int i=0;i<loop.Count;i++){var x=xy(loop[i]);var y=xy(loop[(i+1)%loop.Count]);a+=x[0]*y[1]-y[0]*x[1];}return a/2;};
