@@ -12,6 +12,7 @@
     <Compile Include="$(EncoderDir)/RoundHoleCgrMesh.cs" Link="RoundHoleCgrMesh.cs" />
     <Compile Include="$(EncoderDir)/RoundHoleCgrPlanarCaps.cs" Link="RoundHoleCgrPlanarCaps.cs" />
     <Compile Include="$(EncoderDir)/RoundHoleCgrTrimmedCaps.cs" Link="RoundHoleCgrTrimmedCaps.cs" />
+    <Compile Include="$(EncoderDir)/RoundHoleCgrRefinement.cs" Link="RoundHoleCgrRefinement.cs" />
     <Compile Include="$(EncoderDir)/Vendor/EarCut/*.cs" Link="Vendor/EarCut/%(Filename)%(Extension)" />
     <Compile Include="$(EncoderDir)/CgrCompact95.cs" Link="CgrCompact95.cs" />
     <Compile Include="$(EncoderDir)/CgrTemplate.cs" Link="CgrTemplate.cs" />

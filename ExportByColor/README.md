@@ -32,19 +32,16 @@ Export Process Simulate resources to CATIA CGR or mesh formats, with color group
 
 ## 相关文档
 
-## 2026-10-11：直接 JT 转换与 R53 圆柱重建
+## JT 圆柱重建
 
-资源的 JT 路径及放置矩阵在 PS 主线程取得；独立 C# 解码器、圆柱识别、网格重建和 CGR 写出在有界工作线程执行，CATIA 插入在 STA 线程完成。选择多个资源时可并行转码；几何转换无需 PS 网格采集，也不依赖 Python。
-
-生产版本为 `CGR-20261011-R53-punctured-cylinder-boundaries`。圆柱重建支持完整源开口环、跨 Shape 精确端面连接、倒角连接及非平面裁剪端口。孔壁圆弧显示弦高目标为 0.002 mm，仍受源拟合精度与 Float32 坐标限制；裁剪端口不伪装成平面圆边。
-
-相交圆柱的壁面若带横向孔，保留其原壁面分片并附加原生圆柱属性，避免完整圆筒封住横向孔，再按原端面分片重建孔壁。保留壁面的细分密度尚未提高。近似平面的多分片孔口按逐片裁剪处理，台阶环面按实际填充侧选择整体重建；不能证明连接正确、混色或透明的候选继续保留原几何。
+JT 圆柱重建保留源面颜色、透明度及裁剪边界。普通圆柱按弦高自适应细分；复杂相交区域限制搜索和网格预算，失败时保留源网格。
 
 ## 主要文件
 
 - `ExportByColorCmd.cs`、`ExportByColorForm.cs`：命令与界面。
 - `ExportByColorService.cs`：资源收集与导出编排。
 - `CgrWriter.cs`、`CgrCompact95.cs`：CGR 写出。
+- `RoundHoleCgrRefinement.cs`：相交圆柱的约束细分、材质保留和工作量保护。
 - `MeshExport.cs`、`FbxExport.cs`：网格和 FBX 写出。
 
 ## 界面与构建

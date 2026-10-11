@@ -9,7 +9,7 @@ namespace TxTools.ExportByColor
     // Experimental R7-R12 standalone encoding. Opaque metadata/ID allocation remain experimental.
     public static partial class CgrWriter
     {
-        public const string Version="CGR-20261011-R53-punctured-cylinder-boundaries";
+        public const string Version="CGR-20261012-R54-constrained-cylinder-refinement";
         // Compact and CFV3-compatible output retain their established chunk size.
         public const int MaxVertsPerChunk=40960;
         // Feature CGR uses unsigned 16-bit indices and can address 65,536 vertices.

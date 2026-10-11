@@ -16,12 +16,14 @@ namespace TxTools.ExportByColor
             public bool ExternalCylinder;
             public bool TrimmedRimA,TrimmedRimB;
             public bool PreservedWallTessellation;
+            public bool RefinedSourceWall;
         }
         public sealed class Result
         {
             public List<float[]> Vertices;public List<CgrWriter.Face> Faces;
             public readonly Dictionary<int,Cylinder> Cylinders=new Dictionary<int,Cylinder>();
             public int RemovedWallTriangles,ReplacedCapTriangles,AddedWallTriangles,AddedCapTriangles;
+            public int RefinementAddedTriangles;
             public readonly HashSet<int> ChangedSourceTriangles=new HashSet<int>();
             public readonly List<string> Diagnostics=new List<string>();
             public readonly Dictionary<int[],int> SourceFaceIndices=new Dictionary<int[],int>();
@@ -178,11 +180,13 @@ namespace TxTools.ExportByColor
                 }
                 if(current.Count==0){result.Diagnostics.Add("shape="+h.Surface+" reason=punctured-wall-missing; source preserved");continue;}
                 int surface=checked(result.Faces.Max(f=>f.Surface)+1);
-                foreach(int i in current){var f=result.Faces[i];f.Surface=surface;result.Faces[i]=f;}
+                foreach(int i in current){var f=result.Faces[i];int original;if(!result.SourceFaceIndices.ContainsKey(f.Idx)&&origins.TryGetValue(f.Idx,out original))result.SourceFaceIndices[f.Idx]=original;f.Surface=surface;result.Faces[i]=f;}
                 result.Cylinders.Add(surface,new Cylinder{Surface=surface,SourceSurface=h.Surface,Center=h.Center,Axis=h.Axis,RimA=h.RimA,RimB=h.RimB,Radius=h.Radius,Depth=h.Depth,ExternalCylinder=h.ExternalCylinder,TrimmedRimA=h.TrimmedRimA,TrimmedRimB=h.TrimmedRimB,PreservedWallTessellation=true});
                 preserved++;result.Diagnostics.Add("shape="+h.Surface+" radius="+h.Radius+" punctured-wall=preserved native cylinder attributes; no filled side openings");
             }
             if(log!=null)log("[CGR punctured cylinders] preserved="+preserved+"; source wall tessellation and transverse openings retained");
+            RefineRegisteredSourceWalls(result,source,faces,log);
+            RefineRemainingSourceWalls(result,source,faces,holes,log);
             if(log!=null)log("[CGR final cylinders] accepted="+result.Cylinders.Count+" inner="+result.Cylinders.Values.Count(c=>!c.ExternalCylinder)+" outer="+result.Cylinders.Values.Count(c=>c.ExternalCylinder));
             if(log!=null)log("[CGR final source trim] cylinders="+result.Cylinders.Values.Count(c=>c.TrimmedRimA||c.TrimmedRimB));
             return result;
