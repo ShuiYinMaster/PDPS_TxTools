@@ -10,7 +10,7 @@ class DirectHoleCgrRegression {
  var remesh=RoundHoleCgrMesh.Replace(mesh.Vertices,faces,holes,Console.WriteLine);if(remesh.Cylinders.Count==0)throw new Exception("No safely replaced cylindrical walls");
  File.WriteAllLines(Path.Combine(args[2],"cylinder_diagnostics.txt"),remesh.Diagnostics);
  if(args.Length>3&&args[3]=="analyze")return;
- if(remesh.Faces.Count!=faces.Count-remesh.RemovedWallTriangles-remesh.ReplacedCapTriangles+remesh.AddedWallTriangles+remesh.AddedCapTriangles)throw new Exception("Triangle accounting mismatch");
+ if(remesh.Faces.Count!=faces.Count-remesh.RemovedWallTriangles-remesh.ReplacedCapTriangles+remesh.AddedWallTriangles+remesh.AddedCapTriangles+remesh.RefinementAddedTriangles)throw new Exception("Triangle accounting mismatch");
  for(int i=0;i<mesh.Vertices.Count;i++)if(!object.ReferenceEquals(mesh.Vertices[i],remesh.Vertices[i]))throw new Exception("Source vertex array mutated");
  string path=verifyPath??Path.Combine(args[2],"fixture_holes.cgr");if(verifyPath==null)CgrWriter.BuildFileWithCylinders(remesh.Vertices,remesh.Faces,path,remesh.Cylinders,Console.WriteLine);
  RoundHoleReconstruction.WriteCsv(Path.Combine(args[2],"fitted_holes.csv"),holes);

@@ -491,6 +491,7 @@
     <Compile Include="ExportByColor\RoundHoleCgrMesh.cs" />
     <Compile Include="ExportByColor\RoundHoleCgrPlanarCaps.cs" />
     <Compile Include="ExportByColor\RoundHoleCgrTrimmedCaps.cs" />
+    <Compile Include="ExportByColor\RoundHoleCgrRefinement.cs" />
     <Compile Include="ExportByColor\Vendor\EarCut\EarCutDouble.cs" />
     <Compile Include="ExportByColor\Vendor\EarCut\NodeDouble.cs" />
     <Compile Include="ExportByColor\Vendor\EarCut\DoubleExtensions.cs" />

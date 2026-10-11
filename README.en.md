@@ -13,9 +13,9 @@ TxTools is a C# plugin collection for **Siemens Tecnomatix Process Simulate (PDP
 - **Excel annotation:** export viewport screenshots and weld-point labels with [WeldAnnotator](WeldAnnotator/README.md).
 - **AI and automation:** query actual scene data and run reusable recipes with [TxAgent](Agent/README.md); expose its tools to MCP clients with [McpBridge](McpBridge/README.md).
 
-## October 11, 2026 update
+## October 12, 2026 update
 
-The October 11, 2026 **R53 JT → CGR** update adds open-rim and trimmed-cylinder reconstruction, protects transverse holes in intersecting cylinders, and fixes stepped-cap omissions. A production build converted the complete 9156 JT directly to a single CGR and inserted it into CATIA: 2554 cylinder groups, including 1723 inner and 831 outer cylinders. All 2540 R52 source parameter records remain present. Punctured base walls retain their original display tessellation; their native cylinder attributes are written without filling side openings. Source geometry regressions passed; no independent CGR readback was performed this round. See the [reconstruction and validation record](Tests/JtCgr/ROUND-HOLES.md) for scope and limitations.
+The **R54 JT → CGR** update refines intersecting cylinder walls while preserving transverse openings, shared seams and per-face color/opacity. It also recovers fitted cylinders whose previous cap reconstruction failed, with atomic rollback and bounded search work for complex patches. The final production DLL converted the complete 9156 JT to one CGR and inserted it into CATIA: **2562 cylinder groups, including 1725 inner and 837 outer cylinders**. All 2554 R53 source parameter records remain present. Eleven of the fifteen previously coarse punctured walls were refined; four retain their source tessellation after topology guards. Six source geometry suites and three actual fixture regressions passed, including all nine targeted intersecting walls. No independent CGR readback was performed. See the [reconstruction and validation record](Tests/JtCgr/ROUND-HOLES.md) for sample results and remaining limits.
 
 ## Requirements
 
