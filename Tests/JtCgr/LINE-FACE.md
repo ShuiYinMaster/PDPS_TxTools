@@ -1,5 +1,7 @@
 # R45: JT to line/face CGR
 
+R57 update (2026-10-16): planar compatibility has been removed from both plugin option lists; the internal backend remains for historical callers and regression coverage. The PS triangle route now supports inner/outer cylinder reconstruction and continuous line/face compression. See [R57](../PsCgrPipeline/README.md) for implementation, full Release build, COM acceptance and deployment evidence. The following records the historical R45 behavior.
+
 The exporter adds two explicit JT modes: continuous line/face compression and planar line/face compatibility. The existing JT mode continues to use compact CGR. A detached backend value travels with each conversion task; workers do not change process-wide backend settings. Resource snapshots remain on PS and CATIA insertion remains on its STA coordinator.
 
 Line/face grouping now includes opacity. Face appearance records retain JT alpha, including zero and partial alpha. JT conversion preserves source winding, does not invent reverse triangles, and skips coordinate welding before generating feature adjacency. Coincident sheets with independent JT indices remain independent. Existing PS line/face welding behavior is unchanged. Legacy and non-source-winding RGBA remain rejected; the opaque CFV3/3DXML adapter is unchanged.

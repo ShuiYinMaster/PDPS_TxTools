@@ -72,13 +72,13 @@ namespace TxTools.ExportByColor
                     CompactGroup95(vertices,group,children,picks,ref changed,ref vertexCount,write,faceLimit,
                         smoothDomains?MaxFeatureVertsPerChunk:MaxVertsPerChunk,cylinders!=null&&cylinders.ContainsKey(group[0].Surface));
                 byte[] scene;
+                float rootRadius;var rootCenter=SceneRootSphere(vertices,out rootRadius);
                 using(var ms=new MemoryStream())using(var w=new BinaryWriter(ms))
                 {
-                    w.Write(ScenePrefix,0,41);Compact(w,checked((uint)children.Count));
+                    WriteLegacyRoot(w,checked((uint)children.Count),rootRadius,rootCenter);
                     foreach(var child in children){w.Write((byte)0);w.Write(child);}
                     scene=ms.ToArray();
                 }
-                SetRootSphere(scene,vertices);
                 WriteContainer(scene,picks.ToArray(),path,vertices);
             }
             if(progress!=null)progress("[CGR 线面] "+(smoothDomains?"连续面压缩":"逐平面兼容")+"；"+children.Count+" 块，"+domains+" 个面域，"+edgeCount+" 条边，"+encodedVertices+" 顶点；"+new FileInfo(path).Length+" 字节");
@@ -196,16 +196,16 @@ namespace TxTools.ExportByColor
             }
             using(var ms=new MemoryStream())using(var w=new BinaryWriter(ms))
             {
-                w.Write((byte)255);w.Write(0);w.Write(PacketPrefix);
+                w.Write((byte)255);w.Write(0);WritePickControls(w);
                 for(int i=0;i<domains.Count;i++)
                 {
-                    w.Write(checked(firstId+(uint)i));if(cylinder==null)w.Write(FaceReserved);else WriteCanonicalCylinder95(w,cylinder);
+                    w.Write(checked(firstId+(uint)i));if(cylinder==null)w.Write((ushort)0);else WriteCanonicalCylinder95(w,cylinder);
                     foreach(double x in bounds[i])w.Write(Finite(x));w.Write(FaceSuffix);
                 }
                 for(int i=0;i<boundary.Count;i++)
                 {
                     var edge=boundary[i];w.Write((byte)96);w.Write(checked(firstId+(uint)domains.Count+(uint)i));
-                    if(cylinder==null||!WriteCanonicalCircle95(w,cylinder,edge,vs))w.Write(EdgeReserved);
+                    if(cylinder==null||!WriteCanonicalCircle95(w,cylinder,edge,vs))w.Write((ushort)0);
                     Compact(w,(uint)edge.Face);Compact(w,edge.Other<0?uint.MaxValue:(uint)edge.Other);
                 }
                 pick=ms.ToArray();LE(pick,1,pick.Length);
@@ -241,19 +241,9 @@ namespace TxTools.ExportByColor
 
         private static byte[] WrapFeature95(List<float[]> vertices,byte[] payload,uint pickOffset)
         {
-            byte[] child;
-            using(var ms=new MemoryStream())using(var w=new BinaryWriter(ms))
-            {
-                w.Write(ScenePrefix,43,ScenePrefix.Length-43);w.Write(payload);Compact(w,pickOffset);
-                w.Write(SceneSuffix,1,SceneSuffix.Length-1);child=ms.ToArray();
-            }
-            LE(child,2,child.Length-2);LE(child,148,payload.Length+40);
             var all=new int[vertices.Count];for(int i=0;i<all.Length;i++)all[i]=i;
             var sphere=Bounds(vertices,all);double radius=sphere[9]+Math.Max(.2,sphere[9]*1e-6);
-            int[] radii={17,64,111,163},centers={25,72,119,171};
-            for(int i=0;i<radii.Length;i++)
-            {Float(child,radii[i],radius);for(int k=0;k<3;k++)Float(child,centers[i]+k*4,sphere[k]);}
-            return child;
+            return WriteAcceptedFeatureScene(payload,Finite(radius),new[]{Finite(sphere[0]),Finite(sphere[1]),Finite(sphere[2])},pickOffset);
         }
     }
 }

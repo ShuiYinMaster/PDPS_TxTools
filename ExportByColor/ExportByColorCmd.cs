@@ -13,11 +13,13 @@ namespace TxTools.ExportByColor
 
         public override void Execute(object cmdParams)
         {
-            SynchronizationContext psCtx = SynchronizationContext.Current
-                                          ?? new SynchronizationContext();
-
             try
             {
+                // Created here on PS's command/UI thread. A plain context would
+                // dispatch Post to the pool and violate the PS SDK boundary.
+                SynchronizationContext psCtx = SynchronizationContext.Current;
+                if (psCtx == null || psCtx.GetType().GetMethod("Post", new[] { typeof(SendOrPostCallback), typeof(object) }).DeclaringType == typeof(SynchronizationContext))
+                    psCtx = new System.Windows.Forms.WindowsFormsSynchronizationContext();
                 if (ExportByColorForm.Instance == null || ExportByColorForm.Instance.IsDisposed)
                 {
                     ExportByColorForm.Instance = new ExportByColorForm(psCtx);

@@ -13,7 +13,7 @@ Export Process Simulate resources to CATIA CGR or mesh formats, with color group
 - 将选定/可见资源按显示颜色生成 CGR 并导出到 CATIA。
 - 支持 STL、OBJ、PLY、FBX 等网格格式导出。
 - 可设置导出坐标原点、合并策略、边线显示和输出目录。
-- CGR 导出包含面方向、颜色、模板及紧凑写出逻辑，适合大批量布局资源。
+- CGR 导出包含面方向、颜色、字段生成的 CFV2 容器及紧凑写出逻辑，适合大批量布局资源。
 - 提供直接 JT → CGR → CATIA 模式，以及试用的内外圆柱重建模式；重建参数写入 CGR 原生圆柱/圆边属性，不生成附属 CATPart 或参考轴线。
 - 网格导出提供通用网格写出和 FBX 专用写出路径。
 
@@ -32,10 +32,50 @@ Export Process Simulate resources to CATIA CGR or mesh formats, with color group
 
 ## 相关文档
 
+- [CFV2 容器字段生成与解码](../Tests/CgrContainer/README.md)
+- [R2 身份字段与 CATIA COM 验收](../Tests/CgrContainer/METADATA-R2.md)
+- [R3 精度字段、线框位与附加容器清单](../Tests/CgrContainer/FIELDS-R3.md)
+- [R4 名称边界与变长身份编码](../Tests/CgrContainer/IDENTITY-R4.md)
+- [R5 场景框架字段生成、矩阵与共享引用](../Tests/CgrContainer/SCENE-R5.md)
+- [R6 图层字段、禁止拾取位与体积贡献位](../Tests/CgrContainer/SCENE-FLAGS-R6.md)
+- [R7 变长公共头、显示属性继承与线样式打包](../Tests/CgrContainer/SCENE-STYLES-R7.md)
+- [R57 PS 三角网格内外圆柱重建与压缩](../Tests/PsCgrPipeline/README.md)
+- [R56 原型展开与批次进程隔离](../Tests/JtCgr/BATCH-SAFETY.md)
+- [R55 显示细分密度与体积优化](../Tests/JtCgr/CGR-DENSITY.md)
 - [ExportByColor 技术审查](TECHNICAL_REVIEW.md)
 - [JT → CGR 内外圆柱重建与回归记录](../Tests/JtCgr/ROUND-HOLES.md)
 
-## 2026-10-12：直接 JT 转换与 R54 圆柱重建
+## 2026-10-16：PS 三角网格圆柱重建 R57
+
+当前生产版本为 `CGR-20261016-R57-ps-cylinder-pipeline`。插件已移除 PS/JT 两处“逐平面兼容”选项，PS 线面路线改为“PS 三角面 → CGR → CATIA（内外圆柱重建与压缩）”。该路线整理 PS 网格绕序后复用内外圆柱安全重建与连续面域压缩，并保留未通过重建检查的区域及颜色。旧方案和 JT 入口继续可用。
+
+完整 Release 与 .NET Framework 回归通过，五类快照及两批 CATIA COM 回读通过，38 组默认输出保持一致。主 DLL/PDB 已备份并部署到指定生产 bin，下次启动 PS 加载；PS 实际项目采集仍需宿主验收。详见 [R57 记录](../Tests/PsCgrPipeline/README.md)。
+
+## 2026-10-12：EquipmentPrototype 与批次隔离 R56（历史）
+
+R56 版本为 `CGR-20261012-R56-prototype-isolated-batch`。EquipmentPrototype 按容器展开，
+包括由普通 TxComponent 暴露的同名原型；无独立 JT 的组件也继续查找子项。
+每个子资源单独解析 JT，并使用自身绝对放置矩阵；按对象身份去重，同一路径的不同实例保留。
+
+资源元数据在 PS 主线程读取；每个资源的 JT 解码、圆柱重建与 CGR 写出在独立 C# 工作进程完成。
+默认同时运行 2 个资源，`TXTOOLS_JT_WORKERS` 可设置 1–4；完整资源默认限时 900 秒，
+`TXTOOLS_JT_TIMEOUT_SECONDS` 可设置 30–3600 秒。先完成的任务先处理，超时只结束该资源及其
+解码子进程，失败项不插入 CATIA，其他资源继续。CATIA 插入仍在单一 STA 线程执行。
+此直接模式不再因解码失败回退至 PS 几何采集；未增加 CGR 回读。
+
+正式构建自动部署 `JtDirectCs/TxTools.JtCgrWorker.exe` 与已有解码器，均使用 .NET Framework 4.8，
+无需 Python。真实 JT 9.5、故意损坏 JT、JT 10.6 的两路批次回归为 2 成功、1 失败；
+最终版增加默认 Compact 模式，四项批次为 3 成功、1 失败；
+FFM170 保留 1182 段圆柱、FFM130 为 880 段。EquipmentPrototype 场景展开需在 PS 实机验收；
+模拟树已覆盖原型、嵌套、重复选择、循环和单个 SDK 枚举异常。详见 R56 记录。
+
+## 2026-10-12：直接 JT 转换与 R54/R55 圆柱重建（历史）
+
+R55 生产版本为 `CGR-20261012-R55-adaptive-cylinder-density`：普通圆柱默认至少 24 段、
+0.02 mm 弦高自适应细分，复杂裁剪与相交边界保持原严格保护。相同 FFM170 JT 的 CGR
+从 18.93 MB 降为 10.82 MB（减少 42.87%），1182 段圆柱的源测量参数全部精确保留，
+最终输出已直接插入 CATIA。原法向编码保留；本轮未执行生成 CGR 的独立回读。
+详细范围见上面的 R55 记录；以下是 R54 的历史结果。
 
 资源的 JT 路径及放置矩阵在 PS 主线程取得；独立 C# 解码器、圆柱识别、网格重建和 CGR 写出在有界工作线程执行，CATIA 插入在 STA 线程完成。选择多个资源时可并行转码；几何转换无需 PS 网格采集，也不依赖 Python。
 

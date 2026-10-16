@@ -24,7 +24,15 @@ namespace TxTools.ExportByColor
         private sealed class SurfaceEdge { public List<int> Faces=new List<int>();public List<bool> Directions=new List<bool>(); }
         // PS triangle primitives do not guarantee consistent winding. Solve adjacency first;
         // choose outward winding by signed volume only for closed connected components.
-        private static void PrepareSurfaces(ref List<float[]> vertices,ref List<Face> faces,Action<string> progress,bool preserveSurfaces=true)
+        public static void PreparePsReconstructionMesh(ref List<float[]> vertices,ref List<Face> faces,Action<string> progress=null)
+        {
+            if(vertices==null||faces==null)throw new ArgumentNullException("mesh");
+            faces=FilterZeroArea(vertices,faces,progress);
+            WeldFeatureVertices(ref vertices,ref faces);
+            PrepareSurfaces(ref vertices,ref faces,progress,true,false);
+        }
+
+        private static void PrepareSurfaces(ref List<float[]> vertices,ref List<Face> faces,Action<string> progress,bool preserveSurfaces=true,bool addBackfaces=true)
         {
             vertices=new List<float[]>(vertices);faces=new List<Face>(faces);
             var positions=new Dictionary<Tuple<float,float,float>,int>();var canonical=new int[vertices.Count];
@@ -104,6 +112,7 @@ namespace TxTools.ExportByColor
             }
             // Until the native two-sided flag is proven, open sheets have explicit reverse-side
             // triangles with independent vertex identity. Closed solids are NOT duplicated.
+            if(!addBackfaces)return;
             var reverseVertices=new Dictionary<int,int>();
             bool duplicateBackfaces=Environment.GetEnvironmentVariable("TXTOOLS_CGR_DUPLICATE_BACKFACES")!="0";
             if(progress!=null && conflicts.Count>0) progress("[CGR] 绕序冲突："+conflicts.Count+" 条约束边；受影响 "+forcedBackFaces.Count+" 面以正反双面保留");

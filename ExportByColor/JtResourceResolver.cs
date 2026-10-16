@@ -57,6 +57,16 @@ namespace TxTools.ExportByColor
                 return false;
             }
 
+            bool prototype = false;
+            for (var type = resource.GetType(); type != null; type = type.BaseType)
+                if (type.Name.IndexOf("EquipmentPrototype", StringComparison.OrdinalIgnoreCase) >= 0) prototype = true;
+            try { prototype |= string.Equals(resource.Name, "EquipmentPrototype", StringComparison.OrdinalIgnoreCase); } catch { }
+            if (prototype)
+            {
+                trace = "EquipmentPrototype 是资源容器，需展开子项后分别解析 JT 与放置";
+                return false;
+            }
+
             var queue = new Queue<WorkItem>();
             var seen = new HashSet<int>();
             string nonExisting = null;

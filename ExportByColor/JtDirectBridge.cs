@@ -111,24 +111,9 @@ namespace TxTools.ExportByColor
             Directory.CreateDirectory(directory);
             string output=Path.Combine(directory,Guid.NewGuid().ToString("N")+".jtmesh");
             string log=output+".log";
-            string headerInfo=null;
-            using(var writer=new StreamWriter(log,false,new UTF8Encoding(false)))
-            using(var process=new Process()) {
-                object gate=new object();
-                process.StartInfo=new ProcessStartInfo(worker,Quote(source)+" "+Quote(output)) {
-                    UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true,
-                    WorkingDirectory=Path.GetDirectoryName(worker)
-                };
-                process.OutputDataReceived+=(s,e)=>{if(e.Data!=null)lock(gate){writer.WriteLine(e.Data);if(e.Data.StartsWith("JT_HEADER=",StringComparison.Ordinal))headerInfo=e.Data;}};
-                process.ErrorDataReceived+=(s,e)=>{if(e.Data!=null)lock(gate)writer.WriteLine("ERROR "+e.Data);};
-                process.Start();process.BeginOutputReadLine();process.BeginErrorReadLine();
-                if(!process.WaitForExit(timeoutMs)) {
-                    process.Kill();process.WaitForExit();throw new TimeoutException("JT 解码超时；日志="+log);
-                }
-                process.WaitForExit();
-                if(process.ExitCode==2)throw new NotSupportedException("JT 文件需要 PS 原生兼容转换；"+(headerInfo??"版本未提供")+"；日志="+log);
-                if(process.ExitCode!=0)throw new InvalidDataException("JT 解码失败，退出码="+process.ExitCode+"；日志="+log);
-            }
+            int exit=JtProcessRunner.Run(worker,Quote(source)+" "+Quote(output),log,timeoutMs);
+            if(exit==2)throw new NotSupportedException("JT 版本或编码暂不支持直接解码；日志="+log);
+            if(exit!=0)throw new InvalidDataException("JT 解码失败，退出码="+exit+"；日志="+log);
             return Read(output,source);
         }
         private static float Finite(float v)
