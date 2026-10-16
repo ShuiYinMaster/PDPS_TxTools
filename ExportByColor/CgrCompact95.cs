@@ -6,11 +6,6 @@ namespace TxTools.ExportByColor
 {
     public static partial class CgrWriter
     {
-        private static byte[] H95(string s) { var b=new byte[s.Length/2];for(int i=0;i<b.Length;i++)b[i]=Convert.ToByte(s.Substring(i*2,2),16);return b; }
-        private static readonly byte[] Root95=H95("6200200504fdff00000001006864124500000000fcff4fc19065c9410000044400000000ff03010000");
-        private static readonly byte[] Branch95=H95("6200200504fdff00000001006864124500000000fcff4fc19065c9410000044400000000ffff000000");
-        private static readonly byte[] Leaf95=H95("95ff6213000000200404ffffffffff01004a168842000000000800c8c2573d45c3562b084400000000");
-        private static readonly byte[] Pick95=H95("ff3d000000db0f493fa5d468530000000000ffff0900ecc261a759c3d31003440800a4c24dd330c3d8450d440800c8c2573d45c3562b08444a16884201");
         private static int Find95(int[] p,int x) {while(p[x]!=x){p[x]=p[p[x]];x=p[x];}return x;}
         private static void Join95(int[] p,int a,int b){a=Find95(p,a);b=Find95(p,b);if(a!=b)p[b]=a;}
         private static double Dot95(double[] a,double[] b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];}
@@ -39,11 +34,6 @@ namespace TxTools.ExportByColor
             if(length==0)throw new InvalidDataException("Zero area in compact backend");
             for(int k=0;k<3;k++)n[k]/=length;return n;
         }
-        private static byte[] Header95(byte[] template,double[] bounds)
-        {
-            var h=(byte[])template.Clone();Float(h,12,bounds[9]+Math.Max(.2,bounds[9]*1e-6));
-            for(int k=0;k<3;k++)Float(h,20+4*k,bounds[k]);return h;
-        }
         private static void BuildCompact95(List<float[]> vertices,List<Face> faces,string path,Action<string> progress)
         {
             var groups=new Dictionary<Tuple<int,int>,List<Face>>();var order=new List<List<Face>>();
@@ -60,12 +50,12 @@ namespace TxTools.ExportByColor
                     CompactGroup95(vertices,group,leaves,picks,ref changed,ref vertexCount);
                 using(var scene=new MemoryStream())using(var w=new BinaryWriter(scene))
                 {
-                    w.Write(Header95(Root95,global));Compact(w,(uint)leaves.Count);
+                    WriteCompactNode(w,global,false);Compact(w,(uint)leaves.Count);
                     foreach(var leaf in leaves)
                     {
                         w.Write((byte)0);
                         // The reference branch shape is required by CATIA for this representation.
-                        for(int level=0;level<4;level++){w.Write(Header95(level==0?Branch95:Root95,global));Compact(w,1);w.Write((byte)0);}
+                        for(int level=0;level<4;level++){WriteCompactNode(w,global,level==0);Compact(w,1);w.Write((byte)0);}
                         w.Write(leaf);
                     }
                     w.Write((byte)0);
@@ -239,12 +229,9 @@ namespace TxTools.ExportByColor
                 foreach(var tri in faces)foreach(int j in tri)Index(w,remap[j],vs.Count>255);
                 w.Write(new byte[]{32,4,4,color.Opacity??255,255,color.B,color.G,color.R});payload=ms.ToArray();
             }
-            var bounds=Bounds(vs,order.ToArray());var header=(byte[])Leaf95.Clone();
-            Float(header,17,bounds[9]+Math.Max(.2,bounds[9]*1e-6));for(int k=0;k<3;k++)Float(header,25+4*k,bounds[k]);LE(header,2,checked(header.Length+payload.Length-1));
-            using(var ms=new MemoryStream())using(var w=new BinaryWriter(ms)){w.Write(header);w.Write(payload);Compact(w,checked((uint)picks.Position));leaves.Add(ms.ToArray());}
-            var pick=(byte[])Pick95.Clone();
-            for(int k=0;k<3;k++){Float(pick,20+4*k,bounds[k]-bounds[k+3]);Float(pick,32+4*k,bounds[k]+bounds[k+3]);Float(pick,44+4*k,bounds[k]);}
-            Float(pick,56,bounds[9]);picks.Write(pick,0,pick.Length);
+            var bounds=Bounds(vs,order.ToArray());
+            leaves.Add(WriteCompactLeaf(payload,bounds,checked((uint)picks.Position)));
+            using(var w=new BinaryWriter(picks,System.Text.Encoding.UTF8,true)) WriteCompactPick(w,bounds);
         }
     }
 }

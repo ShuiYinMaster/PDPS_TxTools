@@ -487,6 +487,9 @@
     <Compile Include="ExportByColor\ExportByColorService.cs" />
     <Compile Include="ExportByColor\JtResourceResolver.cs" />
     <Compile Include="ExportByColor\JtDirectBridge.cs" />
+    <Compile Include="ExportByColor\JtBatchSafety.cs" />
+    <Compile Include="ExportByColor\JtProcessRunner.cs" />
+    <Compile Include="ExportByColor\JtCgrProcessBridge.cs" />
     <Compile Include="ExportByColor\RoundHoleReconstruction.cs" />
     <Compile Include="ExportByColor\RoundHoleCgrMesh.cs" />
     <Compile Include="ExportByColor\RoundHoleCgrPlanarCaps.cs" />
@@ -501,13 +504,15 @@
     <Compile Include="ExportByColor\CgrCanonical95.cs" />
     <Compile Include="ExportByColor\RoundHoleCatiaWriter.cs" />
     <Compile Include="ExportByColor\CgrWriter.cs" />
+    <Compile Include="ExportByColor\PsCgrPipeline.cs" />
     <Compile Include="ExportByColor\CgrCompact95.cs" />
     <Compile Include="ExportByColor\CgrLineFace95.cs" />
     <Compile Include="ExportByColor\CgrFeatureCompression.cs" />
     <Compile Include="ExportByColor\CgrFeatureCfv3Adapter.cs" />
     <Compile Include="ExportByColor\Cfv3Encoder.cs" />
     <Compile Include="ExportByColor\ThreeDXmlWriter.cs" />
-    <Compile Include="ExportByColor\CgrTemplate.cs" />
+    <Compile Include="ExportByColor\CgrSceneRecords.cs" />
+    <Compile Include="ExportByColor\CgrContainer.cs" />
     <Compile Include="ExportByColor\CgrSurfaceOrientation.cs" />
     <Compile Include="ExportByColor\CgrTestData.cs" />
     <Compile Include="ExportByColor\MeshExport.cs" />
@@ -1505,5 +1510,7 @@
       <JtDecoderFiles Include="$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\TxTools.JtDecoder.exe*;$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\*.dll;$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\LICENSE.JTReader;$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\THIRD-PARTY-NOTICES.txt" />
     </ItemGroup>
     <Copy SourceFiles="@(JtDecoderFiles)" DestinationFolder="$(TargetDir)JtDirectCs" SkipUnchangedFiles="true" />
+    <MSBuild Projects="$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\CgrWorker.csproj" Targets="Build" Properties="Configuration=Release;Platform=AnyCPU;TxToolsAssembly=$(TargetPath)" RemoveProperties="OutputPath;OutDir" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\cgr_bin\Release\TxTools.JtCgrWorker.exe" DestinationFolder="$(TargetDir)JtDirectCs" SkipUnchangedFiles="true" />
   </Target>
 </Project>

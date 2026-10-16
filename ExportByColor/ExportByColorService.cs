@@ -14,15 +14,6 @@ using SysFile = System.IO.File;
 
 namespace TxTools.ExportByColor
 {
-    public sealed class ColorGroup
-    {
-        public byte R, G, B;
-        // Surface identity prevents separately-instanced geometry with the same
-        // RGB value from being welded into one smoothing island downstream.
-        public int Surface;
-        public List<float[]> Tris = new List<float[]>();   // 每条 float[9] = 世界坐标三角形
-    }
-
     public sealed class DeviceData
     {
         public string Name;
@@ -87,6 +78,23 @@ namespace TxTools.ExportByColor
             return val;
         }
 
+        private T OnPsJt<T>(Func<T> func)
+        {
+            if (_psCtx.GetType().GetMethod("Post", new[] { typeof(SendOrPostCallback), typeof(object) }).DeclaringType == typeof(SynchronizationContext))
+                throw new InvalidOperationException("JT 资源读取需要 PS 主线程上下文，请从 PS 导出命令启动");
+            var completion = new TaskCompletionSource<T>(); int expired = 0;
+            _psCtx.Post(s => {
+                if (Interlocked.CompareExchange(ref expired, 0, 0) != 0) return;
+                try { completion.TrySetResult(func()); } catch (Exception ex) { completion.TrySetException(ex); }
+            }, null);
+            if (Task.WaitAny(new Task[] { completion.Task }, 120000) < 0)
+            {
+                Interlocked.Exchange(ref expired, 1);
+                throw new TimeoutException("PS 资源元数据读取超过 120 秒，请确认主界面未被对话框阻塞");
+            }
+            return completion.Task.GetAwaiter().GetResult();
+        }
+
         // ── 枚举场景所有可见设备（保留可见性过滤）───────────────────────
         public List<ITxObject> EnumerateVisibleDevices(Action<string> onLog)
         {
@@ -137,7 +145,7 @@ namespace TxTools.ExportByColor
             public string ExportName;
             public string Path;
             public string SourcePath;
-            public List<RoundHoleReconstruction.Hole> Holes;
+            public int[] CylinderCounts;
             public ThreeDXmlWriter.PartTicket PackagePart;
             public Cfv3EncodingStats Cfv3Stats;
             public Exception Error;
@@ -181,6 +189,12 @@ namespace TxTools.ExportByColor
         public void RunAsync(List<ITxObject> picked, string originName, string format, string outputRoot, bool mergeMeshes,
                              Action<string> onLog, Action<ExportProgressInfo> onProgress, Action<bool, string> onComplete,CgrBackend backend)
         {
+            RunAsync(picked,originName,format,outputRoot,mergeMeshes,onLog,onProgress,onComplete,backend,false);
+        }
+
+        public void RunAsync(List<ITxObject> picked, string originName, string format, string outputRoot, bool mergeMeshes,
+                             Action<string> onLog, Action<ExportProgressInfo> onProgress, Action<bool, string> onComplete,CgrBackend backend,bool reconstructCylinders)
+        {
             // Capture the choice per export; never change a process-wide environment variable
             // while the two device workers are encoding.  R38 feature CGR is bridged to
             // compact geometry only at the CFV3 boundary; compact capacity limits may split it.
@@ -195,6 +209,8 @@ namespace TxTools.ExportByColor
                 ThreeDXmlWriter package = null;
                 try
                 {
+                    if(reconstructCylinders&&(format!="CGR"||runBackend!=CgrBackend.LineFace))
+                        throw new ArgumentException("PS 内外圆柱重建需要选择 CGR 线面压缩路线");
                     if(format=="3DXML"&&runBackend==CgrBackend.LineFacePlanar)
                         throw new ArgumentException("逐平面兼容方案尚未接入 3DXML，请选择默认直出或 R38 线面几何试用方案");
                     if (format != "3DXML" && format != "CGR" && format != "STL" && format != "OBJ" && format != "PLY" && format != "FBX" && format != "FBX_BINARY" && format != "FBX_ASCII")
@@ -233,7 +249,7 @@ namespace TxTools.ExportByColor
                     var progress = new ExportProgressState(devices.Count);
                     progress.Report(onProgress, "准备导出", null);
                     SafeLog(onLog, "[导出] " + devices.Count + " 个设备；" + (format == "3DXML" ? "直出装配 3DXML" : format) + "；编码并发 " + workers + " 路");
-                    if(format=="CGR")SafeLog(onLog,runBackend==CgrBackend.LineFace?"[CGR] 线面压缩：连续曲面合域，保留网格测量；可切回逐平面兼容或原方案":runBackend==CgrBackend.LineFacePlanar?"[CGR] 逐平面兼容：保留细分面域及边关联":"[CGR] 原有生成方案");
+                    if(format=="CGR")SafeLog(onLog,reconstructCylinders?"[CGR] PS 三角网格 → 内外圆柱重建与线面压缩 → CATIA":runBackend==CgrBackend.LineFace?"[CGR] 线面压缩：连续曲面合域，保留网格测量":"[CGR] 原有生成方案");
                     if(format=="3DXML"&&runBackend==CgrBackend.LineFace)SafeLog(onLog,"[3DXML] R38 线面几何试用：保留几何和源组后桥接 CFV3；3DXML 不携带 CGR 线/面选择记录");
                     var names = new ExportNames();
                     if (mergeMeshes && format != "CGR" && format != "3DXML") merged = new MeshExport.Archive(output);
@@ -277,7 +293,11 @@ namespace TxTools.ExportByColor
                                     {
                                         if (format == "CGR" || format == "3DXML")
                                         {
-                                            string cgr = BuildCgr(dd.Colors, name, workDir, message => DetailLog(onLog, "[" + name + "] " + message),runBackend);
+                                            string cgr = BuildCgr(dd.Colors, name, workDir, message =>
+                                            {
+                                                if(message.StartsWith("[PS cylinders]",StringComparison.Ordinal))SafeLog(onLog,"["+name+"] "+message);
+                                                else DetailLog(onLog,"["+name+"] "+message);
+                                            },runBackend,reconstructCylinders);
                                             if (format == "3DXML")
                                             {
                                                 result.SourcePath = cgr;
@@ -419,31 +439,10 @@ namespace TxTools.ExportByColor
             catch (Exception ex) { DetailLog(onLog, "[临时文件] " + path + "：" + ex.Message); }
         }
 
-        private static string BuildCgr(List<ColorGroup> groups, string name, string tmpDir, Action<string> onLog,CgrBackend backend=CgrBackend.Configured)
+        private static string BuildCgr(List<ColorGroup> groups, string name, string tmpDir, Action<string> onLog,CgrBackend backend=CgrBackend.Configured,bool reconstructCylinders=false)
         {
-            var vertices=new List<float[]>();var faces=new List<CgrWriter.Face>();
-            // Keep color groups' vertex identity separate: touching independent solids must not
-            // become nonmanifold through coordinate welding. All groups still share ONE file.
-            int surface=0;
-            foreach(var group in groups)
-            {
-                surface++;
-                var map=new Dictionary<Tuple<float,float,float>,int>();
-                foreach(var t in group.Tris)
-                {
-                    if(t==null||t.Length!=9) throw new ArgumentException("三角形数据必须为 9 个坐标值");
-                    var ids=new int[3];
-                    for(int k=0;k<3;k++)
-                    {
-                        var key=Tuple.Create(t[3*k],t[3*k+1],t[3*k+2]);int id;
-                        if(!map.TryGetValue(key,out id)) { id=vertices.Count;map.Add(key,id);vertices.Add(new[]{key.Item1,key.Item2,key.Item3}); } ids[k]=id;
-                    }
-                    faces.Add(new CgrWriter.Face{Idx=ids,R=group.R,G=group.G,B=group.B,Surface=surface});
-                }
-            }
-            if(faces.Count==0) throw new InvalidOperationException("设备无有效三角面");
             string path=Path.Combine(tmpDir,name+".cgr");
-            CgrWriter.BuildFile(vertices,faces,path,backend,progress:onLog);
+            PsCgrPipeline.BuildFile(groups,path,backend,reconstructCylinders,onLog);
             return path;
         }
 
@@ -483,8 +482,7 @@ namespace TxTools.ExportByColor
 
         private sealed class PendingJtConversion
         {
-            // PS reference is used only by the coordinator for compatibility collection.
-            internal ITxObject Source;
+            internal EncodedDevice Result;
             internal Task<EncodedDevice> Task;
             internal List<string> Logs;
         }
@@ -496,8 +494,10 @@ namespace TxTools.ExportByColor
             {
                 try
                 {
-                    if (reconstructRoundHoles) result.Holes = JtDirectBridge.ConvertToCgrWithHoles(result.SourcePath, directory, decoder, result.Path, placement, backend, logs.Add);
-                    else JtDirectBridge.ConvertToCgr(result.SourcePath, directory, decoder, result.Path, placement, backend, logs.Add);
+                    result.CylinderCounts = JtCgrProcessBridge.Convert(result.SourcePath, directory, decoder,
+                        result.Path, placement, backend, reconstructRoundHoles, message => {
+                            if (logs.Count < 4096) logs.Add(message);
+                        });
                 }
                 catch (Exception ex) { result.Error = ex; }
                 return result;
@@ -516,7 +516,7 @@ namespace TxTools.ExportByColor
             var thread = new Thread(() =>
             {
                 int ok = 0, failed = 0;
-                var pending = new Queue<PendingJtConversion>();
+                var pending = new List<PendingJtConversion>();
                 string workDir = Path.Combine(Path.GetTempPath(),
                     "TxTools_JT_CGR_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" +
                     Guid.NewGuid().ToString("N").Substring(0, 8));
@@ -526,60 +526,26 @@ namespace TxTools.ExportByColor
                     if (!Connect(out error)) throw new InvalidOperationException(error);
                     EnsureProductDocument(onLog);
                     Directory.CreateDirectory(workDir);
-                    var devices = OnPs(() =>
-                    {
-                        var result = new List<ITxObject>();
-                        var keys = new HashSet<string>();
-                        foreach (var item in picked)
-                            foreach (var device in ExpandPicked(item, onLog))
-                                if (keys.Add(ObjKey(device))) result.Add(device);
-                        return result;
-                    });
+                    var devices = OnPsJt(() => ExpandJtPicked(picked, onLog));
                     if (devices.Count == 0) throw new InvalidOperationException("没有可转换的设备");
                     var progress = new ExportProgressState(devices.Count);
                     int workers = JtDirectBridge.ConversionWorkers;
                     string decoder = Path.Combine(Path.GetDirectoryName(typeof(ExportByColorService).Assembly.Location),
                         "JtDirectCs", "TxTools.JtDecoder.exe");
                     progress.Report(onProgress, "JT 准备", null);
-                    SafeLog(onLog, "[JT→CGR parallel] workers=" + workers + "; backend=" + backend + "; resources=" + devices.Count + "; output=" + workDir);
+                    SafeLog(onLog, "[JT→CGR parallel R56] isolated workers=" + workers + "; timeoutSeconds=" + JtCgrProcessBridge.TimeoutMs/1000 + "; backend=" + backend + "; resources=" + devices.Count + "; output=" + workDir);
                     SafeLog(onLog, "[JT 直接保色] 使用 JT 文件内姿态和颜色，应用资源整体放置；未采集 PS 运动部件当前姿态");
                     var names = new ExportNames();
                     Action<PendingJtConversion> finish = item =>
                     {
-                        var result = item.Task.GetAwaiter().GetResult();
-                        foreach (string message in item.Logs) DetailLog(onLog, "[" + result.ExportName + "] " + message);
+                        var result = item.Result;
                         try
                         {
-                            var unsupported = result.Error as NotSupportedException;
-                            if (unsupported != null && !reconstructRoundHoles)
+                            result = item.Task.GetAwaiter().GetResult();
+                            foreach (string message in item.Logs) DetailLog(onLog, "[" + result.ExportName + "] " + message);
+                            if (result.Error == null && reconstructRoundHoles && result.CylinderCounts != null)
                             {
-                                SafeLog(onLog, "[JT compatibility] " + unsupported.Message);
-                                SafeLog(onLog, "[JT compatibility] Using loaded PS geometry/design colors and current PS pose; direct JT face-color decoder is not used.");
-                                progress.Report(onProgress, "PS compatibility collection", result.ExportName);
-                                var nativeData = CollectDeviceGroups(new List<ITxObject> { item.Source }, null, onLog, true);
-                                if (nativeData == null || nativeData.Count == 0)
-                                    throw new InvalidOperationException("Native JT compatibility found no loaded PS geometry; " + unsupported.Message);
-                                var nativeGroups = new List<ColorGroup>();
-                                try
-                                {
-                                    foreach (var data in nativeData) nativeGroups.AddRange(data.Colors);
-                                    if (nativeGroups.Count == 0) throw new InvalidOperationException("Native PS compatibility found no triangles");
-                                    // Detached native groups are encoded off PS too. This coordinator
-                                    // blocks until ready, while other direct conversion workers continue.
-                                    result.Path = Task.Run(() => BuildCgr(nativeGroups, result.ExportName, workDir,
-                                        message => DetailLog(onLog, "[" + result.ExportName + "] " + message), backend))
-                                        .GetAwaiter().GetResult();
-                                    result.Error = null;
-                                }
-                                finally
-                                {
-                                    nativeGroups.Clear();
-                                    foreach (var data in nativeData) data.Colors.Clear();
-                                }
-                            }
-                            if (result.Error == null && reconstructRoundHoles && result.Holes != null)
-                            {
-                                SafeLog(onLog, "[圆柱 CGR] 内孔="+result.Holes.FindAll(h=>!h.ExternalCylinder).Count+"，外圆柱="+result.Holes.FindAll(h=>h.ExternalCylinder).Count+"；圆柱壁与圆形端边已直接编码到单个 CGR；其余保留源网格");
+                                SafeLog(onLog, "[圆柱 CGR] 内孔="+result.CylinderCounts[0]+"，外圆柱="+result.CylinderCounts[1]+"；圆柱壁与圆形端边已直接编码到单个 CGR；其余保留源网格");
                             }
                             FinishExport(result, "CGR", null, onLog, progress, onProgress, ref ok, ref failed);
                         }
@@ -594,14 +560,14 @@ namespace TxTools.ExportByColor
                     foreach (var device in devices)
                     {
                         // Drain before the next snapshot: at most 'workers' meshes in flight.
-                        // FIFO publication preserves selection order in CATIA.
-                        if (pending.Count >= workers) finish(pending.Dequeue());
+                        // A slow/bad first resource cannot hold up completed siblings.
+                        if (pending.Count >= workers) finish(JtBatchSafety.TakeCompleted(pending, p => p.Task));
                         string name = null;
                         try
                         {
                             string jtPath = null, trace = null;
                             double[] placement = null;
-                            DeviceData snapshot = OnPs(() =>
+                            DeviceData snapshot = OnPsJt(() =>
                             {
                                 name = names.Next(device.Name);
                                 if (!JtResourceResolver.TryResolve(device, out jtPath, out trace) || string.IsNullOrWhiteSpace(jtPath))
@@ -625,7 +591,7 @@ namespace TxTools.ExportByColor
                             var result = new EncodedDevice { Device=snapshot, ExportName=name,
                                 Path=Path.Combine(workDir, name + ".cgr"), SourcePath=jtPath };
                             var task = StartJtConversion(result, workDir, decoder, placement, logs, backend, reconstructRoundHoles);
-                            pending.Enqueue(new PendingJtConversion { Source=device, Task=task, Logs=logs });
+                            pending.Add(new PendingJtConversion { Result=result, Task=task, Logs=logs });
                             progress.Collected++;
                             progress.Report(onProgress, "JT 并行转码", name);
                         }
@@ -637,7 +603,7 @@ namespace TxTools.ExportByColor
                             DetailLog(onLog, "[JT 失败详情] " + ex);
                         }
                     }
-                    while (pending.Count > 0) finish(pending.Dequeue());
+                    while (pending.Count > 0) finish(JtBatchSafety.TakeCompleted(pending, p => p.Task));
                     progress.Failed = failed;
                     progress.Report(onProgress, failed == 0 ? "JT→CGR 完成" : "JT→CGR 结束，存在失败", null);
                     SafeComplete(onComplete, ok > 0 && failed == 0,
@@ -645,8 +611,12 @@ namespace TxTools.ExportByColor
                 }
                 catch (Exception ex)
                 {
-                    // Wait for owned workers before reporting completion or abandoning this batch.
-                    while (pending.Count > 0) pending.Dequeue().Task.GetAwaiter().GetResult();
+                    // Never synchronously drain jobs after a coordinator failure.
+                    // The bounded, isolated workers can finish to recovery files;
+                    // observe faults without making another CATIA or PS call.
+                    foreach (var item in pending)
+                        item.Task.ContinueWith(t => { if (t.IsFaulted) { var observed = t.Exception; }
+                            SafeLog(onLog, "[JT 后台任务已结束] " + item.Result.ExportName); }, TaskScheduler.Default);
                     SafeLog(onLog, "[JT→CGR 详细错误] " + ex);
                     SafeComplete(onComplete, false, ex.Message + "；恢复目录: " + workDir);
                 }
@@ -689,6 +659,60 @@ namespace TxTools.ExportByColor
                    c.Red<best.Red || (c.Red==best.Red&&(c.Green<best.Green || c.Green==best.Green&&c.Blue<best.Blue))) best=c;
             }
             if(best!=null){r=best.Red;g=best.Green;b=best.Blue;}
+        }
+
+        private static bool IsJtContainer(ITxObject obj)
+        {
+            if (obj is TxPhysicalRoot) return true;
+            for (var type = obj.GetType(); type != null; type = type.BaseType)
+                if (type.Name.IndexOf("EquipmentPrototype", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            // PS also exposes the prototype as a regular TxComponent.
+            try { return string.Equals(obj.Name, "EquipmentPrototype", StringComparison.OrdinalIgnoreCase); }
+            catch { return false; }
+        }
+
+        private static List<ITxObject> ExpandJtPicked(IEnumerable<ITxObject> picked, Action<string> onLog)
+        {
+            var resources = JtBatchSafety.Expand(picked, ObjKey, IsJtContainer, obj => {
+                string path, trace;
+                if (!JtResourceResolver.TryResolve(obj, out path, out trace)) return false;
+                try { return SysFile.Exists(JtDirectBridge.ResolveFile(path)); }
+                catch { return false; }
+            }, obj => EnumerateJtKids(obj, onLog), (obj, ex) => SafeLog(onLog, "[JT 子项读取失败] " + ObjKey(obj) + ": " + ex.Message));
+            SafeLog(onLog, "[JT 资源展开] EquipmentPrototype/无 JT 容器展开后=" + resources.Count + " 个；每个子项使用自身绝对放置");
+            return resources;
+        }
+
+        private static List<ITxObject> EnumerateJtKids(ITxObject obj, Action<string> onLog)
+        {
+            var kids = new List<ITxObject>(); var keys = new HashSet<string>();
+            Action<ITxObject> add = child => {
+                if (child != null && IsDeviceLike(child) && ObjKey(child) != ObjKey(obj) && keys.Add(ObjKey(child))) kids.Add(child);
+            };
+            try
+            {
+                var enumerable = obj as System.Collections.IEnumerable;
+                if (enumerable != null) foreach (object child in enumerable) add(child as ITxObject);
+            }
+            catch (Exception ex) { DetailLog(onLog, "[JT 子项枚举] " + ex.Message); }
+            AddPrototypeSubsetChildren(obj, add, onLog);
+            if (kids.Count == 0) foreach (var child in EnumerateKids(obj)) add(child);
+            // GetAllDescendants is a fallback, not a list of independent export
+            // units. Remove entries under another returned resource/container.
+            var direct = new List<ITxObject>();
+            foreach (var child in kids)
+            {
+                var guard = new HashSet<string>(); bool nested = false;
+                var parent = GetParentObject(child) as ITxObject;
+                while (parent != null && ObjKey(parent) != ObjKey(obj) && guard.Add(ObjKey(parent)))
+                {
+                    if (keys.Contains(ObjKey(parent))) { nested = true; break; }
+                    parent = GetParentObject(parent) as ITxObject;
+                }
+                if (!nested) direct.Add(child);
+            }
+            if (direct.Count != 0) SafeLog(onLog, "[JT 子项展开] " + obj.Name + " → " + direct.Count + " 个直接资源/子集");
+            return direct;
         }
 
         // ── 展开：叶子设备直接加入；纯容器递归展开；静态资源兜底整体导出 ──

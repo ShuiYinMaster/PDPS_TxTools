@@ -8,6 +8,12 @@ namespace TxTools.ExportByColor
     // cap triangulations stay unchanged; input lists and coordinate arrays are never edited.
     public static partial class RoundHoleCgrMesh
     {
+        public sealed class DisplayOptions
+        {
+            public double ChordToleranceMm=.02;
+            public int MinimumCircleSegments=24;
+            public static DisplayOptions Fine(){return new DisplayOptions{ChordToleranceMm=.002,MinimumCircleSegments=96};}
+        }
         public sealed class Cylinder
         {
             public int Surface,SourceSurface;
@@ -151,14 +157,19 @@ namespace TxTools.ExportByColor
         }
 
         public static Result Replace(List<float[]> source,List<CgrWriter.Face> faces,List<RoundHoleReconstruction.Hole> holes,Action<string> log=null)
+        {return Replace(source,faces,holes,log,new DisplayOptions());}
+        public static Result Replace(List<float[]> source,List<CgrWriter.Face> faces,List<RoundHoleReconstruction.Hole> holes,Action<string> log,DisplayOptions display)
         {
+            if(display==null||double.IsNaN(display.ChordToleranceMm)||double.IsInfinity(display.ChordToleranceMm)||display.ChordToleranceMm<=0||display.ChordToleranceMm>.2||display.MinimumCircleSegments<8||display.MinimumCircleSegments>2048)throw new ArgumentOutOfRangeException("display");
+            var density=new DisplayOptions{ChordToleranceMm=display.ChordToleranceMm,MinimumCircleSegments=display.MinimumCircleSegments};
+            if(log!=null)log("[CGR display density] regular sag<="+density.ChordToleranceMm+"mm minimumSegments="+density.MinimumCircleSegments+"; original rim samples retained; clipped/intersecting walls keep 0.002mm guards; analytical parameters unchanged");
             // A cylindrical wall can have additional boundary loops where a
             // transverse bore cuts it. Bridging only its two axial rims would
             // fill those openings. Preserve that wall's source tessellation;
             // its proven cylinder still receives native measurement attributes.
             var punctured=holes.Where(h=>h.PairedRims&&h.WallTriangles!=null&&h.RimPointsA!=null&&h.RimPointsB!=null&&h.Depth>.02&&HasAdditionalWallBoundaries(source,faces,h)).ToList();
             var excluded=new HashSet<RoundHoleReconstruction.Hole>(punctured);
-            var result=ReplaceCore(source,faces,holes.Where(h=>!excluded.Contains(h)).ToList(),log);
+            var result=ReplaceCore(source,faces,holes.Where(h=>!excluded.Contains(h)).ToList(),log,density);
             foreach(var h in holes.Where(h=>h.PairedRims&&!h.ExternalCylinder&&(h.TrimmedRimA||h.TrimmedRimB)))
             {
                 if(result.Cylinders.Values.Any(c=>c.SourceSurface==h.Surface&&Math.Abs(c.Radius-h.Radius)<.01&&Dot(Sub(c.Center,h.Center),Sub(c.Center,h.Center))<.0001))continue;
@@ -198,7 +209,7 @@ namespace TxTools.ExportByColor
             var rims=new HashSet<long>();foreach(var ring in new[]{h.RimPointsA,h.RimPointsB})for(int i=0;i<ring.Length;i++)rims.Add(Edge(id(ring[i]),id(ring[(i+1)%ring.Length])));
             return counts.Any(e=>e.Value!=2&&!rims.Contains(e.Key));
         }
-        static Result ReplaceCore(List<float[]> source,List<CgrWriter.Face> faces,List<RoundHoleReconstruction.Hole> holes,Action<string> log)
+        static Result ReplaceCore(List<float[]> source,List<CgrWriter.Face> faces,List<RoundHoleReconstruction.Hole> holes,Action<string> log,DisplayOptions density)
         {
             var result=new Result{Vertices=new List<float[]>(source),Faces=new List<CgrWriter.Face>()};
             var ids=new Dictionary<Tuple<int,float,float,float>,int>();var points=new List<double[]>();
@@ -244,7 +255,10 @@ namespace TxTools.ExportByColor
                 // otherwise they create zero-width slivers at the shared cap boundary.
                 double angularTolerance=Math.Max(1e-6,.001/p.Hole.Radius);
                 var all=p.Hole.RimPointsA.Concat(p.Hole.RimPointsB).Select(v=>Angle(p,v)).OrderBy(a=>a).ToList();var unique=new List<double>();foreach(double a in all)if(unique.Count==0||a-unique[unique.Count-1]>angularTolerance)unique.Add(a);if(unique.Count>1&&2*Math.PI+unique[0]-unique[unique.Count-1]<=angularTolerance)unique.RemoveAt(unique.Count-1);
-                double step=Math.Min(2*Math.PI/96,2*Math.Acos(Math.Max(-1,1-.002/p.Hole.Radius)));
+                // Clipped endpoints retain the tight source-boundary tolerance.
+                double tolerance=(p.Hole.TrimmedRimA||p.Hole.TrimmedRimB) ? .002 : density.ChordToleranceMm;
+                int minimum=(p.Hole.TrimmedRimA||p.Hole.TrimmedRimB) ? 96 : density.MinimumCircleSegments;
+                double step=Math.Min(2*Math.PI/minimum,2*Math.Acos(Math.Max(-1,1-tolerance/p.Hole.Radius)));
                 if(step<2*Math.PI/2048){p.Rejected=true;p.Failure="display-resolution";continue;}
                 p.Angles=new List<double>();for(int i=0;i<unique.Count;i++){double a=unique[i],b=i+1<unique.Count?unique[i+1]:unique[0]+2*Math.PI;int count=(int)Math.Ceiling((b-a)/step);for(int k=0;k<count;k++)p.Angles.Add((a+(b-a)*k/count)%(2*Math.PI));}p.Angles.Sort();
                 p.Cylinder=new Cylinder{SourceSurface=p.Hole.Surface,Surface=checked(++nextSurface),Center=p.Hole.Center,Axis=p.Hole.Axis,Radius=p.Hole.Radius,Depth=p.Hole.Depth,ExternalCylinder=p.Hole.ExternalCylinder,TrimmedRimA=p.Hole.TrimmedRimA,TrimmedRimB=p.Hole.TrimmedRimB};
@@ -295,7 +309,7 @@ namespace TxTools.ExportByColor
                 var color=faces[p.Hole.WallTriangles[0]];color.Surface=p.Cylinder.Surface;
                 for(int i=0;i<p.Angles.Count;i++){int j=(i+1)%p.Angles.Count;foreach(var t in new[]{new[]{p.Rings[0][i],p.Rings[0][j],p.Rings[1][j]},new[]{p.Rings[0][i],p.Rings[1][j],p.Rings[1][i]}}){var middle=D(result.Vertices[t[0]]);var radial=Sub(middle,p.Hole.Center);double axial=Dot(radial,p.Hole.Axis);for(int k=0;k<3;k++)radial[k]-=axial*p.Hole.Axis[k];var n=Normal(result.Vertices,t);if(Dot(n,radial)*(p.Hole.ExternalCylinder?-1:1)>0){int swap=t[1];t[1]=t[2];t[2]=swap;}n=Unit(Normal(result.Vertices,t));color.Nx=(float)n[0];color.Ny=(float)n[1];color.Nz=(float)n[2];result.Faces.Add(Triangle(color,t[0],t[1],t[2]));result.AddedWallTriangles++;}}
             }
-            if(log!=null)log("[CGR cylindrical replacement] accepted="+result.Cylinders.Count+" eligible="+plans.Count+" removedWalls="+result.RemovedWallTriangles+" replacedCaps="+result.ReplacedCapTriangles+" addedWalls="+result.AddedWallTriangles+" addedCaps="+result.AddedCapTriangles+" displaySag<=0.002mm; ambiguous caps retained");
+            if(log!=null)log("[CGR cylindrical replacement] accepted="+result.Cylinders.Count+" eligible="+plans.Count+" removedWalls="+result.RemovedWallTriangles+" replacedCaps="+result.ReplacedCapTriangles+" addedWalls="+result.AddedWallTriangles+" addedCaps="+result.AddedCapTriangles+" regularDisplaySag<="+density.ChordToleranceMm+"mm; clipped ends<=0.002mm; ambiguous caps retained");
             if(log!=null)log("[CGR source trim] cylinders="+result.Cylinders.Values.Count(c=>c.TrimmedRimA||c.TrimmedRimB)+"; source axial profile retained; trimmed ends have no circle attribute");
             if(log!=null){foreach(var g in plans.Where(p=>p.Rejected).GroupBy(p=>(p.Failure??"rim-topology").Split(' ')[0]))log("[CGR cylinder guard] reason="+g.Key+" count="+g.Count()+" exampleShapes="+string.Join(",",g.Take(8).Select(p=>p.Hole.Surface)));log("[CGR cylinder directions] inner="+result.Cylinders.Values.Count(c=>!c.ExternalCylinder)+" outer="+result.Cylinders.Values.Count(c=>c.ExternalCylinder));}
             return result;

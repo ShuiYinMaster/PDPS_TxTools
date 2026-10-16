@@ -35,6 +35,16 @@ namespace TxTools.ExportByColor
         private string _lastLogMessage;
         private const int MaxLogCharacters = 60000;
 
+        private sealed class ExportMode
+        {
+            internal readonly string Label, Format;
+            internal readonly CgrBackend Backend;
+            internal readonly bool ReconstructCylinders;
+            internal ExportMode(string label, string format, CgrBackend backend, bool reconstructCylinders = false)
+            { Label = label; Format = format; Backend = backend; ReconstructCylinders = reconstructCylinders; }
+            public override string ToString() { return Label; }
+        }
+
         private bool _scaled;
         private readonly Size _designSize = new Size(960, 740);
         private readonly Size _minSize = new Size(740, 540);
@@ -189,12 +199,20 @@ namespace TxTools.ExportByColor
             _exportTabs = new TabControl { Width = 340, Height = 190, Font = FormUiKit.BaseFont };
             var cgrTab = new TabPage("3DXML / CGR");
             _cgrMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Left = 12, Top = 12, Width = 285, DropDownWidth = 460 };
-            _cgrMode.Items.AddRange(new object[] { "直出 3DXML（推荐）", "直出 3DXML（R38线面几何·试用）", "CGR → CATIA（原方案）", "CGR → CATIA（线面压缩·试用）", "CGR → CATIA（逐平面兼容）", "读取 JT → CGR → CATIA", "读取 JT → CGR → CATIA（线面压缩·试用）", "读取 JT → CGR → CATIA（逐平面兼容·试用）", "读取 JT → 内外圆柱重建 CGR → CATIA（试用）" });
+            _cgrMode.Items.AddRange(new object[] {
+                new ExportMode("直出 3DXML（推荐）", "3DXML", CgrBackend.Compact),
+                new ExportMode("直出 3DXML（R38线面几何·试用）", "3DXML", CgrBackend.LineFace),
+                new ExportMode("CGR → CATIA（原方案）", "CGR", CgrBackend.Compact),
+                new ExportMode("PS 三角面 → CGR → CATIA（内外圆柱重建与压缩）", "CGR", CgrBackend.LineFace, true),
+                new ExportMode("读取 JT → CGR → CATIA", "JT_CGR", CgrBackend.Compact),
+                new ExportMode("读取 JT → CGR → CATIA（线面压缩·试用）", "JT_CGR", CgrBackend.LineFace),
+                new ExportMode("读取 JT → 内外圆柱重建 CGR → CATIA（试用）", "JT_CGR", CgrBackend.LineFace, true)
+            });
             _cgrMode.SelectedIndex = 0;
             cgrTab.Controls.Add(_cgrMode);
             cgrTab.Controls.Add(new Label
             {
-                Text = "直出 3DXML 保留装配层级，无需 CATIA。\r\nR38 线面试用沿用其网格分块，再桥接为 CFV3；3DXML 当前不含 CGR 的线、面选择记录。CGR 线面压缩可在 CATIA 中测量；逐平面兼容保留细分面选择。",
+                Text = "直出 3DXML 保留装配层级，无需 CATIA。\r\nPS 三角面路线支持内外圆柱重建及线面压缩，未通过重建检查的区域保留原网格。R38 线面几何桥接的 3DXML 当前不含 CGR 线、面选择记录。",
                 Left = 12,
                 Top = 50,
                 Width = 300,
@@ -368,12 +386,11 @@ namespace TxTools.ExportByColor
                 }
             }
             string origin = GetOriginName();
+            var route = (ExportMode)_cgrMode.SelectedItem;
             string format = _exportTabs.SelectedIndex == 0
-                ? (_cgrMode.SelectedIndex <= 1 ? "3DXML" : (_cgrMode.SelectedIndex >= 5 ? "JT_CGR" : "CGR"))
+                ? route.Format
                 : new[] { "STL", "OBJ", "PLY", "FBX_BINARY", "FBX_ASCII" }[_meshFormat.SelectedIndex];
-            CgrBackend cgrBackend = format == "3DXML"
-                ? (_cgrMode.SelectedIndex == 1 ? CgrBackend.LineFace : CgrBackend.Compact)
-                : (format == "CGR" ? (_cgrMode.SelectedIndex == 3 ? CgrBackend.LineFace : _cgrMode.SelectedIndex == 4 ? CgrBackend.LineFacePlanar : CgrBackend.Compact) : CgrBackend.Compact);
+            CgrBackend cgrBackend = route.Backend;
             string output = null;
             if (format == "3DXML")
             {
@@ -427,11 +444,11 @@ namespace TxTools.ExportByColor
             if (format == "JT_CGR")
             {
                 Log("JT 模式：从资源 StorageObject/表示属性解析 JT 文件，再生成 CGR 并插入 CATIA。");
-                _svc.RunJtToCgrAsync(picked, Log, SetProgress, complete, (_cgrMode.SelectedIndex == 6 || _cgrMode.SelectedIndex == 8) ? CgrBackend.LineFace : _cgrMode.SelectedIndex == 7 ? CgrBackend.LineFacePlanar : CgrBackend.Compact, _cgrMode.SelectedIndex == 8);
+                _svc.RunJtToCgrAsync(picked, Log, SetProgress, complete, route.Backend, route.ReconstructCylinders);
             }
             else
             {
-                _svc.RunAsync(picked, origin, format, output, format != "CGR" && format != "3DXML" && _mergeMeshes.Checked, Log, SetProgress, complete, cgrBackend);
+                _svc.RunAsync(picked, origin, format, output, format != "CGR" && format != "3DXML" && _mergeMeshes.Checked, Log, SetProgress, complete, cgrBackend, format == "CGR" && route.ReconstructCylinders);
             }
         }
 

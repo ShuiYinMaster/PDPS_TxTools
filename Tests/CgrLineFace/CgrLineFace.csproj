@@ -7,6 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="$(EncoderDir)/CgrWriter.cs" Link="CgrWriter.cs" />
+    <Compile Include="$(EncoderDir)/PsCgrPipeline.cs" Link="PsCgrPipeline.cs" Condition="Exists('$(EncoderDir)/PsCgrPipeline.cs')" />
     <Compile Include="$(EncoderDir)/CgrCanonical95.cs" Link="CgrCanonical95.cs" />
     <Compile Include="$(EncoderDir)/RoundHoleReconstruction.cs" Link="RoundHoleReconstruction.cs" />
     <Compile Include="$(EncoderDir)/RoundHoleCgrMesh.cs" Link="RoundHoleCgrMesh.cs" />
@@ -15,7 +16,9 @@
     <Compile Include="$(EncoderDir)/RoundHoleCgrRefinement.cs" Link="RoundHoleCgrRefinement.cs" />
     <Compile Include="$(EncoderDir)/Vendor/EarCut/*.cs" Link="Vendor/EarCut/%(Filename)%(Extension)" />
     <Compile Include="$(EncoderDir)/CgrCompact95.cs" Link="CgrCompact95.cs" />
-    <Compile Include="$(EncoderDir)/CgrTemplate.cs" Link="CgrTemplate.cs" />
+    <Compile Include="$(EncoderDir)/CgrSceneRecords.cs" Link="CgrSceneRecords.cs" Condition="Exists('$(EncoderDir)/CgrSceneRecords.cs')" />
+    <Compile Include="$(EncoderDir)/CgrTemplate.cs" Link="CgrTemplate.cs" Condition="!Exists('$(EncoderDir)/CgrSceneRecords.cs')" />
+    <Compile Include="$(EncoderDir)/CgrContainer.cs" Link="CgrContainer.cs" Condition="Exists('$(EncoderDir)/CgrContainer.cs')" />
     <Compile Include="$(EncoderDir)/CgrSurfaceOrientation.cs" Link="CgrSurfaceOrientation.cs" />
     <Compile Include="$(EncoderDir)/CgrLineFace95.cs" Link="CgrLineFace95.cs" Condition="Exists('$(EncoderDir)/CgrLineFace95.cs')" />
     <Compile Include="$(EncoderDir)/CgrFeatureCompression.cs" Link="CgrFeatureCompression.cs" Condition="Exists('$(EncoderDir)/CgrFeatureCompression.cs')" />

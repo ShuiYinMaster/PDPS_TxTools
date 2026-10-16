@@ -13,7 +13,7 @@ Export Process Simulate resources to CATIA CGR or mesh formats, with color group
 - 将选定/可见资源按显示颜色生成 CGR 并导出到 CATIA。
 - 支持 STL、OBJ、PLY、FBX 等网格格式导出。
 - 可设置导出坐标原点、合并策略、边线显示和输出目录。
-- CGR 导出包含面方向、颜色、模板及紧凑写出逻辑，适合大批量布局资源。
+- CGR 导出包含面方向、颜色、字段生成的 CFV2 容器及紧凑写出逻辑，适合大批量布局资源。
 - 提供直接 JT → CGR → CATIA 模式，以及试用的内外圆柱重建模式；重建参数写入 CGR 原生圆柱/圆边属性，不生成附属 CATPart 或参考轴线。
 - 网格导出提供通用网格写出和 FBX 专用写出路径。
 
@@ -31,6 +31,16 @@ Export Process Simulate resources to CATIA CGR or mesh formats, with color group
 - 坐标原点和合并选项会影响 CATIA 中的装配结构与定位，正式交付前应抽检模型位置。
 
 ## 相关文档
+
+- [R57 PS 三角网格内外圆柱重建与压缩](../Tests/PsCgrPipeline/README.md)
+
+## PS 圆柱重建
+
+PS 三角网格可执行圆柱拟合和连续面域压缩。不同源几何身份保持隔离，不能安全重建的区域保留源网格。拟合结果不是完整 CAD 特征历史。
+
+## JT 批次隔离
+
+EquipmentPrototype 和没有独立 JT 的组件继续展开到实际资源，按对象身份去重并保留实例放置。完整 JT 转换使用每资源独立工作进程、有界并发与超时，失败只清理对应任务；成功退出后才发布 CGR。部署时同时保留工作进程、解码器及其依赖。
 
 ## JT 圆柱重建
 
