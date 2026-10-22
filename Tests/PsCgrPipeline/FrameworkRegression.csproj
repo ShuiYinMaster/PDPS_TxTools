@@ -1,0 +1,15 @@
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <AssemblyName>PsCgrPipelineRegression</AssemblyName><LangVersion>7.3</LangVersion>
+    <DefineConstants>NETFRAMEWORK</DefineConstants><PlatformTarget>x64</PlatformTarget>
+    <OutputPath>bin48\</OutputPath><BaseIntermediateOutputPath>obj48\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System"/><Reference Include="System.Core"/>
+    <Reference Include="TxTools"><HintPath>$(PluginDir)\TxTools.dll</HintPath></Reference>
+    <Reference Include="Newtonsoft.Json"><HintPath>$(PluginDir)\Newtonsoft.Json.dll</HintPath></Reference>
+    <Compile Include="Program.cs"/><Compile Include="..\JtCgr\FeatureTestDecoder.cs"/>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>
+</Project>

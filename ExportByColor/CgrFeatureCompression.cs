@@ -25,7 +25,7 @@ namespace TxTools.ExportByColor
             domains=sorted;
         }
 
-        private static List<FeatureBoundary95> ChainFeatureEdges95(List<FeatureBoundary95> input,List<float[]> vs)
+        private static List<FeatureBoundary95> ChainFeatureEdges95(List<FeatureBoundary95> input,List<float[]> vs,bool fittedCylinder=false)
         {
             var groups=new Dictionary<Tuple<int,int>,List<FeatureBoundary95>>();var order=new List<List<FeatureBoundary95>>();
             foreach(var edge in input)
@@ -60,7 +60,7 @@ namespace TxTools.ExportByColor
                     for(int k=0;k<3;k++){double u=(double)va[k]-origin[k],v=(double)vb[k]-origin[k];dot+=u*v;aa+=u*u;bb+=v*v;}
                     // Join gentle polyline continuation, never a sharp corner. Every
                     // original boundary segment and intermediate position is retained.
-                    if(aa==0||bb==0||dot/Math.Sqrt(aa*bb)>-Math.Cos(Math.PI/10))continue;
+                    if(aa==0||bb==0||(!fittedCylinder&&dot/Math.Sqrt(aa*bb)>-Math.Cos(Math.PI/10)))continue;
                     links[a][ka]=b;links[b][kb]=a;
                 }
                 var used=new bool[group.Count];

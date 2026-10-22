@@ -1,0 +1,12 @@
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <AssemblyName>CylinderSafetyRegression</AssemblyName><LangVersion>7.3</LangVersion><PlatformTarget>x64</PlatformTarget>
+    <OutputPath>bin48\safety\</OutputPath><BaseIntermediateOutputPath>obj48\safety\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+  <ItemGroup><Reference Include="System"/><Reference Include="System.Core"/>
+    <Reference Include="TxTools"><HintPath>$(PluginDir)\TxTools.dll</HintPath></Reference>
+    <Compile Include="../JtCgr/$(RegressionCase).cs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>
+</Project>

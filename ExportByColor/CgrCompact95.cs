@@ -6,11 +6,6 @@ namespace TxTools.ExportByColor
 {
     public static partial class CgrWriter
     {
-        private static byte[] H95(string s) { var b=new byte[s.Length/2];for(int i=0;i<b.Length;i++)b[i]=Convert.ToByte(s.Substring(i*2,2),16);return b; }
-        private static readonly byte[] Root95=H95("6200200504fdff00000001006864124500000000fcff4fc19065c9410000044400000000ff03010000");
-        private static readonly byte[] Branch95=H95("6200200504fdff00000001006864124500000000fcff4fc19065c9410000044400000000ffff000000");
-        private static readonly byte[] Leaf95=H95("95ff6213000000200404ffffffffff01004a168842000000000800c8c2573d45c3562b084400000000");
-        private static readonly byte[] Pick95=H95("ff3d000000db0f493fa5d468530000000000ffff0900ecc261a759c3d31003440800a4c24dd330c3d8450d440800c8c2573d45c3562b08444a16884201");
         private static int Find95(int[] p,int x) {while(p[x]!=x){p[x]=p[p[x]];x=p[x];}return x;}
         private static void Join95(int[] p,int a,int b){a=Find95(p,a);b=Find95(p,b);if(a!=b)p[b]=a;}
         private static double Dot95(double[] a,double[] b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];}
@@ -39,17 +34,12 @@ namespace TxTools.ExportByColor
             if(length==0)throw new InvalidDataException("Zero area in compact backend");
             for(int k=0;k<3;k++)n[k]/=length;return n;
         }
-        private static byte[] Header95(byte[] template,double[] bounds)
-        {
-            var h=(byte[])template.Clone();Float(h,12,bounds[9]+Math.Max(.2,bounds[9]*1e-6));
-            for(int k=0;k<3;k++)Float(h,20+4*k,bounds[k]);return h;
-        }
         private static void BuildCompact95(List<float[]> vertices,List<Face> faces,string path,Action<string> progress)
         {
             var groups=new Dictionary<Tuple<int,int>,List<Face>>();var order=new List<List<Face>>();
             foreach(var f in faces)
             {
-                var key=Tuple.Create(f.Surface,f.R|(f.G<<8)|(f.B<<16));List<Face> group;
+                var key=Tuple.Create(f.Surface,f.R|(f.G<<8)|(f.B<<16)|((f.Opacity??255)<<24));List<Face> group;
                 if(!groups.TryGetValue(key,out group)){group=new List<Face>();groups.Add(key,group);order.Add(group);}group.Add(f);
             }
             int[] all=new int[vertices.Count];for(int i=0;i<all.Length;i++)all[i]=i;var global=Bounds(vertices,all);
@@ -60,12 +50,12 @@ namespace TxTools.ExportByColor
                     CompactGroup95(vertices,group,leaves,picks,ref changed,ref vertexCount);
                 using(var scene=new MemoryStream())using(var w=new BinaryWriter(scene))
                 {
-                    w.Write(Header95(Root95,global));Compact(w,(uint)leaves.Count);
+                    WriteCompactNode(w,global,false);Compact(w,(uint)leaves.Count);
                     foreach(var leaf in leaves)
                     {
                         w.Write((byte)0);
                         // The reference branch shape is required by CATIA for this representation.
-                        for(int level=0;level<4;level++){w.Write(Header95(level==0?Branch95:Root95,global));Compact(w,1);w.Write((byte)0);}
+                        for(int level=0;level<4;level++){WriteCompactNode(w,global,level==0);Compact(w,1);w.Write((byte)0);}
                         w.Write(leaf);
                     }
                     w.Write((byte)0);
@@ -75,7 +65,7 @@ namespace TxTools.ExportByColor
             if(progress!=null)progress("[CGR95] "+groups.Count+" 个源几何/颜色组，"+leaves.Count+" 块，"+vertexCount+" 顶点；平滑角点 "+changed+"；文件 "+new FileInfo(path).Length+" 字节");
         }
         private static void CompactGroup95(List<float[]> source,List<Face> faces,List<byte[]> leaves,MemoryStream picks,ref long changed,ref int vertexCount,
-            Action<List<float[]>,List<float[]>,List<int[]>,List<int[]>,Face> featureWriter=null,int featureFaceLimit=int.MaxValue,int featureVertexLimit=MaxVertsPerChunk)
+            Action<List<float[]>,List<float[]>,List<int[]>,List<int[]>,Face> featureWriter=null,int featureFaceLimit=int.MaxValue,int featureVertexLimit=MaxVertsPerChunk,bool fittedCylinder=false)
         {
             int count=faces.Count;var positions=new List<float[]>();var map=new Dictionary<Tuple<float,float,float>,int>();
             var ids=new int[count][];var normals=new double[count][];var angles=new double[count][];var areas=new double[count];
@@ -101,6 +91,9 @@ namespace TxTools.ExportByColor
                     double ab=0,ac=0,dot=0;
                     for(int j=0;j<3;j++){double u=(double)b[j]-a[j],v=(double)c[j]-a[j];ab+=u*u;ac+=v*v;dot+=u*v;}
                     angles[i][k]=Math.Acos(Math.Max(-1,Math.Min(1,dot/Math.Sqrt(ab*ac))));
+                    // A valid slender triangle can round cosine to 1. Preserve its tiny
+                    // corner weight instead of producing a zero shading normal.
+                    if(angles[i][k]==0)angles[i][k]=Math.Atan2(areas[i],dot);
                     long key=EdgeKey(ids[i][k],ids[i][(k+1)%3]);List<int> edge;
                     if(!edges.TryGetValue(key,out edge)){edge=new List<int>();edges.Add(key,edge);}edge.Add(i*3+k);
                 }
@@ -146,7 +139,7 @@ namespace TxTools.ExportByColor
                             if(pair.Key!=pb&&CurvatureContinues95(normals[pair.Key],normals[pa],normals[pb])&&(double.IsNaN(ca)||Math.Abs(pair.Value-angle)<Math.Abs(ca-angle)))ca=pair.Value;
                         if(neighbors.TryGetValue(pb,out adj))foreach(var pair in adj)
                             if(pair.Key!=pa&&CurvatureContinues95(normals[pa],normals[pb],normals[pair.Key])&&(double.IsNaN(cb)||Math.Abs(pair.Value-angle)<Math.Abs(cb-angle)))cb=pair.Value;
-                        if(!SmoothAdaptive95(angle,ca,cb))continue;
+                        if(!fittedCylinder&&!SmoothAdaptive95(angle,ca,cb))continue;
                         if(matches[i]!=-1){matches[i]=-2;break;}matches[i]=j;
                     }
                 }
@@ -199,6 +192,8 @@ namespace TxTools.ExportByColor
         }
         private static void WriteLeaf95(List<float[]> vs,List<float[]> ns,List<int[]> faces,Face color,List<byte[]> leaves,MemoryStream picks)
         {
+            if(vs.Count<3||vs.Count>MaxSafeIndexedVerts||ns.Count!=vs.Count||faces.Count==0)
+                throw new InvalidDataException("Invalid compact block vertex count or normals");
             var order=new List<int>();for(int i=0;i<vs.Count;i++)order.Add(i);
             order.Sort((a,b)=>{for(int k=0;k<3;k++){int c=vs[a][k].CompareTo(vs[b][k]);if(c!=0)return c;}return a.CompareTo(b);});
             var remap=new int[vs.Count];for(int i=0;i<order.Count;i++)remap[order[i]]=i;
@@ -234,14 +229,11 @@ namespace TxTools.ExportByColor
                 w.Write(normalMap);w.Write(.2f);w.Write(new byte[]{0,1,2,10});Compact(w,1);w.Write(new byte[]{1,65});
                 Compact(w,(uint)faces.Count);Compact(w,(uint)checked(faces.Count*3));
                 foreach(var tri in faces)foreach(int j in tri)Index(w,remap[j],vs.Count>255);
-                w.Write(new byte[]{32,4,4,255,255,color.B,color.G,color.R});payload=ms.ToArray();
+                w.Write(new byte[]{32,4,4,color.Opacity??255,255,color.B,color.G,color.R});payload=ms.ToArray();
             }
-            var bounds=Bounds(vs,order.ToArray());var header=(byte[])Leaf95.Clone();
-            Float(header,17,bounds[9]+Math.Max(.2,bounds[9]*1e-6));for(int k=0;k<3;k++)Float(header,25+4*k,bounds[k]);LE(header,2,checked(header.Length+payload.Length-1));
-            using(var ms=new MemoryStream())using(var w=new BinaryWriter(ms)){w.Write(header);w.Write(payload);Compact(w,checked((uint)picks.Position));leaves.Add(ms.ToArray());}
-            var pick=(byte[])Pick95.Clone();
-            for(int k=0;k<3;k++){Float(pick,20+4*k,bounds[k]-bounds[k+3]);Float(pick,32+4*k,bounds[k]+bounds[k+3]);Float(pick,44+4*k,bounds[k]);}
-            Float(pick,56,bounds[9]);picks.Write(pick,0,pick.Length);
+            var bounds=Bounds(vs,order.ToArray());
+            leaves.Add(WriteCompactLeaf(payload,bounds,checked((uint)picks.Position)));
+            using(var w=new BinaryWriter(picks,System.Text.Encoding.UTF8,true)) WriteCompactPick(w,bounds);
         }
     }
 }

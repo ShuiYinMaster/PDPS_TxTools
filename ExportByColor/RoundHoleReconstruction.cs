@@ -1,0 +1,418 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Diagnostics;
+
+namespace TxTools.ExportByColor
+{
+    // Packed (a,b) edge keys otherwise hash as a XOR b, collapsing adjacent
+    // vertex pairs into a handful of buckets on large tessellated assemblies.
+    internal sealed class CylinderEdgeComparer : IEqualityComparer<long>
+    {
+        internal static readonly CylinderEdgeComparer Instance=new CylinderEdgeComparer();
+        public bool Equals(long a,long b){return a==b;}
+        public int GetHashCode(long value)
+        {
+            unchecked
+            {
+                ulong z=(ulong)value+0x9e3779b97f4a7c15UL;
+                z=(z^(z>>30))*0xbf58476d1ce4e5b9UL;
+                z=(z^(z>>27))*0x94d049bb133111ebUL;
+                return (int)(z^(z>>31));
+            }
+        }
+    }
+    // Reconstructs geometric parameters from tessellation, not original CAD feature history.
+    // Exact-position welding is analysis-only, scoped to a JT Shape; it never changes output mesh indices.
+    public static class RoundHoleReconstruction
+    {
+        public sealed class Options
+        {
+            // Coarse JT circles can have only eight samples. Full rings, radial
+            // wall evidence and paired boundaries are still required to replace them.
+            public int MinimumSegments = 8;
+            public double AbsoluteTolerance = 0.01;
+            public double RelativeTolerance = 0.001;
+            public bool IncludeExternalCylinders;
+            public bool IncludeTransitionRims;
+            public bool IncludeOpenCylinderEnds;
+            public bool IncludeTrimmedCylinderEnds;
+            // Zero uses available logical processors; one provides a deterministic serial baseline.
+            public int MaxDegreeOfParallelism;
+        }
+        public sealed class Hole
+        {
+            public int Surface, Segments, WallTriangleCount;
+            public double[] Center, Axis, RimA, RimB;
+            public double Radius, Depth, MaximumError;
+            public bool PairedRims;
+            public bool OpenRimA,OpenRimB;
+            public bool TrimmedRimA,TrimmedRimB;
+            public bool ExternalCylinder;
+            public int[] WallTriangles;
+            public double[][] RimPointsA, RimPointsB;
+        }
+        private sealed class Edge
+        {
+            internal int A, B;
+            internal readonly List<int> Faces = new List<int>(2);
+        }
+        private sealed class Rim
+        {
+            internal double[] Center, Axis;
+            internal double Radius, Error;
+            internal int Segments;
+            internal int WallComponent, WallTriangleCount;
+            internal List<double[]> Points;
+            internal bool ExternalCylinder;
+            internal List<int> CapFaces;
+            internal bool Open;
+            internal bool Trimmed;
+        }
+        public static List<Hole> Find(List<float[]> vertices, List<CgrWriter.Face> faces, Options options = null)
+        { return Find(vertices,faces,options,null); }
+
+        public static List<Hole> Find(List<float[]> vertices, List<CgrWriter.Face> faces, Options options, Action<string> progress)
+        {
+            if (vertices == null || faces == null) throw new ArgumentNullException("mesh");
+            options = options ?? new Options();
+            if (options.MinimumSegments < 8 || !Positive(options.AbsoluteTolerance) || !Positive(options.RelativeTolerance)
+                || options.RelativeTolerance > 0.05) throw new ArgumentException("Invalid circle fitting options");
+            var groups = new Dictionary<int, List<int>>();
+            for(int faceIndex=0;faceIndex<faces.Count;faceIndex++)
+            {
+                var face=faces[faceIndex];List<int> group;
+                if (!groups.TryGetValue(face.Surface, out group)) groups.Add(face.Surface, group = new List<int>());
+                group.Add(faceIndex);
+            }
+            var shapes = new List<KeyValuePair<int,List<int>>>(groups);
+            var found = new List<Hole>[shapes.Count];
+            int workers = options.MaxDegreeOfParallelism == 0 ? Environment.ProcessorCount : options.MaxDegreeOfParallelism;
+            if(workers < 1) throw new ArgumentOutOfRangeException("MaxDegreeOfParallelism");
+            // Workstation GC contention dominates tiny partitions. Scale from one
+            // worker per 128K triangles up to all logical processors for larger meshes.
+            if(options.MaxDegreeOfParallelism==0)workers=Math.Min(workers,Math.Max(1,(int)(((long)faces.Count+131071)/131072)));
+            workers = Math.Min(workers, Math.Max(1,shapes.Count));
+            // Each worker owns its topology and fit state. Bound simultaneous large
+            // shapes to a 512 MiB estimated topology budget, while small parts can use all cores.
+            var sizes = new List<int>(); foreach(var shape in shapes)sizes.Add(shape.Value.Count);
+            sizes.Sort((a,b)=>b.CompareTo(a));
+            long activeTriangles=0; int memoryWorkers=0;
+            foreach(int size in sizes){if(memoryWorkers>=workers)break;if(memoryWorkers>0&&(activeTriangles+size)*768L>512L*1024*1024)break;activeTriangles+=size;memoryWorkers++;}
+            workers=Math.Min(workers,Math.Max(1,memoryWorkers));
+            var watch=Stopwatch.StartNew(); int completed=0; long lastReport=0;
+            object reportLock=new object();
+            if(progress!=null)progress("[PS stage] 圆柱识别："+shapes.Count+" 个几何，"+workers+" 路 CPU；拓扑复用三种孔口识别");
+            Action<int> analyze = index =>
+            {
+                var group=shapes[index];
+                var mesh=BuildShape(vertices,faces,group.Value);
+                var candidates=new List<Hole>();AnalyzeShape(mesh,group.Key,options,candidates);
+                if(options.IncludeTransitionRims)
+                {
+                    foreach(double crease in new[]{Math.PI/6,Math.PI/12})
+                    {
+                        var extra=new List<Hole>();AnalyzeShape(mesh,group.Key,options,extra,crease);
+                        var occupied=new HashSet<int>();foreach(var h in candidates)if(h.PairedRims)foreach(int fi in h.WallTriangles)occupied.Add(fi);
+                        foreach(var h in extra)if(h.PairedRims&&!Array.Exists(h.WallTriangles,fi=>occupied.Contains(fi)))
+                        {
+                            var wall=new HashSet<int>(h.WallTriangles);
+                            candidates.RemoveAll(c=>!c.PairedRims&&Array.Exists(c.WallTriangles,fi=>wall.Contains(fi)));
+                            candidates.Add(h);foreach(int fi in h.WallTriangles)occupied.Add(fi);
+                        }
+                    }
+                }
+                found[index]=candidates;
+                Interlocked.Increment(ref completed);
+                if(progress!=null)lock(reportLock)
+                {
+                    int count=Volatile.Read(ref completed);long elapsed=watch.ElapsedMilliseconds;
+                    if(count==shapes.Count||elapsed-lastReport>=2000){lastReport=elapsed;progress("[PS stage] 圆柱识别：已完成 "+count+"/"+shapes.Count+" 个几何；"+watch.Elapsed.TotalSeconds.ToString("F1")+" 秒");}
+                }
+            };
+            if(workers==1)for(int i=0;i<shapes.Count;i++)analyze(i);
+            else Parallel.For(0,shapes.Count,new ParallelOptions{MaxDegreeOfParallelism=workers},analyze);
+            // Completion order must never affect cylinder numbering or output bytes.
+            var result=new List<Hole>();foreach(var list in found)result.AddRange(list);
+            return result;
+        }
+        // Same arithmetic as Cross(Sub(point,center),axis), without temporary vectors.
+        private static double RadialDistance(double[] point,double[] center,double[] axis)
+        {
+            double x=point[0]-center[0],y=point[1]-center[1],z=point[2]-center[2];
+            double a=y*axis[2]-z*axis[1],b=z*axis[0]-x*axis[2],c=x*axis[1]-y*axis[0];
+            return Math.Sqrt(a*a+b*b+c*c);
+        }
+        private static double[] TriangleNormal(double[] a,double[] b,double[] c)
+        {
+            double x=b[0]-a[0],y=b[1]-a[1],z=b[2]-a[2],u=c[0]-a[0],v=c[1]-a[1],w=c[2]-a[2];
+            return new[]{y*w-z*v,z*u-x*w,x*v-y*u};
+        }
+        private static bool Positive(double v) { return v > 0 && !double.IsNaN(v) && !double.IsInfinity(v); }
+        private static long Key(int a, int b) { return ((long)Math.Min(a,b) << 32) | (uint)Math.Max(a,b); }
+        private static double[] Sub(double[] a, double[] b) { return new[] { a[0]-b[0],a[1]-b[1],a[2]-b[2] }; }
+        private static double Dot(double[] a,double[] b) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
+        private static double[] Cross(double[] a,double[] b) { return new[] {a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]}; }
+        private static double Length(double[] a) { return Math.Sqrt(Dot(a,a)); }
+        private static double[] Unit(double[] a) { double n=Length(a);if(!Positive(n))return null;return new[]{a[0]/n,a[1]/n,a[2]/n}; }
+        private static void Canonical(double[] axis) { int k=0;for(int j=1;j<3;j++)if(Math.Abs(axis[j])>Math.Abs(axis[k]))k=j;if(axis[k]<0)for(int j=0;j<3;j++)axis[j]=-axis[j]; }
+        private static int Root(int[] parent,int i) { while(parent[i]!=i){parent[i]=parent[parent[i]];i=parent[i];}return i; }
+
+        private sealed class ShapeTopology
+        {
+            internal List<double[]> Vertices, Normals;
+            internal List<int[]> Triangles;
+            internal List<double> Areas;
+            internal List<int> OriginalIndices;
+            internal Dictionary<long,Edge> Edges;
+        }
+        private static ShapeTopology BuildShape(List<float[]> source,List<CgrWriter.Face> faces,List<int> sourceIndices)
+        {
+            var positions=new Dictionary<Tuple<float,float,float>,int>();var vertices=new List<double[]>();
+            var edges=new Dictionary<long,Edge>(CylinderEdgeComparer.Instance);var normals=new List<double[]>();var triangles=new List<int[]>();var areas=new List<double>();
+            var originalIndices=new List<int>();
+            var sourcePositions=new Dictionary<int,int>();
+            foreach(int sourceIndex in sourceIndices)
+            {
+                var face=faces[sourceIndex];
+                if(face.Idx==null||face.Idx.Length!=3)throw new ArgumentException("Expected triangle");
+                int[] ids=new int[3];
+                for(int k=0;k<3;k++)
+                {
+                    int id=face.Idx[k];if(id<0||id>=source.Count)throw new ArgumentException("Triangle index out of range");
+                    int cached;if(sourcePositions.TryGetValue(id,out cached)){ids[k]=cached;continue;}
+                    var p=source[id];if(p==null||p.Length!=3)throw new ArgumentException("Expected XYZ" );
+                    foreach(float v in p)if(float.IsNaN(v)||float.IsInfinity(v))throw new ArgumentException("Non-finite point");
+                    var key=Tuple.Create(p[0],p[1],p[2]);int local;
+                    if(!positions.TryGetValue(key,out local)){local=vertices.Count;positions.Add(key,local);vertices.Add(new[]{(double)p[0],p[1],p[2]});}
+                    ids[k]=local;sourcePositions.Add(id,local);
+                }
+                var rawNormal=TriangleNormal(vertices[ids[0]],vertices[ids[1]],vertices[ids[2]]);var normal=Unit(rawNormal);
+                if(normal==null)continue;
+                int f=normals.Count;normals.Add(normal);areas.Add(Length(rawNormal));triangles.Add(ids);originalIndices.Add(sourceIndex);
+                for(int k=0;k<3;k++){int a=ids[k],b=ids[(k+1)%3];long key=Key(a,b);Edge edge;if(!edges.TryGetValue(key,out edge))edges.Add(key,edge=new Edge{A=a,B=b});edge.Faces.Add(f);}
+            }
+            return new ShapeTopology{Vertices=vertices,Normals=normals,Triangles=triangles,Areas=areas,OriginalIndices=originalIndices,Edges=edges};
+        }
+        private static void AnalyzeShape(ShapeTopology mesh,int surface,Options options,List<Hole> result,double creaseAngle=Math.PI/3)
+        {
+            var vertices=mesh.Vertices;var normals=mesh.Normals;var triangles=mesh.Triangles;
+            var areas=mesh.Areas;var originalIndices=mesh.OriginalIndices;var edges=mesh.Edges;
+            // Only manifold sharp joins may form rims. Open seams and ambiguous joins are excluded.
+            var sharp=new List<Edge>();
+            var parent=new int[normals.Count];for(int i=0;i<parent.Length;i++)parent[i]=i;
+            foreach(var edge in edges.Values)if(edge.Faces.Count==2&&Dot(normals[edge.Faces[0]],normals[edge.Faces[1]])>(Math.Cos(creaseAngle)+1e-7))parent[Root(parent,edge.Faces[0])]=Root(parent,edge.Faces[1]);
+            var components=new Dictionary<int,List<int>>();for(int i=0;i<parent.Length;i++){int root=Root(parent,i);List<int> component;if(!components.TryGetValue(root,out component))components.Add(root,component=new List<int>());component.Add(i);}
+            foreach(var edge in edges.Values)
+            {
+                if(edge.Faces.Count==1&&options.IncludeOpenCylinderEnds){sharp.Add(edge);continue;}
+                if(edge.Faces.Count!=2||Dot(normals[edge.Faces[0]],normals[edge.Faces[1]])>(Math.Cos(creaseAngle)+1e-7))continue;
+                sharp.Add(edge);
+            }
+            // Follow each surface component's boundary separately. A cap can
+            // have a seam meeting a circular rim at a vertex; the global sharp
+            // edge graph then branches even though the cylinder itself is closed.
+            var boundaries=new Dictionary<int,List<Edge>>();foreach(var edge in sharp){int first=Root(parent,edge.Faces[0]),second=edge.Faces.Count==2?Root(parent,edge.Faces[1]):-1;if(first==second)continue;foreach(int root in second<0?new[]{first}:new[]{first,second}){List<Edge> boundary;if(!boundaries.TryGetValue(root,out boundary))boundaries.Add(root,boundary=new List<Edge>());boundary.Add(edge);}}
+            var rims=new List<Rim>();foreach(var boundary in boundaries)
+            {
+              var componentSharp=boundary.Value;var componentLinks=new Dictionary<int,List<int>>();for(int i=0;i<componentSharp.Count;i++)foreach(int v in new[]{componentSharp[i].A,componentSharp[i].B}){List<int> incident;if(!componentLinks.TryGetValue(v,out incident))componentLinks.Add(v,incident=new List<int>());incident.Add(i);}
+              var loops=new List<Tuple<List<double[]>,List<Edge>>>();
+              var used=new bool[componentSharp.Count];for(int seed=0;seed<componentSharp.Count;seed++)
+              {
+                if(used[seed])continue;
+                int start=componentSharp[seed].A,current=start,edgeId=seed;var points=new List<double[]>();var ring=new List<Edge>();bool closed=false;
+                while(!used[edgeId])
+                {
+                    used[edgeId]=true;var edge=componentSharp[edgeId];points.Add(vertices[current]);ring.Add(edge);
+                    current=edge.A==current?edge.B:edge.A;
+                    if(componentLinks[current].Count!=2)break;
+                    if(current==start){closed=true;break;}
+                    var next=componentLinks[current];edgeId=next[0]==edgeId?next[1]:next[0];
+                }
+                if(!closed||points.Count<options.MinimumSegments)continue;
+                loops.Add(Tuple.Create(points,ring));
+              }
+              double[] trimAxis=null;
+              if(options.IncludeTrimmedCylinderEnds)
+              {
+                  // A complete planar rim is stronger evidence than facet normals
+                  // when the two ends have different angular sampling.
+                  foreach(var loop in loops){Rim anchor;if(Fit(loop.Item1,options,out anchor)&&WallError(anchor,components[boundary.Key],triangles,vertices,normals)<=Math.Max(options.AbsoluteTolerance,anchor.Radius*options.RelativeTolerance)){trimAxis=anchor.Axis;break;}}
+                  if(trimAxis==null)
+                  {
+                      trimAxis=WallAxis(components[boundary.Key],normals,areas);
+                      if(trimAxis!=null&&loops.Count==2)
+                      {
+                          // Refine a normal-based seed using the projected circle
+                          // centers. Axial trim changes mean height, not the center
+                          // line of a true cylinder. Full wall evidence gates it.
+                          double[] bestAxis=trimAxis;double bestError=double.PositiveInfinity;
+                          for(int iteration=0;iteration<6;iteration++)
+                          {
+                              Rim ra,rb;if(!Fit(loops[0].Item1,options,out ra,trimAxis,true)||!Fit(loops[1].Item1,options,out rb,trimAxis,true))break;
+                              double tolerance=Math.Max(options.AbsoluteTolerance,Math.Max(ra.Radius,rb.Radius)*options.RelativeTolerance);
+                              if(Math.Abs(ra.Radius-rb.Radius)>tolerance)break;
+                              double error=Math.Max(WallError(ra,components[boundary.Key],triangles,vertices,normals),WallError(rb,components[boundary.Key],triangles,vertices,normals));
+                              if(error<bestError){bestError=error;bestAxis=trimAxis;}
+                              var delta=Sub(rb.Center,ra.Center);if(Length(delta)<=.02)break;
+                              var proposed=Unit(delta);if(Math.Abs(Dot(proposed,trimAxis))<.9999)break;Canonical(proposed);trimAxis=proposed;
+                          }
+                          trimAxis=bestAxis;
+                      }
+                  }
+              }
+              foreach(var loop in loops)
+              {
+                var points=loop.Item1;var ring=loop.Item2;
+                Rim rim;bool fitted=Fit(points,options,out rim);
+                if(options.IncludeTrimmedCylinderEnds)
+                {
+                    Rim projected;
+                    if(trimAxis!=null&&Fit(points,options,out projected,trimAxis,true)&&(!fitted||projected.Trimmed)){rim=projected;fitted=true;}
+                }
+                if(!fitted)continue;
+                bool open=ring.TrueForAll(e=>e.Faces.Count==1);if(!open&&ring.Exists(e=>e.Faces.Count==1))continue;
+                int inward=0,outward=0;var wallComponents=new HashSet<int>();var capNormal=new double[3];var capFaces=new HashSet<int>();
+                foreach(var edge in ring)
+                {
+                    var mid=new[]{(vertices[edge.A][0]+vertices[edge.B][0])/2,(vertices[edge.A][1]+vertices[edge.B][1])/2,(vertices[edge.A][2]+vertices[edge.B][2])/2};
+                    var radialDelta=Sub(mid,rim.Center);double axial=Dot(radialDelta,rim.Axis);for(int k=0;k<3;k++)radialDelta[k]-=axial*rim.Axis[k];
+                    var radial=Unit(radialDelta);if(radial==null)continue;
+                    var a=normals[edge.Faces[0]];var b=edge.Faces.Count==2?normals[edge.Faces[1]]:null;
+                    double direction=0;int wall=-1,cap=-1;
+                    double transition=options.IncludeTransitionRims?.15:.95;
+                    if(open&&Math.Abs(Dot(a,rim.Axis))<.15){direction=Dot(a,radial);wall=edge.Faces[0];}
+                    else if(b!=null&&Math.Abs(Dot(a,rim.Axis))>transition&&Math.Abs(Dot(b,rim.Axis))<0.15){direction=Dot(b,radial);wall=edge.Faces[1];cap=edge.Faces[0];}
+                    else if(b!=null&&Math.Abs(Dot(b,rim.Axis))>transition&&Math.Abs(Dot(a,rim.Axis))<0.15){direction=Dot(a,radial);wall=edge.Faces[0];cap=edge.Faces[1];}
+                    if(cap>=0&&Math.Abs(Dot(normals[cap],rim.Axis))>.9999){capFaces.Add(cap);for(int k=0;k<3;k++)capNormal[k]+=normals[cap][k]*areas[cap]*(Dot(normals[cap],rim.Axis)<0?-1:1);}
+                    if(direction<-.90){inward++;wallComponents.Add(Root(parent,wall));}
+                    else if(options.IncludeExternalCylinders&&direction>.90){outward++;wallComponents.Add(Root(parent,wall));}
+                }
+                int required=(int)Math.Ceiling(ring.Count*.90);
+                if(inward<required&&outward<required)continue;
+                // A small ring's float32 plane fit can tilt by enough to reject a
+                // large adjacent cap. Area-weighted planar faces provide stronger
+                // axial evidence; refit and still check every original rim point.
+                var stableAxis=Unit(capNormal);Rim refined;
+                if(!rim.Trimmed&&stableAxis!=null&&Fit(points,options,out refined,stableAxis))rim=refined;
+                rim.ExternalCylinder=outward>=required;rim.Open=open;
+                if(wallComponents.Count!=1)continue;
+                foreach(int component in wallComponents)rim.WallComponent=component;
+                if(rim.WallComponent!=boundary.Key)continue;
+                bool cylinder=true;double tolerance=Math.Max(options.AbsoluteTolerance,rim.Radius*options.RelativeTolerance);
+                foreach(int f in components[rim.WallComponent])
+                {
+                    if(Math.Abs(Dot(normals[f],rim.Axis))>0.15){cylinder=false;break;}
+                    foreach(int id in triangles[f]){double error=Math.Abs(RadialDistance(vertices[id],rim.Center,rim.Axis)-rim.Radius);rim.Error=Math.Max(rim.Error,error);if(error>tolerance){cylinder=false;break;}}
+                    if(!cylinder)break;
+                }
+                if(!cylinder)continue;rim.WallTriangleCount=components[rim.WallComponent].Count;rim.CapFaces=new List<int>(capFaces);
+                rims.Add(rim);
+              }
+            }
+            var paired=new bool[rims.Count];
+            for(int i=0;i<rims.Count;i++)
+            {
+                if(paired[i])continue;var a=rims[i];int match=-1;double depth=double.PositiveInfinity;
+                for(int j=i+1;j<rims.Count;j++)
+                {
+                    if(paired[j])continue;var b=rims[j];if(a.WallComponent!=b.WallComponent||a.ExternalCylinder!=b.ExternalCylinder)continue;double tolerance=Math.Max(options.AbsoluteTolerance,Math.Max(a.Radius,b.Radius)*options.RelativeTolerance);
+                    if(Math.Abs(a.Radius-b.Radius)>tolerance||Math.Abs(Dot(a.Axis,b.Axis))<0.9999)continue;
+                    var delta=Sub(b.Center,a.Center);double axial=Math.Abs(Dot(delta,a.Axis));double offset=Length(Cross(delta,a.Axis));
+                    if(offset>tolerance||axial<=tolerance||axial>=depth)continue;
+                    match=j;depth=axial;
+                }
+                // A common axis from both rim centers is more reliable than one
+                // small ring's plane. Choose it only when it fits both rings and
+                // improves agreement with the original adjacent planar faces.
+                if(match>=0&&!a.Trimmed&&!rims[match].Trimmed)
+                {
+                    var b=rims[match];Func<Rim,double> score=r=>{double error=0;foreach(int fi in r.CapFaces)foreach(int v in triangles[fi])error=Math.Max(error,Math.Abs(Dot(Sub(vertices[v],r.Center),r.Axis)));return Math.Max(error,r.Error);};
+                    double best=Math.Max(score(a),score(b));
+                    foreach(var proposed in new[]{Unit(Sub(b.Center,a.Center)),Unit(new[]{a.Axis[0]+b.Axis[0],a.Axis[1]+b.Axis[1],a.Axis[2]+b.Axis[2]})})
+                    {
+                        if(proposed==null||Math.Abs(Dot(proposed,a.Axis))<.9999)continue;Rim ra,rb;
+                        if(!Fit(a.Points,options,out ra,proposed)||!Fit(b.Points,options,out rb,proposed))continue;
+                        ra.CapFaces=a.CapFaces;rb.CapFaces=b.CapFaces;double candidate=Math.Max(score(ra),score(rb));
+                        // Avoid changing a good axis for microscopic score gains:
+                        // extra angular phase jitter can collapse float32 slivers.
+                        if(best<=.001||candidate>=best*.8)continue;best=candidate;ra.WallComponent=a.WallComponent;ra.WallTriangleCount=a.WallTriangleCount;ra.ExternalCylinder=a.ExternalCylinder;ra.Open=a.Open;rb.WallComponent=b.WallComponent;rb.WallTriangleCount=b.WallTriangleCount;rb.ExternalCylinder=b.ExternalCylinder;rb.Open=b.Open;a=ra;rims[match]=rb;depth=Math.Abs(Dot(Sub(rb.Center,ra.Center),ra.Axis));
+                    }
+                }
+                // Pairing alone does not prove a through hole: a blind-hole bottom can also be circular.
+                paired[i]=true;var h=new Hole{Surface=surface,Center=(double[])a.Center.Clone(),Axis=(double[])a.Axis.Clone(),RimA=(double[])a.Center.Clone(),Radius=a.Radius,MaximumError=a.Error,Segments=a.Segments,WallTriangleCount=a.WallTriangleCount,ExternalCylinder=a.ExternalCylinder,OpenRimA=a.Open,TrimmedRimA=a.Trimmed};
+                if(match>=0){var b=rims[match];paired[match]=true;h.PairedRims=true;h.OpenRimB=b.Open;h.TrimmedRimB=b.Trimmed;h.RimB=(double[])b.Center.Clone();h.Depth=depth;h.MaximumError=Math.Max(h.MaximumError,b.Error);h.Segments+=b.Segments;h.Radius=(a.Radius+b.Radius)/2;for(int k=0;k<3;k++)h.Center[k]=(a.Center[k]+b.Center[k])/2;}
+                // Validate the final common axis/average radius, not just each independent rim fit.
+                foreach(int f in components[a.WallComponent])foreach(int id in triangles[f])h.MaximumError=Math.Max(h.MaximumError,Math.Abs(RadialDistance(vertices[id],h.Center,h.Axis)-h.Radius));
+                foreach(var rim in match>=0?new[]{a,rims[match]}:new[]{a})if(!rim.Trimmed)foreach(var point in rim.Points)h.MaximumError=Math.Max(h.MaximumError,Math.Abs(Dot(Sub(point,rim.Center),h.Axis)));
+                if(h.MaximumError>Math.Max(options.AbsoluteTolerance,h.Radius*options.RelativeTolerance))continue;
+                h.WallTriangles=components[a.WallComponent].ConvertAll(f=>originalIndices[f]).ToArray();
+                h.RimPointsA=a.Points.ToArray();if(match>=0)h.RimPointsB=rims[match].Points.ToArray();
+                result.Add(h);
+            }
+        }
+        // A trimmed rim does not determine the cylinder axis. Infer it from the
+        // entire wall's normals, requiring independent radial directions. Every
+        // wall vertex and normal is subsequently checked against this axis.
+        private static double WallError(Rim rim,List<int> component,List<int[]> triangles,List<double[]> vertices,List<double[]> normals)
+        {
+            double error=rim.Error;
+            foreach(int fi in component)
+            {
+                if(Math.Abs(Dot(normals[fi],rim.Axis))>.15)return double.PositiveInfinity;
+                foreach(int vi in triangles[fi])error=Math.Max(error,Math.Abs(RadialDistance(vertices[vi],rim.Center,rim.Axis)-rim.Radius));
+            }
+            return error;
+        }
+        private static double[] WallAxis(List<int> component,List<double[]> normals,List<double> areas)
+        {
+            var m=new double[3,3];var basis=new double[3,3];for(int i=0;i<3;i++)basis[i,i]=1;
+            foreach(int fi in component)for(int i=0;i<3;i++)for(int j=0;j<3;j++)m[i,j]+=areas[fi]*normals[fi][i]*normals[fi][j];
+            for(int iteration=0;iteration<24;iteration++)
+            {
+                int p=0,q=1;for(int i=0;i<3;i++)for(int j=i+1;j<3;j++)if(Math.Abs(m[i,j])>Math.Abs(m[p,q])){p=i;q=j;}
+                if(Math.Abs(m[p,q])<1e-12)break;
+                double angle=.5*Math.Atan2(2*m[p,q],m[q,q]-m[p,p]),c=Math.Cos(angle),s=Math.Sin(angle);
+                double pp=m[p,p],qq=m[q,q],pq=m[p,q];
+                for(int k=0;k<3;k++)if(k!=p&&k!=q){double kp=m[k,p],kq=m[k,q];m[k,p]=m[p,k]=c*kp-s*kq;m[k,q]=m[q,k]=s*kp+c*kq;}
+                m[p,p]=c*c*pp-2*c*s*pq+s*s*qq;m[q,q]=s*s*pp+2*c*s*pq+c*c*qq;m[p,q]=m[q,p]=0;
+                for(int k=0;k<3;k++){double bp=basis[k,p],bq=basis[k,q];basis[k,p]=c*bp-s*bq;basis[k,q]=s*bp+c*bq;}
+            }
+            int smallest=0;for(int i=1;i<3;i++)if(m[i,i]<m[smallest,smallest])smallest=i;
+            double trace=m[0,0]+m[1,1]+m[2,2];if(!Positive(trace)||m[smallest,smallest]>trace*.001) return null;
+            for(int i=0;i<3;i++)if(i!=smallest&&m[i,i]<trace*.05)return null;
+            return Unit(new[]{basis[0,smallest],basis[1,smallest],basis[2,smallest]});
+        }
+        private static bool Fit(List<double[]> points,Options options,out Rim rim,double[] axisHint=null,bool allowTrim=false)
+        {
+            rim=null;var origin=new double[3];foreach(var p in points)for(int k=0;k<3;k++)origin[k]+=p[k]/points.Count;
+            var normal=new double[3];for(int i=0;i<points.Count;i++){var c=Cross(Sub(points[i],origin),Sub(points[(i+1)%points.Count],origin));for(int k=0;k<3;k++)normal[k]+=c[k];}
+            var axis=axisHint??Unit(normal);if(axis==null)return false;Canonical(axis);
+            var u=Unit(Sub(points[0],origin));if(u==null)return false;u=Unit(Cross(axis,u));if(u==null)return false;var v=Cross(axis,u);
+            double scale=0;foreach(var p in points)scale=Math.Max(scale,Length(Sub(p,origin)));if(!Positive(scale))return false;
+            var matrix=new double[3,4];
+            foreach(var p in points){var delta=Sub(p,origin);double x=Dot(delta,u)/scale,y=Dot(delta,v)/scale,q=x*x+y*y;double[] row={x,y,1};for(int a=0;a<3;a++){for(int b=0;b<3;b++)matrix[a,b]+=row[a]*row[b];matrix[a,3]+=row[a]*q;}}
+            for(int k=0;k<3;k++){int pivot=k;for(int a=k+1;a<3;a++)if(Math.Abs(matrix[a,k])>Math.Abs(matrix[pivot,k]))pivot=a;if(Math.Abs(matrix[pivot,k])<1e-12)return false;for(int b=k;b<4;b++){double tmp=matrix[k,b];matrix[k,b]=matrix[pivot,b];matrix[pivot,b]=tmp;}double d=matrix[k,k];for(int b=k;b<4;b++)matrix[k,b]/=d;for(int a=0;a<3;a++)if(a!=k){d=matrix[a,k];for(int b=k;b<4;b++)matrix[a,b]-=d*matrix[k,b];}}
+            double cx=matrix[0,3]/2,cy=matrix[1,3]/2,r2=matrix[2,3]+cx*cx+cy*cy;if(!Positive(r2))return false;
+            double radius=Math.Sqrt(r2)*scale,tolerance=Math.Max(options.AbsoluteTolerance,radius*options.RelativeTolerance);var center=new double[3];for(int k=0;k<3;k++)center[k]=origin[k]+scale*(cx*u[k]+cy*v[k]);
+            double error=0;var angles=new List<double>();
+            bool trimmed=false;foreach(var p in points){var delta=Sub(p,center);double plane=Math.Abs(Dot(delta,axis)),x=Dot(delta,u),y=Dot(delta,v);double radial=Math.Abs(Math.Sqrt(x*x+y*y)-radius);trimmed|=plane>tolerance;error=Math.Max(error,Math.Max(allowTrim?0:plane,radial));angles.Add(Math.Atan2(y,x));}
+            if(error>tolerance)return false;
+            double winding=0;int sign=0;for(int i=0;i<angles.Count;i++){double turn=angles[(i+1)%angles.Count]-angles[i];while(turn<=-Math.PI)turn+=2*Math.PI;while(turn>Math.PI)turn-=2*Math.PI;if(Math.Abs(turn)<1e-6||Math.Abs(turn)>Math.PI/4+Math.Max(1e-6,2*tolerance/radius))return false;int s=turn>0?1:-1;if(sign!=0&&sign!=s)return false;sign=s;winding+=turn;}if(Math.Abs(Math.Abs(winding)-2*Math.PI)>1e-5)return false;
+            angles.Sort();double maxGap=0;for(int i=0;i<angles.Count;i++){double gap=(i+1<angles.Count?angles[i+1]:angles[0]+2*Math.PI)-angles[i];if(gap<1e-6)return false;maxGap=Math.Max(maxGap,gap);}if(maxGap>Math.PI/4+Math.Max(1e-6,2*tolerance/radius))return false;
+            rim=new Rim{Center=center,Axis=axis,Radius=radius,Error=error,Segments=points.Count,Points=points,Trimmed=allowTrim&&trimmed};return true;
+        }
+        public static void WriteCsv(string path,List<Hole> holes)
+        {
+            using(var w=new StreamWriter(path,false,new UTF8Encoding(true)))
+            {
+                w.WriteLine("shape,kind,cx,cy,cz,ax,ay,az,radius,diameter,depth,max_fit_error,rim_segments,rim_a_x,rim_a_y,rim_a_z,rim_b_x,rim_b_y,rim_b_z");
+                foreach(var h in holes){var row=new List<string>{h.Surface.ToString(CultureInfo.InvariantCulture),h.ExternalCylinder?(h.PairedRims?"paired_external_cylinder":"single_external_rim"):(h.PairedRims?"paired_circular_rims":"single_circular_rim")};foreach(double d in h.Center)row.Add(d.ToString("R",CultureInfo.InvariantCulture));foreach(double d in h.Axis)row.Add(d.ToString("R",CultureInfo.InvariantCulture));foreach(double d in new[]{h.Radius,h.Radius*2,h.Depth,h.MaximumError,(double)h.Segments})row.Add(d.ToString("R",CultureInfo.InvariantCulture));foreach(double d in h.RimA)row.Add(d.ToString("R",CultureInfo.InvariantCulture));for(int k=0;k<3;k++)row.Add(h.RimB==null?"":h.RimB[k].ToString("R",CultureInfo.InvariantCulture));w.WriteLine(string.Join(",",row));}
+            }
+        }
+    }
+}

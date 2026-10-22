@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Diagnostics;
@@ -9,25 +9,28 @@ namespace TxTools.ExportByColor
     // Experimental R7-R12 standalone encoding. Opaque metadata/ID allocation remain experimental.
     public static partial class CgrWriter
     {
-        public const string Version="CGR-20260921-R39-cfv3-feature-bridge";
+        public const string Version="CGR-20261021-R61-verified-cgr-boundaries";
+        public const string ContainerVersion=CgrContainer.Version;
         // Compact and CFV3-compatible output retain their established chunk size.
         public const int MaxVertsPerChunk=40960;
-        // Feature CGR uses unsigned 16-bit indices and can address 65,536 vertices.
-        // The larger limit avoids artificial topology cuts in that separate backend.
-        private const int MaxFeatureVertsPerChunk=65536;
+        // CATIA B30 COM/WER tests reproduce crashes at 65,536 and 65,537
+        // declared vertices. Keep a separate hard limit below those counts.
+        private const int MaxSafeIndexedVerts=65535;
+        // Use the tested safe capacity for feature blocks; Compact retains 40,960.
+        // Splitting retains close cone tips and every nonzero-area triangle.
+        private const int MaxFeatureVertsPerChunk=MaxSafeIndexedVerts;
         private const int MaxFacesPerChunk=20000;
-        public struct Face { public float Nx,Ny,Nz; public int[] Idx; public byte R,G,B; public int Surface; }
-        private sealed class Entry
-        {
-            public int Type,Offset,Count; public byte[] Data;
-            public Entry(int t,int o,int n,byte[] d) { Type=t;Offset=o;Count=n;Data=d; }
-        }
+        public struct Face { public float Nx,Ny,Nz; public int[] Idx; public byte R,G,B; public byte? Opacity; public int Surface; }
         private sealed class Edge { public int A,B; public List<uint> Faces=new List<uint>(); }
         private sealed class Primitive { public int[] Indices; public bool Strip; public bool List; public Face Source; public int FaceIndex; public double[] Bounds; }
         private static void Compact(BinaryWriter w,uint n) { if(n<255) w.Write((byte)n); else { w.Write((byte)255);w.Write(n); } }
         private static void CompactExtended(BinaryWriter w,uint n) { w.Write((byte)255);w.Write(n); }
-        private static void Index(BinaryWriter w,int i,bool wide) { if(wide) w.Write((byte)(i>>8)); w.Write((byte)i); }
-        private static void BE(byte[] b,int p,int v) { for(int i=0;i<4;i++) b[p+i]=(byte)((uint)v>>(24-8*i)); }
+        private static void Index(BinaryWriter w,int i,bool wide)
+        {
+            if(i<0||i>=(wide?ushort.MaxValue:byte.MaxValue))
+                throw new ArgumentOutOfRangeException(nameof(i),i,"Vertex index is outside the safe CGR index range");
+            if(wide) w.Write((byte)(i>>8)); w.Write((byte)i);
+        }
         private static void LE(byte[] b,int p,int v) { Array.Copy(BitConverter.GetBytes(v),0,b,p,4); }
         private static float Finite(double x)
         {
@@ -88,21 +91,34 @@ namespace TxTools.ExportByColor
         }
         public static void BuildFile(List<float[]> vertices,List<Face> faces,string outPath,CgrBackend backend,int maxFacesPerBlock=MaxFacesPerChunk,Action<string> progress=null)
         {
+            BuildFile(vertices,faces,outPath,backend,maxFacesPerBlock,progress,false);
+        }
+        // JT has source topology and normals. Color patches need not form closed solids;
+        // solving them as PS sheets introduces reverse faces over neighboring materials.
+        public static void BuildFile(List<float[]> vertices,List<Face> faces,string outPath,CgrBackend backend,int maxFacesPerBlock,Action<string> progress,bool preserveSourceWinding)
+        {
             if(vertices==null||faces==null||faces.Count==0||maxFacesPerBlock<1) throw new ArgumentException("Empty mesh or invalid block size");
             backend=ResolveBackend(backend);
+            if(faces.Exists(f => (f.Opacity ?? 255) != 255) && (!preserveSourceWinding || (backend != CgrBackend.Compact && backend != CgrBackend.LineFace && backend != CgrBackend.LineFacePlanar)))
+                throw new NotSupportedException("RGBA requires compact or line/face CGR with source winding retained");
             bool features=backend==CgrBackend.LineFace||backend==CgrBackend.LineFacePlanar;
             var watch=Stopwatch.StartNew();int inputFaces=faces.Count;
-            if(progress!=null) progress("[CGR] 编码器 "+Version+"；方案="+backend+"；DLL="+typeof(CgrWriter).Assembly.Location+"；批量="+(Environment.GetEnvironmentVariable("TXTOOLS_CGR_BATCH_LISTS")!="0")+"；边="+(features||Environment.GetEnvironmentVariable("TXTOOLS_CGR_WRITE_EDGES")=="1")+"；背面="+(Environment.GetEnvironmentVariable("TXTOOLS_CGR_DUPLICATE_BACKFACES")!="0"));
+            if(progress!=null) progress("[CGR] 编码器 "+Version+"；方案="+backend+"；DLL="+typeof(CgrWriter).Assembly.Location+"；批量="+(Environment.GetEnvironmentVariable("TXTOOLS_CGR_BATCH_LISTS")!="0")+"；边="+(features||Environment.GetEnvironmentVariable("TXTOOLS_CGR_WRITE_EDGES")=="1")+"；背面="+(!preserveSourceWinding&&Environment.GetEnvironmentVariable("TXTOOLS_CGR_DUPLICATE_BACKFACES")!="0"));
             faces=FilterZeroArea(vertices,faces,progress);
-            if(features) WeldFeatureVertices(ref vertices,ref faces);
-            PrepareSurfaces(ref vertices,ref faces,progress,backend!=CgrBackend.Legacy);
+            // JT index identities preserve disconnected/coincident sheets and source adjacency.
+            if(features && !preserveSourceWinding) WeldFeatureVertices(ref vertices,ref faces);
+            if(preserveSourceWinding)
+            {
+                if(progress!=null) progress("[CGR] source winding retained; no synthetic reverse faces; triangles="+faces.Count);
+            }
+            else PrepareSurfaces(ref vertices,ref faces,progress,backend!=CgrBackend.Legacy);
             if(features)
             {
-                // The historical 20,000-triangle default is unnecessary for feature
-                // topology. Split only at the 16-bit vertex boundary, otherwise
-                // a continuous surface gains artificial face and edge records. A
-                // non-default caller limit remains an explicit operational override.
+                // Feature leaves can safely use 65,535 vertices. Do not force a
+                // topology cut at the historical 20,000-face default; retain an
+                // explicitly supplied non-default limit as an operational override.
                 int featureLimit=backend==CgrBackend.LineFace&&maxFacesPerBlock==MaxFacesPerChunk?int.MaxValue:maxFacesPerBlock;
+                if(progress!=null)progress("[CGR] 已验证分块：每块至多 "+MaxFeatureVertsPerChunk+" 顶点；连续线面按顶点容量切块");
                 BuildLineFace95(vertices,faces,outPath,featureLimit,progress,backend==CgrBackend.LineFace);return;
             }
             if(backend==CgrBackend.Compact)
@@ -120,7 +136,7 @@ namespace TxTools.ExportByColor
             // Keep source face order until primitive/type13 IDs are fully
             // remapped; stripification remains an experimental helper.
             if(progress!=null) progress("[CGR] 绕序/背面准备："+watch.ElapsedMilliseconds+" ms，输入 "+inputFaces+" 面，编码 "+faces.Count+" 面");
-            var scenes=new List<byte[]>();var packets=new List<byte[]>();int i=0;uint nextId=FirstId;
+            var scenes=new List<byte[]>();var packets=new List<byte[]>();int i=0;uint nextId=FirstId,nextPickOffset=0;
             while(i<faces.Count)
             {
                 var verts=new List<float[]>();var local=new List<Face>();var map=new Dictionary<int,int>();
@@ -138,18 +154,19 @@ namespace TxTools.ExportByColor
                     }
                     f.Idx=ids;local.Add(f);i++;
                 }
-                byte[] scene,packet;BuildStreams(verts,local,nextId,out scene,out packet,out nextId);
+                byte[] scene,packet;BuildStreams(verts,local,nextId,out scene,out packet,out nextId,nextPickOffset);
+                nextPickOffset=checked(nextPickOffset+(uint)packet.Length);
                 scenes.Add(scene);packets.Add(packet);
             }
             byte[] combined,topology;
+            float rootRadius;var rootCenter=SceneRootSphere(vertices,out rootRadius);
             using(var ms=new MemoryStream()) using(var w=new BinaryWriter(ms))
             {
-                w.Write(ScenePrefix,0,41);Compact(w,(uint)scenes.Count);
+                WriteLegacyRoot(w,(uint)scenes.Count,rootRadius,rootCenter);
                 foreach(var scene in scenes) { w.Write((byte)0);w.Write(scene,43,scene.Length-43); }
                 combined=ms.ToArray();
             }
             // Global root bounds cover all devices, while each child retains its local bounds.
-            SetRootSphere(combined,vertices);
             using(var ms=new MemoryStream()) { foreach(var packet in packets) ms.Write(packet,0,packet.Length);topology=ms.ToArray(); }
             WriteContainer(combined,topology,outPath,vertices);
             if(progress!=null) progress("[CGR] 编码完成："+scenes.Count+" 个内部块，1 个文件，"+new FileInfo(outPath).Length+" 字节，总耗时 "+watch.ElapsedMilliseconds+" ms");
@@ -159,12 +176,12 @@ namespace TxTools.ExportByColor
             Directory.CreateDirectory(outDir);string path=Path.Combine(outDir,baseName+".cgr");
             BuildFile(vertices,faces,path);return new List<string>{path};
         }
-        private static void SetRootSphere(byte[] scene,List<float[]> vertices)
+        private static float[] SceneRootSphere(List<float[]> vertices,out float radius)
         {
             int[] all=new int[vertices.Count];for(int i=0;i<all.Length;i++) all[i]=i;
-            var b=Bounds(vertices,all);double r2=0;
-            for(int k=0;k<3;k++) { b[k]=Finite(b[k]);double h=0;foreach(var v in vertices) h=Math.Max(h,Math.Abs(v[k]-b[k]));r2+=h*h;Float(scene,20+4*k,b[k]); }
-            double radius=Math.Sqrt(r2);Float(scene,12,radius+Math.Max(.2,radius*1e-6));
+            var b=Bounds(vertices,all);double r2=0;var center=new float[3];
+            for(int k=0;k<3;k++) { center[k]=Finite(b[k]);double h=0;foreach(var v in vertices) h=Math.Max(h,Math.Abs((double)v[k]-center[k]));r2+=h*h; }
+            double r=Math.Sqrt(r2);radius=Finite(r+Math.Max(.2,r*1e-6));return center;
         }
         public static void Build(List<float[]> vertices,List<Face> faces,string outPath)
         {
@@ -195,10 +212,10 @@ namespace TxTools.ExportByColor
             if(kept.Count==0) throw new ArgumentException("No nonzero-area triangles remain");
             return kept;
         }
-        private static void BuildStreams(List<float[]> vertices,List<Face> faces,uint firstId,out byte[] scene,out byte[] packet,out uint nextId)
+        private static void BuildStreams(List<float[]> vertices,List<Face> faces,uint firstId,out byte[] scene,out byte[] packet,out uint nextId,uint pickOffset=0)
         {
             if(vertices==null||vertices.Count<3||vertices.Count>MaxVertsPerChunk||faces==null||faces.Count==0)
-                throw new ArgumentException("Expected 3..65536 vertices and nonempty triangles");
+                throw new ArgumentException("Expected 3.."+MaxVertsPerChunk+" vertices and nonempty triangles");
             foreach(var v in vertices) { if(v==null||v.Length!=3) throw new ArgumentException("Expected XYZ");foreach(float x in v) Finite(x); }
             // Sort vertex references only: improve native prefix reuse without
             // welding identities, changing winding, colors, or world positions.
@@ -305,23 +322,15 @@ namespace TxTools.ExportByColor
                 foreach(var e in edges) { w.Write(new byte[]{2,2});Index(w,e.A,wide);Index(w,e.B,wide); }
                 w.Write(new byte[]{16,36,4,255,255,0,0,0});payload=ms.ToArray();
             }
-            scene=new byte[ScenePrefix.Length+payload.Length+SceneSuffix.Length];
-            Array.Copy(ScenePrefix,scene,ScenePrefix.Length);Array.Copy(payload,0,scene,ScenePrefix.Length,payload.Length);
-            Array.Copy(SceneSuffix,0,scene,ScenePrefix.Length+payload.Length,SceneSuffix.Length);
-            LE(scene,45,scene.Length-45);LE(scene,191,payload.Length+40);
-            int[] all=new int[vertices.Count];for(int i=0;i<all.Length;i++) all[i]=i;
-            var sphere=Bounds(vertices,all);double sum=0;
-            for(int k=0;k<3;k++) { sphere[k]=Finite(sphere[k]);double half=0;foreach(var v in vertices) half=Math.Max(half,Math.Abs(v[k]-sphere[k]));sum+=half*half; }
-            double radius=Math.Sqrt(sum);radius=Finite(radius+Math.Max(.2,radius*1e-6));
-            int[] radiusOffsets={12,60,107,154,206},centerOffsets={20,68,115,162,214};
-            for(int i=0;i<5;i++) { Float(scene,radiusOffsets[i],radius);for(int k=0;k<3;k++) Float(scene,centerOffsets[i]+4*k,sphere[k]); }
+            float radius;var center=SceneRootSphere(vertices,out radius);
+            scene=WriteAcceptedLegacyScene(payload,radius,center,pickOffset);
             using(var ms=new MemoryStream()) using(var w=new BinaryWriter(ms))
             {
-                w.Write((byte)255);w.Write(0);w.Write(PacketPrefix);
-                for(int i=0;i<primitives.Count;i++) { w.Write(checked(firstId+(uint)i)); if(primitives[i].List) w.Write(new byte[]{0x1a,0x00}); else w.Write(FaceReserved); foreach(double x in primitives[i].Bounds) w.Write(Finite(x)); w.Write(primitives[i].List?(byte)0x20:FaceSuffix); }
+                w.Write((byte)255);w.Write(0);WritePickControls(w);
+                for(int i=0;i<primitives.Count;i++) { w.Write(checked(firstId+(uint)i)); if(primitives[i].List) w.Write(new byte[]{0x1a,0x00}); else w.Write((ushort)0); foreach(double x in primitives[i].Bounds) w.Write(Finite(x)); w.Write(primitives[i].List?(byte)0x20:FaceSuffix); }
                 for(int i=0;i<edges.Count;i++)
                 {
-                    w.Write((byte)96);w.Write(checked(firstId+(uint)primitives.Count+(uint)i));w.Write(EdgeReserved);
+                    w.Write((byte)96);w.Write(checked(firstId+(uint)primitives.Count+(uint)i));w.Write((ushort)0);
                     Compact(w,(uint)faceToPrimitive[checked((int)edges[i].Faces[0])]);
                     Compact(w,edges[i].Faces.Count==2?(uint)faceToPrimitive[checked((int)edges[i].Faces[1])]:uint.MaxValue);
                 }
@@ -331,40 +340,19 @@ namespace TxTools.ExportByColor
         }
         private static void WriteContainer(byte[] scene,byte[] packet,string outPath,List<float[]> geometry=null,bool compact95=false)
         {
-            byte[] directory=(byte[])DirectoryTemplate.Clone(),header=(byte[])Header.Clone();
+            if(geometry==null||geometry.Count==0) throw new ArgumentException("Container geometry is empty");
+            double[] bounds={double.PositiveInfinity,double.PositiveInfinity,double.PositiveInfinity,
+                             double.NegativeInfinity,double.NegativeInfinity,double.NegativeInfinity};
+            foreach(var v in geometry) for(int k=0;k<3;k++)
+            {
+                bounds[k]=Math.Min(bounds[k],v[k]);bounds[k+3]=Math.Max(bounds[k+3],v[k]);
+            }
             string temporary=outPath+"."+Guid.NewGuid().ToString("N")+".partial";
             try
             {
             using(var ms=new FileStream(temporary,FileMode.CreateNew,FileAccess.Write))
             {
-                ms.Write(header,0,header.Length);int encodedBytes=0;
-                foreach(var e in TemplateEntries)
-                {
-                    byte[] blob=e.Type==12?scene:e.Type==13?packet:e.Data;
-                    if(e.Type==6&&compact95){blob=(byte[])blob.Clone();blob[4]=22;}
-                    if(e.Type==9 && geometry!=null)
-                    {
-                        blob=(byte[])blob.Clone();double[] lo={double.PositiveInfinity,double.PositiveInfinity,double.PositiveInfinity},hi={double.NegativeInfinity,double.NegativeInfinity,double.NegativeInfinity};
-                        foreach(var v in geometry) for(int k=0;k<3;k++){lo[k]=Math.Min(lo[k],v[k]);hi[k]=Math.Max(hi[k],v[k]);}
-                        for(int k=0;k<3;k++){Float(blob,0x1b+4*k,lo[k]);Float(blob,0x27+4*k,hi[k]);}
-                    }
-                    int encoding=(directory[e.Offset+8]<<8)|directory[e.Offset+9];
-                    if(encoding==2) encodedBytes=checked(encodedBytes+blob.Length);
-                    if(blob.Length<e.Count) throw new InvalidDataException("Stream shorter than fragment count");
-                    if(e.Type>=12) { BE(directory,e.Offset-(e.Type==12?102:98),blob.Length);BE(directory,e.Offset+14,blob.Length); }
-                    int logical=0;
-                    for(int i=0;i<e.Count;i++)
-                    {
-                        int n=blob.Length/e.Count+(i<blob.Length%e.Count?1:0),p=e.Offset+86+20*i;
-                        BE(directory,p,checked((int)ms.Position));BE(directory,p+4,n);BE(directory,p+8,n);BE(directory,p+12,logical);BE(directory,p+16,0);
-                        ms.Write(blob,logical,n);logical+=n;
-                    }
-                }
-                BE(header,8,checked((int)ms.Position));
-                // Native directory header summarizes type-2 bytes and total physical file size.
-                BE(directory,27,encodedBytes);BE(directory,31,checked((int)ms.Position+directory.Length));
-                ms.Write(directory,0,directory.Length);ms.Position=0;ms.Write(header,0,header.Length);
-
+                CgrContainer.Write(ms,scene,packet,bounds,compact95);
             }
             File.Move(temporary,outPath);
             }

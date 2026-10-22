@@ -145,8 +145,6 @@ namespace TxTools.ExportGun
         private ComboBox _cmbBallTarget;
         private ComboBox _cmbBallOption;
         private NumericUpDown _nudDiameter;
-        private TextBox _txtGeomSet;
-        private TextBox _txtNamePrefix;
         private TextBox _txtBallPartName;
         private Button _btnExportBall;
         #endregion
@@ -159,6 +157,7 @@ namespace TxTools.ExportGun
         private Button _btnClose;
         private Button _btnHelp;
         private Button _btnExportExcel;
+        private Panel _opsListPanel;
         private TableLayoutPanel _root;        // 根布局（用于切换日志行高度）
         private Label _logToggle;              // 日志折叠标题条
         private bool _logExpanded;             // 日志当前是否展开
@@ -167,6 +166,7 @@ namespace TxTools.ExportGun
         // 日志折叠行高度
         private const int LOG_COLLAPSED_H = 26;
         private const int LOG_EXPANDED_H = 168;
+        private static readonly Size DesignSize = new Size(960, 600);
 
         // ════════════════════════════════════════════════════════════
         //  构造
@@ -221,10 +221,10 @@ namespace TxTools.ExportGun
         {
             base.OnLoad(e);
 
-            FormUiKit.ApplyDpiScaling(this, ref _dpiApplied, new Size(960, 800), sc =>
+            FormUiKit.ApplyDpiScaling(this, ref _dpiApplied, DesignSize, sc =>
             {
                 _layoutScale = sc;
-                // 两侧列按实际布局系数设置，中间点列表占据剩余宽度。
+                // 三列等宽，中间点列表占满可用高度。
                 ApplySideColumnWidths(sc);
             });
 
@@ -403,7 +403,8 @@ namespace TxTools.ExportGun
             AutoScaleDimensions = new SizeF(96F, 96F);
             AutoScaleMode = AutoScaleMode.None;
             Text = "导出插枪 / 点云到 CATIA";
-            Size = new Size(960, 800);
+            Size = DesignSize;
+            MinimumSize = new Size(860, 600);
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -426,6 +427,7 @@ namespace TxTools.ExportGun
             root.Controls.Add(BuildHeaderRow(), 0, 0);
             root.Controls.Add(BuildBody(), 0, 1);
             root.Controls.Add(BuildLogPanel(), 0, 2);
+            PluginLog.Register(root.GetControlFromPosition(0, 2), true);
             root.Controls.Add(BuildBottom(), 0, 3);
             Controls.Add(root);
             ResumeLayout(false);
@@ -442,9 +444,7 @@ namespace TxTools.ExportGun
                 Margin = new Padding(0, 0, 0, 2),
                 Padding = Padding.Empty
             };
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300F));  // 左：通用信息（固定宽）
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 390F));   // 中：操作点列表（吃掉剩余宽度）
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300F));  // 右：导插枪/点球（固定宽，贴合内容）
+            for (int i = 0; i < 3; i++) row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F / 3));
             row.Controls.Add(MkHeaderLabel("通用信息", Theme.TxCol1), 0, 0);
             row.Controls.Add(MkHeaderLabel("操作点列表", Theme.TxPoints), 1, 0);
             row.Controls.Add(MkHeaderLabel("导插枪 / 点球", Theme.TxGun), 2, 0);
@@ -461,12 +461,10 @@ namespace TxTools.ExportGun
                 Margin = new Padding(0, 2, 0, 2),
                 Padding = Padding.Empty
             };
-            body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300F));  // 左：通用信息（固定宽）
-            body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 390F));   // 中：操作点列表（吃掉剩余宽度）
-            body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300F));  // 右：导插枪/点球（固定宽，贴合内容）
+            for (int i = 0; i < 3; i++) body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F / 3));
             body.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             body.Controls.Add(BuildCol1(), 0, 0);          // 通用信息（不变）
-            body.Controls.Add(BuildPointsColumn(), 1, 0);  // 操作点列表（满高勾选）
+            body.Controls.Add(BuildPointsColumn(), 1, 0);
             body.Controls.Add(BuildCol2(), 2, 0);          // 导插枪 / 点球（原第二栏移来）
             return body;
         }
@@ -481,8 +479,8 @@ namespace TxTools.ExportGun
                 Margin = new Padding(0, 2, 0, 0),
                 Padding = Padding.Empty
             };
-            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40F));
-            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60F));
+            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
             var lf = new FlowLayoutPanel
             {
@@ -538,7 +536,7 @@ namespace TxTools.ExportGun
         // ════════════════════════════════════════════════════════════
         private Control BuildCol1()
         {
-            var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(2) };
+            var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = false, Padding = new Padding(2) };
             var stack = new TableLayoutPanel
             {
                 Dock = DockStyle.Top,
@@ -553,6 +551,24 @@ namespace TxTools.ExportGun
             stack.Controls.Add(BuildCoordCard(), 0, 1);
             stack.Controls.Add(BuildSettingsCard(), 0, 2);
 
+            bool fitting = false;
+            Action fitList = () =>
+            {
+                if (fitting || _opsListPanel == null || scroll.ClientSize.Height <= 0) return;
+                fitting = true;
+                try
+                {
+                    float scale = _dpiApplied ? FormUiKit.GetLayoutScale(this) : 1f;
+                    int fixedHeight = stack.PreferredSize.Height - _opsListPanel.Height;
+                    int height = Math.Max((int)(40 * scale), scroll.ClientSize.Height
+                        - scroll.Padding.Vertical - fixedHeight);
+                    if (_opsListPanel.Height != height) _opsListPanel.Height = height;
+                }
+                finally { fitting = false; }
+            };
+            scroll.SizeChanged += (s, e) => fitList();
+            stack.Layout += (s, e) => fitList();
+
             scroll.Controls.Add(stack);
             return scroll;
         }
@@ -566,12 +582,13 @@ namespace TxTools.ExportGun
             var gridPanel = new Panel
             {
                 AutoSize = false,
-                Height = 220,
+                Height = 130,
                 BackColor = SystemColors.Window,
                 Padding = new Padding(1),
                 Margin = new Padding(0, 0, 0, 4),
                 BorderStyle = BorderStyle.FixedSingle
             };
+            _opsListPanel = gridPanel;
 
             // 主方案：TxObjGridCtrl
             bool usingGrid = false;
@@ -633,8 +650,11 @@ namespace TxTools.ExportGun
                 Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 0, 6)
             };
-            flow.Controls.Add(opsHint);
-            WrapLabelInFlow(flow, opsHint);
+            var pickTip = new ToolTip();
+            pickTip.SetToolTip(gridPanel, opsHint.Text);
+            pickTip.SetToolTip(_btnPickFromSel, opsHint.Text);
+            card.Disposed += (s, e) => pickTip.Dispose();
+            opsHint.Dispose();
 
             card.Controls.Add(flow);
             return card;
@@ -674,16 +694,19 @@ namespace TxTools.ExportGun
             _lblRefCoordStatus = new Label
             {
                 Text = "当前：世界坐标系",
-                AutoSize = true,
+                AutoSize = false,
+                AutoEllipsis = true,
+                Size = new Size(124, PluginUiPolicy.ButtonHeight),
                 ForeColor = Theme.StatusOkFg,
                 BackColor = Theme.StatusOkBg,
                 Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 0, 4),
                 Padding = new Padding(6, 3, 6, 3)
             };
-            flow.Controls.Add(_lblRefCoordStatus);
+            var statusRow = MkRowFlow();
+            statusRow.Controls.Add(_lblRefCoordStatus);
 
-            var btnClrCoord = MkFuncButton("重置为世界坐标系", Theme.BtnMuted);
+            var btnClrCoord = MkFuncButton("重置坐标", Theme.BtnMuted);
             btnClrCoord.Margin = new Padding(0, 0, 0, 2);
             btnClrCoord.Click += delegate
             {
@@ -693,7 +716,8 @@ namespace TxTools.ExportGun
                 UpdateRefCoordStatus("世界坐标系", true);
                 Log("[坐标] 已重置为世界坐标系", LogLevel.Coord);
             };
-            flow.Controls.Add(btnClrCoord);
+            statusRow.Controls.Add(btnClrCoord);
+            flow.Controls.Add(statusRow);
 
             var coordHint = new Label
             {
@@ -703,8 +727,13 @@ namespace TxTools.ExportGun
                 Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 0, 2)
             };
-            flow.Controls.Add(coordHint);
-            WrapLabelInFlow(flow, coordHint);
+            var coordTip = new ToolTip();
+            coordTip.SetToolTip(frameCtrlPanel, coordHint.Text);
+            coordTip.SetToolTip(btnClrCoord, "重置为世界坐标系");
+            coordTip.SetToolTip(_lblRefCoordStatus, _lblRefCoordStatus.Text);
+            _lblRefCoordStatus.TextChanged += (s, e) => coordTip.SetToolTip(_lblRefCoordStatus, _lblRefCoordStatus.Text);
+            card.Disposed += (s, e) => coordTip.Dispose();
+            coordHint.Dispose();
 
             card.Controls.Add(flow);
             return card;
@@ -739,7 +768,7 @@ namespace TxTools.ExportGun
                 Margin = new Padding(0, 2, 0, 2)
             };
             _chkUseMfgName.CheckedChanged += delegate { ReloadPointsList(); };
-            flow.Controls.Add(_chkUseMfgName);
+            rowType.Controls.Add(_chkUseMfgName);
 
             _lblPointCount = new Label
             {
@@ -760,7 +789,7 @@ namespace TxTools.ExportGun
         // ════════════════════════════════════════════════════════════
         private Control BuildCol2()
         {
-            var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(2) };
+            var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = false, Padding = new Padding(2) };
             var stack = new TableLayoutPanel
             {
                 Dock = DockStyle.Top,
@@ -773,6 +802,11 @@ namespace TxTools.ExportGun
 
             stack.Controls.Add(BuildGunCard(), 0, 0);
             stack.Controls.Add(BuildBallCard(), 0, 1);
+            foreach (Control card in stack.Controls)
+            {
+                card.Padding = new Padding(8, 2, 8, 2);
+                card.Margin = new Padding(2, 0, 2, 2);
+            }
 
             scroll.Controls.Add(stack);
             return scroll;
@@ -797,14 +831,16 @@ namespace TxTools.ExportGun
             flow.Controls.Add(rowProd);
             var prodHint = new Label
             {
-                Text = "留空则使用活动文档内产品名",
+                Text = "填写后设置当前/新建 Product 的产品名称与零件号；留空沿用原名称",
                 AutoSize = true,
                 ForeColor = SystemColors.GrayText,
                 Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 0, 2)
             };
-            flow.Controls.Add(prodHint);
-            WrapLabelInFlow(flow, prodHint);
+            var productTip = new ToolTip();
+            productTip.SetToolTip(_txtGunProductName, prodHint.Text);
+            card.Disposed += (s, e) => productTip.Dispose();
+            prodHint.Dispose();
 
             var rowCustom = MkRowFlow();
             _chkCustomGun = new CheckBox
@@ -839,12 +875,18 @@ namespace TxTools.ExportGun
             _lblGunInfo = new Label
             {
                 Text = "焊钳：（待选取）",
-                AutoSize = true,
+                AutoSize = false,
+                AutoEllipsis = true,
+                Height = 22,
+                TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = SystemColors.GrayText,
                 Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 2, 0, 4)
             };
             flow.Controls.Add(_lblGunInfo);
+            FillWidthInFlow(flow, _lblGunInfo);
+            productTip.SetToolTip(_lblGunInfo, _lblGunInfo.Text);
+            _lblGunInfo.TextChanged += (s, e) => productTip.SetToolTip(_lblGunInfo, _lblGunInfo.Text);
 
             _chkGunOriginTCP = new CheckBox
             {
@@ -892,8 +934,9 @@ namespace TxTools.ExportGun
                 Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 0, 4)
             };
-            flow.Controls.Add(_lblTcpInfo);
-            WrapLabelInFlow(flow, _lblTcpInfo);
+            productTip.SetToolTip(_cmbTcp, _lblTcpInfo.Text);
+            _lblTcpInfo.TextChanged += (s, e) => productTip.SetToolTip(_cmbTcp, _lblTcpInfo.Text);
+            card.Disposed += (s, e) => _lblTcpInfo.Dispose();
 
             _chkExportTCP = new CheckBox
             {
@@ -902,12 +945,14 @@ namespace TxTools.ExportGun
                 Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 2, 0, 4)
             };
-            flow.Controls.Add(_chkExportTCP);
 
             _btnExportGun = MkFuncButton("导出插枪", Theme.BtnGun);
-            _btnExportGun.Margin = new Padding(0, 6, 0, 4);
+            _btnExportGun.Margin = new Padding(0, 2, 8, 2);
             _btnExportGun.Click += new EventHandler(OnExportGun);
-            flow.Controls.Add(_btnExportGun);
+            var exportRow = MkRowFlow();
+            exportRow.Controls.Add(_btnExportGun);
+            exportRow.Controls.Add(_chkExportTCP);
+            flow.Controls.Add(exportRow);
 
             card.Controls.Add(flow);
             return card;
@@ -962,30 +1007,6 @@ namespace TxTools.ExportGun
             rowDiam.Controls.Add(_nudDiameter);
             flow.Controls.Add(rowDiam);
 
-            var rowGeom = MkRowFlow();
-            rowGeom.Controls.Add(MkLabel("几何集"));
-            _txtGeomSet = new TextBox
-            {
-                Text = "Geometry_Spheres",
-                Width = 140,
-                Font = FormUiKit.BaseFont,
-                Margin = new Padding(2, 3, 0, 0)
-            };
-            rowGeom.Controls.Add(_txtGeomSet);
-            flow.Controls.Add(rowGeom);
-
-            var rowPrefix = MkRowFlow();
-            rowPrefix.Controls.Add(MkLabel("名称前缀"));
-            _txtNamePrefix = new TextBox
-            {
-                Text = "SPHERE",
-                Width = 140,
-                Font = FormUiKit.BaseFont,
-                Margin = new Padding(2, 3, 0, 0)
-            };
-            rowPrefix.Controls.Add(_txtNamePrefix);
-            flow.Controls.Add(rowPrefix);
-
             var rowPart = MkRowFlow();
             rowPart.Controls.Add(MkLabel("零件名称"));
             _txtBallPartName = new TextBox
@@ -1004,11 +1025,13 @@ namespace TxTools.ExportGun
                 Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 0, 2)
             };
-            flow.Controls.Add(partHint);
-            WrapLabelInFlow(flow, partHint);
+            var partTip = new ToolTip();
+            partTip.SetToolTip(_txtBallPartName, partHint.Text);
+            card.Disposed += (s, e) => partTip.Dispose();
+            partHint.Dispose();
 
             _btnExportBall = MkFuncButton("导出点球", Theme.TxBall.Color);
-            _btnExportBall.Margin = new Padding(0, 6, 0, 4);
+            _btnExportBall.Margin = new Padding(0, 2, 0, 2);
             _btnExportBall.Click += new EventHandler(OnExportBall);
             flow.Controls.Add(_btnExportBall);
 
@@ -1098,7 +1121,7 @@ namespace TxTools.ExportGun
         // ════════════════════════════════════════════════════════════
         private Control BuildLogPanel()
         {
-            var panel = new Panel { Dock = DockStyle.Fill, Margin = new Padding(0, 2, 0, 0) };
+            var panel = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
 
             // 日志正文（Fill，先加入；默认隐藏）
             _rtbLog = new RichTextBox
@@ -1116,7 +1139,7 @@ namespace TxTools.ExportGun
             panel.Controls.Add(_rtbLog);
 
             // 标题条（Top）：点击切换展开/收起 + 右侧清除按钮
-            var bar = new Panel { Dock = DockStyle.Top, Height = 24, BackColor = Theme.TxLog.Color };
+            var bar = new Panel { Dock = DockStyle.Top, Height = 26, BackColor = Theme.TxLog.Color };
 
             _logToggle = new Label
             {
@@ -1135,14 +1158,14 @@ namespace TxTools.ExportGun
             var btnClear = new FlatColorButton
             {
                 Text = "清除",
-                Dock = DockStyle.Right,
-                Width = 56,
+                Size = new Size(PluginUiPolicy.ButtonWidth, PluginUiPolicy.ButtonHeight),
                 BgColor = Theme.TxAccent.Color,
                 ForeColor = TxColor.TxColorWhite.Color,
                 Font = FormUiKit.BaseFont
             };
             btnClear.Click += delegate { if (_rtbLog != null) _rtbLog.Clear(); };
             bar.Controls.Add(btnClear);
+            bar.Layout += (s, e) => btnClear.Left = Math.Max(0, bar.ClientSize.Width - btnClear.Width);
 
             panel.Controls.Add(bar);
 
@@ -1156,8 +1179,6 @@ namespace TxTools.ExportGun
         /// </summary>
         private void ApplySideColumnWidths(float sc)
         {
-            int leftW = (int)(330 * sc);
-            int rightW = (int)(300 * sc);
             TableLayoutPanel[] tables =
             {
                 _root != null ? _root.GetControlFromPosition(0, 0) as TableLayoutPanel : null, // 标题行
@@ -1166,9 +1187,8 @@ namespace TxTools.ExportGun
             foreach (TableLayoutPanel t in tables)
             {
                 if (t == null || t.ColumnStyles.Count < 3) continue;
-                t.ColumnStyles[0].SizeType = SizeType.Absolute; t.ColumnStyles[0].Width = leftW;
-                t.ColumnStyles[1].SizeType = SizeType.Percent; t.ColumnStyles[1].Width = 100F;
-                t.ColumnStyles[2].SizeType = SizeType.Absolute; t.ColumnStyles[2].Width = rightW;
+                foreach (ColumnStyle column in t.ColumnStyles)
+                { column.SizeType = SizeType.Percent; column.Width = 100F / 3; }
             }
         }
 
@@ -1180,6 +1200,7 @@ namespace TxTools.ExportGun
 
         private void ToggleLog()
         {
+            if (!PluginLog.Enabled) return;
             _logExpanded = !_logExpanded;
 
             float sc = DpiScale();
@@ -1632,7 +1653,8 @@ namespace TxTools.ExportGun
                     }
                     else
                     {
-                        _lblGunInfo.Text = "焊钳：" + string.Join(", ", names);
+                        _lblGunInfo.Text = (names.Count > 1 ? "焊钳（" + names.Count + " 把）：" : "焊钳：")
+                            + string.Join(", ", names);
                         _lblGunInfo.ForeColor = SystemColors.GrayText;
                     }
                 });
@@ -1887,6 +1909,7 @@ namespace TxTools.ExportGun
 
             using (var dlg = new Form())
             {
+                PluginUiPolicy.Attach(dlg);
                 dlg.Text = "选择参考坐标";
                 dlg.StartPosition = FormStartPosition.CenterParent;
                 dlg.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -2292,6 +2315,7 @@ namespace TxTools.ExportGun
         {
             using (var dlg = new Form())
             {
+                PluginUiPolicy.Attach(dlg);
                 dlg.Text = "请确认 CGR 文件 — " + opName;
                 dlg.Size = new Size(620, 440);
                 dlg.StartPosition = FormStartPosition.CenterParent;
@@ -2444,6 +2468,7 @@ namespace TxTools.ExportGun
         {
             using (var dlg = new Form())
             {
+                PluginUiPolicy.Attach(dlg);
                 dlg.Text = "未找到 CGR — " + opName;
                 dlg.Size = new Size(560, 285);
                 dlg.StartPosition = FormStartPosition.CenterParent;
@@ -2460,7 +2485,7 @@ namespace TxTools.ExportGun
                         + "\n原因：" + (reason ?? "未知原因")
                         + "\n\n你可以：\n"
                         + "  · 打开 JT 所在位置，确认目录下是否存在 CGR 文件；\n"
-                        + "  · 直接从当前工具生成一个 CGR 到该 JT 目录；\n"
+                        + "  · 从当前工具生成 CGR，目录过长时自动使用短路径缓存；\n"
                         + "  · 手动浏览选择一个 CGR / CATPart / CATProduct；\n"
                         + "  · 取消本次导出。",
                     Dock = DockStyle.Fill,
@@ -2492,7 +2517,7 @@ namespace TxTools.ExportGun
                     dlg.DialogResult = DialogResult.OK;
                     dlg.Close();
                 };
-                btnGenerate.Enabled = toolObject != null && !string.IsNullOrEmpty(sameDir) && Directory.Exists(sameDir);
+                btnGenerate.Enabled = toolObject != null;
                 btnGenerate.Click += delegate
                 {
                     generate = true;
@@ -2517,7 +2542,8 @@ namespace TxTools.ExportGun
                 {
                     try
                     {
-                        string output = Path.Combine(sameDir, SafeCgrFileName(toolName) + ".cgr");
+                        string output = CgrOutputPaths.Create(sameDir, toolName);
+                        Log("[CGR] 已选择兼容临时文件及 CATIA 的输出路径（" + output.Length + " 字符）：" + output, LogLevel.Info);
                         Log("[CGR] 正在从当前工具几何生成：" + output, LogLevel.Info);
                         if (_cgrGenerator == null) _cgrGenerator = new ExportByColorService(_psCtx);
                         string generated = _cgrGenerator.GenerateCgrForObject(toolObject, output,
@@ -2545,13 +2571,6 @@ namespace TxTools.ExportGun
                     return ofd.FileName;
                 }
             }
-        }
-
-        private static string SafeCgrFileName(string name)
-        {
-            if (string.IsNullOrWhiteSpace(name)) return "Gun";
-            foreach (char c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
-            return string.IsNullOrWhiteSpace(name) ? "Gun" : name.Trim();
         }
 
         // ════════════════════════════════════════════════════════════
@@ -2623,8 +2642,8 @@ namespace TxTools.ExportGun
                 OutputPath = DefaultOut(),
                 PointFilter = GetPtType(),
                 UseMfgName = _chkUseMfgName.Checked,
-                GeomSetName = string.IsNullOrWhiteSpace(_txtGeomSet.Text) ? "Geometry_Spheres" : _txtGeomSet.Text.Trim(),
-                NamePrefix = string.IsNullOrWhiteSpace(_txtNamePrefix.Text) ? "SPHERE" : _txtNamePrefix.Text.Trim(),
+                GeomSetName = "Geometry_Spheres",
+                NamePrefix = "SPHERE",
                 CustomPartName = string.IsNullOrWhiteSpace(_txtBallPartName.Text) ? null : _txtBallPartName.Text.Trim(),
                 RefMatrix = _refFrameMatrix,
                 RefName = _refFrameName,
@@ -2662,8 +2681,6 @@ namespace TxTools.ExportGun
             _cmbBallTarget.SelectedIndex = 0;
             _cmbBallOption.SelectedIndex = 0;
             _nudDiameter.Value = 10;
-            _txtGeomSet.Text = "Geometry_Spheres";
-            _txtNamePrefix.Text = "SPHERE";
             _chkUseMfgName.Checked = false;
             if (_txtBallPartName != null) _txtBallPartName.Text = "";
             _refFrameName = "世界坐标系";
@@ -2718,15 +2735,21 @@ namespace TxTools.ExportGun
         // 新代码尽量使用 Log(msg, level) 显式指定。
         private void Log(string msg)
         {
-            Log(msg, GuessLevel(msg));
+            // 后台摘要中的“失败 0”等文字仅用于着色，不据此改变日志栏状态。
+            Log(msg, GuessLevel(msg), false);
         }
 
         private void Log(string msg, LogLevel level)
         {
+            Log(msg, level, true);
+        }
+
+        private void Log(string msg, LogLevel level, bool expandOnError)
+        {
             if (_rtbLog == null || IsDisposed) return;
             if (InvokeRequired)
             {
-                BeginInvoke(new Action<string, LogLevel>(Log), msg, level);
+                BeginInvoke(new Action<string, LogLevel, bool>(Log), msg, level, expandOnError);
                 return;
             }
 
@@ -2749,7 +2772,7 @@ namespace TxTools.ExportGun
             _rtbLog.AppendText("[" + DateTime.Now.ToString("HH:mm:ss") + "] " + msg + Environment.NewLine);
 
             // 折叠状态下出现错误时自动展开，避免用户漏看
-            if (level == LogLevel.Error && !_logExpanded) ToggleLog();
+            if (expandOnError && level == LogLevel.Error && !_logExpanded) ToggleLog();
             if (_rtbLog.Visible) try { _rtbLog.ScrollToCaret(); } catch { }
         }
 

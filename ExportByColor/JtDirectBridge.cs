@@ -13,7 +13,7 @@ namespace TxTools.ExportByColor
         public sealed class Triangle
         {
             public int[] Indices;
-            public byte R,G,B;
+            public byte R,G,B; public byte Alpha = 255;
             public int Surface;
             public float[] Normal;
         }
@@ -21,6 +21,67 @@ namespace TxTools.ExportByColor
         {
             public readonly List<float[]> Vertices = new List<float[]>();
             public readonly List<Triangle> Faces = new List<Triangle>();
+        }
+        // Each call owns its decoder process, mesh, output file and log callback.
+        // Callers must provide detached placement data and a unique output path.
+        public static void ConvertToCgr(string source, string directory, string worker,
+            string output, double[] placement, Action<string> log)
+        {
+            ConvertToCgr(source, directory, worker, output, placement, CgrBackend.Compact, log);
+        }
+
+        public static void ConvertToCgr(string source, string directory, string worker,
+            string output, double[] placement, CgrBackend backend, Action<string> log)
+        {
+            ConvertToCgrCore(source, directory, worker, output, placement, backend, log, false);
+        }
+
+        public static List<RoundHoleReconstruction.Hole> ConvertToCgrWithHoles(string source, string directory,
+            string worker, string output, double[] placement, CgrBackend backend, Action<string> log)
+        {
+            return ConvertToCgrCore(source, directory, worker, output, placement, backend, log, true);
+        }
+
+        private static List<RoundHoleReconstruction.Hole> ConvertToCgrCore(string source, string directory,
+            string worker, string output, double[] placement, CgrBackend backend, Action<string> log, bool reconstruct)
+        {
+            if (backend != CgrBackend.Compact && backend != CgrBackend.LineFace && backend != CgrBackend.LineFacePlanar)
+                throw new ArgumentException("JT output requires an explicit compact or line/face backend", "backend");
+            var mesh = Convert(source, directory, worker, 300000);
+            Place(mesh, placement);
+            var faces = new List<CgrWriter.Face>(mesh.Faces.Count);
+            foreach (var face in mesh.Faces)
+                faces.Add(new CgrWriter.Face { Idx=face.Indices, R=face.R, G=face.G, B=face.B,
+                    Surface=face.Surface, Opacity=face.Alpha, Nx=face.Normal[0], Ny=face.Normal[1], Nz=face.Normal[2] });
+            if (!reconstruct){CgrWriter.BuildFile(mesh.Vertices, faces, output, backend, 20000, log, true);return null;}
+            if(backend!=CgrBackend.LineFace)throw new ArgumentException("Cylinder reconstruction requires line/face CGR");
+            var holes = RoundHoleReconstruction.Find(mesh.Vertices, faces,
+                new RoundHoleReconstruction.Options { IncludeExternalCylinders = true, IncludeTransitionRims = true, IncludeOpenCylinderEnds = true, IncludeTrimmedCylinderEnds = true });
+            string csv = output + ".holes.csv";
+            RoundHoleReconstruction.WriteCsv(csv, holes);
+            if (log != null) log("[JT cylinders] candidates=" + holes.Count + "; parameters=" + csv + "; tessellation fit, not original CAD feature history");
+            var replacement=RoundHoleCgrMesh.Replace(mesh.Vertices,faces,holes,log);
+            if(replacement.Cylinders.Count==0)CgrWriter.BuildFile(mesh.Vertices,faces,output,backend,20000,log,true);
+            else CgrWriter.BuildFileWithCylinders(replacement.Vertices,replacement.Faces,output,replacement.Cylinders,log);
+            var accepted=new HashSet<double[]>();foreach(var cylinder in replacement.Cylinders.Values)accepted.Add(cylinder.Center);
+            var rebuilt=holes.FindAll(h=>accepted.Contains(h.Center));
+            if(log!=null)log("[JT source open rims] reconstructed="+rebuilt.FindAll(h=>h.OpenRimA||h.OpenRimB).Count+"; complete projected rims fitted; no invented end caps");
+            RoundHoleReconstruction.WriteCsv(output+".cylinders.csv",rebuilt);
+            File.WriteAllLines(output+".cylinders.log",replacement.Diagnostics);
+            return rebuilt;
+        }
+
+        public static int ConversionWorkers
+        {
+            get
+            {
+                // A 32-bit PS host has limited address space; default to two on 64-bit.
+                int limit = Environment.Is64BitProcess ? Math.Min(4, Environment.ProcessorCount) : 1;
+                int requested;
+                if (!int.TryParse(Environment.GetEnvironmentVariable("TXTOOLS_JT_WORKERS"), out requested)
+                    || requested < 1) requested = 2;
+                return Math.Max(1, Math.Min(limit, requested));
+            }
         }
         public static string ResolveFile(string source)
         {
@@ -50,24 +111,9 @@ namespace TxTools.ExportByColor
             Directory.CreateDirectory(directory);
             string output=Path.Combine(directory,Guid.NewGuid().ToString("N")+".jtmesh");
             string log=output+".log";
-            string headerInfo=null;
-            using(var writer=new StreamWriter(log,false,new UTF8Encoding(false)))
-            using(var process=new Process()) {
-                object gate=new object();
-                process.StartInfo=new ProcessStartInfo(worker,Quote(source)+" "+Quote(output)) {
-                    UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true,
-                    WorkingDirectory=Path.GetDirectoryName(worker)
-                };
-                process.OutputDataReceived+=(s,e)=>{if(e.Data!=null)lock(gate){writer.WriteLine(e.Data);if(e.Data.StartsWith("JT_HEADER=",StringComparison.Ordinal))headerInfo=e.Data;}};
-                process.ErrorDataReceived+=(s,e)=>{if(e.Data!=null)lock(gate)writer.WriteLine("ERROR "+e.Data);};
-                process.Start();process.BeginOutputReadLine();process.BeginErrorReadLine();
-                if(!process.WaitForExit(timeoutMs)) {
-                    process.Kill();process.WaitForExit();throw new TimeoutException("JT 解码超时；日志="+log);
-                }
-                process.WaitForExit();
-                if(process.ExitCode==2)throw new NotSupportedException("JT 文件需要 PS 原生兼容转换；"+(headerInfo??"版本未提供")+"；日志="+log);
-                if(process.ExitCode!=0)throw new InvalidDataException("JT 解码失败，退出码="+process.ExitCode+"；日志="+log);
-            }
+            int exit=JtProcessRunner.Run(worker,Quote(source)+" "+Quote(output),log,timeoutMs);
+            if(exit==2)throw new NotSupportedException("JT 版本或编码暂不支持直接解码；日志="+log);
+            if(exit!=0)throw new InvalidDataException("JT 解码失败，退出码="+exit+"；日志="+log);
             return Read(output,source);
         }
         private static float Finite(float v)
@@ -77,20 +123,22 @@ namespace TxTools.ExportByColor
         public static Mesh Read(string path,string source)
         {
             using(var r=new BinaryReader(File.OpenRead(path))) {
-                if(Encoding.ASCII.GetString(r.ReadBytes(8))!="JTMESH01"||r.ReadUInt32()!=1)throw new InvalidDataException("JT mesh 协议不支持");
+                string magic=Encoding.ASCII.GetString(r.ReadBytes(8)); uint version=r.ReadUInt32();
+                bool rgba=magic=="JTMESH02"&&version==2;
+                if(!rgba && !(magic=="JTMESH01"&&version==1))throw new InvalidDataException("JT mesh 协议不支持");
                 byte[] expected=r.ReadBytes(32),actual;
                 using(var h=SHA256.Create())using(var s=File.OpenRead(source))actual=h.ComputeHash(s);
                 if(expected.Length!=32)throw new InvalidDataException("摘要截断");
                 for(int i=0;i<32;i++)if(expected[i]!=actual[i])throw new InvalidDataException("JT 文件已变化或网格来源不匹配");
                 uint nv=r.ReadUInt32(),nf=r.ReadUInt32();
-                if(nv==0||nf==0||nv>5000000||nf>5000000||r.BaseStream.Length!=52L+nv*12L+nf*31L)
+                if(nv==0||nf==0||nv>5000000||nf>5000000||r.BaseStream.Length!=52L+nv*12L+nf*(rgba?32L:31L))
                     throw new InvalidDataException("网格数量、长度或 500 万限制不符合要求");
                 var mesh=new Mesh();
                 for(uint i=0;i<nv;i++)mesh.Vertices.Add(new[]{Finite(r.ReadSingle()),Finite(r.ReadSingle()),Finite(r.ReadSingle())});
                 for(uint i=0;i<nf;i++) {
                     int[] ids={r.ReadInt32(),r.ReadInt32(),r.ReadInt32()};
                     foreach(int id in ids)if(id<0||id>=nv)throw new InvalidDataException("网格索引越界");
-                    var face=new Triangle{Indices=ids,R=r.ReadByte(),G=r.ReadByte(),B=r.ReadByte(),Surface=r.ReadInt32(),
+                    var face=new Triangle{Indices=ids,R=r.ReadByte(),G=r.ReadByte(),B=r.ReadByte(),Alpha=rgba?r.ReadByte():(byte)255,Surface=r.ReadInt32(),
                         Normal=new[]{Finite(r.ReadSingle()),Finite(r.ReadSingle()),Finite(r.ReadSingle())}};
                     if(face.Surface<=0)throw new InvalidDataException("缺少 Shape 面域");mesh.Faces.Add(face);
                 }

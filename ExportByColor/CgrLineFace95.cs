@@ -41,12 +41,12 @@ namespace TxTools.ExportByColor
             vertices=output;faces=result;
         }
 
-        private static void BuildLineFace95(List<float[]> vertices,List<Face> faces,string path,int faceLimit,Action<string> progress,bool smoothDomains)
+        private static void BuildLineFace95(List<float[]> vertices,List<Face> faces,string path,int faceLimit,Action<string> progress,bool smoothDomains,Dictionary<int,RoundHoleCgrMesh.Cylinder> cylinders=null)
         {
             var groups=new Dictionary<Tuple<int,int>,List<Face>>();var order=new List<List<Face>>();
             foreach(var f in faces)
             {
-                var key=Tuple.Create(f.Surface,f.R|(f.G<<8)|(f.B<<16));List<Face> group;
+                var key=Tuple.Create(f.Surface,f.R|(f.G<<8)|(f.B<<16)|((f.Opacity??255)<<24));List<Face> group;
                 if(!groups.TryGetValue(key,out group)){group=new List<Face>();groups.Add(key,group);order.Add(group);}
                 group.Add(f);
             }
@@ -60,7 +60,8 @@ namespace TxTools.ExportByColor
                     CompactFeatureVertices95(ref vs,ref ns,ref tris);
                     encodedVertices+=vs.Count;
                     int nf,ne;byte[] payload,pick;
-                    BuildFeaturePayload95(vs,ns,tris,topology,color,nextId,smoothDomains,out payload,out pick,out nf,out ne);
+                    RoundHoleCgrMesh.Cylinder cylinder=null;if(cylinders!=null)cylinders.TryGetValue(color.Surface,out cylinder);
+                    BuildFeaturePayload95(vs,ns,tris,topology,color,nextId,smoothDomains,out payload,out pick,out nf,out ne,cylinder);
                     nextId=checked(nextId+(uint)nf+(uint)ne);
                     children.Add(WrapFeature95(vs,payload,checked((uint)picks.Position)));
                     picks.Write(pick,0,pick.Length);domains+=nf;edgeCount+=ne;
@@ -69,15 +70,15 @@ namespace TxTools.ExportByColor
                 // carried separately, so a shading split never becomes a missing adjacency.
                 foreach(var group in order)
                     CompactGroup95(vertices,group,children,picks,ref changed,ref vertexCount,write,faceLimit,
-                        smoothDomains?MaxFeatureVertsPerChunk:MaxVertsPerChunk);
+                        smoothDomains?MaxFeatureVertsPerChunk:MaxVertsPerChunk,cylinders!=null&&cylinders.ContainsKey(group[0].Surface));
                 byte[] scene;
+                float rootRadius;var rootCenter=SceneRootSphere(vertices,out rootRadius);
                 using(var ms=new MemoryStream())using(var w=new BinaryWriter(ms))
                 {
-                    w.Write(ScenePrefix,0,41);Compact(w,checked((uint)children.Count));
+                    WriteLegacyRoot(w,checked((uint)children.Count),rootRadius,rootCenter);
                     foreach(var child in children){w.Write((byte)0);w.Write(child);}
                     scene=ms.ToArray();
                 }
-                SetRootSphere(scene,vertices);
                 WriteContainer(scene,picks.ToArray(),path,vertices);
             }
             if(progress!=null)progress("[CGR 线面] "+(smoothDomains?"连续面压缩":"逐平面兼容")+"；"+children.Count+" 块，"+domains+" 个面域，"+edgeCount+" 条边，"+encodedVertices+" 顶点；"+new FileInfo(path).Length+" 字节");
@@ -100,9 +101,9 @@ namespace TxTools.ExportByColor
         }
 
         private static void BuildFeaturePayload95(List<float[]> vs,List<float[]> ns,List<int[]> triangles,List<int[]> topology,
-            Face color,uint firstId,bool smoothDomains,out byte[] payload,out byte[] pick,out int faceCount,out int edgeCount)
+            Face color,uint firstId,bool smoothDomains,out byte[] payload,out byte[] pick,out int faceCount,out int edgeCount,RoundHoleCgrMesh.Cylinder cylinder=null)
         {
-            if(vs.Count>65536||triangles.Count!=topology.Count||ns.Count!=vs.Count)
+            if(vs.Count<3||vs.Count>MaxSafeIndexedVerts||triangles.Count!=topology.Count||ns.Count!=vs.Count)
                 throw new InvalidDataException("Invalid line/face block");
             var edgeMap=new Dictionary<long,FeatureEdge95>(EdgeKeyComparer.Instance);var edges=new List<FeatureEdge95>();
             var normals=new double[triangles.Count][];
@@ -167,7 +168,7 @@ namespace TxTools.ExportByColor
             }
             if(smoothDomains)
             {
-                boundary=ChainFeatureEdges95(boundary,vs);
+                boundary=ChainFeatureEdges95(boundary,vs,cylinder!=null);
                 ReorderFeatureDomains95(ref domains,boundary);
             }
             bool wide=vs.Count>255;
@@ -183,7 +184,7 @@ namespace TxTools.ExportByColor
                     bounds.Add(Bounds(vs,indices));
                     w.Write(CompressFeaturePacket95(triangles,domain,wide));
                 }
-                foreach(var domain in domains)w.Write(new byte[]{48,4,4,255,255,color.B,color.G,color.R});
+                foreach(var domain in domains)w.Write(new byte[]{48,4,4,color.Opacity??255,255,color.B,color.G,color.R});
                 w.Write(new byte[]{1,1});Compact(w,checked((uint)boundary.Count));
                 foreach(var edge in boundary)
                 {
@@ -195,15 +196,16 @@ namespace TxTools.ExportByColor
             }
             using(var ms=new MemoryStream())using(var w=new BinaryWriter(ms))
             {
-                w.Write((byte)255);w.Write(0);w.Write(PacketPrefix);
+                w.Write((byte)255);w.Write(0);WritePickControls(w);
                 for(int i=0;i<domains.Count;i++)
                 {
-                    w.Write(checked(firstId+(uint)i));w.Write(FaceReserved);
+                    w.Write(checked(firstId+(uint)i));if(cylinder==null)w.Write((ushort)0);else WriteCanonicalCylinder95(w,cylinder);
                     foreach(double x in bounds[i])w.Write(Finite(x));w.Write(FaceSuffix);
                 }
                 for(int i=0;i<boundary.Count;i++)
                 {
-                    var edge=boundary[i];w.Write((byte)96);w.Write(checked(firstId+(uint)domains.Count+(uint)i));w.Write(EdgeReserved);
+                    var edge=boundary[i];w.Write((byte)96);w.Write(checked(firstId+(uint)domains.Count+(uint)i));
+                    if(cylinder==null||!WriteCanonicalCircle95(w,cylinder,edge,vs))w.Write((ushort)0);
                     Compact(w,(uint)edge.Face);Compact(w,edge.Other<0?uint.MaxValue:(uint)edge.Other);
                 }
                 pick=ms.ToArray();LE(pick,1,pick.Length);
@@ -239,19 +241,9 @@ namespace TxTools.ExportByColor
 
         private static byte[] WrapFeature95(List<float[]> vertices,byte[] payload,uint pickOffset)
         {
-            byte[] child;
-            using(var ms=new MemoryStream())using(var w=new BinaryWriter(ms))
-            {
-                w.Write(ScenePrefix,43,ScenePrefix.Length-43);w.Write(payload);Compact(w,pickOffset);
-                w.Write(SceneSuffix,1,SceneSuffix.Length-1);child=ms.ToArray();
-            }
-            LE(child,2,child.Length-2);LE(child,148,payload.Length+40);
             var all=new int[vertices.Count];for(int i=0;i<all.Length;i++)all[i]=i;
             var sphere=Bounds(vertices,all);double radius=sphere[9]+Math.Max(.2,sphere[9]*1e-6);
-            int[] radii={17,64,111,163},centers={25,72,119,171};
-            for(int i=0;i<radii.Length;i++)
-            {Float(child,radii[i],radius);for(int k=0;k<3;k++)Float(child,centers[i]+k*4,sphere[k]);}
-            return child;
+            return WriteAcceptedFeatureScene(payload,Finite(radius),new[]{Finite(sphere[0]),Finite(sphere[1]),Finite(sphere[2])},pickOffset);
         }
     }
 }

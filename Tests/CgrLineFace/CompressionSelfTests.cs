@@ -69,7 +69,8 @@ internal static class CompressionSelfTests
             for(int i=0;i<fields.Length;i++)Field(fields[i]).SetValue(e,edge[i]);
             input.Add(e);string key=Segment(edge[0],edge[1],edge[4],edge[5]);int n;expected.TryGetValue(key,out n);expected[key]=n+1;
         }
-        var output=(IList)Call("ChainFeatureEdges95",input,vertices);Require(output.Count==expectedCount,"edge chain count");
+        var chainMethod=typeof(CgrWriter).GetMethod("ChainFeatureEdges95",BindingFlags.NonPublic|BindingFlags.Static);
+        var output=(IList)(chainMethod.GetParameters().Length==2?Call("ChainFeatureEdges95",input,vertices):Call("ChainFeatureEdges95",input,vertices,false));Require(output.Count==expectedCount,"edge chain count");
         var actual=new Dictionary<string,int>();
         foreach(object e in output)
         {

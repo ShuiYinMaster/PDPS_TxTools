@@ -4,5 +4,6 @@
  <PropertyGroup><BaseIntermediateOutputPath>worker_obj\</BaseIntermediateOutputPath><MSBuildProjectExtensionsPath>worker_obj\</MSBuildProjectExtensionsPath></PropertyGroup>
  <ItemGroup><Reference Include="System.Xml"/><Reference Include="Dependencies\System.*.dll"/><Reference Include="Dependencies\Microsoft.Bcl.AsyncInterfaces.dll"/></ItemGroup>
  <ItemGroup><Content Include="LICENSE.JTReader;THIRD-PARTY-NOTICES.txt"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content></ItemGroup>
+ <ItemGroup><Compile Include="Program9.cs"/></ItemGroup>
  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>
 </Project>
