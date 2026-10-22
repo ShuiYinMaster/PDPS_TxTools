@@ -32,7 +32,7 @@ namespace TxTools.CrossEnvIO
             if (sinY > 1.0) sinY = 1.0;
             if (sinY < -1.0) sinY = -1.0;
             ry = Math.Asin(sinY);
-            const double GimbalLock = 1.0 - 1e-6;
+            const double GimbalLock = 1.0 - 1e-12;
             if (Math.Abs(sinY) < GimbalLock)
             {
                 rx = Math.Atan2(m[9], m[10]);
@@ -41,7 +41,8 @@ namespace TxTools.CrossEnvIO
             else
             {
                 rx = 0.0;
-                rz = sinY > 0 ? Math.Atan2(-m[1], m[5]) : Math.Atan2(m[1], -m[5]);
+                // RX 取 0 后，两种 ±90° 情况均由第一行的 m01/m11 恢复 RZ。
+                rz = Math.Atan2(-m[1], m[5]);
             }
             rx *= Rad2Deg; ry *= Rad2Deg; rz *= Rad2Deg;
         }

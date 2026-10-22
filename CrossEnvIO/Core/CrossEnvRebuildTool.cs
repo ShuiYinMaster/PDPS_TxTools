@@ -12,6 +12,9 @@
 
 using System;
 using System.Text;
+using System.Globalization;
+using System.Collections.Generic;
+using System.IO;
 using Newtonsoft.Json.Linq;
 using Tecnomatix.Engineering;
 using TxTools.Agent.Core;
@@ -45,6 +48,11 @@ namespace TxTools.CrossEnvIO
                     'properties': {
                         'kind': { 'type': 'string', 'description': 'resource | part | weld' },
                         'file': { 'type': 'string', 'description': 'TSV 数据文件绝对路径' },
+                        'expected_study': { 'type': 'string', 'description': '调用方确认的目标工程，工程切换时中止' },
+                        'expected_library_root': { 'type': 'string', 'description': '调用方确认的目标库根，变化时中止' },
+                        'expected_document': { 'type': 'string', 'description': '调用方确认的目标工程文件路径' },
+                        'source_library_root': { 'type': 'string', 'description': '源库根，用于保留完整相对路径' },
+                        'cojt_map': { 'type': 'object', 'description': '源 cojt 绝对路径到目标 cojt 绝对路径的精确映射' },
                         'save_reload': { 'type': 'boolean', 'description': '默认 false；true 时保存/修路径/重载，磁盘操作不由 Ctrl+Z 恢复' },
                         'project': { 'type': 'boolean', 'description': 'weld: 重建后投影到零件表面' },
                         'bind_only': { 'type': 'boolean', 'description': 'weld: 仅绑定已有焊点，不新建' },
@@ -66,6 +74,17 @@ namespace TxTools.CrossEnvIO
 
             var doc = TxApplication.ActiveDocument;
             if (doc == null) return "Error: 当前实例没有打开的工程。";
+            string expectedStudy = GetString(input, "expected_study");
+            string expectedRoot = GetString(input, "expected_library_root");
+            if (!string.IsNullOrEmpty(expectedStudy) && !string.Equals(doc.CurrentStudy.Name, expectedStudy, StringComparison.Ordinal))
+                return "Error: 目标工程已变化，已取消重建。";
+            string expectedDocument = GetString(input, "expected_document");
+            if (expectedDocument != null && !string.Equals(doc.FinalDestination ?? "", expectedDocument,
+                StringComparison.OrdinalIgnoreCase)) return "Error: 目标工程文件已变化，已取消重建。";
+            if (!string.IsNullOrEmpty(expectedRoot) && !string.Equals(
+                Path.GetFullPath(TxApplication.SystemRootDirectory).TrimEnd('\\', '/'),
+                Path.GetFullPath(expectedRoot).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+                return "Error: 目标库根已变化，已取消重建。";
 
             var sb = new StringBuilder();
             Action<string> log = s => { lock (sb) { sb.AppendLine(s); } };
@@ -80,14 +99,21 @@ namespace TxTools.CrossEnvIO
                         double ox = NumVal(input, "origin_x");
                         double oy = NumVal(input, "origin_y");
                         double oz = NumVal(input, "origin_z");
+                        var mapToken = input["cojt_map"] as JObject;
+                        var map = mapToken == null ? null : mapToken.ToObject<Dictionary<string, string>>();
                         var rep = StructureIO.RebuildStructure(file, doc.PhysicalRoot,
-                            kind == "resource", log, ox, oy, oz);
+                            kind == "resource", log, ox, oy, oz, GetString(input, "source_library_root"), map);
                         foreach (var e in rep.Errors) log("[警告] " + e);
                         // 文件操作必须显式请求；避免默认覆盖工程并重载撤销历史。
-                        if (input["save_reload"] != null && (bool)input["save_reload"])
-                            ComponentIO.FixPszAfterInsert(log);
+                        if ((bool?)input["save_reload"] == true)
+                        {
+                            if (rep.Failed > 0 || rep.Errors.Count > 0)
+                                log("[修路径] 重建未完整成功，未执行保存/重载。");
+                            else if (!ComponentIO.FixPszAfterInsert(log))
+                                return "Error: 保存/路径修补/重载失败\n" + sb + "\n" + rep;
+                        }
                         else log("[Undo] 未自动保存/重载；场景变更可在目标 PS 工程 Ctrl+Z 撤销。");
-                        return sb.ToString() + "\n" + rep;
+                        return (rep.Failed > 0 || rep.Errors.Count > 0 ? "Error: 重建未完整成功\n" : "") + sb + "\n" + rep;
                     }
 
                     case "weld":
@@ -98,7 +124,7 @@ namespace TxTools.CrossEnvIO
                                         && (bool)input["bind_only"];
                         var rep = WeldPointIO.RebuildWeldPoints(file, proj, bindOnly, log);
                         foreach (var e in rep.Errors) log("[警告] " + e);
-                        return sb.ToString() + "\n" + rep;
+                        return (rep.Failed > 0 || rep.Errors.Count > 0 ? "Error: 焊点重建未完整成功\n" : "") + sb + "\n" + rep;
                     }
 
                     default:
@@ -117,7 +143,33 @@ namespace TxTools.CrossEnvIO
             var v = input[key];
             if (v == null || v.Type == JTokenType.Null) return fallback;
             double d;
-            return double.TryParse(v.ToString(), out d) ? d : fallback;
+            if (!double.TryParse(v.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out d)
+                || double.IsNaN(d) || double.IsInfinity(d))
+                throw new ArgumentException("无效的数值参数: " + key);
+            return d;
+        }
+    }
+
+    /// <summary>对端主线程预检；清理文件时检查目标工程依赖，不只检查调用方工程。</summary>
+    public sealed class CrossEnvInspectTool : TxAgentToolBase
+    {
+        public override string Name => "crossenv_inspect";
+        public override string Description => "读取当前实例的工程、库根以及指定目录的场景引用。";
+        public override bool IsReadOnly => true;
+        public override JObject InputSchema => JObject.Parse(@"{
+            'type':'object','properties':{'directories':{'type':'array','items':{'type':'string'}}}}");
+        public override string Execute(JObject input)
+        {
+            var doc = TxApplication.ActiveDocument;
+            if (doc == null) return "Error: 目标实例无活动工程。";
+            var references = new JObject();
+            var directories = input["directories"] as JArray;
+            if (directories != null)
+                foreach (var directory in directories)
+                    references[(string)directory] = ComponentIO.IsPathReferencedByScene((string)directory);
+            return new JObject { ["study"] = doc.CurrentStudy.Name,
+                ["document"] = doc.FinalDestination ?? "", ["systemRoot"] = TxApplication.SystemRootDirectory,
+                ["references"] = references }.ToString(Newtonsoft.Json.Formatting.None);
         }
     }
 }

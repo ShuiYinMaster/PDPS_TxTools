@@ -17,6 +17,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.Xml;
 
 namespace TxTools.CrossEnvIO
 {
@@ -44,18 +46,18 @@ namespace TxTools.CrossEnvIO
         {
             log = log ?? (s => { });
             if (string.IsNullOrWhiteSpace(pszPath) || !File.Exists(pszPath))
-            { log("[Psz] 文件不存在: " + pszPath); return 0; }
+            { log("[Psz] 文件不存在: " + pszPath); return -1; }
             if (string.IsNullOrWhiteSpace(libRoot) || !Directory.Exists(libRoot))
-            { log("[Psz] 库根无效: " + libRoot); return 0; }
+            { log("[Psz] 库根无效: " + libRoot); return -1; }
 
             // 备份
             try
             {
-                string bak = pszPath + ".bak";
-                File.Copy(pszPath, bak, true);
+                string bak = pszPath + ".pathfix-" + Guid.NewGuid().ToString("N") + ".bak";
+                File.Copy(pszPath, bak, false);
                 log("[Psz] 已备份 → " + bak);
             }
-            catch (Exception ex) { log("[Psz] 备份失败: " + ex.Message); }
+            catch (Exception ex) { log("[Psz] 备份失败，已停止修改: " + ex.Message); return -1; }
 
             string content = null;
             Encoding stateEncoding = null;
@@ -65,21 +67,21 @@ namespace TxTools.CrossEnvIO
                 using (var zip = ZipFile.Open(pszPath, ZipArchiveMode.Read))
                 {
                     var entry = zip.GetEntry(StateFile);
-                    if (entry == null) { log("[Psz] 未找到 " + StateFile); return 0; }
+                    if (entry == null) { log("[Psz] 未找到 " + StateFile); return -1; }
                     var bytes = ReadEntryBytes(entry);
                     if (!TryDecodeStateXml(bytes, out content, out stateEncoding, out statePreamble))
                     {
                         log("[Psz] 无法识别 " + StateFile + " 的原始编码，为避免转换编码已跳过");
-                        return 0;
+                        return -1;
                     }
                 }
             }
             catch (Exception ex)
             {
                 log("[Psz] 读取失败: " + ex.Message);
-                return 0;
+                return -1;
             }
-            if (string.IsNullOrEmpty(content)) { log("[Psz] 内容为空"); return 0; }
+            if (string.IsNullOrEmpty(content)) { log("[Psz] 内容为空"); return -1; }
 
             // 扫描所有 fileName，构建 组件cojt名 → 真实相对路径 映射
             var nameToRealPath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -91,7 +93,8 @@ namespace TxTools.CrossEnvIO
                 if (s < 0) break;
                 int e = content.IndexOf("</fileName>", s);
                 if (e < 0) break;
-                string path = content.Substring(s + 10, e - (s + 10));
+                string xmlPath = content.Substring(s + 10, e - (s + 10));
+                string path = DecodeXmlPath(xmlPath);
                 idx = e + 11;
 
                 // 判断路径是否错误：
@@ -102,25 +105,20 @@ namespace TxTools.CrossEnvIO
                     continue;
 
                 string cojtName = GetCojtName(path);
-                if (string.IsNullOrWhiteSpace(cojtName)) continue;
+                if (string.IsNullOrWhiteSpace(cojtName)
+                    || !cojtName.EndsWith(".cojt", StringComparison.OrdinalIgnoreCase)) continue;
 
                 string realRel = FindKnownRealRel(libRoot, cojtName, knownRealPaths);
                 if (string.IsNullOrEmpty(realRel))
                     realRel = FindRealRelPath(libRoot, cojtName, log);
                 if (string.IsNullOrEmpty(realRel)) continue;
 
-                string from = path;
-                string to = "#\\" + realRel;
+                string from = xmlPath;
+                string to = EscapeXmlPath("#\\" + realRel);
                 if (string.Equals(from, to, StringComparison.Ordinal)) continue;
 
                 replacements.Add(new KeyValuePair<string, string>(from, to));
                 nameToRealPath[cojtName] = realRel;
-            }
-
-            if (replacements.Count == 0)
-            {
-                log("[Psz] 没有需要修复的 junction 路径（" + StateFile + "）");
-                return 0;
             }
 
             // 执行路径替换
@@ -142,19 +140,25 @@ namespace TxTools.CrossEnvIO
             byte[] newContentBytes;
             try
             {
+                // 校验 XML 后再发布，不使用 XML 序列化器改动原声明或格式。
+                using (var reader = XmlReader.Create(new StringReader(newContent),
+                    new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null }))
+                    while (reader.Read()) { }
                 newContentBytes = stateEncoding.GetBytes(newContent);
             }
-            catch (EncoderFallbackException ex)
+            catch (Exception ex)
             {
                 log("[Psz] 新内容无法用原始 " + stateEncoding.WebName
                     + " 编码表示，为保留 psz 编码已跳过: " + ex.Message);
-                return 0;
+                return -1;
             }
 
             // 写回 zip
+            string staging = pszPath + ".pathfix-" + Guid.NewGuid().ToString("N") + ".tmp";
             try
             {
-                using (var zip = ZipFile.Open(pszPath, ZipArchiveMode.Update))
+                File.Copy(pszPath, staging, false);
+                using (var zip = ZipFile.Open(staging, ZipArchiveMode.Update))
                 {
                     var entry = zip.GetEntry(StateFile);
                     if (entry != null) entry.Delete();
@@ -166,6 +170,7 @@ namespace TxTools.CrossEnvIO
                         stream.Write(newContentBytes, 0, newContentBytes.Length);
                     }
                 }
+                File.Replace(staging, pszPath, null);
                 foreach (var kv in replacements)
                     log("[Psz] ✓ " + kv.Key + " → " + kv.Value);
                 log("[Psz] 已修复 " + replacements.Count + " 条路径 → " + pszPath);
@@ -174,8 +179,9 @@ namespace TxTools.CrossEnvIO
             catch (Exception ex)
             {
                 log("[Psz] 写回失败: " + ex.Message);
-                return 0;
+                return -1;
             }
+            finally { try { if (File.Exists(staging)) File.Delete(staging); } catch { } }
         }
 
         /// <summary>
@@ -201,18 +207,28 @@ namespace TxTools.CrossEnvIO
                 }
                 else
                 {
-                    // 未带 BOM 或 XML 声明时，先识别无 BOM UTF-8；否则按 psz 的历史
-                    // ANSI/GBK 格式处理。两种分支都会把同一编码用于写回。
-                    var utf8 = new UTF8Encoding(false, true);
-                    try
+                    bool asciiOnly = true;
+                    foreach (byte value in bytes) if (value >= 0x80) { asciiOnly = false; break; }
+                    if (asciiOnly)
                     {
-                        utf8.GetString(bytes);
-                        encoding = utf8;
+                        // 纯 ASCII 无声明不能证明是 UTF-8 还是 GBK：保留兼容字节，
+                        // 若修改引入非 ASCII 字符则拒绝，避免猜测并转换。
+                        encoding = CreateStrictEncoding(20127);
                     }
-                    catch (DecoderFallbackException)
+                    else
                     {
-                        try { encoding = CreateStrictEncoding(936); } // GBK
-                        catch { return false; }
+                        // 无 BOM 或声明时严格识别 UTF-8，否则回退 GBK。
+                        var utf8 = new UTF8Encoding(false, true);
+                        try
+                        {
+                            utf8.GetString(bytes);
+                            encoding = utf8;
+                        }
+                        catch (DecoderFallbackException)
+                        {
+                            try { encoding = CreateStrictEncoding(936); }
+                            catch { return false; }
+                        }
                     }
                 }
             }
@@ -220,6 +236,10 @@ namespace TxTools.CrossEnvIO
             try
             {
                 content = encoding.GetString(bytes, preambleLength, bytes.Length - preambleLength);
+                var roundTrip = encoding.GetBytes(content);
+                if (roundTrip.Length != bytes.Length - preambleLength) return false;
+                for (int i = 0; i < roundTrip.Length; i++)
+                    if (roundTrip[i] != bytes[i + preambleLength]) return false;
                 preamble = new byte[preambleLength];
                 if (preambleLength > 0)
                     Buffer.BlockCopy(bytes, 0, preamble, 0, preambleLength);
@@ -365,8 +385,7 @@ namespace TxTools.CrossEnvIO
 
         /// <summary>
         /// 在库根下递归找 cojt 目录，返回绝对路径（跳过 junction 残留目录）。
-        /// 若多个匹配，优先选「段数最多（嵌套最深）」的 —— 真实库通常嵌套深
-        /// （如 1、Product\VAN\F30-5400710\xxx.cojt），浅层多为实验残留。
+        /// 同名有多份时不猜测；返回 null 并记录候选路径，要求明确指定组件。
         /// 供 StructureIO 定位待插入 cojt 与 FixPszPaths 修复路径共用。
         /// </summary>
         public static string FindRealCojtInRoot(string libRoot, string cojtName, Action<string> log)
@@ -375,7 +394,7 @@ namespace TxTools.CrossEnvIO
             {
                 libRoot = libRoot.TrimEnd('\\', '/');
                 string best = null;
-                int bestDepth = -1;
+                int matches = 0;
                 var stack = new Stack<string>();
                 stack.Push(libRoot);
                 int guard = 0;
@@ -383,29 +402,29 @@ namespace TxTools.CrossEnvIO
                 {
                     string cur = stack.Pop();
                     if (!Directory.Exists(cur)) continue;
+                    if ((File.GetAttributes(cur) & FileAttributes.ReparsePoint) != 0) continue;
 
                     if (string.Equals(Path.GetFileName(cur), cojtName, StringComparison.OrdinalIgnoreCase)
                         && !IsJunctionPath(cur))
                     {
-                        string rel = cur.Substring(libRoot.Length).TrimStart('\\', '/');
-                        int depth = rel.Split('\\', '/').Length;
-                        if (depth > bestDepth)
-                        {
-                            bestDepth = depth;
-                            best = cur;
-                        }
+                        matches++;
+                        best = cur;
+                        if (matches > 1)
+                        { (log ?? (s => { }))("[定位] 同名 cojt 存在多份，停止自动匹配: " + cojtName); return null; }
+                        continue;
                     }
 
                     try
                     {
                         foreach (var d in Directory.GetDirectories(cur))
                         {
-                            if (IsJunctionPath(d)) continue;
+                            if (IsJunctionPath(d) || (File.GetAttributes(d) & FileAttributes.ReparsePoint) != 0) continue;
                             stack.Push(d);
                         }
                     }
                     catch { }
                 }
+                if (stack.Count > 0) return null; // 扫描未完成不能证明唯一
                 return best;
             }
             catch { }
@@ -436,7 +455,8 @@ namespace TxTools.CrossEnvIO
                 {
                     if (string.IsNullOrWhiteSpace(abs)) continue;
                     string name = Path.GetFileName(abs.TrimEnd('\\', '/'));
-                    if (!string.Equals(name, cojtName, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!string.Equals(name, cojtName, StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(CojtTransfer.LinkNameForPath(abs), cojtName, StringComparison.OrdinalIgnoreCase)) continue;
                     if (!Directory.Exists(abs)) continue;
                     if (!abs.StartsWith(rootNorm + "\\", StringComparison.OrdinalIgnoreCase)
                         && !string.Equals(Path.GetPathRoot(abs), rootNorm + "\\", StringComparison.OrdinalIgnoreCase))
@@ -449,8 +469,9 @@ namespace TxTools.CrossEnvIO
                         rel = abs.Substring(rootNorm.Length).TrimStart('\\', '/');
                     if (string.IsNullOrEmpty(rel)) continue;
                     // 同名多份时选最深（真实库通常嵌套深）
-                    if (best == null || DepthOf(rel) > DepthOf(best))
-                        best = rel;
+                    if (best != null && !string.Equals(best, rel, StringComparison.OrdinalIgnoreCase))
+                        return null;
+                    best = rel;
                 }
                 return best;
             }
@@ -495,11 +516,10 @@ namespace TxTools.CrossEnvIO
                 string after = content.Substring(e);
 
                 // 先解码已有的 XML 实体，再统一转义非法字符（避免重复转义）
-                string decoded = inner
-                    .Replace("&amp;", "&").Replace("&lt;", "<")
-                    .Replace("&gt;", ">").Replace("&apos;", "'").Replace("&quot;", "\"");
-                string escaped = decoded
-                    .Replace("&", "&amp;").Replace("<", "&lt;");
+                // 合法实体（含数值实体）保持字节不变，只修复裸 & 和 <。
+                string escaped = Regex.Replace(inner,
+                    @"&(?!amp;|lt;|gt;|apos;|quot;|#\d+;|#x[0-9a-fA-F]+;)", "&amp;")
+                    .Replace("<", "&lt;");
 
                 if (!string.Equals(escaped, inner, StringComparison.Ordinal))
                 {
@@ -511,6 +531,22 @@ namespace TxTools.CrossEnvIO
             if (fixedCount > 0)
                 log("[Psz] ✓ XML 良构修复：转义 " + fixedCount + " 处非法字符（&/lt 等）");
             return content;
+        }
+
+        private static string EscapeXmlPath(string value)
+        {
+            return value.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+        }
+
+        private static string DecodeXmlPath(string value)
+        {
+            // 单遍解码，&amp;lt; 只解成字面 &lt;，不再二次解码成 <。
+            return Regex.Replace(value, @"&(?:amp|lt|gt|apos|quot|#\d+|#x[0-9a-fA-F]+);", match =>
+            {
+                var xml = new XmlDocument { XmlResolver = null };
+                xml.LoadXml("<v>" + match.Value + "</v>");
+                return xml.DocumentElement.InnerText;
+            });
         }
     }
 }

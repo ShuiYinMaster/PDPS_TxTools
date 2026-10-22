@@ -50,7 +50,7 @@ namespace TxTools.CrossEnvIO
         ///   自身 → TxApplication.SystemRootDirectory（本进程直接读）；
         ///   其它 → PsRpcClient.Ping 实时取 systemRoot。
         /// </summary>
-        public static List<EnvInfo> ListEnvironments(Action<string> log)
+        public static List<EnvInfo> ListEnvironments(Action<string> log, string selfRoot)
         {
             log = log ?? (s => { });
             var result = new List<EnvInfo>();
@@ -66,7 +66,8 @@ namespace TxTools.CrossEnvIO
                 };
                 if (inst.IsSelf)
                 {
-                    info.SystemRoot = CurrentRoot();
+                    // 调用方在 PS 主线程预先读取本端库根，后台发现线程仅做管道 IO。
+                    info.SystemRoot = selfRoot;
                 }
                 else
                 {

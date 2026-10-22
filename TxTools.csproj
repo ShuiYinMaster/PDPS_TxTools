@@ -570,6 +570,9 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="CrossEnvIO\Core\CojtTransfer.cs" />
+    <Compile Include="CrossEnvIO\Core\CopyIdentity.cs" />
+    <Compile Include="CrossEnvIO\Core\DirectoryLinks.cs" />
+    <Compile Include="CrossEnvIO\Core\TransferFile.cs" />
     <Compile Include="CrossEnvIO\Core\CrossEnvRebuildTool.cs" />
     <Compile Include="CrossEnvIO\Core\EnvLibrary.cs" />
     <Compile Include="CrossEnvIO\Core\PszPathFixer.cs" />

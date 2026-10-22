@@ -19,6 +19,8 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.DataTypes;
 
@@ -26,10 +28,10 @@ namespace TxTools.CrossEnvIO
 {
     public sealed class WeldPointReport
     {
-        public int Exported, Created, Bound, Projected, Skipped, Failed, Rebuilt;
+        public int Exported, Created, Updated, Bound, Projected, Skipped, Failed, Rebuilt;
         public readonly List<string> Errors = new List<string>();
         public override string ToString()
-            => $"重建 {Created}（更新位置 {Rebuilt} · 绑定 {Bound} · 投影 {Projected}）· 跳过 {Skipped} · 失败 {Failed}";
+            => $"新建 {Created} · 更新已有 {Updated}（更新位置 {Rebuilt} · 绑定 {Bound} · 投影 {Projected}）· 跳过 {Skipped} · 失败 {Failed}";
     }
 
     public static class WeldPointIO
@@ -46,7 +48,7 @@ namespace TxTools.CrossEnvIO
         /// selectedNames：若非空，只导出名称在此集合中的焊点操作（null/空=导出全部）。
         /// </summary>
         public static int ExportWeldPoints(string filePath, Action<string> log,
-                                           HashSet<string> selectedNames = null)
+                                           HashSet<string> selectedIds = null)
         {
             log = log ?? Nop;
             var doc = TxApplication.ActiveDocument;
@@ -55,15 +57,16 @@ namespace TxTools.CrossEnvIO
             if (opRoot == null) { log("[导出] OperationRoot 为空"); return 0; }
 
             var sb = new StringBuilder();
-            sb.AppendLine("WeldOpName\tWeldPointName\tBindPart\tX\tY\tZ\tRX\tRY\tRZ\tParentOpPath");
+            sb.AppendLine("WeldOpName\tWeldPointName\tBindPart\tX\tY\tZ\tRX\tRY\tRZ\tParentOpPath\tFormatVersion");
 
             int count = 0;
+            var partPaths = BuildPartPaths();
             WalkOps(opRoot, "", (op, path) =>
             {
                 var wop = op as TxWeldLocationOperation;
                 if (wop == null) return;
                 // 多选过滤：选中了操作则只导出选中的
-                if (selectedNames != null && selectedNames.Count > 0 && !selectedNames.Contains(wop.Name))
+                if (selectedIds != null && !selectedIds.Contains(wop.Id))
                     return;
                 try
                 {
@@ -77,10 +80,10 @@ namespace TxTools.CrossEnvIO
                         x = loc.Translation.X; y = loc.Translation.Y; z = loc.Translation.Z;
                         TxMath.MatrixToEulerDeg(TxMath.TxToArr(loc), out rx, out ry, out rz);
                     }
-                    string bind = GetBindPart(wp);
+                    string bind = GetBindPart(wp, partPaths);
 
-                    sb.Append(wop.Name).Append('\t')
-                      .Append(wp != null ? wp.Name : "").Append('\t')
+                    sb.Append(TransferFile.Field(wop.Name)).Append('\t')
+                      .Append(TransferFile.Field(wp != null ? wp.Name : "")).Append('\t')
                       .Append(bind).Append('\t')
                       .Append(x.ToString(Fmt, CultureInfo.InvariantCulture)).Append('\t')
                       .Append(y.ToString(Fmt, CultureInfo.InvariantCulture)).Append('\t')
@@ -88,14 +91,14 @@ namespace TxTools.CrossEnvIO
                       .Append(rx.ToString(Fmt, CultureInfo.InvariantCulture)).Append('\t')
                       .Append(ry.ToString(Fmt, CultureInfo.InvariantCulture)).Append('\t')
                       .Append(rz.ToString(Fmt, CultureInfo.InvariantCulture)).Append('\t')
-                      .Append(path)
+                      .Append(path).Append("\t2")
                       .AppendLine();
                     count++;
                 }
-                catch (Exception ex) { log("[导出] " + SafeName(wop) + " 行异常: " + ex.Message); }
+                catch (Exception ex) { throw new InvalidOperationException("导出焊点失败: " + SafeName(wop), ex); }
             });
 
-            File.WriteAllText(filePath, sb.ToString(), new UTF8Encoding(true));
+            TransferFile.Write(filePath, sb.ToString());
             log("[导出] ✓ 已写入焊点 " + count + " 条 → " + filePath);
             return count;
         }
@@ -115,9 +118,9 @@ namespace TxTools.CrossEnvIO
 
                 var children = new List<ITxObject>();
                 try { foreach (ITxObject c in (System.Collections.IEnumerable)coll) if (c != null) children.Add(c); }
-                catch { }
+                catch (Exception ex) { throw new InvalidOperationException("无法读取操作树: " + SafeName(cur), ex); }
 
-                bool isContainer = cur.GetType().Name.IndexOf("Compound", StringComparison.Ordinal) >= 0
+                bool isContainer = cur is TxOperationRoot || cur.GetType().Name.IndexOf("Compound", StringComparison.Ordinal) >= 0
                                    || cur.GetType().Name.IndexOf("Weld", StringComparison.Ordinal) >= 0
                                    || cur.GetType().Name.IndexOf("Robotic", StringComparison.Ordinal) >= 0;
                 foreach (var c in children)
@@ -131,7 +134,8 @@ namespace TxTools.CrossEnvIO
                     }
                     if (isContainer)
                     {
-                        string childPath = curPath.Length == 0 ? c.Name : curPath + "/" + c.Name;
+                        string childPath = curPath.Length == 0 ? Uri.EscapeDataString(c.Name ?? "")
+                            : curPath + "/" + Uri.EscapeDataString(c.Name ?? "");
                         stack.Push(new KeyValuePair<ITxObject, string>(c, childPath));
                     }
                     else
@@ -143,7 +147,7 @@ namespace TxTools.CrossEnvIO
             }
         }
 
-        private static string GetBindPart(TxWeldPoint wp)
+        private static string GetBindPart(TxWeldPoint wp, Dictionary<string, string> paths)
         {
             if (wp == null) return "";
             try
@@ -151,15 +155,24 @@ namespace TxTools.CrossEnvIO
                 var parts = wp.AssignedParts;
                 if (parts != null && parts.Count > 0)
                 {
-                    var names = new List<string>();
+                    var names = new JArray();
                     foreach (ITxObject p in parts)
-                        try { names.Add(p.Name); } catch { }
-                    return string.Join("+", names);
+                    {
+                        string path; paths.TryGetValue(p.Id, out path);
+                        names.Add(new JObject { ["name"] = p.Name, ["path"] = path,
+                            ["leading"] = (wp.LeadingPart as ITxObject)?.Id == p.Id });
+                    }
+                    return names.ToString(Formatting.None);
                 }
                 var lead = wp.LeadingPart as ITxObject;
-                if (lead != null) return lead.Name;
+                if (lead != null)
+                {
+                    string path; paths.TryGetValue(lead.Id, out path);
+                    return new JArray(new JObject { ["name"] = lead.Name, ["path"] = path,
+                        ["leading"] = true }).ToString(Formatting.None);
+                }
             }
-            catch { }
+            catch (Exception ex) { throw new InvalidOperationException("无法读取焊点绑定关系", ex); }
             return "";
         }
 
@@ -205,41 +218,46 @@ namespace TxTools.CrossEnvIO
                     string bindName = cols.BindPartIdx >= 0 && cols.BindPartIdx < r.Length ? r[cols.BindPartIdx] : "";
                     double x, y, z, rx, ry, rz;
                     if (!TryParseLoc(r, cols.XIdx, out x, out y, out z, out rx, out ry, out rz))
-                    { rep.Skipped++; continue; }
+                    { rep.Failed++; rep.Errors.Add("无效焊点位姿: " + weldName); continue; }
                     string rawPath = r[cols.PathIdx];
+                    string groupPath = NormalizePath(rawPath);
+                    if (cols.FormatVersionIdx < 0 && (groupPath.EndsWith("/" + Uri.EscapeDataString(weldName), StringComparison.Ordinal)
+                        || string.Equals(groupPath, Uri.EscapeDataString(weldName), StringComparison.Ordinal)))
+                    {
+                        int last = groupPath.LastIndexOf('/');
+                        groupPath = last > 0 ? groupPath.Substring(0, last) : "";
+                    }
 
                     try
                     {
                         if (bindOnly)
                         {
-                            if (TryBindExisting(opRoot, weldName, bindName, partMap, doProject, rep))
-                                rep.Bound++;
+                            ITxObject existingGroup;
+                            var existingWeld = opIndex.TryGetValue(groupPath, out existingGroup)
+                                ? FindOpByName(existingGroup, weldName) : null;
+                            if (existingWeld == null)
+                            { rep.Failed++; rep.Errors.Add("未找到指定父操作下的焊点: " + groupPath + "/" + weldName); }
+                            else if (TryBind(existingWeld, bindName, partMap, doProject, rep, log)) rep.Updated++;
                             continue;
                         }
 
-                        string groupPath = NormalizePath(rawPath);
-                        // 兼容旧格式：路径最后一段是焊点名时去掉（旧导出 ParentOpPath 含焊点名，
-                        // 新导出不含 —— 焊点应挂在父操作如 Weld_Op 下，而不是为焊点名建 CompOp）。
-                        if (groupPath.EndsWith("/" + weldName, StringComparison.Ordinal)
-                            || string.Equals(groupPath, weldName, StringComparison.Ordinal))
-                        {
-                            int last = groupPath.LastIndexOf('/');
-                            groupPath = last > 0 ? groupPath.Substring(0, last) : "";
-                        }
                         var group = FindOrCreateGroup(opRoot, opIndex, groupPath, log);
-                        if (group == null) { rep.Skipped++; log("[重建] 无目标复合操作: " + rawPath); continue; }
+                        if (group == null) { rep.Failed++; rep.Errors.Add("无目标父操作: " + rawPath); continue; }
 
                         // 已存在同名焊点 → 只更新位置/绑定
                         var existing = FindOpByName(group, weldName);
                         if (existing != null)
                         {
                             if (SetLocation(existing, x, y, z, rx, ry, rz)) rep.Rebuilt++;
-                            TryBind(existing, bindName, partMap, doProject, rep);
-                            rep.Created++;
+                            else { rep.Failed++; rep.Errors.Add("更新焊点位姿失败: " + weldName); }
+                            TryBind(existing, bindName, partMap, doProject, rep, log);
+                            rep.Updated++;
                             continue;
                         }
 
-                        var wpData = TxMfgCreationDataFactory.CreateWeldPointCreationData(weldName,
+                        string pointName = cols.WeldPointNameIdx >= 0 && cols.WeldPointNameIdx < r.Length
+                            && !string.IsNullOrWhiteSpace(r[cols.WeldPointNameIdx]) ? r[cols.WeldPointNameIdx] : weldName;
+                        var wpData = TxMfgCreationDataFactory.CreateWeldPointCreationData(pointName,
                             new TxVector(x, y, z));
                         var cd = new TxWeldLocationOperationCreationData();
                         cd.Name = weldName;
@@ -252,7 +270,8 @@ namespace TxTools.CrossEnvIO
                         if (wop == null) { rep.Failed++; rep.Errors.Add("创建返回 null: " + weldName); continue; }
                         rep.Created++;
                         if (SetLocation(wop, x, y, z, rx, ry, rz)) rep.Rebuilt++;
-                        TryBind(wop, bindName, partMap, doProject, rep);
+                        else { rep.Failed++; rep.Errors.Add("设置焊点位姿失败: " + weldName); }
+                        TryBind(wop, bindName, partMap, doProject, rep, log);
                     }
                     catch (Exception ex)
                     {
@@ -278,28 +297,29 @@ namespace TxTools.CrossEnvIO
         private static Dictionary<string, ITxObject> BuildOpIndex(TxOperationRoot opRoot, Action<string> log)
         {
             var map = new Dictionary<string, ITxObject>(StringComparer.Ordinal);
+            map[""] = opRoot;
             var stack = new Stack<KeyValuePair<ITxObject, string>>();
             try
             {
                 foreach (ITxObject c in (System.Collections.IEnumerable)opRoot)
                 {
                     bool isOp = c is TxCompoundOperation || c is TxWeldOperation;
-                    if (isOp) stack.Push(new KeyValuePair<ITxObject, string>(c, c.Name));
+                    if (isOp) stack.Push(new KeyValuePair<ITxObject, string>(c, Uri.EscapeDataString(c.Name ?? "")));
                 }
             }
             catch { }
             while (stack.Count > 0)
             {
                 var kv = stack.Pop();
-                if (!map.ContainsKey(kv.Key.Name) && !map.ContainsKey(kv.Value))
-                    map[kv.Value] = kv.Key;
+                if (map.ContainsKey(kv.Value)) map[kv.Value] = null;
+                else map[kv.Value] = kv.Key;
                 try
                 {
                     foreach (ITxObject c in (System.Collections.IEnumerable)kv.Key)
                     {
                         bool isOp = c is TxCompoundOperation || c is TxWeldOperation;
                         if (isOp)
-                            stack.Push(new KeyValuePair<ITxObject, string>(c, kv.Value + "/" + c.Name));
+                            stack.Push(new KeyValuePair<ITxObject, string>(c, kv.Value + "/" + Uri.EscapeDataString(c.Name ?? "")));
                     }
                 }
                 catch { }
@@ -310,7 +330,7 @@ namespace TxTools.CrossEnvIO
         private static ITxObject FindOrCreateGroup(TxOperationRoot opRoot,
             Dictionary<string, ITxObject> opIndex, string path, Action<string> log)
         {
-            if (string.IsNullOrEmpty(path)) return null;
+            if (string.IsNullOrEmpty(path)) return opRoot;
             ITxObject cached;
             if (opIndex.TryGetValue(path, out cached)) return cached;
 
@@ -324,8 +344,8 @@ namespace TxTools.CrossEnvIO
             int total = segs.Count;
             for (int i = 0; i < total; i++)
             {
-                string seg = segs[i];
-                acc = acc.Length == 0 ? seg : acc + "/" + seg;
+                string seg = Uri.UnescapeDataString(segs[i]);
+                acc = acc.Length == 0 ? segs[i] : acc + "/" + segs[i];
                 bool isLast = (i == total - 1);
 
                 ITxObject found = FindChildOp(cur, seg);
@@ -336,7 +356,7 @@ namespace TxTools.CrossEnvIO
                     else
                         found = CreateCompound(cur, new TxCompoundOperationCreationData());
                     if (found == null) return null;
-                    TrySetName(found, seg);
+                    if (!TrySetName(found, seg)) throw new InvalidOperationException("父操作重命名失败: " + seg);
                 }
                 opIndex[acc] = found;
                 cur = found;
@@ -363,33 +383,34 @@ namespace TxTools.CrossEnvIO
 
         private static ITxObject FindChildOp(ITxObject parent, string name)
         {
-            try
+            ITxObject found = null;
+            foreach (ITxObject c in (System.Collections.IEnumerable)parent)
             {
-                foreach (ITxObject c in (System.Collections.IEnumerable)parent)
+                if (c == null) continue;
+                bool isOp = c is TxCompoundOperation || c is TxWeldOperation;
+                if (isOp && string.Equals(c.Name, name, StringComparison.Ordinal))
                 {
-                    if (c == null) continue;
-                    bool isOp = c is TxCompoundOperation || c is TxWeldOperation;
-                    if (isOp && string.Equals(c.Name, name, StringComparison.Ordinal))
-                        return c;
+                    if (found != null) throw new InvalidOperationException("同名父操作有多份: " + name);
+                    found = c;
                 }
             }
-            catch { }
-            return null;
+            return found;
         }
 
         private static TxWeldLocationOperation FindOpByName(ITxObject group, string name)
         {
-            try
+            if (group == null) return null;
+            TxWeldLocationOperation found = null;
+            foreach (ITxObject c in (System.Collections.IEnumerable)group)
             {
-                foreach (ITxObject c in (System.Collections.IEnumerable)group)
+                var wop = c as TxWeldLocationOperation;
+                if (wop != null && string.Equals(wop.Name, name, StringComparison.Ordinal))
                 {
-                    var wop = c as TxWeldLocationOperation;
-                    if (wop != null && string.Equals(wop.Name, name, StringComparison.Ordinal))
-                        return wop;
+                    if (found != null) throw new InvalidOperationException("同名焊点操作有多份: " + name);
+                    found = wop;
                 }
             }
-            catch { }
-            return null;
+            return found;
         }
 
         /// <summary>在父操作(TxCompoundOperation 或 TxWeldOperation)下创建焊点。父可为焊接操作。</summary>
@@ -404,108 +425,136 @@ namespace TxTools.CrossEnvIO
         {
             if (string.IsNullOrEmpty(raw)) return "";
             string p = raw.TrimStart('/');
-            // 去掉首段重复（T18FL4 布局: 首段出现两次）
             var segs = p.Split('/').Where(s => s.Length > 0).ToList();
-            if (segs.Count >= 2 && string.Equals(segs[0], segs[1], StringComparison.Ordinal))
-                segs.RemoveAt(0);
             return string.Join("/", segs);
         }
 
         // ── 绑定 / 投影 ──
 
+        private static Dictionary<string, string> BuildPartPaths()
+        {
+            var paths = new Dictionary<string, string>();
+            var root = TxApplication.ActiveDocument.PhysicalRoot;
+            var pending = new Stack<KeyValuePair<ITxObject, string>>();
+            foreach (var child in DirectChildren(root))
+                pending.Push(new KeyValuePair<ITxObject, string>(child, PartSegment(child)));
+            while (pending.Count > 0)
+            {
+                var item = pending.Pop();
+                paths[item.Key.Id] = item.Value;
+                foreach (var child in DirectChildren(item.Key))
+                    pending.Push(new KeyValuePair<ITxObject, string>(child,
+                        item.Value + "/" + PartSegment(child)));
+            }
+            return paths;
+        }
+
+        private static string PartSegment(ITxObject obj)
+        {
+            // 同名资源树与零件树也必须区分；路径同时保留容器角色。
+            return (obj is TxCompoundPart ? "P:" : obj is TxCompoundResource ? "R:" : "")
+                + Uri.EscapeDataString(obj.Name ?? "");
+        }
+
         private static Dictionary<string, TxComponent> BuildPartMap(Action<string> log)
         {
-            var map = new Dictionary<string, TxComponent>(StringComparer.OrdinalIgnoreCase);
-            try
+            var map = new Dictionary<string, TxComponent>(StringComparer.Ordinal);
+            var paths = BuildPartPaths();
+            foreach (ITxObject obj in TxApplication.ActiveDocument.PhysicalRoot
+                .GetAllDescendants(new TxTypeFilter(typeof(TxComponent))))
             {
-                var doc = TxApplication.ActiveDocument;
-                if (doc == null) return map;
-                var stack = new Stack<ITxObject>();
-                foreach (var c in DirectChildren(doc.PhysicalRoot)) stack.Push(c);
-                while (stack.Count > 0)
-                {
-                    var cur = stack.Pop();
-                    if (cur == null) continue;
-                    try
-                    {
-                        var comp = cur as TxComponent;
-                        if (comp != null && !comp.Name.Contains("FeatureLine") && !map.ContainsKey(comp.Name))
-                            map[comp.Name] = comp;
-                        var coll = cur as ITxObjectCollection;
-                        if (coll != null)
-                            foreach (var c in DirectChildren(cur)) stack.Push(c);
-                    }
-                    catch { }
-                }
+                var comp = obj as TxComponent;
+                if (comp == null) continue;
+                string path;
+                if (paths.TryGetValue(comp.Id, out path))
+                    AddUniquePart(map, "@path:" + path, comp);
+                AddUniquePart(map, comp.Name, comp);
             }
-            catch { }
             return map;
         }
 
-        private static void TryBind(TxWeldLocationOperation wop, string bindName,
+        private static void AddUniquePart(Dictionary<string, TxComponent> map, string key, TxComponent part)
+        {
+            if (map.ContainsKey(key)) map[key] = null; // 重名不能静默覆盖
+            else map[key] = part;
+        }
+
+        private static bool TryBind(TxWeldLocationOperation wop, string bindName,
             Dictionary<string, TxComponent> partMap, bool doProject, WeldPointReport rep,
             Action<string> log = null)
         {
             log = log ?? Nop;
-            if (string.IsNullOrWhiteSpace(bindName)) return;
-            var wp = wop.WeldPoint;
-            if (wp == null) return;
-            TxComponent part;
-            if (!partMap.TryGetValue(bindName, out part))
+            if (string.IsNullOrWhiteSpace(bindName))
             {
-                rep.Failed++;
-                rep.Errors.Add("[" + SafeName(wop) + "] 未找到零件: " + bindName);
-                return;
+                if (doProject) { rep.Failed++; rep.Errors.Add("[" + SafeName(wop) + "] 无绑定零件，无法投影"); }
+                return !doProject;
             }
+            var wp = wop.WeldPoint;
+            if (wp == null) { rep.Failed++; rep.Errors.Add("[" + SafeName(wop) + "] 没有焊点对象"); return false; }
             try
             {
-                wp.ClearAssignedParts();
-                var list = new TxObjectList();
-                list.Add(part);
-                wp.AssignParts(list);
+                var assignments = new List<TxComponent>();
+                TxComponent leading = null;
+                JArray entries;
+                if (bindName.TrimStart().StartsWith("[", StringComparison.Ordinal))
+                    entries = JArray.Parse(bindName);
+                else
+                {
+                    // 旧格式优先按完整名称查找，兼容名称本身含 + 的零件。
+                    entries = partMap.ContainsKey(bindName) ? new JArray(bindName)
+                        : new JArray(bindName.Split('+'));
+                }
+                foreach (var token in entries)
+                {
+                    var entry = token as JObject;
+                    string name = entry != null ? (string)entry["name"] : (string)token;
+                    string path = entry != null ? (string)entry["path"] : null;
+                    string key = !string.IsNullOrEmpty(path) ? "@path:" + path : name;
+                    TxComponent part;
+                    if (string.IsNullOrWhiteSpace(key) || !partMap.TryGetValue(key, out part) || part == null)
+                        throw new InvalidOperationException("零件不存在或同名有多份: " + key);
+                    if (!assignments.Any(p => p.Id == part.Id)) assignments.Add(part);
+                    if (entry != null && (bool?)entry["leading"] == true) leading = part;
+                }
+                if (assignments.Count == 0) throw new InvalidOperationException("绑定零件列表为空");
+                var previousParts = new TxObjectList();
+                foreach (ITxObject part in wp.AssignedParts) previousParts.Add(part);
+                var previousLeading = wp.LeadingPart;
+                try
+                {
+                    var list = new TxObjectList();
+                    foreach (var part in assignments) list.Add(part);
+                    wp.ClearAssignedParts();
+                    wp.AssignParts(list);
+                    wp.LeadingPart = leading ?? assignments[0];
+                }
+                catch
+                {
+                    // 赋值失败尽量恢复原绑定；整个批次仍保留 Ctrl+Z 撤销分组。
+                    try { wp.ClearAssignedParts(); wp.AssignParts(previousParts); wp.LeadingPart = previousLeading; }
+                    catch (Exception restore) { rep.Errors.Add("恢复原绑定失败: " + restore.Message); }
+                    throw;
+                }
                 rep.Bound++;
+                if (doProject)
+                {
+                    try { wop.Project(leading ?? assignments[0], true); rep.Projected++; }
+                    catch (Exception ex)
+                    {
+                        rep.Failed++;
+                        string message = "[" + SafeName(wop) + "] 投影失败: " + ex.Message;
+                        rep.Errors.Add(message); log("[投影] " + message);
+                        return false;
+                    }
+                }
+                return true;
             }
             catch (Exception ex)
             {
                 rep.Failed++;
-                rep.Errors.Add("[" + SafeName(wop) + "] 绑定失败(" + bindName + "): " + ex.Message);
-                return;
+                rep.Errors.Add("[" + SafeName(wop) + "] 绑定失败: " + ex.Message);
+                return false;
             }
-            if (doProject)
-            {
-                try
-                {
-                    wop.Project(part, true);
-                    rep.Projected++;
-                }
-                catch (Exception ex)
-                {
-                    log("[投影] " + SafeName(wop) + " 投影失败: " + ex.Message);
-                }
-            }
-        }
-
-        private static bool TryBindExisting(TxOperationRoot opRoot, string weldName, string bindName,
-            Dictionary<string, TxComponent> partMap, bool doProject, WeldPointReport rep)
-        {
-            TxWeldLocationOperation found = null;
-            var stack = new Stack<ITxObject>();
-            foreach (var c in DirectChildren(opRoot)) stack.Push(c);
-            while (stack.Count > 0)
-            {
-                var cur = stack.Pop();
-                if (cur == null) continue;
-                var wop = cur as TxWeldLocationOperation;
-                if (wop != null)
-                {
-                    if (string.Equals(wop.Name, weldName, StringComparison.Ordinal)) { found = wop; break; }
-                }
-                var coll = cur as ITxObjectCollection;
-                if (coll != null) foreach (var c in DirectChildren(cur)) stack.Push(c);
-            }
-            if (found == null) return false;
-            TryBind(found, bindName, partMap, doProject, rep);
-            return true;
         }
 
         private static List<ITxObject> DirectChildren(ITxObject obj)
@@ -526,7 +575,7 @@ namespace TxTools.CrossEnvIO
 
         private sealed class Columns
         {
-            public int WeldOpNameIdx, BindPartIdx, XIdx, PathIdx, MinCols;
+            public int WeldOpNameIdx, WeldPointNameIdx, BindPartIdx, XIdx, PathIdx, FormatVersionIdx, MinCols;
         }
 
         private static Columns DetectColumns(string filePath, Action<string> log)
@@ -538,19 +587,20 @@ namespace TxTools.CrossEnvIO
                     if (string.IsNullOrWhiteSpace(l)) continue;
                     var head = l.Split('\t');
                     if (head.Length < 2) continue;
-                    var c = new Columns { WeldOpNameIdx = 0, BindPartIdx = -1, XIdx = -1, PathIdx = -1 };
+                    var c = new Columns { WeldOpNameIdx = 0, WeldPointNameIdx = -1, BindPartIdx = -1, XIdx = -1, PathIdx = -1, FormatVersionIdx = -1 };
                     for (int i = 0; i < head.Length; i++)
                     {
                         string h = head[i].Trim();
                         if (h == "WeldOpName") c.WeldOpNameIdx = i;
-                        else if (h == "WeldPointName") { /* 略过，T18FL4 无此列 */ }
+                        else if (h == "WeldPointName") c.WeldPointNameIdx = i;
                         else if (h == "BindPart") c.BindPartIdx = i;
                         else if (h == "X") c.XIdx = i;
                         else if (h == "ParentOpPath") c.PathIdx = i;
+                        else if (h == "FormatVersion") c.FormatVersionIdx = i;
                     }
                     if (c.XIdx >= 0 && c.PathIdx >= 0)
                     {
-                        c.MinCols = Math.Max(c.PathIdx + 1, 6);
+                        c.MinCols = Math.Max(c.PathIdx + 1, c.XIdx + 6);
                         return c;
                     }
                     break;
@@ -583,7 +633,8 @@ namespace TxTools.CrossEnvIO
             for (int i = 0; i < 6; i++)
             {
                 if (idx + i >= r.Length) return false;
-                if (!double.TryParse(r[idx + i], NumberStyles.Float, ci, out v[i])) return false;
+                if (!double.TryParse(r[idx + i], NumberStyles.Float, ci, out v[i])
+                    || double.IsNaN(v[i]) || double.IsInfinity(v[i])) return false;
             }
             x = v[0]; y = v[1]; z = v[2]; rx = v[3]; ry = v[4]; rz = v[5];
             return true;
@@ -601,9 +652,9 @@ namespace TxTools.CrossEnvIO
             catch { return false; }
         }
 
-        private static void TrySetName(ITxObject obj, string name)
+        private static bool TrySetName(ITxObject obj, string name)
         {
-            try { obj.Name = name; } catch { }
+            try { obj.Name = name; return obj.Name == name; } catch { return false; }
         }
 
         private static string SafeName(ITxObject obj)

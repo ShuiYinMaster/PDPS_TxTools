@@ -15,6 +15,23 @@ namespace TxTools.CrossEnvIO
     {
         private static void Nop(string s) { }
 
+        public static string LinkNameForPath(string path)
+        {
+            string full = Path.GetFullPath(path).TrimEnd('\\', '/').ToUpperInvariant();
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+                return "Link_" + BitConverter.ToString(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(full)))
+                    .Replace("-", "") + ".cojt";
+        }
+
+        public static string RelativeToRoot(string path, string root)
+        {
+            if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(root)) return null;
+            string full = Path.GetFullPath(path).TrimEnd('\\', '/');
+            string prefix = Path.GetFullPath(root).TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
+            return full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                ? full.Substring(prefix.Length) : null;
+        }
+
         /// <summary>
         /// 把一个 .cojt 目录整体复制到目标父目录（保留目录名）。
         /// 栈式逐文件复制，避免 Directory.Copy 在 PS 沙箱内不可用的问题。
@@ -30,6 +47,9 @@ namespace TxTools.CrossEnvIO
                 if (string.IsNullOrWhiteSpace(dstParentDir)) throw new IOException("目标父目录为空");
                 srcDir = Path.GetFullPath(srcDir).TrimEnd('\\', '/');
                 dstParentDir = Path.GetFullPath(dstParentDir);
+                if (RelativeToRoot(dstParentDir, srcDir) != null
+                    || string.Equals(dstParentDir.TrimEnd('\\', '/'), srcDir, StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("不能把 cojt 复制到自身或其子目录");
                 Directory.CreateDirectory(dstParentDir);
                 string dstDir = Path.Combine(dstParentDir, Path.GetFileName(srcDir));
                 if (Directory.Exists(dstDir) || File.Exists(dstDir))
@@ -94,8 +114,10 @@ namespace TxTools.CrossEnvIO
                 if (!Directory.Exists(cur)) continue;
                 try
                 {
+                    if ((File.GetAttributes(cur) & FileAttributes.ReparsePoint) != 0) continue;
                     foreach (var d in Directory.GetDirectories(cur))
                     {
+                        if ((File.GetAttributes(d) & FileAttributes.ReparsePoint) != 0) continue;
                         if (d.EndsWith(".cojt", StringComparison.OrdinalIgnoreCase))
                         {
                             if (seen.Add(d)) result.Add(d);
@@ -115,9 +137,7 @@ namespace TxTools.CrossEnvIO
         /// <summary>
         /// 把一批 cojt 目录按相对路径映射复制到目标库根。srcRoot 与 dstRoot 为对应库目录。
         ///
-        /// 目标路径的【中间目录层】做字母部分模糊匹配（忽略数字/符号，如 1、Product 与
-        /// 1_Product 视为同一目录），复用目标库已有的同字母目录，避免命名变体产生一堆文件夹；
-        /// 最后一层（cojt 目录名）精确匹配，保证每个资源唯一。
+        /// 每一层保留完整目录名称；复制结果记录源路径到目标路径的精确映射。
         /// </summary>
         public static CopyResult CopyCojtList(List<string> srcCojtDirs, string srcRoot,
                                               string dstRoot, Action<string> log)
@@ -126,23 +146,27 @@ namespace TxTools.CrossEnvIO
             var rep = new CopyResult();
             if (srcCojtDirs == null || srcCojtDirs.Count == 0) return rep;
 
-            string srcRootNorm = (srcRoot ?? "").TrimEnd('\\', '/');
-            string dstRootNorm = (dstRoot ?? "").TrimEnd('\\', '/');
-            if (string.IsNullOrEmpty(dstRootNorm)) { log("[复制] 目标库根为空"); return rep; }
+            if (string.IsNullOrWhiteSpace(srcRoot) || !Directory.Exists(srcRoot)
+                || string.IsNullOrWhiteSpace(dstRoot))
+            { rep.Fail++; log("[复制] 源库根或目标库根无效"); return rep; }
+            string srcRootNorm = Path.GetFullPath(srcRoot);
+            string dstRootNorm = Path.GetFullPath(dstRoot);
+            if (RelativeToRoot(dstRootNorm, srcRootNorm) != null)
+            { rep.Fail++; log("[复制] 目标库不能位于源库内部"); return rep; }
+            rep.SourceRoot = srcRootNorm;
+            rep.DestinationRoot = dstRootNorm;
             Directory.CreateDirectory(dstRootNorm);
 
             foreach (var src in srcCojtDirs)
             {
-                string rel = src;
+                string rel;
                 try
                 {
-                    if (!string.IsNullOrEmpty(srcRootNorm)
-                        && src.StartsWith(srcRootNorm + "\\", StringComparison.OrdinalIgnoreCase))
-                        rel = src.Substring(srcRootNorm.Length + 1);
-                    else
-                        rel = Path.GetFileName(src);
+                    rel = RelativeToRoot(src, srcRootNorm);
+                    if (rel == null || !src.TrimEnd('\\', '/').EndsWith(".cojt", StringComparison.OrdinalIgnoreCase))
+                        throw new IOException("源组件不在指定库根内或不是 cojt: " + src);
                 }
-                catch { rel = Path.GetFileName(src); }
+                catch (Exception ex) { rep.Fail++; log("[复制] " + ex.Message); continue; }
 
                 string dstParent = ResolveDstParent(rel, dstRootNorm, log);
                 if (string.IsNullOrEmpty(dstParent))
@@ -157,14 +181,19 @@ namespace TxTools.CrossEnvIO
                 string dstDir = Path.Combine(dstParent, cojtName);
                 if (Directory.Exists(dstDir))
                 {
+                    // 同名不代表同一版本，只有内容一致才允许在重建中复用。
+                    if (!CopyResult.SameContent(src, dstDir))
+                    { rep.Fail++; log("[复制] 目标同路径组件内容不同，未覆盖: " + dstDir); continue; }
+                    rep.TargetPaths[Path.GetFullPath(src)] = Path.GetFullPath(dstDir);
                     rep.Skipped++;
-                    log("[跳过] 目标已存在，跳过: " + cojtName);
+                    log("[跳过] 目标组件内容一致: " + dstDir);
                     continue;
                 }
 
                 if (CopyCojtDirectory(src, dstParent, log, rep))
                 {
                     rep.Ok++;
+                    rep.TargetPaths[Path.GetFullPath(src)] = Path.GetFullPath(dstDir);
                 }
                 else rep.Fail++;
             }
@@ -173,7 +202,7 @@ namespace TxTools.CrossEnvIO
 
         /// <summary>
         /// 把相对路径（如 1、Product\VAN\F30-5400710\xxx.cojt）解析到目标库根下，
-        /// 中间目录逐层用字母模糊匹配复用已有目录。
+        /// 中间目录逐层精确匹配，保留编号和版本。
         /// </summary>
         private static string ResolveDstParent(string relPath, string dstRoot, Action<string> log)
         {
@@ -188,7 +217,11 @@ namespace TxTools.CrossEnvIO
 
                 string cur = dstRoot;
                 for (int i = 0; i < midCount; i++)
-                    cur = MatchDirByAlpha(cur, segs[i]);
+                {
+                    if (segs[i] == "." || segs[i] == ".." || segs[i].IndexOf(':') >= 0)
+                        throw new IOException("非法相对目录段: " + segs[i]);
+                    cur = MatchDirExactly(cur, segs[i]);
+                }
                 return cur;
             }
             catch (Exception ex)
@@ -199,44 +232,28 @@ namespace TxTools.CrossEnvIO
         }
 
         /// <summary>
-        /// 在 parentDir 下匹配/创建目录：优先复用「字母部分相同」的已有子目录，
-        /// 没有则新建。避免 1、Product / 1_Product / 1 等命名变体各建一个文件夹。
+        /// 精确匹配目录，不删除编号、不复用链接目录。
         /// </summary>
-        private static string MatchDirByAlpha(string parentDir, string name)
+        private static string MatchDirExactly(string parentDir, string name)
         {
-            string targetAlpha = AlphaPart(name);
-            try
-            {
+                if ((File.GetAttributes(parentDir) & FileAttributes.ReparsePoint) != 0)
+                    throw new IOException("目标库路径包含链接目录: " + parentDir);
                 foreach (var d in Directory.GetDirectories(parentDir))
                 {
                     string dn = Path.GetFileName(d);
                     // 精确名优先（同字母下优先完全一致）
                     if (string.Equals(dn, name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if ((File.GetAttributes(d) & FileAttributes.ReparsePoint) != 0)
+                            throw new IOException("目标目录为链接: " + d);
                         return d;
+                    }
                 }
-                foreach (var d in Directory.GetDirectories(parentDir))
-                {
-                    string dn = Path.GetFileName(d);
-                    if (AlphaPart(dn) == targetAlpha)
-                        return d;
-                }
-            }
-            catch { }
             string nd = Path.Combine(parentDir, name);
             Directory.CreateDirectory(nd);
             return nd;
         }
 
-        /// <summary>提取字符串的字母部分（仅保留字母，统一小写），用于模糊匹配。</summary>
-        private static string AlphaPart(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return "";
-            var sb = new System.Text.StringBuilder(s.Length);
-            foreach (var c in s)
-                if (char.IsLetter(c))
-                    sb.Append(char.ToLowerInvariant(c));
-            return sb.ToString();
-        }
     }
 
     public sealed class CopyResult
@@ -245,6 +262,10 @@ namespace TxTools.CrossEnvIO
         public int Fail;
         public int Skipped;
         public bool SceneMayReferenceFiles;
+        public string SourceRoot, DestinationRoot;
+        public readonly HashSet<int> TargetPids = new HashSet<int>();
+        public readonly Dictionary<string, string> TargetPaths =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public readonly List<string> CopiedDirs = new List<string>();
         private readonly Dictionary<string, Dictionary<string, string>> _snapshots =
             new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
@@ -271,6 +292,7 @@ namespace TxTools.CrossEnvIO
             foreach (var directory in previous.CopiedDirs) Track(directory);
             foreach (var item in previous._snapshots) _snapshots[item.Key] = item.Value;
             SceneMayReferenceFiles |= previous.SceneMayReferenceFiles;
+            TargetPids.UnionWith(previous.TargetPids);
         }
 
         private static Dictionary<string, string> Snapshot(string directory)
@@ -294,6 +316,19 @@ namespace TxTools.CrossEnvIO
                 foreach (string child in Directory.GetDirectories(current)) pending.Push(child);
             }
             return result;
+        }
+
+        internal static bool SameContent(string left, string right)
+        {
+            try
+            {
+                var a = Snapshot(left); var b = Snapshot(right);
+                if (a.Count != b.Count) return false;
+                foreach (var item in a)
+                { string value; if (!b.TryGetValue(item.Key, out value) || value != item.Value) return false; }
+                return true;
+            }
+            catch { return false; }
         }
 
         /// <summary>文件清理独立于场景撤销；调用方必须先检查当前工程引用。</summary>

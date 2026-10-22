@@ -9,6 +9,9 @@ namespace TxTools.CrossEnvIO
 {
     public class CrossEnvIOCmd : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.CrossEnvIO.bmp";
+        public override string LargeBitmap => "image.CrossEnvIO.png";
+
         public override string Name { get { return ".跨环境IO→资源/零件/焊点"; } }
         public override string Category { get { return "TxTools"; } }
         public override string Tooltip { get { return "跨环境传输资源/零件/焊点（主控↔被控）"; } }
