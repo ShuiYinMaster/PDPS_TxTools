@@ -28,6 +28,7 @@ namespace TxTools.Agent.UI
 
         private ConversationListDialog()
         {
+            TxTools.Common.PluginUiPolicy.Attach(this);
             Text = "历史对话";
             Name = GetType().FullName;
             FormBorderStyle = FormBorderStyle.Sizable;

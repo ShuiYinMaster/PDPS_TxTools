@@ -239,6 +239,25 @@ public static class RecipeControlsRegression
             Check(done.Wait(TimeSpan.FromSeconds(5)) && (bool)result["ok"] && !RecipeUiActions.IsRunning, "Run completes and releases gate");
             Check(TxTools.Agent.Ps.PsBridge.Code.Contains("var show = false;"), "UI bridge applies authoritative action");
             Check(!UserPrefsStore.Load().RecipeArguments[recipe.Id].ContainsKey("target"), "Preferences contain only scalar arguments");
+            // Foreground can change while generated code is waiting for the PS UI thread.
+            int executedBefore = TxTools.Agent.Ps.PsBridge.Executed;
+            int foreground = 1;
+            Func<string> validateForeground = () => Volatile.Read(ref foreground) == 1 ? null : "前台程序已变化";
+            done.Reset(); result = null;
+            TxTools.Agent.Ps.PsBridge.Code = null;
+            TxTools.Agent.Ps.PsBridge.Gate.Reset();
+            RecipeUiActions.Run(3, run, (seq, data) => { result = data; done.Set(); }, validateForeground);
+            Check(SpinWait.SpinUntil(() => TxTools.Agent.Ps.PsBridge.Code != null, TimeSpan.FromSeconds(5)), "Recipe reached queued host boundary");
+            Volatile.Write(ref foreground, 2);
+            TxTools.Agent.Ps.PsBridge.Gate.Set();
+            Check(done.Wait(TimeSpan.FromSeconds(5)) && !(bool)result["ok"] && ((string)result["text"]).Contains("前台"), "Queued recipe rechecks foreground before scene mutation");
+            Check(TxTools.Agent.Ps.PsBridge.Executed == executedBefore && !RecipeUiActions.IsRunning, "Foreground change prevents engineering execution and releases gate");
+            result = null;
+            RecipeUiActions.Run(4, run, (seq, data) => result = data, validateForeground);
+            Check(result != null && !(bool)result["ok"] && TxTools.Agent.Ps.PsBridge.Executed == executedBefore, "Inactive foreground rejected before queueing");
+            Volatile.Write(ref foreground, 1); done.Reset(); result = null;
+            RecipeUiActions.Run(5, run, (seq, data) => { result = data; done.Set(); }, validateForeground);
+            Check(done.Wait(TimeSpan.FromSeconds(5)) && (bool)result["ok"] && TxTools.Agent.Ps.PsBridge.Executed == executedBefore + 1, "Returning to foreground allows a fresh execution");
             Console.WriteLine("PASS: recipe controls, Chinese names, choices, actions, migrations, sharing and execution gate (" + checks + " checks)");
             RecipeSharingRegression.Main();
             return Environment.ExitCode;

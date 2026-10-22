@@ -22,11 +22,13 @@ namespace TxTools.Agent.UI
         private string _study;
         private bool _ready;
         private bool _loadingHtml;
+        private bool _foregroundInvalidated;
 
         protected override bool ShowWithoutActivation => true;
 
         public RecipeQuickForm(Action manage)
         {
+            TxTools.Common.PluginUiPolicy.Attach(this);
             _manage = manage;
             Text = "鲸鱼娘 · 快捷配方";
             Font = new Font("Microsoft YaHei UI", 9F);
@@ -50,6 +52,12 @@ namespace TxTools.Agent.UI
             _studyTimer.Tick += (s, e) =>
             {
                 if (!Visible) return;
+                if (DesktopPetSession.ValidateSelf() != null)
+                {
+                    InvalidateForegroundTarget();
+                    Hide();
+                    return;
+                }
                 string study = RecipeUiActions.CurrentStudyKey();
                 if (!string.Equals(study, _study, StringComparison.Ordinal))
                 {
@@ -63,11 +71,20 @@ namespace TxTools.Agent.UI
         public void Toggle(JObject anchor, IWin32Window owner)
         {
             if (Visible) { Hide(); return; }
+            string error = DesktopPetSession.ValidateSelf();
+            if (error != null) throw new InvalidOperationException(error);
             _anchor = anchor;
             PositionNearPet();
             if (owner != null) Show(owner); else Show();
             PositionNearPet();
-            if (_ready) Send(0, new JObject { ["type"] = "quick.refresh" });
+            if (_foregroundInvalidated) InvalidateForegroundTarget();
+            if (_ready) { _foregroundInvalidated = false; Send(0, new JObject { ["type"] = "quick.refresh" }); }
+        }
+
+        private void InvalidateForegroundTarget()
+        {
+            _foregroundInvalidated = true;
+            Send(0, new JObject { ["type"] = "quick.targetChanged" });
         }
 
         private void PositionNearPet()
@@ -120,7 +137,7 @@ namespace TxTools.Agent.UI
                 using (var reader = new StreamReader(stream, System.Text.Encoding.UTF8))
                 {
                     _loadingHtml = true;
-                    _web.CoreWebView2.NavigateToString(reader.ReadToEnd());
+                    _web.CoreWebView2.NavigateToString(TxTools.Common.PluginUiPolicy.PrepareWebDocument(reader.ReadToEnd()));
                 }
             }
             catch (Exception ex) { _loading.Text = "快捷配方界面加载失败：\n" + ex.Message; }
@@ -131,6 +148,18 @@ namespace TxTools.Agent.UI
             int seq = (int?)msg["seq"] ?? 0;
             try
             {
+                string type = (string)msg["type"];
+                if (type == "recipe.pickSelection" || type == "recipe.objectTypes" || type == "recipe.run")
+                {
+                    string error = DesktopPetSession.ValidateSelf();
+                    if (error != null)
+                    {
+                        InvalidateForegroundTarget();
+                        string resultType = type == "recipe.pickSelection" ? "recipe.pick.result" : type + ".result";
+                        Send(seq, RecipeUiActions.Error(resultType, error, (string)msg["recipeId"]));
+                        return;
+                    }
+                }
                 switch ((string)msg["type"])
                 {
                     case "quick.ready":
@@ -138,6 +167,7 @@ namespace TxTools.Agent.UI
                         _ready = true;
                         _loading.Visible = false;
                         _web.BringToFront();
+                        if (_foregroundInvalidated) { InvalidateForegroundTarget(); _foregroundInvalidated = false; }
                         SendList(seq);
                         break;
                     case "recipe.list": SendList(seq); break;
@@ -149,7 +179,7 @@ namespace TxTools.Agent.UI
                         UserPrefsStore.UpdateRecipeFavorite(id, (bool?)msg["favorite"] == true);
                         SendList(seq);
                         break;
-                    case "recipe.run": RecipeUiActions.Run(seq, msg, Send); break;
+                    case "recipe.run": RecipeUiActions.Run(seq, msg, Send, DesktopPetSession.ValidateSelf); break;
                     case "recipe.detail":
                         var recipe = RecipeStore.Get((string)msg["recipeId"]);
                         if (recipe == null) throw new InvalidOperationException("配方不存在。");
@@ -172,7 +202,9 @@ namespace TxTools.Agent.UI
         private void SendList(int seq)
         {
             _study = RecipeUiActions.CurrentStudyKey();
-            Send(seq, RecipeUiActions.List());
+            var data = RecipeUiActions.List();
+            data["targetPid"] = PsInstanceRegistry.SelfPid;
+            Send(seq, data);
         }
 
         private void NotifyChanged()

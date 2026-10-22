@@ -156,6 +156,23 @@ class PetSprite {
 
     stage.appendChild(this.videoA);
     stage.appendChild(this.videoB);
+    this.frameCanvas = document.createElement('canvas');
+    this.frameCanvas.className = 'pet-frame';
+    this.frameCanvas.width = 640;
+    this.frameCanvas.height = 360;
+    this.frameContext = this.frameCanvas.getContext('2d', { alpha: true });
+    if (!this.frameContext) throw new Error('无法创建桌宠动画画布');
+    stage.appendChild(this.frameCanvas);
+    this._displayVideo = null;
+    this._displayFrame = null;
+    this._displayPaint = null;
+    this._drawCount = 0;
+    this._videoPool = new Set([this.videoA, this.videoB]);
+    this._warmVideos = new Map();
+    this._warmFailed = new Set();
+    this._warmTimer = null;
+    this._warming = null;
+    this._disposed = false;
     stage.appendChild(this.hit);
     this.el.appendChild(this.bubble);
     this.el.appendChild(stage);
@@ -221,6 +238,15 @@ class PetSprite {
   }
 
   dispose() {
+    this._disposed = true;
+    this.stopVideoFrames();
+    window.clearTimeout(this._warmTimer);
+    for (const entry of this._warmVideos.values()) entry.cancel?.();
+    this._warmVideos.clear();
+    ++this.gen;
+    this.pending?.cancel?.();
+    this.pending = null;
+    for (const video of this._videoPool) video.pause();
     clearTimeout(this._recipeClickTimer);
     this.ac.abort();
     if (this.bubbleTimer !== null) window.clearTimeout(this.bubbleTimer);
@@ -333,9 +359,132 @@ class PetSprite {
     return this.pos.y + this.halfH;
   }
 
-  // 双缓冲切换（与浏览器同一套：前台 opacity 切换 + 降级视频清 handler 并停播，防残留 ended 雪崩）
+  drawVideoFrame(video) {
+    if (this._disposed || video.readyState < 2) return false;
+    // One copy operation also replaces transparent pixels. No clear/draw gap or
+    // blending with the preceding pose, and no video-overlay surface promotion.
+    try {
+      this.frameContext.globalCompositeOperation = 'copy';
+      this.frameContext.drawImage(video, 0, 0, this.frameCanvas.width, this.frameCanvas.height);
+      this._drawCount++;
+      return true;
+    } catch (error) { console.warn('[dsh-pet] 动画画布绘制失败', error); return false; }
+  }
+
+  stopVideoFrames() {
+    if (this._displayFrame !== null && this._displayVideo) this._displayVideo.cancelVideoFrameCallback(this._displayFrame);
+    if (this._displayPaint !== null) cancelAnimationFrame(this._displayPaint);
+    this._displayFrame = null; this._displayPaint = null; this._displayVideo = null;
+  }
+
+  startVideoFrames(video) {
+    this.stopVideoFrames();
+    this._displayVideo = video;
+    const next = () => {
+      if (this._disposed || this._displayVideo !== video) return;
+      if (typeof video.requestVideoFrameCallback === 'function') {
+        this._displayFrame = video.requestVideoFrameCallback(() => {
+          if (this._disposed || this._displayVideo !== video) return;
+          this._displayFrame = null;
+          this.drawVideoFrame(video); next();
+        });
+      } else {
+        this._displayPaint = requestAnimationFrame(() => {
+          if (this._disposed || this._displayVideo !== video) return;
+          this._displayPaint = null;
+          this.drawVideoFrame(video); next();
+        });
+      }
+    };
+    next();
+  }
+
+  // Four paused decoded clips, loaded serially after the visible pet has started.
+  // The pool is capped at six video elements including the two playback slots.
+  warmAnimationCandidates() {
+    const first = slot => Array.isArray(slot) ? slot[0] : slot;
+    return [...new Set([
+      this.animations.idle?.[0],
+      first(this.animations.events?.workStatus?.[0]),
+      first(this.animations.events?.workStatus?.[1]),
+      this.animations.clicks?.slice(-1)[0],
+    ].filter(name => typeof name === 'string' && name))];
+  }
+
+  queueWarmAnimations() {
+    if (this._disposed || this._warming || this._warmTimer !== null) return;
+    this._warmTimer = window.setTimeout(() => {
+      this._warmTimer = null;
+      this.warmNextAnimation();
+    }, 100);
+  }
+
+  warmNextAnimation() {
+    if (this._disposed || this._warming || this._warmVideos.size >= 4) return;
+    const name = this.warmAnimationCandidates().find(n => !this._warmVideos.has(n) && !this._warmFailed.has(n));
+    if (!name) return;
+    const reserved = new Set([...this._warmVideos.values()].map(entry => entry.video));
+    let video = [...this._videoPool].find(v => v !== this.videoA && v !== this.videoB && !reserved.has(v));
+    if (!video) {
+      if (this._videoPool.size >= 6) return;
+      video = document.createElement('video');
+      video.className = 'pet-video';
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = 'auto';
+      this.stage.appendChild(video);
+      this._videoPool.add(video);
+    }
+    video.pause();
+    video.classList.remove('is-front');
+    video.onended = null;
+    video.autoplay = false;
+    video.loop = false;
+    const entry = { video, ready: false, cancel: null };
+    this._warmVideos.set(name, entry);
+    this._warming = entry;
+    let timer = null, frame = null, paint = null, done = false;
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      video.removeEventListener('loadeddata', decoded);
+      if (video.onerror === failed) video.onerror = null;
+      if (frame !== null) video.cancelVideoFrameCallback(frame);
+      if (paint !== null) cancelAnimationFrame(paint);
+    };
+    const finish = ok => {
+      if (done) return;
+      done = true;
+      cleanup(); video.pause();
+      if (this._disposed) return;
+      entry.ready = ok;
+      if (!ok) { this._warmVideos.delete(name); this._warmFailed.add(name); }
+      this._warming = null;
+      this.queueWarmAnimations();
+    };
+    const failed = () => finish(false);
+    const decoded = () => {
+      if (done || this._disposed || video.readyState < 2) return;
+      video.removeEventListener('loadeddata', decoded);
+      if (typeof video.requestVideoFrameCallback === 'function') {
+        frame = video.requestVideoFrameCallback(() => { frame = null; finish(true); });
+      } else {
+        paint = requestAnimationFrame(() => { paint = requestAnimationFrame(() => { paint = null; finish(true); }); });
+      }
+      video.play().catch(failed);
+    };
+    entry.cancel = () => { done = true; cleanup(); video.pause(); };
+    timer = window.setTimeout(failed, 10000);
+    video.onerror = failed;
+    video.addEventListener('loadeddata', decoded);
+    video.src = this.assetBase + encodeURIComponent(name) + (S.ANIMATION_EXT || '.webm');
+    video.load();
+    if (video.readyState >= 2) decoded();
+  }
+
+  // Prepare invisibly, then flip both visibility flags in one rendering task.
+  // No frame ever deliberately contains two visible actions or fractional opacity.
   switchTo(next, nextOnce) {
-    if (!next) return;
+    if (!next || this._disposed) return;
     const pending = this.pending;
     if (pending && pending.anim === next && pending.once === nextOnce) {
       // 防重命中（单动画点击时目标=当前动画，不重播）：仍消费 Q 弹标记，压当前前台视频，
@@ -346,47 +495,64 @@ class PetSprite {
       }
       return;
     }
+    this.pending?.cancel?.();
     const gen = ++this.gen;
-    this.pending = { anim: next, once: nextOnce, gen };
-    const target = this.front === 0 ? this.videoB : this.videoA;
-    const el = target;
+    const targetIndex = this.front === 0 ? 1 : 0;
+    const old = this.front === 0 ? this.videoA : this.videoB;
+    const cached = this._warmVideos.get(next);
+    const warmed = cached?.ready && cached.video.readyState >= 2;
+    if (warmed) {
+      this._warmVideos.delete(next);
+      if (targetIndex === 0) this.videoA = cached.video; else this.videoB = cached.video;
+    }
+    const el = targetIndex === 0 ? this.videoA : this.videoB;
     if (!el) return;
-    el.src = this.assetBase + encodeURIComponent(next) + (S.ANIMATION_EXT || '.webm');
+    old.onended = null;
+    el.pause();
+    el.classList.remove('is-front');
+    el.style.zIndex = '0';
+    el.style.transform = this.facing === 'right' ? 'scaleX(-1)' : '';
     el.loop = !nextOnce;
     el.muted = true;
     el.autoplay = true;
     el.playsInline = true;
-    el.onended = nextOnce ? () => this.handleEnded() : null;
-    // 加载兜底（与浏览器 web 端 fetch+blob 的 10s 超时同义）：素材加载失败或卡住时必须释放
-    // pending，否则它永久挂起——之后相同目标会被防重分支吞掉、不同目标靠 gen 覆盖，
-    // 表现就是"点了没反应"（#62 报告的就是 web 端同一类问题，桌面端此前完全没有兜底）。
+    el.onended = null;
+    let loadTimer = null, videoFrame = null, paintFrame = null;
+    const active = () => this.pending?.gen === gen && this.gen === gen;
+    const cleanup = () => {
+      window.clearTimeout(loadTimer);
+      el.removeEventListener('loadeddata', onReady);
+      if (el.onerror === onError) el.onerror = null;
+      if (videoFrame !== null) el.cancelVideoFrameCallback(videoFrame);
+      if (paintFrame !== null) cancelAnimationFrame(paintFrame);
+    };
+    this.pending = { anim: next, once: nextOnce, gen, cancel: () => { cleanup(); el.pause(); } };
     const loadGuard = (why) => {
-      if (!this.pending || this.pending.gen !== gen) return;
+      if (!active()) return;
+      cleanup();
+      el.pause();
       this.pending = null;
+      this.queueWarmAnimations();
       console.warn('[dsh-pet] 素材加载失败 pet=' + this.pet.id + ' anim=' + next + '：' + why + '（已释放本次切换）');
     };
-    const loadTimer = window.setTimeout(() => loadGuard('10s 超时'), 10000);
-    el.onerror = () => {
-      window.clearTimeout(loadTimer);
-      loadGuard('video error');
-    };
-    el.load();
-    const onReady = () => {
-      el.removeEventListener('loadeddata', onReady);
-      window.clearTimeout(loadTimer);
-      el.onerror = null;
-      if (this.pending && this.pending.gen !== gen) return;
-      const old = this.front === 0 ? this.videoA : this.videoB;
+    const onError = () => loadGuard('video error');
+    const commit = () => {
+      if (!active() || el.readyState < 2 || el.paused) return;
+      if (!this.drawVideoFrame(el)) return;
+      cleanup();
+      this.startVideoFrames(el);
+      this.stopSquash();
+      this.frameCanvas.style.transformOrigin = '';
+      this.frameCanvas.style.transform = el.style.transform;
+      old.classList.remove('is-front');
+      old.pause();
+      el.style.zIndex = '1';
       el.classList.add('is-front');
-      if (old && old !== el) {
-        old.classList.remove('is-front');
-        old.onended = null;
-        old.pause();
-      }
-      this.front = this.front === 0 ? 1 : 0;
+      this.front = targetIndex;
       this.pending = null;
-      el.style.transform = this.facing === 'right' ? 'scaleX(-1)' : '';
-      el.play().catch(() => {});
+      el.onended = nextOnce ? () => { if (this._displayVideo === el && this.gen === gen && !this.pending) this.handleEnded(); } : null;
+      this._warmFailed.delete(next);
+      this.queueWarmAnimations();
       // 点击 Q 弹：等新动画就位后才压（压的是新点击动画的首帧，与浏览器一致）
       if (this.pendingSquash) {
         this.pendingSquash = false;
@@ -394,8 +560,32 @@ class PetSprite {
       }
       if (this.pendingMove) this.startMoveDrive(el);
     };
-    el.addEventListener('loadeddata', onReady);
-    if (el.readyState >= 2) onReady();
+    const onReady = () => {
+      if (!active() || el.readyState < 2) return;
+      el.removeEventListener('loadeddata', onReady);
+      if (typeof el.requestVideoFrameCallback === 'function') {
+        videoFrame = el.requestVideoFrameCallback(() => { videoFrame = null; commit(); });
+      } else {
+        paintFrame = requestAnimationFrame(() => { paintFrame = requestAnimationFrame(() => { paintFrame = null; commit(); }); });
+      }
+      el.play().catch(() => loadGuard('play rejected'));
+    };
+    loadTimer = window.setTimeout(() => loadGuard('10s 加载超时'), 10000);
+    el.onerror = onError;
+    if (warmed) onReady();
+    else {
+      // Let the preceding atomic cut paint before recycling its retired decoder.
+      paintFrame = requestAnimationFrame(() => {
+        paintFrame = requestAnimationFrame(() => {
+          paintFrame = null;
+          if (!active()) return;
+          el.addEventListener('loadeddata', onReady);
+          el.src = this.assetBase + encodeURIComponent(next) + (S.ANIMATION_EXT || '.webm');
+          el.load();
+          if (el.readyState >= 2) onReady();
+        });
+      });
+    }
   }
 
   playOnce(name) {
@@ -722,6 +912,7 @@ class PetSprite {
    *  与浏览器同构，曲线在 shared（S.squashScale）。depth = 下压幅度（点击固定 0.55；
    *  落地按冲击速度 S.landingSquash 动态取）。reduce-motion 时跳过。 */
   startSquash(el, depth = S.SQ_SQUASH) {
+    el = this.frameCanvas;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
     const token = ++this.squashToken;
     if (this.squashRef !== null) cancelAnimationFrame(this.squashRef);

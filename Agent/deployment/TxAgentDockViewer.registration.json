@@ -1,0 +1,12 @@
+{
+  "format": "TxAgent viewer registration requirements (not a Process Simulate import file)",
+  "viewerName": "TxAgentDockViewer",
+  "assemblyFile": "TxTools.dll",
+  "namespace": "TxTools.Agent.UI",
+  "className": "TxAgentDockViewer",
+  "assemblyQualifiedType": "TxTools.Agent.UI.TxAgentDockViewer, TxTools",
+  "singleInstance": true,
+  "openWith": false,
+  "canAutoHide": true,
+  "targetConfigurationSchemaRequired": true
+}

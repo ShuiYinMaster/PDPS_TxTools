@@ -54,6 +54,21 @@ namespace TxTools.Agent.Core
             return Send(target, new JObject { ["op"] = "ping" });
         }
 
+        internal static Result OpenPetUi(PsInstanceInfo target, JObject input)
+        {
+            if (target == null) return Fail("请先将目标 Process Simulate 切到前台。");
+            if (target.IsSelf)
+            {
+                try
+                {
+                    var response = PsContext.Current.Run(() => PsRpcServer.PetUiHandler(input));
+                    return (bool?)response["ok"] == true ? new Result { Ok = true } : Fail((string)response["error"]);
+                }
+                catch (Exception ex) { return Fail(ex.Message); }
+            }
+            return Send(target, new JObject { ["op"] = "pet_ui", ["input"] = input });
+        }
+
         /// <summary>
         /// 快速 ping：给环境枚举/库根识别用 —— 短连接+短读超时，
         /// 目标没响应也尽快返回，不让 UI 卡住。

@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/PC2005-cloud/dsh-pet",
+  "commit": "849a42ca6c77a85e27752329e7a58cc53564f590",
+  "version": "0.3.0",
+  "webmCount": 106,
+  "adaptations": [
+    "local state file adapter",
+    "TxAgent menu and double-click",
+    "system font",
+    "quiet defaults",
+    "show without activation",
+    "shared-session singleton",
+    "bounded common-action predecoding and atomic hard cuts on a persistent transparent canvas"
+  ]
+}

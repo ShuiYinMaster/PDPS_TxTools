@@ -5,6 +5,11 @@ const { app } = require('electron');
 const profile = process.env.TXAGENT_PET_PROFILE || path.join(app.getPath('appData'), 'TxAgent-dsh-pet');
 fs.mkdirSync(profile, { recursive: true });
 app.setPath('userData', profile);
+// The C# lease elects a host; Electron also guards the shutdown/failover overlap.
+if (process.env.TXAGENT_PET_SINGLETON === '1' && process.env.DSH_PET_DPI_PROBE !== '1' && !app.requestSingleInstanceLock()) {
+  process.stdout.write('txagent-pet:' + JSON.stringify({kind:'singleton-busy'}) + '\n');
+  app.exit(0);
+} else {
 if (process.env.DSH_PET_DPI_PROBE !== '1') {
   require('./startup-monitor.js');
   require('./quick-launch.js');
@@ -22,4 +27,5 @@ if (process.env.DSH_PET_DPI_PROBE !== '1') {
       app.quit();
     }
   }, 300).unref();
+}
 }

@@ -26,7 +26,11 @@ namespace TxTools.Agent
 {
     public sealed class TxAgentCommand : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.Agent.bmp";
+        public override string LargeBitmap => "image.ai.png";
+
         private static TxAgentForm _form;
+        private static TxAgentControl _content;
         private static DshPetController _petController;
         private static string _petError;
         private static RecipeQuickForm _quickRecipes;
@@ -66,6 +70,7 @@ namespace TxTools.Agent
         private static void StartBackgroundServices()
         {
             if (Interlocked.CompareExchange(ref _backgroundStartup, 1, 0) != 0) return;
+            PsRpcServer.PetUiHandler = HandlePetUi;
             var ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
             System.Threading.Tasks.Task.Run(() =>
             {
@@ -96,7 +101,6 @@ namespace TxTools.Agent
 
         public override string Name { get { return "TxAgent"; } }
         public override string Category { get { return "TxTools"; } }
-        public override string LargeBitmap { get { return "image.ai.png"; } }
         public override string Description => "可接入deepseek进行一些简单的自动化处理";
 
         public override void Execute(object cmdParams)
@@ -118,30 +122,75 @@ namespace TxTools.Agent
                 return;
             }
 
+            // Viewer 已在目标机器注册时交给 PS 创建/激活，支持拖拽停靠和自动隐藏。
+            // 未注册的环境保留独立窗口入口；不在运行时猜测或改写 PS 配置。
+            var manager = TxApplication.ViewersManager;
+            if (manager.IsViewer(TxAgentDockViewer.RegisteredName))
+            {
+                if (!manager.IsNonOpenWithViewer(TxAgentDockViewer.RegisteredName))
+                    throw new InvalidOperationException("TxAgentDockViewer 必须注册为单实例 Viewer。");
+                var viewer = manager.ShowViewer(TxAgentDockViewer.RegisteredName);
+                var dockViewer = viewer.GetViewerControl() as TxAgentDockViewer;
+                if (dockViewer == null)
+                    throw new InvalidOperationException("TxAgentDockViewer 的注册类应为 TxTools.Agent.UI.TxAgentDockViewer。");
+                dockViewer.EnsureContent();
+                dockViewer.Focus();
+                return;
+            }
+
+            var content = CreateViewerContent();
+            if (content == null) { ShowOccupiedHint(); return; }
+            try
+            {
+                _form = new TxAgentForm(content);
+                _form.Name = _form.GetType().FullName;
+                _form.FormClosed += (s, e) => { _form = null; };
+                IWin32Window owner = TryGetPsMainWindow();
+                if (owner != null) _form.Show(owner);
+                else _form.Show();
+            }
+            catch
+            {
+                _form?.Dispose();
+                _form = null;
+                content.Dispose();
+                throw;
+            }
+            try { TxApplication.StatusBarMessage = "TxAgent 已启动（独立窗口；当前环境未注册停靠 Viewer）"; } catch { }
+        }
+
+        /// <summary>供命令入口和 PS 恢复布局时的 Viewer.Initialize 共用。仅在 PS UI 线程调用。</summary>
+        internal static TxAgentControl CreateViewerContent()
+        {
+            if (_content != null && !_content.IsDisposed) return null;
+            PsContext.CaptureFromMainThread();
             // 【Agent 窗口全局唯一】已有其它 PDPS 进程开着窗口时，
             // 本进程不进入对话界面，只显示提示信息 —— 避免两窗口写同一份会话互相覆盖。
             if (!PsInstanceRegistry.TryAcquireWindow())
             {
-                ShowOccupiedHint();
-                return;
+                return null;
             }
-
-            var tools = BuildToolRegistry();
-            _form = new TxAgentForm(psCtx, tools);
-            _form.Name = _form.GetType().FullName;   // 跨插件窗口尺寸串扰修复(双保险)
-            _form.FormClosed += (s, e) =>
+            try
             {
-                if (!RecipeUiActions.IsRunning) SetPetState(null);
-                _form = null;
+                var psCtx = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+                var tools = BuildToolRegistry();
+                var content = new TxAgentControl(psCtx, tools);
+                _content = content;
+                content.Disposed += (s, e) =>
+                {
+                    if (!ReferenceEquals(_content, content)) return;
+                    _content = null;
+                    if (!RecipeUiActions.IsRunning) SetPetState(null);
+                    try { PsInstanceRegistry.ReleaseWindow(); } catch { }
+                };
+                if (_petError != null) content.ReportPetError(_petError);
+                return content;
+            }
+            catch
+            {
                 try { PsInstanceRegistry.ReleaseWindow(); } catch { }
-            };
-
-            IWin32Window owner = TryGetPsMainWindow();
-            if (owner != null) _form.Show(owner);
-            else _form.Show();
-            if (_petError != null) _form.ReportPetError(_petError);
-
-            try { TxApplication.StatusBarMessage = "TxTools.Agent 已启动"; } catch { }
+                throw;
+            }
         }
 
         private static void InitializePet(bool? visible = null)
@@ -153,17 +202,16 @@ namespace TxTools.Agent
                 var controller = new DshPetController(visible ?? UserPrefsStore.Load().DesktopPetVisible,
                     UserPrefsStore.UpdateDesktopPetVisible, () =>
                     {
-                        _quickRecipes?.Hide();
-                        new TxAgentCommand().Execute(null);
+                        RoutePetUi(new JObject { ["kind"] = "open-assistant" });
                     }, ToggleQuickRecipes);
                 controller.Failed += message =>
                 {
                     _petError = message;
-                    _form?.ReportPetError(message);
+                    _content?.ReportPetError(message);
                 };
                 controller.Changed += (s, e) =>
                 {
-                    _form?.PostPetVisibility();
+                    _content?.PostPetVisibility();
                     if (!controller.Enabled) _quickRecipes?.Hide();
                 };
                 _petController = controller;
@@ -172,7 +220,7 @@ namespace TxTools.Agent
             {
                 _petError = ex.Message;
                 System.Diagnostics.Debug.WriteLine("[TxAgent] 鲸鱼娘悬浮窗创建失败: " + ex.Message);
-                _form?.ReportPetError(ex.Message);
+                _content?.ReportPetError(ex.Message);
             }
         }
 
@@ -180,18 +228,45 @@ namespace TxTools.Agent
 
         private static void ToggleQuickRecipes(JObject anchor)
         {
-            if ((string)anchor?["kind"] == "manage-recipes") { OpenRecipeManager(); return; }
+            RoutePetUi(anchor);
+        }
+
+        private static async void RoutePetUi(JObject request)
+        {
+            try
+            {
+                var result = await System.Threading.Tasks.Task.Run(() =>
+                {
+                    var target = DesktopPetSession.ForegroundTarget();
+                    return PsRpcClient.OpenPetUi(target, request ?? new JObject { ["kind"] = "open-recipes" });
+                });
+                if (!result.Ok) MessageBox.Show(result.Error, "鲸鱼娘 · 前台程序", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex) { MessageBox.Show(ex.Message, "鲸鱼娘 · 前台程序"); }
+        }
+
+        private static JObject HandlePetUi(JObject anchor)
+        {
+            string error = DesktopPetSession.ValidateSelf();
+            if (error != null) return new JObject { ["ok"] = false, ["error"] = error };
+            if ((string)anchor?["kind"] == "open-assistant")
+            {
+                _quickRecipes?.Hide(); new TxAgentCommand().Execute(null);
+                return new JObject { ["ok"] = true };
+            }
+            if ((string)anchor?["kind"] == "manage-recipes") { OpenRecipeManager(); return new JObject { ["ok"] = true }; }
             // This entry can run before Agent.Execute has ever created a conversation.
             PsContext.CaptureFromMainThread();
             if (_quickRecipes == null || _quickRecipes.IsDisposed) _quickRecipes = new RecipeQuickForm(OpenRecipeManager);
             _quickRecipes.Toggle(anchor, TryGetPsMainWindow());
+            return new JObject { ["ok"] = true };
         }
 
         private static void OpenRecipeManager()
         {
             _quickRecipes?.Hide();
             new TxAgentCommand().Execute(null);
-            _form?.OpenRecipeManager();
+            _content?.OpenRecipeManager();
         }
 
         internal static void SetPetEnabled(bool enabled)
@@ -474,6 +549,13 @@ namespace TxTools.Agent
         private bool _enabled;
         private bool _disposed;
         private bool _starting;
+        private bool _ownsSession;
+        private bool _polling;
+        private bool _resyncRequested;
+        private DateTime _retryAfter;
+        private readonly System.Windows.Forms.Timer _sessionTimer;
+        private IDisposable _foregroundWatch;
+        private int _visibilityRevision;
         public event EventHandler Changed;
         public event Action<string> Failed;
         public bool Enabled { get { lock (_gate) return _enabled; } }
@@ -488,7 +570,10 @@ namespace TxTools.Agent
             var handle = _dispatcher.Handle;
             Application.ApplicationExit += OnApplicationExit;
             AppDomain.CurrentDomain.ProcessExit += OnApplicationExit;
-            _dispatcher.BeginInvoke(new Action(EnsurePet));
+            _sessionTimer = new System.Windows.Forms.Timer { Interval = 750 };
+            _sessionTimer.Tick += (s, e) => SynchronizeSession();
+            _sessionTimer.Start();
+            _dispatcher.BeginInvoke(new Action(SynchronizeSession));
         }
 
         public void SetEnabled(bool enabled)
@@ -503,25 +588,72 @@ namespace TxTools.Agent
             lock (_gate)
             {
                 if (_disposed) return;
+                _visibilityRevision++;
                 changed = _enabled != enabled;
                 _enabled = enabled;
                 if (!enabled) { old = _host; _host = null; }
             }
+            try { DesktopPetSession.SetVisible(enabled); }
+            catch (Exception ex) { Failed?.Invoke(ex.Message); }
             if (changed)
             {
                 try { _saveVisibility(enabled); }
                 catch (Exception ex) { Failed?.Invoke("桌宠显示状态保存失败: " + ex.Message); }
             }
             old?.Dispose();
-            if (enabled) EnsurePet();
+            SynchronizeSession();
             Changed?.Invoke(this, EventArgs.Empty);
+        }
+
+        private async void SynchronizeSession()
+        {
+            if (_disposed) return;
+            if (_polling) { _resyncRequested = true; return; }
+            _polling = true;
+            try
+            {
+                int visibilityRevision = _visibilityRevision;
+                bool initialVisible = Enabled;
+                var value = await System.Threading.Tasks.Task.Run(() => DesktopPetSession.Poll(initialVisible));
+                if (_disposed || visibilityRevision != _visibilityRevision) return;
+                DshPetHost old = null;
+                bool changed;
+                lock (_gate)
+                {
+                    changed = _enabled != value.Visible;
+                    _enabled = value.Visible;
+                    _ownsSession = value.OwnerPid == PsInstanceRegistry.SelfPid;
+                    _state = value.State; _task = value.Task;
+                    if (!_ownsSession || !_enabled) { old = _host; _host = null; }
+                    else _host?.SetState(_state, _task);
+                }
+                if (_ownsSession && _foregroundWatch == null) _foregroundWatch = DesktopPetSession.WatchForeground();
+                if (!_ownsSession && _foregroundWatch != null) { _foregroundWatch.Dispose(); _foregroundWatch = null; }
+                old?.Dispose();
+                if (changed)
+                {
+                    try { _saveVisibility(value.Visible); } catch (Exception ex) { Failed?.Invoke(ex.Message); }
+                    Changed?.Invoke(this, EventArgs.Empty);
+                }
+                EnsurePet();
+            }
+            catch (Exception ex) { Debug.WriteLine("[TxAgent pet session] " + ex.Message); }
+            finally
+            {
+                _polling = false;
+                if (_resyncRequested && !_disposed)
+                {
+                    _resyncRequested = false;
+                    _dispatcher.BeginInvoke(new Action(SynchronizeSession));
+                }
+            }
         }
 
         private async void EnsurePet()
         {
             lock (_gate)
             {
-                if (_disposed || !_enabled || _starting || (_host != null && !_host.IsDisposed)) return;
+                if (_disposed || !_enabled || !_ownsSession || _starting || DateTime.UtcNow < _retryAfter || (_host != null && !_host.IsDisposed)) return;
                 _starting = true;
             }
             DshPetHost host = null;
@@ -530,10 +662,11 @@ namespace TxTools.Agent
                 // File checks, snapshots and Process.Start may be slow on antivirus/networked disks.
                 // Only dispatcher/event wiring belongs on the PS UI thread.
                 host = await System.Threading.Tasks.Task.Run(() => new DshPetHost(_dispatcher));
+                if (host.SingletonBusy) { _retryAfter = DateTime.UtcNow.AddMilliseconds(750); host.Dispose(); return; }
                 if (host.IsDisposed) throw new InvalidOperationException("桌宠在启动时退出，请查看日志：" + host.LogPath);
                 lock (_gate)
                 {
-                    if (_disposed || !_enabled) { host.Dispose(); return; }
+                    if (_disposed || !_enabled || !_ownsSession) { host.Dispose(); return; }
                     var active = host;
                     active.OpenAssistantRequested += (s, e) => _openAssistant();
                     active.OpenRecipesRequested += anchor => _openRecipes?.Invoke(anchor);
@@ -545,10 +678,11 @@ namespace TxTools.Agent
                         Changed?.Invoke(this, EventArgs.Empty);
                     };
                     _host = active;
+                    DesktopPetSession.SetHelper(active.HelperPid);
                     if (_state != null || _task != null) active.SetState(_state, _task);
                 }
             }
-            catch (Exception ex) { host?.Dispose(); Failed?.Invoke(ex.Message); }
+            catch (Exception ex) { _retryAfter = DateTime.UtcNow.AddSeconds(10); host?.Dispose(); Failed?.Invoke(ex.Message); }
             finally { lock (_gate) _starting = false; }
         }
 
@@ -556,10 +690,12 @@ namespace TxTools.Agent
         {
             lock (_gate)
             {
+                if (_disposed) return;
                 _state = state;
                 _task = task;
                 _host?.SetState(state, task);
             }
+            try { DesktopPetSession.SetState(state, task); } catch (Exception ex) { Debug.WriteLine(ex.Message); }
         }
 
         public void SetThinking(bool thinking)
@@ -585,7 +721,10 @@ namespace TxTools.Agent
             }
             Application.ApplicationExit -= OnApplicationExit;
             AppDomain.CurrentDomain.ProcessExit -= OnApplicationExit;
+            _sessionTimer.Dispose();
+            _foregroundWatch?.Dispose();
             host?.Dispose();
+            try { DesktopPetSession.Release(); } catch { }
             // ProcessExit can run off the UI thread; the process will release the HWND.
             if (!_dispatcher.InvokeRequired) _dispatcher.Dispose();
         }
@@ -608,6 +747,7 @@ namespace TxTools.Agent
         private bool _ready;
         private bool _shutdownRequested;
         private bool _failureReported;
+        internal bool SingletonBusy { get; private set; }
         public event Action<string> Failed;
         public event EventHandler OpenAssistantRequested;
         public event EventHandler HideRequested;
@@ -615,6 +755,7 @@ namespace TxTools.Agent
         public event EventHandler Closed;
         public bool IsDisposed { get { lock (_gate) return _closed; } }
         public bool IsReady { get { lock (_gate) return _ready && !_closed; } }
+        internal int HelperPid { get { lock (_gate) { try { return _process?.Id ?? 0; } catch { return 0; } } } }
 
         public DshPetHost(Control dispatcher)
         {
@@ -661,7 +802,8 @@ namespace TxTools.Agent
             start.EnvironmentVariables.Remove("DSH_PET_SMOKE");
             start.EnvironmentVariables["DSH_PET_HOST_PID"] = Process.GetCurrentProcess().Id.ToString();
             start.EnvironmentVariables["TXAGENT_PET_STATE"] = _stateFile;
-            start.EnvironmentVariables["TXAGENT_PET_PROFILE"] = _stateFile + ".profile";
+            start.EnvironmentVariables["TXAGENT_PET_PROFILE"] = DesktopPetSession.ProfilePath;
+            start.EnvironmentVariables["TXAGENT_PET_SINGLETON"] = "1";
             start.EnvironmentVariables["TXAGENT_PET_CLICK_DELAY"] = GetDoubleClickTime().ToString();
             _process = new Process { StartInfo = start, EnableRaisingEvents = true };
             _process.OutputDataReceived += (s, e) =>
@@ -729,6 +871,9 @@ namespace TxTools.Agent
                 var message = JObject.Parse(line.Substring("txagent-pet:".Length));
                 switch ((string)message["kind"])
                 {
+                    case "singleton-busy":
+                        lock (_gate) { SingletonBusy = true; _shutdownRequested = true; }
+                        break;
                     case "open-recipes":
                     case "manage-recipes":
                         Dispatch(() => OpenRecipesRequested?.Invoke(message));
