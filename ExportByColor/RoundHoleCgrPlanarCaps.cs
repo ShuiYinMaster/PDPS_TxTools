@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -32,7 +32,7 @@ namespace TxTools.ExportByColor
                 var local=new int[indices.Length][];var normals=new double[indices.Length][];
                 var planes=new List<CapPlane>();var planeIds=new int[indices.Length];
                 foreach(int fi in indices){List<RimEdge> hits;if(!caps.TryGetValue(fi,out hits))continue;foreach(var e in hits){bool trimmed=e.Ring==0?e.Plan.Hole.TrimmedRimA:e.Plan.Hole.TrimmedRimB;var axis=trimmed?Unit(Normal(vertices,faces[fi].Idx)):e.Plan.Hole.Axis;var origin=trimmed?D(vertices[faces[fi].Idx[0]]):e.Ring==0?e.Plan.Hole.RimA:e.Plan.Hole.RimB;if(!planes.Any(p=>Math.Abs(Dot(p.Axis,axis))>.999999&&Math.Abs(Dot(Sub(origin,p.Origin),p.Axis))<.001))planes.Add(new CapPlane{Axis=axis,Origin=origin});}}
-                var adjacent=new Dictionary<long,List<int>>();
+                var adjacent=new Dictionary<long,List<int>>(CylinderEdgeComparer.Instance);
                 for(int i=0;i<indices.Length;i++)
                 {
                     var f=faces[indices[i]];local[i]=f.Idx.Select(v=>id(f.Surface,D(vertices[v]))).ToArray();
@@ -176,10 +176,10 @@ namespace TxTools.ExportByColor
         static bool RestoreCapBoundary(List<int[]> triangles,List<List<int>> loops,List<float[]> vertices,double[] normal,out string failure)
         {
             failure="duplicate-boundary";
-            var expected=new HashSet<long>();foreach(var loop in loops)for(int i=0;i<loop.Count;i++)if(!expected.Add(Edge(loop[i],loop[(i+1)%loop.Count])))return false;
+            var expected=new HashSet<long>(CylinderEdgeComparer.Instance);foreach(var loop in loops)for(int i=0;i<loop.Count;i++)if(!expected.Add(Edge(loop[i],loop[(i+1)%loop.Count])))return false;
             for(int pass=0;pass<=expected.Count;pass++)
             {
-                var actual=new Dictionary<long,List<int>>();for(int i=0;i<triangles.Count;i++)for(int k=0;k<3;k++){long e=Edge(triangles[i][k],triangles[i][(k+1)%3]);List<int> a;if(!actual.TryGetValue(e,out a))actual.Add(e,a=new List<int>());a.Add(i);}
+                var actual=new Dictionary<long,List<int>>(CylinderEdgeComparer.Instance);for(int i=0;i<triangles.Count;i++)for(int k=0;k<3;k++){long e=Edge(triangles[i][k],triangles[i][(k+1)%3]);List<int> a;if(!actual.TryGetValue(e,out a))actual.Add(e,a=new List<int>());a.Add(i);}
                 failure="nonmanifold-triangulation";if(actual.Values.Any(a=>a.Count>2))return false;
                 var missing=actual.FirstOrDefault(e=>e.Value.Count==1&&!expected.Contains(e.Key));
                 if(missing.Value==null){failure="missing-expected-edge";return expected.All(e=>actual.ContainsKey(e)&&actual[e].Count==1);}

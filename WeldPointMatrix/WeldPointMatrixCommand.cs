@@ -6,10 +6,12 @@ namespace TxTools.WeldPointMatrix
 {
     public sealed class WeldPointMatrixCommand : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.WeldPointMatrix.bmp";
+        public override string LargeBitmap => "image.WeldPointMatrix.png";
+
         public override string Name => "焊点矩阵";
         public override string Category => "TxTools";
         public override string Description => "并列查看多个焊接操作的焊点与过渡点，并定位机器人或插入点位";
-        public override string LargeBitmap => "WeldSpotAllocator.png";
 
         public override void Execute(object cmdParams)
         {

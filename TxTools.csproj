@@ -374,7 +374,7 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="Agent\UI\TxAgentForm.cs">
-      <SubType>Form</SubType>
+      <SubType>UserControl</SubType>
     </Compile>
     <Compile Include="AutoFance\AppearanceHelper.cs" />
     <Compile Include="AutoFance\FenceBaselineReader.cs" />
@@ -480,39 +480,48 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="ExportGun\ExportService.cs" />
+    <Compile Include="ExportGun\GunExportNaming.cs" />
+    <Compile Include="ExportGun\CgrOutputPaths.cs" />
     <Compile Include="ExportByColor\ExportByColorCmd.cs" />
     <Compile Include="ExportByColor\ExportByColorForm.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="ExportByColor\ExportByColorService.cs" />
+    <Compile Include="ExportByColor\AppearanceGeometrySource.cs" />
+    <Compile Include="ExportByColor\GeometryEntityLoader.cs" />
+    <Compile Include="ExportByColor\ApproximationTriangles.cs" />
     <Compile Include="ExportByColor\JtResourceResolver.cs" />
     <Compile Include="ExportByColor\JtDirectBridge.cs" />
+    <Compile Include="ExportByColor\JtCgrProcessBridge.cs" />
+    <Compile Include="ExportByColor\JtProcessRunner.cs" />
+    <Compile Include="ExportByColor\JtBatchSafety.cs" />
     <Compile Include="ExportByColor\RoundHoleReconstruction.cs" />
-    <Compile Include="ExportByColor\RoundHoleCgrMesh.cs" />
-    <Compile Include="ExportByColor\RoundHoleCgrPlanarCaps.cs" />
-    <Compile Include="ExportByColor\RoundHoleCgrTrimmedCaps.cs" />
     <Compile Include="ExportByColor\RoundHoleCgrRefinement.cs" />
-    <Compile Include="ExportByColor\Vendor\EarCut\EarCutDouble.cs" />
-    <Compile Include="ExportByColor\Vendor\EarCut\NodeDouble.cs" />
+    <Compile Include="ExportByColor\RoundHoleCgrTrimmedCaps.cs" />
     <Compile Include="ExportByColor\Vendor\EarCut\DoubleExtensions.cs" />
-    <EmbeddedResource Include="ExportByColor\Vendor\EarCut\LICENSE">
-      <LogicalName>TxTools.ExportByColor.Vendor.EarCut.LICENSE</LogicalName>
-    </EmbeddedResource>
+    <Compile Include="ExportByColor\Vendor\EarCut\NodeDouble.cs" />
+    <Compile Include="ExportByColor\Vendor\EarCut\EarCutDouble.cs" />
+    <Compile Include="ExportByColor\RoundHoleCgrPlanarCaps.cs" />
     <Compile Include="ExportByColor\CgrCanonical95.cs" />
+    <Compile Include="ExportByColor\RoundHoleCgrMesh.cs" />
     <Compile Include="ExportByColor\RoundHoleCatiaWriter.cs" />
     <Compile Include="ExportByColor\CgrWriter.cs" />
+    <Compile Include="ExportByColor\PsCgrPipeline.cs" />
     <Compile Include="ExportByColor\CgrCompact95.cs" />
     <Compile Include="ExportByColor\CgrLineFace95.cs" />
     <Compile Include="ExportByColor\CgrFeatureCompression.cs" />
     <Compile Include="ExportByColor\CgrFeatureCfv3Adapter.cs" />
     <Compile Include="ExportByColor\Cfv3Encoder.cs" />
     <Compile Include="ExportByColor\ThreeDXmlWriter.cs" />
-    <Compile Include="ExportByColor\CgrTemplate.cs" />
+    <Compile Include="ExportByColor\CgrSceneRecords.cs" />
+    <Compile Include="ExportByColor\CgrContainer.cs" />
     <Compile Include="ExportByColor\CgrSurfaceOrientation.cs" />
     <Compile Include="ExportByColor\CgrTestData.cs" />
     <Compile Include="ExportByColor\MeshExport.cs" />
     <Compile Include="ExportByColor\FbxExport.cs" />
     <Compile Include="SRC\FormUiKit.cs" />
+    <Compile Include="SRC\PluginUiPolicy.cs" />
+    <Compile Include="SRC\PluginLog.cs" />
     <Compile Include="SRC\PickFocus.cs" />
     <Compile Include="SRC\SceneUndoScope.cs" />
     <Compile Include="SRC\SceneCreationBatch.cs" />
@@ -581,6 +590,9 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="CrossEnvIO\Core\CojtTransfer.cs" />
+    <Compile Include="CrossEnvIO\Core\CopyIdentity.cs" />
+    <Compile Include="CrossEnvIO\Core\DirectoryLinks.cs" />
+    <Compile Include="CrossEnvIO\Core\TransferFile.cs" />
     <Compile Include="CrossEnvIO\Core\CrossEnvRebuildTool.cs" />
     <Compile Include="CrossEnvIO\Core\EnvLibrary.cs" />
     <Compile Include="CrossEnvIO\Core\PszPathFixer.cs" />
@@ -1477,14 +1489,35 @@
     <EmbeddedResource Include="image\WeldSpotGrouper.png" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="image\Small\*.bmp" />
+    <EmbeddedResource Include="image\AutoPath.png" />
+    <EmbeddedResource Include="image\CrossEnvIO.png" />
+    <EmbeddedResource Include="image\ExportByColor.png" />
+    <EmbeddedResource Include="image\CatiaPartTree.png" />
+    <EmbeddedResource Include="image\ThemeTuner.png" />
+    <EmbeddedResource Include="image\MechArena.png" />
+    <EmbeddedResource Include="image\SnakeGame.png" />
+    <EmbeddedResource Include="image\WeldPointMatrix.png" />
+    <EmbeddedResource Include="image\SyncLibPath.png" />
+    <EmbeddedResource Include="image\SyncToSelectedComponent.png" />
+    <EmbeddedResource Include="image\DeviceZAligner.png" />
+    <EmbeddedResource Include="image\WeldPoint.png" />
+    <EmbeddedResource Include="image\ViaPoint.png" />
+    <EmbeddedResource Include="image\SeamPoint.png" />
+  </ItemGroup>
+  <ItemGroup>
     <WCFMetadata Include="Connected Services\" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Agent\UI\recipe-quick.html" />
     <EmbeddedResource Include="Agent\UI\chat.html" />
     <EmbeddedResource Include="Agent\UI\recipe-sidebar.css" />
+    <EmbeddedResource Include="Agent\UI\plugin-ui.css" />
     <EmbeddedResource Include="Agent\UI\recipe-sidebar.js" />
   </ItemGroup>
+  <PropertyGroup Condition="'$(TxToolsShowLogs)' == 'false'">
+    <DefineConstants>$(DefineConstants);TXTOOLS_HIDE_LOGS</DefineConstants>
+  </PropertyGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Import Project="packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets" Condition="Exists('packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets')" />
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
@@ -1505,5 +1538,12 @@
       <JtDecoderFiles Include="$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\TxTools.JtDecoder.exe*;$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\*.dll;$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\LICENSE.JTReader;$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\THIRD-PARTY-NOTICES.txt" />
     </ItemGroup>
     <Copy SourceFiles="@(JtDecoderFiles)" DestinationFolder="$(TargetDir)JtDirectCs" SkipUnchangedFiles="true" />
+    <MSBuild Projects="$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\CgrWorker.csproj" Targets="Build" Properties="Configuration=Release;Platform=AnyCPU;TxToolsAssembly=$(TargetPath)" RemoveProperties="OutputPath;OutDir" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\cgr_bin\Release\TxTools.JtCgrWorker.exe" DestinationFolder="$(TargetDir)JtDirectCs" SkipUnchangedFiles="true" />
   </Target>
+  <ItemGroup>
+    <EmbeddedResource Include="ExportByColor\Vendor\EarCut\LICENSE">
+      <LogicalName>TxTools.ExportByColor.Vendor.EarCut.LICENSE</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
 </Project>

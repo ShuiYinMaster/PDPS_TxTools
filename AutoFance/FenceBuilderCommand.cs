@@ -18,10 +18,12 @@ namespace TxTools.FenceBuilder
     /// </summary>
     public class FenceBuilderCommand : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.AutoFance.bmp";
+        public override string LargeBitmap => "image.AutoFance.png";
+
         public override string Name { get { return ".创建围栏"; } }
         public override string Description { get { return "创建围栏"; } }
         public override string Category { get { return "TxTools"; } }
-        public override string LargeBitmap => "image.AutoFance.png";
 
         private static FenceBuilderForm _instance;
 

@@ -23,6 +23,7 @@ namespace TxTools.Agent.UI
 
         private CodeApprovalDialog(string toolName, string code)
         {
+            TxTools.Common.PluginUiPolicy.Attach(this);
             if (code == null) code = "";
             if (code.Length > 50000) code = code.Substring(0, 50000) + Environment.NewLine + "…(已截断)";
 

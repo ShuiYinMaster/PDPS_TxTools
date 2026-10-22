@@ -3,9 +3,29 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Diagnostics;
 
 namespace TxTools.ExportByColor
 {
+    // Packed (a,b) edge keys otherwise hash as a XOR b, collapsing adjacent
+    // vertex pairs into a handful of buckets on large tessellated assemblies.
+    internal sealed class CylinderEdgeComparer : IEqualityComparer<long>
+    {
+        internal static readonly CylinderEdgeComparer Instance=new CylinderEdgeComparer();
+        public bool Equals(long a,long b){return a==b;}
+        public int GetHashCode(long value)
+        {
+            unchecked
+            {
+                ulong z=(ulong)value+0x9e3779b97f4a7c15UL;
+                z=(z^(z>>30))*0xbf58476d1ce4e5b9UL;
+                z=(z^(z>>27))*0x94d049bb133111ebUL;
+                return (int)(z^(z>>31));
+            }
+        }
+    }
     // Reconstructs geometric parameters from tessellation, not original CAD feature history.
     // Exact-position welding is analysis-only, scoped to a JT Shape; it never changes output mesh indices.
     public static class RoundHoleReconstruction
@@ -21,6 +41,8 @@ namespace TxTools.ExportByColor
             public bool IncludeTransitionRims;
             public bool IncludeOpenCylinderEnds;
             public bool IncludeTrimmedCylinderEnds;
+            // Zero uses available logical processors; one provides a deterministic serial baseline.
+            public int MaxDegreeOfParallelism;
         }
         public sealed class Hole
         {
@@ -52,6 +74,9 @@ namespace TxTools.ExportByColor
             internal bool Trimmed;
         }
         public static List<Hole> Find(List<float[]> vertices, List<CgrWriter.Face> faces, Options options = null)
+        { return Find(vertices,faces,options,null); }
+
+        public static List<Hole> Find(List<float[]> vertices, List<CgrWriter.Face> faces, Options options, Action<string> progress)
         {
             if (vertices == null || faces == null) throw new ArgumentNullException("mesh");
             options = options ?? new Options();
@@ -64,24 +89,68 @@ namespace TxTools.ExportByColor
                 if (!groups.TryGetValue(face.Surface, out group)) groups.Add(face.Surface, group = new List<int>());
                 group.Add(faceIndex);
             }
-            var result = new List<Hole>();
-            foreach (var group in groups)
+            var shapes = new List<KeyValuePair<int,List<int>>>(groups);
+            var found = new List<Hole>[shapes.Count];
+            int workers = options.MaxDegreeOfParallelism == 0 ? Environment.ProcessorCount : options.MaxDegreeOfParallelism;
+            if(workers < 1) throw new ArgumentOutOfRangeException("MaxDegreeOfParallelism");
+            // Workstation GC contention dominates tiny partitions. Scale from one
+            // worker per 128K triangles up to all logical processors for larger meshes.
+            if(options.MaxDegreeOfParallelism==0)workers=Math.Min(workers,Math.Max(1,(int)(((long)faces.Count+131071)/131072)));
+            workers = Math.Min(workers, Math.Max(1,shapes.Count));
+            // Each worker owns its topology and fit state. Bound simultaneous large
+            // shapes to a 512 MiB estimated topology budget, while small parts can use all cores.
+            var sizes = new List<int>(); foreach(var shape in shapes)sizes.Add(shape.Value.Count);
+            sizes.Sort((a,b)=>b.CompareTo(a));
+            long activeTriangles=0; int memoryWorkers=0;
+            foreach(int size in sizes){if(memoryWorkers>=workers)break;if(memoryWorkers>0&&(activeTriangles+size)*768L>512L*1024*1024)break;activeTriangles+=size;memoryWorkers++;}
+            workers=Math.Min(workers,Math.Max(1,memoryWorkers));
+            var watch=Stopwatch.StartNew(); int completed=0; long lastReport=0;
+            object reportLock=new object();
+            if(progress!=null)progress("[PS stage] 圆柱识别："+shapes.Count+" 个几何，"+workers+" 路 CPU；拓扑复用三种孔口识别");
+            Action<int> analyze = index =>
             {
-                var candidates=new List<Hole>();AnalyzeShape(vertices,faces,group.Value,group.Key,options,candidates);
+                var group=shapes[index];
+                var mesh=BuildShape(vertices,faces,group.Value);
+                var candidates=new List<Hole>();AnalyzeShape(mesh,group.Key,options,candidates);
                 if(options.IncludeTransitionRims)
                 {
-                    // Separate chamfers from fine cylindrical walls at stricter
-                    // crease angles. Coarse walls still use the original pass.
                     foreach(double crease in new[]{Math.PI/6,Math.PI/12})
                     {
-                        var extra=new List<Hole>();AnalyzeShape(vertices,faces,group.Value,group.Key,options,extra,crease);
+                        var extra=new List<Hole>();AnalyzeShape(mesh,group.Key,options,extra,crease);
                         var occupied=new HashSet<int>();foreach(var h in candidates)if(h.PairedRims)foreach(int fi in h.WallTriangles)occupied.Add(fi);
-                        foreach(var h in extra)if(h.PairedRims&&!Array.Exists(h.WallTriangles,fi=>occupied.Contains(fi))){candidates.RemoveAll(c=>!c.PairedRims&&Array.Exists(c.WallTriangles,fi=>Array.IndexOf(h.WallTriangles,fi)>=0));candidates.Add(h);foreach(int fi in h.WallTriangles)occupied.Add(fi);}
+                        foreach(var h in extra)if(h.PairedRims&&!Array.Exists(h.WallTriangles,fi=>occupied.Contains(fi)))
+                        {
+                            var wall=new HashSet<int>(h.WallTriangles);
+                            candidates.RemoveAll(c=>!c.PairedRims&&Array.Exists(c.WallTriangles,fi=>wall.Contains(fi)));
+                            candidates.Add(h);foreach(int fi in h.WallTriangles)occupied.Add(fi);
+                        }
                     }
                 }
-                result.AddRange(candidates);
-            }
+                found[index]=candidates;
+                Interlocked.Increment(ref completed);
+                if(progress!=null)lock(reportLock)
+                {
+                    int count=Volatile.Read(ref completed);long elapsed=watch.ElapsedMilliseconds;
+                    if(count==shapes.Count||elapsed-lastReport>=2000){lastReport=elapsed;progress("[PS stage] 圆柱识别：已完成 "+count+"/"+shapes.Count+" 个几何；"+watch.Elapsed.TotalSeconds.ToString("F1")+" 秒");}
+                }
+            };
+            if(workers==1)for(int i=0;i<shapes.Count;i++)analyze(i);
+            else Parallel.For(0,shapes.Count,new ParallelOptions{MaxDegreeOfParallelism=workers},analyze);
+            // Completion order must never affect cylinder numbering or output bytes.
+            var result=new List<Hole>();foreach(var list in found)result.AddRange(list);
             return result;
+        }
+        // Same arithmetic as Cross(Sub(point,center),axis), without temporary vectors.
+        private static double RadialDistance(double[] point,double[] center,double[] axis)
+        {
+            double x=point[0]-center[0],y=point[1]-center[1],z=point[2]-center[2];
+            double a=y*axis[2]-z*axis[1],b=z*axis[0]-x*axis[2],c=x*axis[1]-y*axis[0];
+            return Math.Sqrt(a*a+b*b+c*c);
+        }
+        private static double[] TriangleNormal(double[] a,double[] b,double[] c)
+        {
+            double x=b[0]-a[0],y=b[1]-a[1],z=b[2]-a[2],u=c[0]-a[0],v=c[1]-a[1],w=c[2]-a[2];
+            return new[]{y*w-z*v,z*u-x*w,x*v-y*u};
         }
         private static bool Positive(double v) { return v > 0 && !double.IsNaN(v) && !double.IsInfinity(v); }
         private static long Key(int a, int b) { return ((long)Math.Min(a,b) << 32) | (uint)Math.Max(a,b); }
@@ -93,11 +162,20 @@ namespace TxTools.ExportByColor
         private static void Canonical(double[] axis) { int k=0;for(int j=1;j<3;j++)if(Math.Abs(axis[j])>Math.Abs(axis[k]))k=j;if(axis[k]<0)for(int j=0;j<3;j++)axis[j]=-axis[j]; }
         private static int Root(int[] parent,int i) { while(parent[i]!=i){parent[i]=parent[parent[i]];i=parent[i];}return i; }
 
-        private static void AnalyzeShape(List<float[]> source,List<CgrWriter.Face> faces,List<int> sourceIndices,int surface,Options options,List<Hole> result,double creaseAngle=Math.PI/3)
+        private sealed class ShapeTopology
+        {
+            internal List<double[]> Vertices, Normals;
+            internal List<int[]> Triangles;
+            internal List<double> Areas;
+            internal List<int> OriginalIndices;
+            internal Dictionary<long,Edge> Edges;
+        }
+        private static ShapeTopology BuildShape(List<float[]> source,List<CgrWriter.Face> faces,List<int> sourceIndices)
         {
             var positions=new Dictionary<Tuple<float,float,float>,int>();var vertices=new List<double[]>();
-            var edges=new Dictionary<long,Edge>();var normals=new List<double[]>();var triangles=new List<int[]>();var areas=new List<double>();
+            var edges=new Dictionary<long,Edge>(CylinderEdgeComparer.Instance);var normals=new List<double[]>();var triangles=new List<int[]>();var areas=new List<double>();
             var originalIndices=new List<int>();
+            var sourcePositions=new Dictionary<int,int>();
             foreach(int sourceIndex in sourceIndices)
             {
                 var face=faces[sourceIndex];
@@ -106,17 +184,24 @@ namespace TxTools.ExportByColor
                 for(int k=0;k<3;k++)
                 {
                     int id=face.Idx[k];if(id<0||id>=source.Count)throw new ArgumentException("Triangle index out of range");
-                    var p=source[id];if(p==null||p.Length!=3)throw new ArgumentException("Expected XYZ");
+                    int cached;if(sourcePositions.TryGetValue(id,out cached)){ids[k]=cached;continue;}
+                    var p=source[id];if(p==null||p.Length!=3)throw new ArgumentException("Expected XYZ" );
                     foreach(float v in p)if(float.IsNaN(v)||float.IsInfinity(v))throw new ArgumentException("Non-finite point");
                     var key=Tuple.Create(p[0],p[1],p[2]);int local;
                     if(!positions.TryGetValue(key,out local)){local=vertices.Count;positions.Add(key,local);vertices.Add(new[]{(double)p[0],p[1],p[2]});}
-                    ids[k]=local;
+                    ids[k]=local;sourcePositions.Add(id,local);
                 }
-                var rawNormal=Cross(Sub(vertices[ids[1]],vertices[ids[0]]),Sub(vertices[ids[2]],vertices[ids[0]]));var normal=Unit(rawNormal);
+                var rawNormal=TriangleNormal(vertices[ids[0]],vertices[ids[1]],vertices[ids[2]]);var normal=Unit(rawNormal);
                 if(normal==null)continue;
                 int f=normals.Count;normals.Add(normal);areas.Add(Length(rawNormal));triangles.Add(ids);originalIndices.Add(sourceIndex);
                 for(int k=0;k<3;k++){int a=ids[k],b=ids[(k+1)%3];long key=Key(a,b);Edge edge;if(!edges.TryGetValue(key,out edge))edges.Add(key,edge=new Edge{A=a,B=b});edge.Faces.Add(f);}
             }
+            return new ShapeTopology{Vertices=vertices,Normals=normals,Triangles=triangles,Areas=areas,OriginalIndices=originalIndices,Edges=edges};
+        }
+        private static void AnalyzeShape(ShapeTopology mesh,int surface,Options options,List<Hole> result,double creaseAngle=Math.PI/3)
+        {
+            var vertices=mesh.Vertices;var normals=mesh.Normals;var triangles=mesh.Triangles;
+            var areas=mesh.Areas;var originalIndices=mesh.OriginalIndices;var edges=mesh.Edges;
             // Only manifold sharp joins may form rims. Open seams and ambiguous joins are excluded.
             var sharp=new List<Edge>();
             var parent=new int[normals.Count];for(int i=0;i<parent.Length;i++)parent[i]=i;
@@ -222,7 +307,7 @@ namespace TxTools.ExportByColor
                 foreach(int f in components[rim.WallComponent])
                 {
                     if(Math.Abs(Dot(normals[f],rim.Axis))>0.15){cylinder=false;break;}
-                    foreach(int id in triangles[f]){var delta=Sub(vertices[id],rim.Center);double error=Math.Abs(Length(Cross(delta,rim.Axis))-rim.Radius);rim.Error=Math.Max(rim.Error,error);if(error>tolerance){cylinder=false;break;}}
+                    foreach(int id in triangles[f]){double error=Math.Abs(RadialDistance(vertices[id],rim.Center,rim.Axis)-rim.Radius);rim.Error=Math.Max(rim.Error,error);if(error>tolerance){cylinder=false;break;}}
                     if(!cylinder)break;
                 }
                 if(!cylinder)continue;rim.WallTriangleCount=components[rim.WallComponent].Count;rim.CapFaces=new List<int>(capFaces);
@@ -262,7 +347,7 @@ namespace TxTools.ExportByColor
                 paired[i]=true;var h=new Hole{Surface=surface,Center=(double[])a.Center.Clone(),Axis=(double[])a.Axis.Clone(),RimA=(double[])a.Center.Clone(),Radius=a.Radius,MaximumError=a.Error,Segments=a.Segments,WallTriangleCount=a.WallTriangleCount,ExternalCylinder=a.ExternalCylinder,OpenRimA=a.Open,TrimmedRimA=a.Trimmed};
                 if(match>=0){var b=rims[match];paired[match]=true;h.PairedRims=true;h.OpenRimB=b.Open;h.TrimmedRimB=b.Trimmed;h.RimB=(double[])b.Center.Clone();h.Depth=depth;h.MaximumError=Math.Max(h.MaximumError,b.Error);h.Segments+=b.Segments;h.Radius=(a.Radius+b.Radius)/2;for(int k=0;k<3;k++)h.Center[k]=(a.Center[k]+b.Center[k])/2;}
                 // Validate the final common axis/average radius, not just each independent rim fit.
-                foreach(int f in components[a.WallComponent])foreach(int id in triangles[f])h.MaximumError=Math.Max(h.MaximumError,Math.Abs(Length(Cross(Sub(vertices[id],h.Center),h.Axis))-h.Radius));
+                foreach(int f in components[a.WallComponent])foreach(int id in triangles[f])h.MaximumError=Math.Max(h.MaximumError,Math.Abs(RadialDistance(vertices[id],h.Center,h.Axis)-h.Radius));
                 foreach(var rim in match>=0?new[]{a,rims[match]}:new[]{a})if(!rim.Trimmed)foreach(var point in rim.Points)h.MaximumError=Math.Max(h.MaximumError,Math.Abs(Dot(Sub(point,rim.Center),h.Axis)));
                 if(h.MaximumError>Math.Max(options.AbsoluteTolerance,h.Radius*options.RelativeTolerance))continue;
                 h.WallTriangles=components[a.WallComponent].ConvertAll(f=>originalIndices[f]).ToArray();
@@ -279,7 +364,7 @@ namespace TxTools.ExportByColor
             foreach(int fi in component)
             {
                 if(Math.Abs(Dot(normals[fi],rim.Axis))>.15)return double.PositiveInfinity;
-                foreach(int vi in triangles[fi])error=Math.Max(error,Math.Abs(Length(Cross(Sub(vertices[vi],rim.Center),rim.Axis))-rim.Radius));
+                foreach(int vi in triangles[fi])error=Math.Max(error,Math.Abs(RadialDistance(vertices[vi],rim.Center,rim.Axis)-rim.Radius));
             }
             return error;
         }

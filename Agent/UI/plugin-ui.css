@@ -1,0 +1,28 @@
+/* Native and WebView action buttons share the same 96-DPI baseline. */
+:root { --tx-button-height: 26px; --tx-button-min-width: 86px; }
+.primary, .rcp-btn, .rcp-run, .rcp-search, .query-search,
+.pick button, .execution-buttons button, .key-actions button,
+.approval-modal .ap-actions button, .askuser-modal .au-actions button,
+.settings-modal button:not(.sm-close), #key-ok, #key-cancel,
+#ap-allow, #ap-deny, #au-cancel, #au-submit, #btn-new, #btn-pet,
+.tool-copy-btn, .code-copy-btn {
+    box-sizing: border-box !important;
+    height: var(--tx-button-height) !important;
+    min-height: var(--tx-button-height) !important;
+    min-width: var(--tx-button-min-width) !important;
+    width: max-content !important;
+    max-width: 100%;
+    padding: 0 9px !important;
+    white-space: nowrap;
+    flex: 0 0 auto !important;
+    line-height: 24px !important;
+}
+/* Parameter, source and detail panes remain wheel/keyboard accessible without bars. */
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { width: 0; height: 0; }
+#chat-container, #model-menu, .drawer-body, #tools-drawer .tm-list,
+.rcp-body:has(.rcp-card), #content:has(>.card), [role="listbox"] { scrollbar-width: thin; }
+#chat-container::-webkit-scrollbar, #model-menu::-webkit-scrollbar,
+.drawer-body::-webkit-scrollbar, #tools-drawer .tm-list::-webkit-scrollbar,
+.rcp-body:has(.rcp-card)::-webkit-scrollbar, #content:has(>.card)::-webkit-scrollbar,
+[role="listbox"]::-webkit-scrollbar { width: 8px; height: 8px; }

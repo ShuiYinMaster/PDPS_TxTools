@@ -296,6 +296,7 @@ function renderDetail(r,content){
 }
 window.chrome.webview.addEventListener('message',event=>{
  const msg=typeof event.data==='string'?JSON.parse(event.data):event.data;
+ if(msg.type==='quick.targetChanged'){state.bindings={};state.study=null;notice('前台程序已变化，请切回目标软件并重新选取对象。');render();return;}
  if(msg.type==='recipe.studyChanged'){state.bindings={};state.study=msg.study;notice('研究已切换，请重新选取对象。');refresh();return;}
  if(msg.type==='quick.refresh'){refresh();return;}
  const callback=pending.get(msg.seq);if(callback){pending.delete(msg.seq);callback(msg);}else if(msg.type==='recipe.list.result')applyList(msg);

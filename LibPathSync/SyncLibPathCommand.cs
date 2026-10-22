@@ -10,6 +10,9 @@ namespace TxTools.LibPathSync
     /// </summary>
     public class SyncLibPathCommand : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.SyncLibPath.bmp";
+        public override string LargeBitmap => "image.SyncLibPath.png";
+
         public override string Name => ".路径同步";
         public override string Category => "TxTools";
         public override string Description => "将类型设置、插入组件、导入MFG等目录路径同步为 System Root Path";

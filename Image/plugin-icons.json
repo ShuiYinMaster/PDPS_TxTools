@@ -1,0 +1,152 @@
+[
+  {
+    "file": "AutoRecorder/AutoRecorderCmd.cs",
+    "command": "AutoRecorderCmd",
+    "small": "image.Small.AutoRecorder.bmp",
+    "large": "image.AutoRecorder.png"
+  },
+  {
+    "file": "AutoFance/FenceBuilderCommand.cs",
+    "command": "FenceBuilderCommand",
+    "small": "image.Small.AutoFance.bmp",
+    "large": "image.AutoFance.png"
+  },
+  {
+    "file": "ExportGun/ExportGunCmd.cs",
+    "command": "ExportGunCmd",
+    "small": "image.Small.ExportGun.bmp",
+    "large": "image.ExportGun.png"
+  },
+  {
+    "file": "RobotReachabilityChecker/Plugin/RobotReachabilityCheckerCmd.cs",
+    "command": "RobotReachabilityCheckerCmd",
+    "small": "image.Small.RobotReachabilityChecker.bmp",
+    "large": "image.RobotReachabilityChecker.png"
+  },
+  {
+    "file": "WeldSpotGrouper/WeldSpotGrouperCmd.cs",
+    "command": "WeldSpotGrouperCmd",
+    "small": "image.Small.WeldSpotGrouper.bmp",
+    "large": "image.WeldSpotGrouper.png"
+  },
+  {
+    "file": "LineToSolid/LineToSolidCommand.cs",
+    "command": "LineToSolidCommand",
+    "small": "image.Small.LineToSolid.bmp",
+    "large": "image.linetosoild.png"
+  },
+  {
+    "file": "RobotBaseChecker/RobotBaseCheckerCommand.cs",
+    "command": "RobotBaseCheckerCommand",
+    "small": "image.Small.RobotBaseChecker.bmp",
+    "large": "image.base0.png"
+  },
+  {
+    "file": "WeldSpotAllocator/AllocatorCommand.cs",
+    "command": "AllocatorCommand",
+    "small": "image.Small.WeldSpotAllocator.bmp",
+    "large": "WeldSpotAllocator.png"
+  },
+  {
+    "file": "WeldGunDefiner/WeldGunDefinerCommand.cs",
+    "command": "WeldGunDefinerCommand",
+    "small": "image.Small.WeldGunDefiner.bmp",
+    "large": "image.Xgun.png"
+  },
+  {
+    "file": "WeldAnnotator/WeldPointAnnotatorCmd.cs",
+    "command": "WeldPointAnnotatorCmd",
+    "small": "image.Small.WeldAnnotator.bmp",
+    "large": "image.WeldAnnotator.png"
+  },
+  {
+    "file": "Agent/TxAgentCommand.cs",
+    "command": "TxAgentCommand",
+    "small": "image.Small.Agent.bmp",
+    "large": "image.ai.png"
+  },
+  {
+    "file": "SelectButton/OpenResourceFolderCmd.cs",
+    "command": "OpenResourceFolderCmd",
+    "small": "image.Small.OpenResourceFolder.bmp",
+    "large": "image.file.png"
+  },
+  {
+    "file": "AutoPath/AutoPathPlannerCommand.cs",
+    "command": "AutoPathPlannerCommand",
+    "small": "image.Small.AutoPath.bmp",
+    "large": "image.AutoPath.png"
+  },
+  {
+    "file": "CrossEnvIO/CrossEnvIOCmd.cs",
+    "command": "CrossEnvIOCmd",
+    "small": "image.Small.CrossEnvIO.bmp",
+    "large": "image.CrossEnvIO.png"
+  },
+  {
+    "file": "ExportByColor/ExportByColorCmd.cs",
+    "command": "ExportByColorCmd",
+    "small": "image.Small.ExportByColor.bmp",
+    "large": "image.ExportByColor.png"
+  },
+  {
+    "file": "CatiaPartTree/CatiaPartTreeCmd.cs",
+    "command": "CatiaPartTreeCmd",
+    "small": "image.Small.CatiaPartTree.bmp",
+    "large": "image.CatiaPartTree.png"
+  },
+  {
+    "file": "ThemeTuner/ThemeTunerCmd.cs",
+    "command": "ThemeTunerCmd",
+    "small": "image.Small.ThemeTuner.bmp",
+    "large": "image.ThemeTuner.png"
+  },
+  {
+    "file": "MechArena/MechArenaCommand.cs",
+    "command": "MechArenaStartCommand",
+    "small": "image.Small.MechArena.bmp",
+    "large": "image.MechArena.png"
+  },
+  {
+    "file": "SnakeGame/SnakeGameCommand.cs",
+    "command": "SnakeGameCommand",
+    "small": "image.Small.SnakeGame.bmp",
+    "large": "image.SnakeGame.png"
+  },
+  {
+    "file": "WeldPointMatrix/WeldPointMatrixCommand.cs",
+    "command": "WeldPointMatrixCommand",
+    "small": "image.Small.WeldPointMatrix.bmp",
+    "large": "image.WeldPointMatrix.png"
+  },
+  {
+    "file": "LibPathSync/SyncLibPathCommand.cs",
+    "command": "SyncLibPathCommand",
+    "small": "image.Small.SyncLibPath.bmp",
+    "large": "image.SyncLibPath.png"
+  },
+  {
+    "file": "LibPathSync/SyncToSelectedComponentCommand.cs",
+    "command": "SyncToSelectedComponentCommand",
+    "small": "image.Small.SyncToSelectedComponent.bmp",
+    "large": "image.SyncToSelectedComponent.png"
+  },
+  {
+    "file": "SelectButton/SelectPointsCmds.cs",
+    "command": "SelectAllWeldPointsCmd",
+    "small": "image.Small.WeldPoint.bmp",
+    "large": "image.WeldPoint.png"
+  },
+  {
+    "file": "SelectButton/SelectPointsCmds.cs",
+    "command": "SelectAllPathPointsCmd",
+    "small": "image.Small.ViaPoint.bmp",
+    "large": "image.ViaPoint.png"
+  },
+  {
+    "file": "SelectButton/SelectPointsCmds.cs",
+    "command": "SelectAllContinuousPointsCmd",
+    "small": "image.Small.SeamPoint.bmp",
+    "large": "image.SeamPoint.png"
+  }
+]

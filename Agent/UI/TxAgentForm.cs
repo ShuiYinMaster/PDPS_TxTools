@@ -1,7 +1,7 @@
 ﻿// TxTools.Agent / UI / TxAgentForm.cs  (v3 — 全 HTML UI)
 //
-// 从 1400 行的多控件自绘窗口简化为 ~500 行的"WebView2 壳":
-//   • 窗口内只有一个填满的 WebView2,加载 Agent/UI/chat.html
+// TxAgentControl 管理 WebView2 和会话；TxAgentForm / TxAgentDockViewer 管理宿主：
+//   • 内容只有一个填满的 WebView2,加载 Agent/UI/chat.html
 //   • 顶栏、模型选择、按钮、输入区、附件卡片、状态栏、历史抽屉、API Key 输入
 //     全部在 chat.html 内
 //   • 审批弹窗(普通/代码)仍用原生 —— ApprovalRequest 委托签名是同步 bool,
@@ -33,7 +33,8 @@ using TxTools.Common;   // FormUiKit
 
 namespace TxTools.Agent.UI
 {
-    public sealed class TxAgentForm : TxForm
+    /// <summary>聊天内容控件。独立窗口和 PS Viewer 共用同一套会话与 WebView 生命周期。</summary>
+    public sealed class TxAgentControl : UserControl
     {
         private static readonly System.Drawing.Size DesignSize = new System.Drawing.Size(560, 720);
 
@@ -81,7 +82,13 @@ namespace TxTools.Agent.UI
         private bool _webViewReady;
         private string _petStartupError;
         private bool _openRecipesWhenReady;
-        private bool _dpiApplied;
+        private bool _sessionStarted;
+        private volatile bool _sessionClosed;
+        private bool _profileCleaned;
+        private readonly UnhandledExceptionEventHandler _unhandledException;
+        private Func<string, string> _askUserHandler;
+        internal Func<bool, int, bool> SidebarLayout;
+        internal event EventHandler CloseRequested;
 
         // ── 加载覆盖 (WebView 初始化期间遮盖空白,防止用户以为界面卡死) ──
         private System.Windows.Forms.Panel _loadingOverlay;
@@ -98,42 +105,26 @@ namespace TxTools.Agent.UI
 
         // 配方执行在飞标志(0=空闲,1=执行中)。见 HandleRecipeRun 里的防重入说明。
 
-        // 侧栏展开时只增加一次宽度；收起时扣回实际增加量，保留用户后续的手动缩放。
+        // 窗口几何由宿主处理；聊天控件只报告侧栏开关和 CSS 换算后的宽度。
         private bool _recipeSidebarOpen;
-        private bool _recipeSidebarApplied;
         private bool _recipeSidebarOverlay;
-        private bool _recipeSidebarResizing;
         private int _recipeSidebarWidth;
-        private int _recipeSidebarAddedWidth;
-        private System.Drawing.Rectangle _recipeSidebarCollapsedBounds;
-        private System.Drawing.Rectangle _recipeSidebarExpandedBounds;
-        private System.Drawing.Size _recipeSidebarCollapsedMinimum;
-        private FormWindowState _recipeSidebarWindowState;
 
-        public TxAgentForm(SynchronizationContext psCtx, ToolRegistry tools)
+        public TxAgentControl(SynchronizationContext psCtx, ToolRegistry tools)
         {
             _tools = tools;
-
-            FormUiKit.InitStandardForm(this,
-                "TxTools.Agent \u2014 PDPS AI \u52a9\u624b (DeepSeek)",
-                DesignSize, new System.Drawing.Size(420, 480), sizable: true);
-
-            // InitStandardForm 会关掉 FlatStyleEnabled(Siemens AFW 扁平风格)，
-            // 导致 AFW 不再擦除窗体背景、客户区边缘残留系统灰色(左/下/右 10px 灰边)。
-            // TxAgent 是 WebView2 全 HTML UI,原生配色依赖少,恢复扁平风格消除灰边。
-            // 反射设置：旧版 PS 的 TxForm 无此属性时静默跳过。
-            FormUiKit.TrySetFlatStyle(this, true);
+            // 宿主决定尺寸和 DPI，避免在 TxForm 的手动缩放之外二次缩放。
+            AutoScaleMode = AutoScaleMode.None;
+            Size = DesignSize;
+            Margin = Padding.Empty;
 
             // 崩溃兜底 —— PS 进程内出现 unhandled exception 时,先把当前对话强制落盘
             // 应对 AI 长任务跑到一半 PS 突然崩溃的场景;不是所有崩溃都能抓到(native 崩溃抓不到),
             // 但配合 AgentLoop 里"每个工具完成即写盘"的机制,能覆盖 99% 的丢失场景
-            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+            _unhandledException = (s, e) =>
             {
                 try { SaveCurrent(); } catch { }
             };
-
-            // TxForm 默认半模态,会挡住其它窗口;关掉才是真正的非模态
-            try { SemiModal = false; } catch { }
 
             _webView = new WebView2 { Dock = DockStyle.Fill };
             Controls.Add(_webView);
@@ -166,21 +157,15 @@ namespace TxTools.Agent.UI
                 string dots = new string('.', _loadingDotCount);
                 _loadingLabel.Text = "\u6b63\u5728\u52a0\u8f7d TxAgent UI " + dots;
             };
-        }
-
-        public override void OnInitTxForm()
-        {
-            base.OnInitTxForm();
-            try { SemiModal = false; } catch { }
-            // 窗体必在 PS 主线程创建，此刻消息循环在跑 —— 最可靠的主线程上下文来源。
-            // 刷新 PsContext 缓存，保证 RPC 后台线程也能封送回主线程（被控端免窗体场景尤其关键）。
-            try { TxTools.Agent.Core.PsContext.CaptureFromMainThread(); } catch { }
+            AppDomain.CurrentDomain.UnhandledException += _unhandledException;
         }
 
         protected override void OnLoad(EventArgs e)
         {
             base.OnLoad(e);
-            FormUiKit.ApplyDpiScaling(this, ref _dpiApplied, DesignSize);
+            if (_sessionStarted || _sessionClosed) return;
+            _sessionStarted = true;
+            try { PsContext.CaptureFromMainThread(); } catch { }
             _loadingTimer.Start();
 
             // 配方变更 → 推 recipe.changed 刷新侧边栏(聊天里 save/delete 后不用手点刷新)
@@ -198,26 +183,29 @@ namespace TxTools.Agent.UI
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
-            var previous = _recipeSidebarWindowState;
-            _recipeSidebarWindowState = WindowState;
-            if (_recipeSidebarResizing || previous == WindowState
-                || (!_recipeSidebarOpen && !_recipeSidebarApplied)) return;
-            // 最大化时不改窗体尺寸。开关操作在恢复普通窗口后再补齐，避免恢复尺寸漂移。
+            NotifyHostLayoutChanged();
+        }
+
+        internal void NotifyHostLayoutChanged()
+        {
+            if (_sessionClosed || !_sessionStarted) return;
             ApplyRecipeSidebarLayout();
             PostRecipePush(new JObject { ["type"] = "recipe.sidebar.layout", ["overlay"] = _recipeSidebarOverlay });
         }
 
-        protected override void OnFormClosed(FormClosedEventArgs e)
+        protected override void Dispose(bool disposing)
         {
-            // 若正等审批,视为拒绝解除阻塞,让后台线程能退出
-            ReleasePendingApproval(false);
-            FireExtractLessons();                // 关窗前对当前对话跑一次经验萃取
-            try { UploadStore.ClearAll(); } catch { }
-            if (_studyTimer != null) { _studyTimer.Stop(); _studyTimer.Dispose(); _studyTimer = null; }
-            try { TxTools.Agent.Core.RecipeStore.RecipesChanged -= OnRecipesChanged; } catch { }
-            try { RecipeUiActions.Changed -= OnRecipesChanged; } catch { }
-            CleanupWebViewProfile();
-            base.OnFormClosed(e);
+            bool cleanupProfile = disposing && !_profileCleaned;
+            if (cleanupProfile) _profileCleaned = true;
+            if (disposing)
+            {
+                ShutdownSession();
+                _loadingTimer?.Stop();
+                _loadingTimer?.Dispose();
+                _loadingTimer = null;
+            }
+            base.Dispose(disposing);
+            if (cleanupProfile) CleanupWebViewProfile();
         }
 
         // ─────────────────────────────────────────────────────
@@ -274,7 +262,9 @@ namespace TxTools.Agent.UI
                 // 第二个进程会一直卡在 EnsureCoreWebView2Async 不返回,
                 // 界面就停在"正在加载 TxAgent UI …"。
                 var env = await CreateWebViewEnvironmentAsync();
+                if (_sessionClosed || IsDisposed || Disposing) return;
                 await _webView.EnsureCoreWebView2Async(env);
+                if (_sessionClosed || IsDisposed || Disposing) return;
                 try { _webView.CoreWebView2.Settings.AreDevToolsEnabled = true; } catch { }
                 try { _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true; } catch { }
                 try { _webView.CoreWebView2.Settings.IsWebMessageEnabled = true; } catch { }
@@ -362,6 +352,7 @@ namespace TxTools.Agent.UI
             }
             catch (Exception ex)
             {
+                if (_sessionClosed || IsDisposed || Disposing) return;
                 ShowFatal(
                     "WebView2 初始化失败: " + ex.Message + Environment.NewLine + Environment.NewLine +
                     "本插件的 UI 需要 WebView2 Runtime。请到:" + Environment.NewLine +
@@ -376,7 +367,7 @@ namespace TxTools.Agent.UI
         /// </summary>
         private static string ReadEmbeddedChatHtml()
         {
-            return ReadEmbeddedWebResource("chat.html");
+            return PluginUiPolicy.PrepareWebDocument(ReadEmbeddedWebResource("chat.html"));
         }
 
         /// <summary>按文件名尾部匹配读嵌入资源。sidecar 资源(recipe-sidebar.css/js)共用。</summary>
@@ -411,7 +402,7 @@ namespace TxTools.Agent.UI
         private void ShowFatal(string msg)
         {
             try { MessageBox.Show(this, msg, "TxTools.Agent", MessageBoxButtons.OK, MessageBoxIcon.Error); } catch { }
-            try { Close(); } catch { }
+            try { CloseRequested?.Invoke(this, EventArgs.Empty); } catch { }
         }
 
         // ─────────────────────────────────────────────────────
@@ -420,6 +411,7 @@ namespace TxTools.Agent.UI
 
         private void OnWebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
         {
+            if (_sessionClosed) return;
             string raw = null;
             try { raw = e.TryGetWebMessageAsString(); }
             catch
@@ -707,56 +699,10 @@ namespace TxTools.Agent.UI
 
         private void ApplyRecipeSidebarLayout()
         {
-            if (_recipeSidebarResizing || !IsHandleCreated) return;
-            if (WindowState != FormWindowState.Normal)
-            {
-                _recipeSidebarOverlay = _recipeSidebarOpen;
-                return;
-            }
-            if (_recipeSidebarOpen == _recipeSidebarApplied)
-            {
-                if (!_recipeSidebarOpen) _recipeSidebarOverlay = false;
-                else _recipeSidebarOverlay = _recipeSidebarAddedWidth == 0;
-                return;
-            }
-
-            _recipeSidebarResizing = true;
-            try
-            {
-                var workingArea = Screen.FromRectangle(Bounds).WorkingArea;
-                if (_recipeSidebarOpen)
-                {
-                    _recipeSidebarCollapsedBounds = Bounds;
-                    _recipeSidebarCollapsedMinimum = MinimumSize;
-                    var expanded = RecipeSidebarWindowLayout.Expand(Bounds, workingArea,
-                        _recipeSidebarWidth, MaximumSize.Width);
-                    _recipeSidebarApplied = true;
-                    _recipeSidebarOverlay = expanded.Width == Width;
-                    if (!_recipeSidebarOverlay)
-                    {
-                        MinimumSize = new System.Drawing.Size(
-                            Math.Min(expanded.Width, _recipeSidebarCollapsedMinimum.Width + _recipeSidebarWidth),
-                            _recipeSidebarCollapsedMinimum.Height);
-                        Bounds = expanded;
-                    }
-                    _recipeSidebarExpandedBounds = Bounds;
-                    _recipeSidebarAddedWidth = Math.Max(0, Width - _recipeSidebarCollapsedBounds.Width);
-                }
-                else
-                {
-                    // 没有手动移动/调整过时恢复原位置；手动调整过则沿用用户的新位置。
-                    bool restoreLeft = Bounds == _recipeSidebarExpandedBounds;
-                    MinimumSize = _recipeSidebarCollapsedMinimum;
-                    var collapsed = RecipeSidebarWindowLayout.Collapse(Bounds, workingArea,
-                        _recipeSidebarAddedWidth, MinimumSize.Width,
-                        restoreLeft ? _recipeSidebarCollapsedBounds.Left : Left);
-                    _recipeSidebarApplied = false;
-                    _recipeSidebarOverlay = false;
-                    _recipeSidebarAddedWidth = 0;
-                    Bounds = collapsed;
-                }
-            }
-            finally { _recipeSidebarResizing = false; }
+            if (!IsHandleCreated || _sessionClosed) return;
+            _recipeSidebarOverlay = SidebarLayout != null
+                ? SidebarLayout(_recipeSidebarOpen, _recipeSidebarWidth)
+                : RecipeSidebarWindowLayout.NeedsOverlay(_recipeSidebarOpen, ClientSize.Width, DeviceDpi);
         }
 
         private void ReplyToWeb(int seq, JObject payload)
@@ -786,6 +732,7 @@ namespace TxTools.Agent.UI
         /// </summary>
         private void PostRecipePush(JObject payload)
         {
+            if (_sessionClosed || IsDisposed || Disposing) return;
             // WebView 可能还没就绪(窗体刚开)或已在关闭 —— 推送是尽力而为,不抛
             try
             {
@@ -1117,6 +1064,7 @@ namespace TxTools.Agent.UI
 
         private void PostJs(object payload)
         {
+            if (_sessionClosed || IsDisposed || Disposing) return;
             // 注意: 不能在这里判断 _webView.CoreWebView2 == null —— 那本身就是"访问 CoreWebView2",
             // 从后台线程(如 AgentLoop 事件回调 in Task.Run)进来会抛
             //   "CoreWebView2 can only be accessed from the UI thread"。
@@ -1147,6 +1095,7 @@ namespace TxTools.Agent.UI
         /// <summary>在 UI 线程上安全执行 JS,访问 CoreWebView2 前统一 null 检查+异常兜底。</summary>
         private void SafeExecuteScript(string js)
         {
+            if (_sessionClosed || IsDisposed || Disposing) return;
             try
             {
                 if (_webView == null || _webView.CoreWebView2 == null) return;
@@ -1418,6 +1367,7 @@ namespace TxTools.Agent.UI
 
         private async Task HandleUserSendAsync(string text, JArray attachments)
         {
+            if (_sessionClosed) return;
             if (_isSending)
             {
                 PostStatus("\u6b63\u5728\u5904\u7406\u4e0a\u4e00\u6761\u8bf7\u6c42\uff0c\u8bf7\u7a0d\u5019\u3002");
@@ -1440,34 +1390,35 @@ namespace TxTools.Agent.UI
             _isSending = true;
             TxTools.Agent.TxAgentCommand.SetPetThinking(true);
             _cts = new CancellationTokenSource();
+            var sendingLoop = _loop;
             try
             {
                 var token = _cts.Token;
-                await Task.Run(() => _loop.SendAsync(finalText, token));
+                await Task.Run(() => sendingLoop.SendAsync(finalText, token));
                 PostStatus("\u5c31\u7eea\u3002");
-                TxTools.Agent.TxAgentCommand.CelebratePet();
+                if (!_sessionClosed) TxTools.Agent.TxAgentCommand.CelebratePet();
             }
             catch (OperationCanceledException)
             {
-                TxTools.Agent.TxAgentCommand.SetPetState(null);
+                if (!_sessionClosed) TxTools.Agent.TxAgentCommand.SetPetState(null);
                 PostJs(new { type = "message", role = "\u7cfb\u7edf", text = "\u5df2\u53d6\u6d88\u672c\u6b21\u8bf7\u6c42\u3002" });
                 PostStatus("\u5df2\u53d6\u6d88\u3002");
             }
             catch (LlmApiException apiEx)
             {
-                TxTools.Agent.TxAgentCommand.SetPetState("error", "API 请求失败");
+                if (!_sessionClosed) TxTools.Agent.TxAgentCommand.SetPetState("error", "API 请求失败");
                 PostJs(new { type = "message", role = "\u7cfb\u7edf", text = "API \u9519\u8bef: " + apiEx.Message });
                 PostStatus("API \u9519\u8bef\u3002");
             }
             catch (Exception ex)
             {
-                TxTools.Agent.TxAgentCommand.SetPetState("error", "任务遇到问题");
+                if (!_sessionClosed) TxTools.Agent.TxAgentCommand.SetPetState("error", "任务遇到问题");
                 PostJs(new { type = "message", role = "\u7cfb\u7edf", text = "\u51fa\u9519: " + ex.Message });
                 PostStatus("\u51fa\u9519\u3002");
             }
             finally
             {
-                TxTools.Agent.TxAgentCommand.SetPetThinking(false);
+                if (!_sessionClosed) TxTools.Agent.TxAgentCommand.SetPetThinking(false);
                 PostJs(new { type = "closeAssistant" });
                 PostBusy(false);
                 try { if (_cts != null) _cts.Dispose(); } catch { }
@@ -1595,6 +1546,7 @@ namespace TxTools.Agent.UI
                     // 回 UI 线程更新 provider.Models + 推 modelList + 落盘缓存
                     Action apply = () =>
                     {
+                        if (_sessionClosed || IsDisposed || Disposing) return;
                         var target = LlmProviders.ById(pid);
                         target.Models = models.ToArray();
                         PostProviderAndModelList();
@@ -1889,6 +1841,7 @@ namespace TxTools.Agent.UI
 
         private void SaveCurrent()
         {
+            if (_sessionClosed) return;
             if (_loop == null || _current == null) return;
             if (!ConversationStore.HasUserContent(_loop.FullHistory)) return;
             _current.Messages = new List<ChatMessage>(_loop.FullHistory);
@@ -1903,17 +1856,27 @@ namespace TxTools.Agent.UI
         /// 不覆盖:PS 进程被强杀 (Task Manager 结束进程 / native 崩溃) —— 那种场景靠
         ///        AgentLoop 里"每个工具完成即 SaveCurrent"的增量保存来兜底。
         /// </summary>
-        protected override void OnFormClosing(System.Windows.Forms.FormClosingEventArgs e)
+        internal void ShutdownSession()
         {
+            if (_sessionClosed) return;
+            try { SaveCurrent(); } catch { }
+            _sessionClosed = true;
+            _webViewReady = false;
             // 先放行所有挂起的等待,否则阻塞在 tcs.Task.Result 上的后台线程会一直悬着
             try { StopProcessSync(); } catch { }
-            try { AskUserBridge.Handler = null; } catch { }
+            try { if (AskUserBridge.Handler == _askUserHandler) AskUserBridge.Handler = null; } catch { }
             try { ReleasePendingAskUser(null); } catch { }
             try { ReleasePendingApproval(false); } catch { }
             try { if (_cts != null) _cts.Cancel(); } catch { }
 
-            try { SaveCurrent(); } catch { }
-            base.OnFormClosing(e);
+            try { FireExtractLessons(); } catch { }
+            try { UploadStore.ClearAll(); } catch { }
+            if (_studyTimer != null) { _studyTimer.Stop(); _studyTimer.Dispose(); _studyTimer = null; }
+            try { RecipeStore.RecipesChanged -= OnRecipesChanged; } catch { }
+            try { RecipeUiActions.Changed -= OnRecipesChanged; } catch { }
+            AppDomain.CurrentDomain.UnhandledException -= _unhandledException;
+            SidebarLayout = null;
+            CloseRequested = null;
         }
 
         /// <summary>把消息数组序列化成 restore payload,交给 chat.html 一次性渲染。</summary>
@@ -1991,6 +1954,7 @@ namespace TxTools.Agent.UI
 
             loop.AssistantDelta += frag =>
             {
+                if (_sessionClosed) return;
                 TxTools.Agent.TxAgentCommand.SetPetState("result");
                 PostJs(new { type = "delta", text = frag });
             };
@@ -2001,6 +1965,7 @@ namespace TxTools.Agent.UI
             };
             loop.ToolCalled += (name, input) =>
             {
+                if (_sessionClosed) return;
                 TxTools.Agent.TxAgentCommand.SetPetState("working", "正在执行：" + name);
                 PostJs(new { type = "closeAssistant" });
                 PostStatus("\u2699 " + name + "\u2026");
@@ -2008,31 +1973,36 @@ namespace TxTools.Agent.UI
             };
             loop.ToolCompleted += (name, result, isErr) =>
             {
+                if (_sessionClosed) return;
                 TxTools.Agent.TxAgentCommand.SetPetState(isErr ? "error" : "result", isErr ? "工具执行失败：" + name : "正在整理工具结果");
                 PostJs(new { type = "toolResult", name = name, result = result, isErr = isErr });
                 PostStatus("\u5c31\u7eea\u3002");
             };
             loop.ApprovalRequest = (tool, input) =>
             {
+                if (_sessionClosed) return false;
                 TxTools.Agent.TxAgentCommand.SetPetState("waiting", "等待操作确认");
                 try { return AskApproval(tool, input); }
-                finally { TxTools.Agent.TxAgentCommand.SetPetState("thinking"); }
+                finally { if (!_sessionClosed) TxTools.Agent.TxAgentCommand.SetPetState("thinking"); }
             };
             loop.AskUserRequest = (question, kind, choices) =>
             {
+                if (_sessionClosed) return null;
                 TxTools.Agent.TxAgentCommand.SetPetState("waiting", "等待你的回答");
                 try { return AskUser(question, kind, choices); }
-                finally { TxTools.Agent.TxAgentCommand.SetPetState("thinking"); }
+                finally { if (!_sessionClosed) TxTools.Agent.TxAgentCommand.SetPetState("thinking"); }
             };
 
             // ask_user 富负载通道:支持 multi_choice / form / allow_custom / multiline。
             // 每次 BuildLoop 重挂一次,避免 form 重建后残留旧实例引用。
-            AskUserBridge.Handler = payload =>
+            _askUserHandler = payload =>
             {
+                if (_sessionClosed) return null;
                 TxTools.Agent.TxAgentCommand.SetPetState("waiting", "等待你的回答");
                 try { return AskUserRich(payload); }
-                finally { TxTools.Agent.TxAgentCommand.SetPetState("thinking"); }
+                finally { if (!_sessionClosed) TxTools.Agent.TxAgentCommand.SetPetState("thinking"); }
             };
+            AskUserBridge.Handler = _askUserHandler;
 
             // 新 harness 独有能力(旧 AgentLoop 不实现该接口,as 得到 null 自动跳过)
             var streaming = loop as IStreamingAgentLoop;
@@ -2043,6 +2013,7 @@ namespace TxTools.Agent.UI
                 // 思考经独立归档保存，历史默认折叠；网络回传由端点兼容策略控制。
                 streaming.ReasoningStarted += () =>
                 {
+                    if (_sessionClosed) return;
                     TxTools.Agent.TxAgentCommand.SetPetState("thinking");
                     PostJs(new { type = "reasoningStart" });
                 };
@@ -2090,6 +2061,7 @@ namespace TxTools.Agent.UI
 
         private bool AskApproval(ITxAgentTool tool, JObject input)
         {
+            if (_sessionClosed) return false;
             bool isCode = input != null
                           && input["code"] != null
                           && input["code"].Type == JTokenType.String;
@@ -2123,6 +2095,7 @@ namespace TxTools.Agent.UI
             var tcs = new TaskCompletionSource<bool>();
             lock (_pendingApprovalLock)
             {
+                if (_sessionClosed) return false;
                 // 如果之前有挂着的(异常情况),视为拒绝先释放,再上新的
                 if (_pendingApproval != null) _pendingApproval.TrySetResult(false);
                 _pendingApproval = tcs;
@@ -2191,11 +2164,13 @@ namespace TxTools.Agent.UI
 
         private string AskUser(string question, string kind, string[] options)
         {
+            if (_sessionClosed) return null;
             if (!_webViewReady) return null;   // WebView 未就绪 —— 无法弹窗,视为取消
 
             var tcs = new TaskCompletionSource<string>();
             lock (_pendingAskUserLock)
             {
+                if (_sessionClosed) return null;
                 if (_pendingAskUser != null) _pendingAskUser.TrySetResult(null);
                 _pendingAskUser = tcs;
             }
@@ -2246,6 +2221,7 @@ namespace TxTools.Agent.UI
 
         private string AskUserRich(string payloadJson)
         {
+            if (_sessionClosed) return null;
             if (!_webViewReady)
                 throw new InvalidOperationException("WebView \u672a\u5c31\u7eea");
 
@@ -2269,6 +2245,7 @@ namespace TxTools.Agent.UI
             var tcs = new TaskCompletionSource<string>();
             lock (_pendingAskUserLock)
             {
+                if (_sessionClosed) return null;
                 if (_pendingAskUser != null) _pendingAskUser.TrySetResult(null);
                 _pendingAskUser = tcs;
             }
@@ -2290,6 +2267,7 @@ namespace TxTools.Agent.UI
         /// <summary>原生弹窗兜底 —— WebView 未就绪或已在 UI 线程时用。</summary>
         private bool AskApprovalNative(ITxAgentTool tool, JObject input, bool isCode)
         {
+            if (_sessionClosed) return false;
             if (InvokeRequired)
                 return (bool)Invoke(new Func<bool>(() => AskApprovalNative(tool, input, isCode)));
 
@@ -2358,9 +2336,218 @@ namespace TxTools.Agent.UI
         // </PROTOCOL>
     }
 
+    /// <summary>未配置 Viewer 时使用的独立窗口，内容与停靠面板共用。</summary>
+    public sealed class TxAgentForm : TxForm
+    {
+        private static readonly System.Drawing.Size DesignSize = new System.Drawing.Size(560, 720);
+        private readonly TxAgentControl _content;
+        private readonly RecipeSidebarHostLayout _sidebar;
+        private bool _dpiApplied;
+
+        internal TxAgentForm(TxAgentControl content)
+        {
+            FormUiKit.InitStandardForm(this, "TxTools.Agent — PDPS AI 助手",
+                DesignSize, new System.Drawing.Size(420, 480), sizable: true);
+            FormUiKit.TrySetFlatStyle(this, true);
+            try { SemiModal = false; } catch { }
+            _content = content;
+            _sidebar = new RecipeSidebarHostLayout(() => Bounds, value => Bounds = value,
+                () => MinimumSize.Width, () => MaximumSize.Width);
+            _content.SidebarLayout = (open, width) =>
+                _sidebar.Apply(open, width, WindowState == FormWindowState.Normal)
+                || RecipeSidebarWindowLayout.NeedsOverlay(open, ClientSize.Width, DeviceDpi);
+            _content.CloseRequested += (s, e) => Close();
+            _content.Dock = DockStyle.Fill;
+            Controls.Add(_content);
+        }
+
+        public override void OnInitTxForm()
+        {
+            base.OnInitTxForm();
+            try { SemiModal = false; } catch { }
+            PsContext.CaptureFromMainThread();
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            FormUiKit.ApplyDpiScaling(this, ref _dpiApplied, DesignSize);
+            base.OnLoad(e);
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            _content?.NotifyHostLayoutChanged();
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            base.OnFormClosing(e);
+            if (!e.Cancel) _content.ShutdownSession();
+        }
+    }
+
+    /// <summary>由 PS 的 Viewer 配置创建，不能用 Form.Show 代替 Viewer 注册。</summary>
+    public sealed class TxAgentDockViewer : TxViewerUserControl,
+        ITxViewerControl, ITxDockingViewerControl, ITxViewerNotifyMessageHandling
+    {
+        public const string RegisteredName = "TxAgentDockViewer";
+        private TxAgentControl _content;
+        private RecipeSidebarHostLayout _sidebar;
+        private bool _releasing;
+
+        public string ViewerName { get { return RegisteredName; } }
+        public string Description { get { return "TxAgent — PDPS AI 助手"; } }
+        public ITxViewerMenusCollection Menus { get { return null; } }
+        public bool CanAutoHide { get { return true; } }
+        public event TxViewerControl_MenuDisplayRequestedEventHandler MenuDisplayRequested { add { } remove { } }
+        public bool ShoulHandleKeyDownMessage() { return ContainsFocus; }
+
+        // 构造函数不打开会话、不读文件、不抢跨进程锁，配置扫描不会启动聊天。
+        public TxAgentDockViewer() { Size = new System.Drawing.Size(560, 720); }
+
+        public void Initialize() { EnsureContent(); }
+
+        internal bool EnsureContent()
+        {
+            if (_releasing || IsDisposed || Disposing) return false;
+            if (_content != null && !_content.IsDisposed) return true;
+            var content = TxAgentCommand.CreateViewerContent();
+            if (content == null)
+            {
+                if (Controls.Count == 0)
+                {
+                    var retry = new Button { Dock = DockStyle.Bottom, Height = 32, Text = "重新打开 TxAgent" };
+                    retry.Click += (s, e) => EnsureContent();
+                    Controls.Add(new Label { Dock = DockStyle.Fill, TextAlign = System.Drawing.ContentAlignment.MiddleCenter,
+                        Text = "TxAgent 已在当前或其他 Process Simulate 窗口中打开。\n关闭原窗口后可在这里重新打开。" });
+                    Controls.Add(retry);
+                }
+                return false;
+            }
+            while (Controls.Count > 0) Controls[0].Dispose();
+            _content = content;
+            _sidebar = new RecipeSidebarHostLayout(
+                () => DockWindow().Bounds, value => DockWindow().Bounds = value,
+                () => (int)Math.Ceiling(420 * DeviceDpi / 96.0), () => 0);
+            content.SidebarLayout = ApplySidebarLayout;
+            content.CloseRequested += (s, e) =>
+            {
+                var viewer = TxApplication.ViewersManager.GetViewerControl(this);
+                if (viewer != null) viewer.Close();
+            };
+            content.Dock = DockStyle.Fill;
+            Controls.Add(content);
+            return true;
+        }
+
+        private TxDockableViewerWindow DockWindow()
+        {
+            return TxApplication.ViewersManager.GetViewerControl(this)?.ContainerWindow as TxDockableViewerWindow;
+        }
+
+        private bool ApplySidebarLayout(bool open, int width)
+        {
+            var window = DockWindow();
+            if (window == null || !window.IsFloating)
+            {
+                // 停靠面板的宽度由 PS 分栏管理，不修改其 Bounds 或宿主主窗口大小。
+                _sidebar.Reset();
+                return RecipeSidebarWindowLayout.NeedsOverlay(open, ClientSize.Width, DeviceDpi);
+            }
+            return _sidebar.Apply(open, width, true)
+                || RecipeSidebarWindowLayout.NeedsOverlay(open, ClientSize.Width, DeviceDpi);
+        }
+
+        // 自动隐藏只影响可见性，不结束会话或重建 WebView2。
+        public void AfterSlide(bool slideOut) { if (slideOut) _content?.NotifyHostLayoutChanged(); }
+        public void Uninitialize() { ReleaseContent(); }
+
+        private void ReleaseContent()
+        {
+            if (_releasing) return;
+            _releasing = true;
+            try
+            {
+                var content = _content;
+                _content = null;
+                _sidebar = null;
+                content?.Dispose();
+            }
+            finally { _releasing = false; }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) ReleaseContent();
+            base.Dispose(disposing);
+        }
+    }
+
+    /// <summary>浮动宿主展开侧栏时增加一次宽度，收起时保留用户的手动缩放。</summary>
+    internal sealed class RecipeSidebarHostLayout
+    {
+        private readonly Func<System.Drawing.Rectangle> _getBounds;
+        private readonly Action<System.Drawing.Rectangle> _setBounds;
+        private readonly Func<int> _minimumWidth;
+        private readonly Func<int> _maximumWidth;
+        private readonly Func<System.Drawing.Rectangle, System.Drawing.Rectangle> _workingArea;
+        private bool _applied, _resizing, _overlay;
+        private int _addedWidth;
+        private System.Drawing.Rectangle _collapsed, _expanded;
+
+        internal RecipeSidebarHostLayout(Func<System.Drawing.Rectangle> getBounds,
+            Action<System.Drawing.Rectangle> setBounds, Func<int> minimumWidth, Func<int> maximumWidth,
+            Func<System.Drawing.Rectangle, System.Drawing.Rectangle> workingArea = null)
+        {
+            _getBounds = getBounds; _setBounds = setBounds;
+            _minimumWidth = minimumWidth; _maximumWidth = maximumWidth;
+            _workingArea = workingArea ?? (bounds => Screen.FromRectangle(bounds).WorkingArea);
+        }
+
+        internal void Reset() { _applied = false; _addedWidth = 0; _overlay = false; }
+
+        internal bool Apply(bool open, int width, bool canResize)
+        {
+            if (_resizing) return _overlay;
+            if (!canResize) return open;
+            if (_applied == open) return open && _addedWidth == 0;
+            _resizing = true;
+            try
+            {
+                var bounds = _getBounds();
+                var area = _workingArea(bounds);
+                if (open)
+                {
+                    _collapsed = bounds;
+                    var expanded = RecipeSidebarWindowLayout.Expand(bounds, area, width, _maximumWidth());
+                    _applied = true;
+                    _overlay = expanded.Width == bounds.Width;
+                    if (!_overlay) _setBounds(expanded);
+                    _expanded = _getBounds();
+                    _addedWidth = Math.Max(0, _expanded.Width - _collapsed.Width);
+                    _overlay = _addedWidth == 0;
+                }
+                else
+                {
+                    var collapsed = RecipeSidebarWindowLayout.Collapse(bounds, area, _addedWidth,
+                        _minimumWidth(), bounds == _expanded ? _collapsed.Left : bounds.Left);
+                    Reset();
+                    _setBounds(collapsed);
+                }
+                return _overlay;
+            }
+            finally { _resizing = false; }
+        }
+    }
+
     /// <summary>窗体水平扩展与回收的纯布局计算，不访问 PS 或窗口句柄。</summary>
     internal static class RecipeSidebarWindowLayout
     {
+        internal static bool NeedsOverlay(bool open, int clientWidth, int dpi)
+        {
+            return open && clientWidth < Math.Ceiling(720 * Math.Max(96, dpi) / 96.0);
+        }
         public static System.Drawing.Rectangle Expand(System.Drawing.Rectangle bounds,
             System.Drawing.Rectangle workingArea, int sidebarWidth, int maximumWidth)
         {

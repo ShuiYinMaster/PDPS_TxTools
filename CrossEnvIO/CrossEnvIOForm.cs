@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
 using Tecnomatix.Engineering;
@@ -24,6 +25,12 @@ namespace TxTools.CrossEnvIO
 
         private readonly SynchronizationContext _psCtx;
         private RichTextBox _rtbLog;
+        private TabControl _tabs;
+        private Label _lblStatus;
+        private ProgressBar _progress;
+        private bool _busy;
+        private int _refreshGeneration;
+        private readonly Dictionary<int, string> _peerRoots = new Dictionary<int, string>();
 
         // ── 资源/零件页（合并，模式切换共享一套控件）──
         private TextBox _txtSrcLib;
@@ -62,8 +69,8 @@ namespace TxTools.CrossEnvIO
             new List<TxTools.Agent.Core.PsInstanceInfo>();
 
         private bool _scaled;
-        private readonly Size _designSize = new Size(500, 800);
-        private readonly Size _minSize = new Size(500, 800);
+        private readonly Size _designSize = new Size(760, 640);
+        private readonly Size _minSize = new Size(740, 600);
 
         private static readonly string DefaultDir = TxToolsTemp.DirectoryFor("CrossEnvIO");
 
@@ -75,6 +82,10 @@ namespace TxTools.CrossEnvIO
                 "跨环境互传 I/O（资源 / 零件 / 焊点）",
                 _designSize, _minSize, sizable: true);
             BuildUi();
+            FormClosing += (s, e) =>
+            {
+                if (_busy) { e.Cancel = true; Log("[提示] 操作进行中，请等待结果后关闭窗口"); }
+            };
             Log("插件已启动。数据文件默认目录: " + DefaultDir);
             Log("本环境库根自动识别: " + (EnvLibrary.CurrentRoot() ?? "<无>"));
             DetectLibraryRoots();
@@ -116,7 +127,7 @@ namespace TxTools.CrossEnvIO
 
         private void BuildUi()
         {
-            FormBorderStyle = FormBorderStyle.FixedSingle;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
 
@@ -129,6 +140,7 @@ namespace TxTools.CrossEnvIO
                 ItemSize = new Size(100, 28),
                 Appearance = TabAppearance.Normal
             };
+            _tabs = tab;
             tab.DrawItem += (s, e) =>
             {
                 var tc = (TabControl)s;
@@ -150,14 +162,20 @@ namespace TxTools.CrossEnvIO
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 2,
+                RowCount = 3,
                 Margin = new Padding(6, 4, 6, 4),
                 BackColor = FormUiKit.CardBack
             };
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 74));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 26));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 80));
             root.Controls.Add(tab, 0, 0);
-            root.Controls.Add(logBox, 0, 1);
+            var activity = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
+            activity.Controls.Add(_progress);
+            activity.Controls.Add(_lblStatus);
+            root.Controls.Add(activity, 0, 1);
+            root.Controls.Add(logBox, 0, 2);
+            PluginLog.Register(logBox);
 
             Controls.Add(root);
         }
@@ -172,7 +190,7 @@ namespace TxTools.CrossEnvIO
             FlowLayoutPanel content;
             var card = FormUiKit.MkCard("资源 / 零件跨环境传输", 500, 800, out content);
             card.Dock = DockStyle.Fill;   // 关键：卡片填满标签页，消除右侧空白
-            content.AutoScroll = true;
+            content.AutoScroll = false;
 
             // 模式切换（资源 / 零件）
             var rowMode = FormUiKit.MkRowFlow();
@@ -184,7 +202,7 @@ namespace TxTools.CrossEnvIO
             rowMode.Controls.Add(_rbPart);
             content.Controls.Add(rowMode);
 
-            _lblHint = FormUiKit.MkLabel("导出根：在场景中多选复合资源，遍历其子集导出。", false);
+            _lblHint = FormUiKit.MkLabel("导出根：多选资源/零件；选择为空时导出整个场景树。", false);
             content.Controls.Add(_lblHint);
 
             // 导出根多选拾取（带边框）
@@ -211,11 +229,12 @@ namespace TxTools.CrossEnvIO
             FormUiKit.FillWidthInFlow(content, gridPanel);
 
             // 重建原点（PS 原生坐标选择框）
-            content.Controls.Add(FormUiKit.MkLabel("重建原点：拾取坐标系，其 XYZ 为重建偏移量。", false));
+            var originHint = FormUiKit.MkLabel("重建原点（XYZ 偏移）", false);
+            content.Controls.Add(originHint);
             var rowOrigin = FormUiKit.MkRowFlow();
             _frameOrigin = new TxFrameEditBoxCtrl
             {
-                Width = 280,
+                Width = 190,
                 Height = 22,
                 Font = FormUiKit.BaseFont,
                 ListenToPick = true,
@@ -227,7 +246,16 @@ namespace TxTools.CrossEnvIO
             _frameOrigin.InvalidFrameSet += (s, e) => { _originX = 0; _originY = 0; _originZ = 0; };
             rowOrigin.Controls.Add(_frameOrigin);
             var btnResetOrigin = FormUiKit.MkBtn("重置坐标", Theme.BtnSecondary, 60, 26);
-            btnResetOrigin.Click += (s, e) => { _originX = 0; _originY = 0; _originZ = 0; Log("[原点] 已重置坐标"); };
+            btnResetOrigin.Click += (s, e) =>
+            {
+                try
+                {
+                    _frameOrigin.SetLocation(new TxTransformation());
+                    _originX = 0; _originY = 0; _originZ = 0;
+                    Log("[原点] 已重置为世界原点");
+                }
+                catch (Exception ex) { Log("[原点] 重置失败，保留原偏移: " + ex.Message); }
+            };
             rowOrigin.Controls.Add(btnResetOrigin);
             content.Controls.Add(rowOrigin);
             FormUiKit.FillWidthInFlow(content, rowOrigin);
@@ -245,7 +273,7 @@ namespace TxTools.CrossEnvIO
             // 对端实例选择（多实例可切换）
             var rowPeer = FormUiKit.MkRowFlow();
             rowPeer.Controls.Add(FormUiKit.MkFieldLabel("对端实例:"));
-            _cmbPeer = FormUiKit.MkComboBox(250, false);
+            _cmbPeer = FormUiKit.MkComboBox(180, false);
             _cmbPeer.DropDownStyle = ComboBoxStyle.DropDownList;
             _cmbPeer.SelectedIndexChanged += (s, e) => OnPeerChanged();
             rowPeer.Controls.Add(_cmbPeer);
@@ -258,13 +286,13 @@ namespace TxTools.CrossEnvIO
             // 本端库根 / 对端库根 / 结构文件
             var rowSrc = FormUiKit.MkRowFlow();
             rowSrc.Controls.Add(FormUiKit.MkFieldLabel("本端库根:"));
-            rowSrc.Controls.Add(_txtSrcLib = FormUiKit.MkTextBox(DefaultDir, 330));
+            rowSrc.Controls.Add(_txtSrcLib = FormUiKit.MkTextBox("", 330));
             content.Controls.Add(rowSrc);
             FormUiKit.FillWidthInFlow(content, rowSrc);
 
             var rowDst = FormUiKit.MkRowFlow();
             rowDst.Controls.Add(FormUiKit.MkFieldLabel("对端库根:"));
-            rowDst.Controls.Add(_txtDstLib = FormUiKit.MkTextBox(DefaultDir, 330));
+            rowDst.Controls.Add(_txtDstLib = FormUiKit.MkTextBox("", 330));
             content.Controls.Add(rowDst);
             FormUiKit.FillWidthInFlow(content, rowDst);
 
@@ -279,8 +307,11 @@ namespace TxTools.CrossEnvIO
             var rowBrowse = FormUiKit.MkRowFlow();
             rowBrowse.Controls.Add(MkBrowseBtn("浏览本端", "FolderPicker", () => _txtSrcLib));
             rowBrowse.Controls.Add(MkBrowseBtn("浏览对端", "FolderPicker", () => _txtDstLib));
-            rowBrowse.Controls.Add(MkBrowseBtn("浏览文件", "FilePicker", () => _txtFile));
+            rowBrowse.Controls.Add(MkBrowseBtn("打开结构文件", "FilePicker", () => _txtFile));
             content.Controls.Add(rowBrowse);
+            var rowSaveFile = FormUiKit.MkRowFlow();
+            rowSaveFile.Controls.Add(MkBrowseBtn("设置导出路径", "SaveFilePicker", () => _txtFile));
+            content.Controls.Add(rowSaveFile);
 
             // 操作按钮：3×2 铺满宽度
             //   导出本端结构 / 复制cojt到对端 / 在本端重建对端结构
@@ -292,8 +323,11 @@ namespace TxTools.CrossEnvIO
                 AutoSize = false,
                 Dock = DockStyle.Top,
                 Width = 440,
+                Height = 64,
                 Margin = new Padding(0, 4, 0, 0)
             };
+            tblActions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            tblActions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
             for (int c = 0; c < 3; c++)
                 tblActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
 
@@ -316,6 +350,71 @@ namespace TxTools.CrossEnvIO
             FormUiKit.WrapLabelInFlow(content, tip);
             content.Controls.Add(tip);
 
+            // 左侧选取对象/原点，右侧设置对端/路径；底部保持同一组执行操作。
+            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3,
+                Padding = new Padding(8, 6, 8, 4), Margin = Padding.Empty };
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            var selection = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6,
+                Margin = new Padding(0, 0, 12, 0) };
+            for (int i = 0; i < 6; i++) selection.RowStyles.Add(new RowStyle(i == 2 ? SizeType.Percent : SizeType.AutoSize, i == 2 ? 100 : 0));
+            selection.Controls.Add(rowMode, 0, 0);
+            selection.Controls.Add(_lblHint, 0, 1);
+            gridPanel.Dock = DockStyle.Fill;
+            selection.Controls.Add(gridPanel, 0, 2);
+            selection.Controls.Add(originHint, 0, 3);
+            selection.Controls.Add(rowOrigin, 0, 4);
+            selection.Controls.Add(rowTools, 0, 5);
+            _lblHint.AutoSize = true;
+            selection.SizeChanged += (s, e) => _lblHint.MaximumSize = new Size(Math.Max(20, selection.ClientSize.Width - 8), 0);
+
+            var paths = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, RowCount = 5, Margin = Padding.Empty };
+            paths.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            for (int i = 0; i < 5; i++) paths.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            paths.Controls.Add(rowPeer, 0, 0);
+            TableLayoutPanel PathRow(Control label, TextBox input, Control browse)
+            {
+                var row = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = browse == null ? 2 : 3,
+                    RowCount = 1, Margin = new Padding(0, 2, 0, 2) };
+                row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 66));
+                row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                if (browse != null) row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                label.Anchor = AnchorStyles.Left;
+                input.Width = 120;
+                input.Dock = DockStyle.Fill;
+                row.Controls.Add(label, 0, 0);
+                row.Controls.Add(input, 1, 0);
+                if (browse != null) row.Controls.Add(browse, 2, 0);
+                return row;
+            }
+            var browseSource = rowBrowse.Controls[0];
+            var browseTarget = rowBrowse.Controls[1];
+            var browseFile = rowBrowse.Controls[2];
+            browseSource.Text = browseTarget.Text = "浏览";
+            paths.Controls.Add(PathRow(rowSrc.Controls[0], _txtSrcLib, browseSource), 0, 1);
+            paths.Controls.Add(PathRow(rowDst.Controls[0], _txtDstLib, browseTarget), 0, 2);
+            paths.Controls.Add(PathRow(_lblFile, _txtFile, null), 0, 3);
+            var fileActions = FormUiKit.MkRowFlow();
+            fileActions.Controls.Add(browseFile);
+            fileActions.Controls.Add(rowSaveFile.Controls[0]);
+            paths.Controls.Add(fileActions, 0, 4);
+            rowOrigin.Dock = rowTools.Dock = rowPeer.Dock = fileActions.Dock = DockStyle.Top;
+            layout.Controls.Add(selection, 0, 0);
+            layout.Controls.Add(paths, 1, 0);
+            tblActions.Dock = DockStyle.Fill;
+            layout.Controls.Add(tblActions, 0, 1);
+            layout.SetColumnSpan(tblActions, 2);
+            layout.Controls.Add(tip, 0, 2);
+            layout.SetColumnSpan(tip, 2);
+            layout.SizeChanged += (s, e) => tip.MaximumSize = new Size(Math.Max(20, layout.ClientSize.Width - 20), 0);
+            card.Controls.Remove(content);
+            card.Controls.Add(layout);
+            card.Controls.SetChildIndex(layout, 0);
+            content.Dispose();
+
             page.Controls.Add(card);
             return page;
         }
@@ -326,8 +425,8 @@ namespace TxTools.CrossEnvIO
             _partMode = part;
             if (_lblHint != null)
                 _lblHint.Text = part
-                    ? "零件树导出含COJT列；重建用TxCompoundPart容器+组件挂载。"
-                    : "导出根：在场景中多选复合资源，遍历其子集导出。";
+                    ? "零件树导出含COJT列；选择为空时导出整个场景树。"
+                    : "导出根：多选资源/零件；选择为空时导出整个场景树。";
             if (_lblFile != null)
                 _lblFile.Text = part ? "零件树文件:" : "结构文件:";
             if (_txtFile != null)
@@ -353,7 +452,7 @@ namespace TxTools.CrossEnvIO
             FlowLayoutPanel content;
             var card = FormUiKit.MkCard("焊点跨环境传输", 500, 380, out content);
             card.Dock = DockStyle.Fill;   // 填满标签页，消除右侧空白
-            content.AutoScroll = true;
+            content.AutoScroll = false;
 
             content.Controls.Add(FormUiKit.MkLabel("导出选中的焊点操作；重建按ParentOpPath建操作树并创建焊点。", false));
 
@@ -393,7 +492,8 @@ namespace TxTools.CrossEnvIO
             FormUiKit.FillWidthInFlow(content, rowWeldFile);
 
             var rowBrowse = FormUiKit.MkRowFlow();
-            rowBrowse.Controls.Add(MkBrowseBtn("浏览焊点文件", "FilePicker", () => _txtWeldFile));
+            rowBrowse.Controls.Add(MkBrowseBtn("打开焊点文件", "FilePicker", () => _txtWeldFile));
+            rowBrowse.Controls.Add(MkBrowseBtn("设置导出路径", "SaveFilePicker", () => _txtWeldFile));
             content.Controls.Add(rowBrowse);
 
             _chkWeldProject = FormUiKit.MkCheckBox("重建后投影到零件表面", false);
@@ -411,8 +511,10 @@ namespace TxTools.CrossEnvIO
                 AutoSize = false,
                 Dock = DockStyle.Top,
                 Width = 440,
+                Height = 40,
                 Margin = new Padding(0, 4, 0, 0)
             };
+            tblActions.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             tblActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
             tblActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
             tblActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
@@ -453,6 +555,12 @@ namespace TxTools.CrossEnvIO
                 BorderStyle = BorderStyle.FixedSingle
             };
             panel.Controls.Add(_rtbLog);
+            _progress = new ProgressBar { Dock = DockStyle.Top, Height = 6,
+                Style = ProgressBarStyle.Marquee, Visible = false };
+            _lblStatus = new Label { Dock = DockStyle.Top, Height = 22, Text = "就绪",
+                Font = FormUiKit.BaseFont, ForeColor = Theme.LogText };
+            panel.Controls.Add(_progress);
+            panel.Controls.Add(_lblStatus);
             return panel;
         }
 
@@ -468,6 +576,7 @@ namespace TxTools.CrossEnvIO
         /// </summary>
         private void DetectLibraryRoots()
         {
+            int generation = ++_refreshGeneration;
             string current = null;
             try { current = EnvLibrary.CurrentRoot(); }
             catch { }
@@ -487,30 +596,14 @@ namespace TxTools.CrossEnvIO
             {
                 try
                 {
-                    var envs = EnvLibrary.ListEnvironments(MarshalLog);
-                    if (envs.Count <= 1)
-                    {
-                        MarshalLog("[库根] 未发现其它 PDPS 实例（对端库根请手动浏览选择）");
-                        return;
-                    }
+                    var envs = EnvLibrary.ListEnvironments(MarshalLog, current);
                     MarshalLog("[库根] 检测到 " + envs.Count + " 个环境:");
                     foreach (var e in envs)
                         MarshalLog("[库根]   " + (e.IsSelf ? "本端" : "对端") + " " + e.Name
                             + (string.IsNullOrEmpty(e.SystemRoot) ? "  <无库根>" : "  " + e.SystemRoot));
 
                     // 填充对端实例下拉框（多实例可切换）
-                    MarshalRefreshPeer(envs);
-
-                    string remote = EnvLibrary.ResolveRemoteRoot(envs, MarshalLog);
-                    if (!string.IsNullOrEmpty(remote))
-                    {
-                        MarshalText(_txtDstLib, remote);
-                        MarshalLog("[库根] 对端: " + remote);
-                    }
-                    else
-                    {
-                        MarshalLog("[库根] 对端库根未解析到（对端 TxAgent 未启动或库根不存在，请手动浏览）");
-                    }
+                    MarshalRefreshPeer(envs, generation);
                 }
                 catch (Exception ex)
                 {
@@ -520,13 +613,16 @@ namespace TxTools.CrossEnvIO
         }
 
         /// <summary>后台线程把对端实例列表刷新进下拉框（封送回 UI 线程）。</summary>
-        private void MarshalRefreshPeer(List<EnvInfo> envs)
+        private void MarshalRefreshPeer(List<EnvInfo> envs, int generation)
         {
             try
             {
                 if (IsDisposed) return;
-                if (InvokeRequired) { BeginInvoke(new Action<List<EnvInfo>>(PopulatePeerCombo), envs); return; }
-                PopulatePeerCombo(envs);
+                Action apply = () =>
+                {
+                    if (!IsDisposed && !_busy && generation == _refreshGeneration) PopulatePeerCombo(envs);
+                };
+                if (InvokeRequired) BeginInvoke(apply); else apply();
             }
             catch { }
         }
@@ -539,6 +635,7 @@ namespace TxTools.CrossEnvIO
                 if (_cmbPeer == null) return;
                 int keepPid = SelectedPeerPid();
                 _peerList.Clear();
+                _peerRoots.Clear();
                 _cmbPeer.Items.Clear();
                 foreach (var e in envs)
                 {
@@ -550,18 +647,21 @@ namespace TxTools.CrossEnvIO
                         Study = e.Study
                     };
                     _peerList.Add(info);
-                    _cmbPeer.Items.Add(e.Name + "  [pid " + e.Pid + "]");
+                    _peerRoots[e.Pid] = e.SystemRoot;
+                    _cmbPeer.Items.Add(e.Name + "  [" + (e.Study ?? "无工程") + "] [pid " + e.Pid + "]");
                 }
                 if (_cmbPeer.Items.Count > 0)
                 {
                     int sel = -1;
                     for (int i = 0; i < _peerList.Count; i++)
                         if (_peerList[i].Pid == keepPid) { sel = i; break; }
-                    _cmbPeer.SelectedIndex = sel >= 0 ? sel : 0;
-                    Log("[对端] 可切换实例 " + _peerList.Count + " 个，当前: " + _peerList[Math.Max(0, _cmbPeer.SelectedIndex)].Name);
+                    _cmbPeer.SelectedIndex = sel >= 0 ? sel : (keepPid == 0 ? 0 : -1);
+                    if (_cmbPeer.SelectedIndex < 0)
+                    { _txtDstLib.Text = ""; Log("[对端] 原目标已失效，请重新选择实例"); }
                 }
                 else
                 {
+                    _txtDstLib.Text = "";
                     Log("[对端] 没有可用的对端实例");
                 }
             }
@@ -571,15 +671,15 @@ namespace TxTools.CrossEnvIO
         /// <summary>手动刷新对端实例列表（独立线程，避免卡 UI）。</summary>
         private void RefreshPeerList()
         {
+            int generation = ++_refreshGeneration;
+            string current = EnvLibrary.CurrentRoot();
             Log("[对端] 刷新实例列表…");
             System.Threading.ThreadPool.QueueUserWorkItem(delegate
             {
                 try
                 {
-                    var envs = EnvLibrary.ListEnvironments(MarshalLog);
-                    MarshalRefreshPeer(envs);
-                    var remote = EnvLibrary.ResolveRemoteRoot(envs, MarshalLog);
-                    if (!string.IsNullOrEmpty(remote)) MarshalText(_txtDstLib, remote);
+                    var envs = EnvLibrary.ListEnvironments(MarshalLog, current);
+                    MarshalRefreshPeer(envs, generation);
                 }
                 catch (Exception ex) { MarshalLog("[对端] 刷新异常: " + ex.Message); }
             });
@@ -591,6 +691,8 @@ namespace TxTools.CrossEnvIO
             {
                 var peer = SelectedPeer();
                 if (peer == null) return;
+                string root;
+                _txtDstLib.Text = _peerRoots.TryGetValue(peer.Pid, out root) ? root ?? "" : "";
                 Log("[对端] 已切换对端实例: " + peer.Name + " [pid " + peer.Pid + "]");
             }
             catch (Exception ex) { Log("[对端] 切换异常: " + ex.Message); }
@@ -651,251 +753,273 @@ namespace TxTools.CrossEnvIO
                 int n = grid.Count;
                 for (int i = 0; i < n; i++)
                 {
-                    try { var o = grid.GetObject(i); if (o != null) list.Add(o); }
-                    catch { }
+                    var o = grid.GetObject(i);
+                    if (o == null) throw new InvalidOperationException("选择对象已失效，请重新拾取");
+                    list.Add(o);
                 }
             }
-            catch { }
+            catch (Exception ex) { throw new InvalidOperationException("无法读取导出范围: " + ex.Message, ex); }
             if (list.Count == 0 && fallback != null) list.Add(fallback);
             return list;
         }
 
         private string ModeName() => _partMode ? "零件树" : "资源结构";
 
-        private void RunExport()
+        private async void RunOperation(string title, Func<System.Threading.Tasks.Task> operation)
         {
+            if (_busy) { Log("[提示] 上一次操作尚未结束"); return; }
+            _busy = true;
+            _tabs.Enabled = false;
+            _lblStatus.Text = title + "…";
+            _progress.Visible = true;
             try
             {
-                var doc = TxApplication.ActiveDocument;
-                if (doc == null) { Log("[错误] 无活动文档"); return; }
-                var roots = GetGridRoots(_gridRoot, doc.PhysicalRoot);
-                string file = GetText(_txtFile);
-                Log("=== 导出" + ModeName() + " ===  导出根 " + roots.Count + " 个");
-                foreach (var r in roots) Log("  根: " + SafeName(r));
-                // includeCojt=true：组件记录 cojt 磁盘路径，重建时可自动插入组件
-                int n = StructureIO.ExportStructureMulti(roots, file, true, Log);
-                Log("[完成] 导出 " + n + " 行 → " + file);
+                await System.Threading.Tasks.Task.Yield();
+                await operation(); _lblStatus.Text = title + "结束，详见日志";
             }
-            catch (Exception ex) { Log("[错误] " + ex.Message); }
+            catch (Exception ex) { _lblStatus.Text = title + "失败"; Log("[错误] " + ex.Message); }
+            finally
+            {
+                _busy = false;
+                if (!IsDisposed) { _tabs.Enabled = true; _progress.Visible = false; }
+            }
         }
 
-        private void RunCopyCojts()
+        private static System.Threading.Tasks.Task Finished() => System.Threading.Tasks.Task.CompletedTask;
+
+        private void EnsureDocument(TxDocument document)
         {
-            try
+            if (!Equals(document, TxApplication.ActiveDocument))
+                throw new InvalidOperationException("本端工程已切换，操作已中止");
+        }
+
+        private int ExportStructureFile(string file)
+        {
+            var doc = TxApplication.ActiveDocument;
+            if (doc == null) throw new InvalidOperationException("无活动文档");
+            var roots = GetGridRoots(_gridRoot, doc.PhysicalRoot);
+            if (roots.Any(r => !(r is TxPhysicalRoot) && !(r is TxCompoundResource) && !(r is TxCompoundPart)
+                && !(r is ITxComponent)))
+                throw new InvalidOperationException("导出选择包含非资源/零件对象，请检查选择列表");
+            // 同时选中父、子时只遍历父，避免重复数据行。
+            var descendants = new HashSet<string>();
+            foreach (var root in roots)
             {
-                string src = GetText(_txtSrcLib);
-                string dst = GetText(_txtDstLib);
-                Log("=== 复制 cojt ===");
-                // 基于导出结构的 COJT 列复制（与导出范围一致，避免整个库全部复制）
-                string file = GetText(_txtFile);
-                var cojts = StructureIO.ReadCojtList(file, Log);
-                if (cojts.Count == 0)
+                var collection = root as ITxObjectCollection;
+                if (collection == null) continue;
+                foreach (ITxObject child in collection.GetAllDescendants(new TxTypeFilter(typeof(ITxObject))))
+                    descendants.Add(child.Id);
+            }
+            roots = roots.Where(r => !descendants.Contains(r.Id)).GroupBy(r => r.Id).Select(g => g.First()).ToList();
+            Log("=== 导出" + ModeName() + " === 范围: " +
+                string.Join("、", roots.Select(SafeName)));
+            int count = StructureIO.ExportStructureMulti(roots, file, true, Log);
+            if (count == 0) throw new InvalidOperationException("未导出有效结构，已中止后续操作");
+            return count;
+        }
+
+        private int ExportWeldFile(string file)
+        {
+            if (TxApplication.ActiveDocument == null) throw new InvalidOperationException("无活动文档");
+            HashSet<string> ids = null;
+            if (_gridWeldSel.Count > 0)
+            {
+                ids = new HashSet<string>();
+                for (int i = 0; i < _gridWeldSel.Count; i++)
                 {
-                    Log("[完成] 导出文件无 COJT 列或为空，请先【导出】。");
-                    return;
+                    var obj = _gridWeldSel.GetObject(i);
+                    if (!(obj is TxWeldLocationOperation))
+                        throw new InvalidOperationException("请选择焊点操作；列表包含其他类型的对象");
+                    ids.Add(obj.Id);
                 }
-                var rep = CojtTransfer.CopyCojtList(cojts, src, dst, Log);
-                var previous = _partMode ? _lastPartCopy : _lastResCopy;
-                if (previous != null) rep.Merge(previous);
-                if (_partMode) _lastPartCopy = rep; else _lastResCopy = rep;
-                Log("[完成] " + rep);
             }
-            catch (Exception ex) { Log("[错误] " + ex.Message); }
+            Log("=== 导出焊点 === " + (ids == null ? "范围: 全部焊点操作" : "范围: " + ids.Count + " 个指定对象"));
+            int count = WeldPointIO.ExportWeldPoints(file, Log, ids);
+            if (count == 0) throw new InvalidOperationException("未导出有效焊点，已中止后续操作");
+            return count;
         }
 
-        private void RunRebuild()
+        private void RunExport() => RunOperation("导出结构", () =>
         {
-            try
+            ExportStructureFile(GetText(_txtFile)); return Finished();
+        });
+
+        private void RunExportWeld() => RunOperation("导出焊点", () =>
+        {
+            ExportWeldFile(GetText(_txtWeldFile)); return Finished();
+        });
+
+        private async System.Threading.Tasks.Task<CopyResult> CopyCojts(
+            string file, string source, string destination, bool part, int targetPid)
+        {
+            var paths = StructureIO.ReadCojtList(file, Log);
+            if (paths.Count == 0) { Log("[复制] 数据中没有 cojt，无需复制"); return null; }
+            var result = await System.Threading.Tasks.Task.Run(() =>
+                CojtTransfer.CopyCojtList(paths, source, destination, MarshalLog));
+            result.TargetPids.Add(targetPid);
+            var previous = part ? _lastPartCopy : _lastResCopy;
+            if (previous != null) result.Merge(previous);
+            if (part) _lastPartCopy = result; else _lastResCopy = result;
+            Log("[复制结果] " + result);
+            if (result.Fail > 0) throw new IOException("部分 cojt 复制失败，已停止重建");
+            return result;
+        }
+
+        private void RunCopyCojts() => RunOperation("复制 cojt", async () =>
+        {
+            var peer = FindPeerInstance();
+            var doc = TxApplication.ActiveDocument;
+            var state = await InspectPeer(peer);
+            EnsureDocument(doc);
+            string destination = ValidatePeerRoot(state, GetText(_txtDstLib));
+            await CopyCojts(GetText(_txtFile), GetText(_txtSrcLib), destination, _partMode, peer.Pid);
+        });
+
+        private void RunRebuild() => RunOperation("本端重建结构", () =>
+        {
+            var doc = TxApplication.ActiveDocument;
+            if (doc == null) throw new InvalidOperationException("无活动文档");
+            var copy = _partMode ? _lastPartCopy : _lastResCopy;
+            if (copy != null) copy.SceneMayReferenceFiles = true;
+            var rep = StructureIO.RebuildStructure(GetText(_txtFile), doc.PhysicalRoot, !_partMode, Log,
+                _originX, _originY, _originZ);
+            foreach (var error in rep.Errors) Log("[警告] " + error);
+            Log("[结果] " + rep);
+            Log("[Undo] 在当前 PS 工程按 Ctrl+Z 可撤销本批次；未自动保存/重载。");
+            TryRefresh();
+            if (rep.Failed > 0 || rep.Errors.Count > 0) throw new InvalidOperationException("重建未完整成功，请检查日志");
+            return Finished();
+        });
+
+        private void RunRebuildWeld() => RunOperation("本端重建焊点", () =>
+        {
+            var rep = WeldPointIO.RebuildWeldPoints(GetText(_txtWeldFile),
+                _chkWeldProject.Checked, _chkWeldBindOnly.Checked, Log);
+            foreach (var error in rep.Errors) Log("[警告] " + error);
+            Log("[结果] " + rep); TryRefresh();
+            if (rep.Failed > 0 || rep.Errors.Count > 0) throw new InvalidOperationException("焊点重建未完整成功，请检查日志");
+            return Finished();
+        });
+
+        private void RunUndoCopy() => RunOperation("清理复制文件", async () =>
+        {
+            var result = _partMode ? _lastPartCopy : _lastResCopy;
+            if (result == null || result.CopiedDirs.Count == 0) { Log("[清理] 无复制记录"); return; }
+            if (result.SceneMayReferenceFiles) { result.Undo(Log); return; }
+            if (result.TargetPids.Count == 0) throw new InvalidOperationException("复制记录缺少目标实例信息，已保留文件");
+            var doc = TxApplication.ActiveDocument;
+            var removable = new HashSet<string>(result.CopiedDirs, StringComparer.OrdinalIgnoreCase);
+            foreach (int pid in result.TargetPids)
             {
-                var doc = TxApplication.ActiveDocument;
-                if (doc == null) { Log("[错误] 无活动文档"); return; }
-                string file = GetText(_txtFile);
-                Log("=== 重建" + ModeName() + " ===");
-                var copy = _partMode ? _lastPartCopy : _lastResCopy;
-                if (copy != null) copy.SceneMayReferenceFiles = true;
-                var rep = StructureIO.RebuildStructure(file, doc.PhysicalRoot, !_partMode, Log,
-                    _originX, _originY, _originZ);
-                foreach (var e in rep.Errors) Log("[警告] " + e);
-                Log("[Undo] 场景重建已结束，可在当前 PS 工程按 Ctrl+Z；未自动保存/重载工程。");
-                Log("[完成] " + rep);
-                TryRefresh();
+                var peer = TxTools.Agent.Core.PsInstanceRegistry.Live().FirstOrDefault(p => p.Pid == pid && !p.IsSelf);
+                if (peer == null) throw new InvalidOperationException("复制目标实例已不可用，无法核验其工程引用，已保留文件");
+                var state = await InspectPeer(peer, new Newtonsoft.Json.Linq.JArray(result.CopiedDirs));
+                var references = state["references"] as Newtonsoft.Json.Linq.JObject;
+                foreach (var directory in result.CopiedDirs)
+                    if (references == null || references[directory]?.Type != Newtonsoft.Json.Linq.JTokenType.Boolean
+                        || (bool)references[directory]) removable.Remove(directory);
             }
-            catch (Exception ex) { Log("[错误] " + ex.Message); }
-        }
+            EnsureDocument(doc);
+            // 只在两端都明确证明未引用时清理；清单摘要仍由 CopyResult 再校验。
+            result.Undo(Log, directory =>
+                removable.Contains(directory) && !ComponentIO.IsPathReferencedByScene(directory));
+        });
 
-        private void RunUndoCopy()
-        {
-            Log("=== 撤销 cojt 复制 ===");
-            var rep = _partMode ? _lastPartCopy : _lastResCopy;
-            if (rep == null || rep.CopiedDirs.Count == 0)
-            { Log("[撤销] 无可撤销的复制记录"); return; }
-            rep.Undo(Log, dir => !ComponentIO.IsPathReferencedByScene(dir));
-        }
+        private void RunPushToPeer() => PushToPeer(_partMode ? "part" : "resource", true);
+        private void RunRebuildRemote() => PushToPeer(_partMode ? "part" : "resource", false);
+        private void RunPushWeldToPeer() => PushToPeer("weld", false);
 
-        private void RunExportWeld()
+        private void PushToPeer(string kind, bool copyCojts) => RunOperation("推送并对端重建", async () =>
         {
-            try
+            var doc = TxApplication.ActiveDocument;
+            if (doc == null) throw new InvalidOperationException("无活动文档");
+            var peer = FindPeerInstance();
+            var state = await InspectPeer(peer);
+            EnsureDocument(doc);
+            string destination = ValidatePeerRoot(state, GetText(_txtDstLib));
+            string source = EnvLibrary.CurrentRoot();
+            string configuredSource = GetText(_txtSrcLib);
+            if (kind != "weld" && !SamePath(source, configuredSource))
+                throw new InvalidOperationException("本端库根与活动工程不一致，请重新识别库根");
+
+            // 每次调用使用独立快照，原导出文件即使存在也不会被用作失败后的替代数据。
+            string configuredFile = kind == "weld" ? GetText(_txtWeldFile) : GetText(_txtFile);
+            string file = TransferFile.SnapshotPath(configuredFile);
+            if (kind == "weld") ExportWeldFile(file); else ExportStructureFile(file);
+            CopyResult copied = null;
+            if (copyCojts)
             {
-                var doc = TxApplication.ActiveDocument;
-                if (doc == null) { Log("[错误] 无活动文档"); return; }
-                string file = GetText(_txtWeldFile);
-                // 多选过滤：从拾取的焊点操作中提取名称集合（空=导出全部）
-                HashSet<string> selectedNames = null;
-                try
-                {
-                    if (_gridWeldSel != null && _gridWeldSel.Count > 0)
-                    {
-                        selectedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        for (int i = 0; i < _gridWeldSel.Count; i++)
-                        {
-                            try { var obj = _gridWeldSel.GetObject(i); if (obj != null) selectedNames.Add(obj.Name); } catch { }
-                        }
-                    }
-                }
-                catch { }
-                Log("=== 导出焊点 ===" + (selectedNames != null && selectedNames.Count > 0 ? " (过滤 " + selectedNames.Count + " 个)" : " (导出全部)"));
-                int n = WeldPointIO.ExportWeldPoints(file, Log, selectedNames);
-                Log("[完成] 导出焊点 " + n + " 条 → " + file);
+                copied = await CopyCojts(file, source, destination, kind == "part", peer.Pid);
             }
-            catch (Exception ex) { Log("[错误] " + ex.Message); }
-        }
-
-        private void RunRebuildWeld()
-        {
-            try
+            EnsureDocument(doc);
+            var input = new Newtonsoft.Json.Linq.JObject
             {
-                var doc = TxApplication.ActiveDocument;
-                if (doc == null) { Log("[错误] 无活动文档"); return; }
-                string file = GetText(_txtWeldFile);
-                bool proj = _chkWeldProject != null && _chkWeldProject.Checked;
-                bool bindOnly = _chkWeldBindOnly != null && _chkWeldBindOnly.Checked;
-                Log("=== 重建焊点 === 投影=" + proj + " 仅绑定=" + bindOnly);
-                var rep = WeldPointIO.RebuildWeldPoints(file, proj, bindOnly, Log);
-                foreach (var e in rep.Errors) Log("[警告] " + e);
-                Log("[完成] " + rep);
-                TryRefresh();
-            }
-            catch (Exception ex) { Log("[错误] " + ex.Message); }
-        }
-
-        // ════════════════════════════════════════════════════════════
-        //  推送到对端并远程重建（一键）
-        //  流程:① 本端导出 TSV → ② 复制 cojt 到对端库 → ③ RPC 调对端 crossenv_rebuild
-        //  这样无需手动切到对端窗口点「重建」，直接在对端进程内完成重建。
-        // ════════════════════════════════════════════════════════════
-
-        private void RunPushToPeer()
-        {
-            PushToPeer(_partMode ? "part" : "resource", RunExport, RunCopyCojts);
-        }
-
-        /// <summary>在对端重建本端结构：本端导出 → 对端 RPC 重建（不复制 cojt，cojt 复制是单独按钮）。</summary>
-        private void RunRebuildRemote()
-        {
-            PushToPeer(_partMode ? "part" : "resource", RunExport, null);
-        }
-
-        private void RunPushWeldToPeer()
-        {
-            PushToPeer("weld", RunExportWeld, null);
-        }
-
-        private void PushToPeer(string kind, Action localExport, Action localCopyCojt)
-        {
-            try
+                ["kind"] = kind, ["file"] = file, ["source_library_root"] = source,
+                ["expected_study"] = (string)state["study"],
+                ["expected_document"] = (string)state["document"],
+                ["expected_library_root"] = destination,
+                ["origin_x"] = _originX, ["origin_y"] = _originY, ["origin_z"] = _originZ
+            };
+            if (copied != null) input["cojt_map"] = Newtonsoft.Json.Linq.JObject.FromObject(copied.TargetPaths);
+            if (kind == "weld")
             {
-                var doc = TxApplication.ActiveDocument;
-                if (doc == null) { Log("[错误] 无活动文档"); return; }
-
-                // 数据文件路径（先解析，导出后校验）
-                string file = kind == "weld" ? GetText(_txtWeldFile) : GetText(_txtFile);
-                if (string.IsNullOrWhiteSpace(file))
-                { Log("[错误] 数据文件路径为空"); return; }
-
-                // ① 本端导出 TSV（必须先落盘，对端重建读的就是这份文件）
-                if (localExport != null)
-                {
-                    localExport();
-                    if (!File.Exists(file))
-                    {
-                        Log("[错误] 导出未生成文件: " + file + "（本端无活动文档或导出失败，中止推送）");
-                        return;
-                    }
-                }
-
-                // ② 复制 cojt 到对端库（资源/零件才有）—— 先确认两端库根已配置
-                if (localCopyCojt != null)
-                {
-                    string srcLib = GetText(_txtSrcLib);
-                    string dstLib = GetText(_txtDstLib);
-                    if (string.IsNullOrWhiteSpace(srcLib) || !Directory.Exists(srcLib))
-                    { Log("[错误] 本端库根未设置或不存在: " + srcLib + "（先点「识别库根」）"); return; }
-                    if (string.IsNullOrWhiteSpace(dstLib))
-                    { Log("[错误] 对端库根未设置（先点「识别库根」）"); return; }
-                    localCopyCojt();
-                }
-
-                // ③ 找对端实例并远程重建
-                var peer = FindPeerInstance();
-                if (peer == null) { Log("[错误] 未找到对端实例（对端 TxAgent 未启动或不在同一机器）"); return; }
-
-                Log("=== 推送并对端重建 === kind=" + kind + " 对端=" + peer.Name);
-                Log("[远程] 文件: " + file);
-
-                // RPC 调用可能耗时（对端场景大/正在仿真），放后台线程，避免卡 UI
-                var input = new Newtonsoft.Json.Linq.JObject
-                {
-                    ["kind"] = kind,
-                    ["file"] = file,
-                    ["origin_x"] = _originX,
-                    ["origin_y"] = _originY,
-                    ["origin_z"] = _originZ
-                };
-                if (kind == "weld")
-                {
-                    input["project"] = _chkWeldProject != null && _chkWeldProject.Checked;
-                    input["bind_only"] = _chkWeldBindOnly != null && _chkWeldBindOnly.Checked;
-                }
-
-                var target = peer;
-                System.Threading.ThreadPool.QueueUserWorkItem(delegate
-                {
-                    var r = TxTools.Agent.Core.PsRpcClient.Invoke(target, "crossenv_rebuild", input);
-                    if (r.Ok)
-                        MarshalLog("[远程完成] [" + target.Name + "]\n" + (r.Output ?? ""));
-                    else
-                        MarshalLog("[远程失败] [" + target.Name + "] " + (r.Error ?? ""));
-                });
+                input["project"] = _chkWeldProject.Checked;
+                input["bind_only"] = _chkWeldBindOnly.Checked;
             }
-            catch (Exception ex) { Log("[错误] " + ex.Message); }
+            else
+            {
+                // 调用可能超时或部分失败，依赖保护必须在发出 RPC 前设置。
+                if (_lastResCopy != null) _lastResCopy.SceneMayReferenceFiles = true;
+                if (_lastPartCopy != null) _lastPartCopy.SceneMayReferenceFiles = true;
+            }
+            Log("[远程] " + peer.Name + " [pid " + peer.Pid + "] 工程=" + state["study"] +
+                " 库根=" + destination + "\n[快照] " + file);
+            var response = await System.Threading.Tasks.Task.Run(() =>
+                TxTools.Agent.Core.PsRpcClient.Invoke(peer, "crossenv_rebuild", input));
+            if (!response.Ok) throw new IOException("远程调用失败或结果未知，请先核对对端工程: " + response.Error);
+            string output = response.Output ?? "";
+            Log("[远程结果] " + output);
+            if (output.StartsWith("Error:", StringComparison.Ordinal))
+                throw new InvalidOperationException("对端重建未完整成功，详见结果日志");
+        });
+
+        private async System.Threading.Tasks.Task<Newtonsoft.Json.Linq.JObject> InspectPeer(
+            TxTools.Agent.Core.PsInstanceInfo peer, Newtonsoft.Json.Linq.JArray directories = null)
+        {
+            var input = new Newtonsoft.Json.Linq.JObject();
+            if (directories != null) input["directories"] = directories;
+            var response = await System.Threading.Tasks.Task.Run(() =>
+                TxTools.Agent.Core.PsRpcClient.Invoke(peer, "crossenv_inspect", input));
+            if (!response.Ok || string.IsNullOrEmpty(response.Output) || response.Output.StartsWith("Error:", StringComparison.Ordinal))
+                throw new IOException("对端预检失败，请确认对端已加载新版插件: " + (response.Error ?? response.Output));
+            return Newtonsoft.Json.Linq.JObject.Parse(response.Output);
         }
 
-        /// <summary>
-        /// 取对端实例。优先返回下拉框当前选中的实例（多实例可切换）；
-        /// 未选或选中已失效时回退到第一个非本进程的活实例。
-        /// </summary>
+        private static bool SamePath(string left, string right)
+        {
+            if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return false;
+            return string.Equals(Path.GetFullPath(left).TrimEnd('\\', '/'),
+                Path.GetFullPath(right).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string ValidatePeerRoot(Newtonsoft.Json.Linq.JObject state, string configured)
+        {
+            string actual = (string)state["systemRoot"];
+            if (string.IsNullOrWhiteSpace(actual) || !Directory.Exists(actual))
+                throw new IOException("对端库根无效: " + actual);
+            if (!SamePath(actual, configured))
+                throw new InvalidOperationException("对端库根与所选实例不一致，请刷新实例列表后重试。实际库根: " + actual);
+            return actual;
+        }
+
         private TxTools.Agent.Core.PsInstanceInfo FindPeerInstance()
         {
-            try
-            {
-                var selected = SelectedPeer();
-                if (selected != null)
-                {
-                    // 校验选中实例还活着（心跳未过期且进程存在）
-                    foreach (var i in TxTools.Agent.Core.PsInstanceRegistry.Live())
-                        if (i.Pid == selected.Pid) return i;
-                }
-                // 回退：取第一个非本进程的活实例
-                foreach (var i in TxTools.Agent.Core.PsInstanceRegistry.Live())
-                    if (!i.IsSelf) return i;
-            }
-            catch { }
-            return null;
+            var selected = SelectedPeer();
+            if (selected == null) throw new InvalidOperationException("请先选择目标实例");
+            var live = TxTools.Agent.Core.PsInstanceRegistry.Live().FirstOrDefault(p => !p.IsSelf && p.Pid == selected.Pid);
+            if (live == null) throw new InvalidOperationException("选中的实例已失效，请刷新后重新选择");
+            return live;
         }
-
-        // ════════════════════════════════════════════════════════════
-        //  工具
-        // ════════════════════════════════════════════════════════════
 
         private Button MkBrowseBtn(string text, string kind, Func<TextBox> get)
         {
@@ -922,7 +1046,16 @@ namespace TxTools.CrossEnvIO
                         return dlg.ShowDialog() == DialogResult.OK ? dlg.SelectedPath : null;
                     }
                 }
-                using (var dlg = new OpenFileDialog())
+                if (kind == "SaveFilePicker")
+                {
+                    using (var dlg = new SaveFileDialog { Filter = "TSV 数据文件 (*.txt;*.tsv)|*.txt;*.tsv|所有文件 (*.*)|*.*",
+                        DefaultExt = "txt", FileName = Path.GetFileName(initial ?? "") })
+                    {
+                        if (!string.IsNullOrWhiteSpace(initial)) dlg.InitialDirectory = Path.GetDirectoryName(initial);
+                        return dlg.ShowDialog() == DialogResult.OK ? dlg.FileName : null;
+                    }
+                }
+                using (var dlg = new OpenFileDialog { Filter = "TSV 数据文件 (*.txt;*.tsv)|*.txt;*.tsv|所有文件 (*.*)|*.*" })
                 {
                     if (!string.IsNullOrWhiteSpace(initial)) dlg.InitialDirectory = Path.GetDirectoryName(initial);
                     return dlg.ShowDialog() == DialogResult.OK ? dlg.FileName : null;

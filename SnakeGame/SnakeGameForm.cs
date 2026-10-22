@@ -38,6 +38,10 @@ namespace TxTools.SnakeGame
 
         public SnakeGameForm()
         {
+            AutoScaleMode = AutoScaleMode.None;
+            Font = FormUiKit.BaseFont;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
             _engine = new SnakeGameEngine(GridHalfExtent);
             _world = new SnakeWorld(CellSize, AppendLog);
 
@@ -46,6 +50,8 @@ namespace TxTools.SnakeGame
             _timer.Tick += TimerOnTick;
 
             InitUi();
+            bool scaled = false;
+            Load += (s, e) => FormUiKit.ApplyDpiScaling(this, ref scaled, new Size(480, 420));
 
             KeyPreview = true;
             KeyDown += Form_KeyDown;
@@ -59,7 +65,7 @@ namespace TxTools.SnakeGame
             Text = "TxTools · 贪吃蛇";
             Name = GetType().FullName;    // 记忆：Name 唯一化，避免 TxForm 持久化 key 串扰
             StartPosition = FormStartPosition.CenterScreen;
-            MinimumSize = new Size(460, 380);
+            MinimumSize = new Size(460, 150);
             Size = new Size(480, 420);
             BackColor = FormUiKit.CardBack;
 
@@ -121,6 +127,16 @@ namespace TxTools.SnakeGame
 
             Controls.Add(container);
             Controls.Add(top);
+            Action fit = () =>
+            {
+                if (!IsHandleCreated) return;
+                int content = container.Visible ? (int)Math.Round(420 * FormUiKit.GetLayoutScale(this))
+                    : top.Bottom + Height - ClientSize.Height;
+                Height = Math.Max(MinimumSize.Height, content);
+            };
+            container.VisibleChanged += (s, e) => fit();
+            Shown += (s, e) => fit();
+            PluginLog.Register(container);
         }
 
         private static Label MakeLabel(string text)

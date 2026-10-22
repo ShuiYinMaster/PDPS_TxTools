@@ -168,6 +168,7 @@ namespace TxTools.Agent.Ui
 
             using (var form = new Form())
             {
+                TxTools.Common.PluginUiPolicy.Attach(form);
                 form.Text = "TxAgent 提问";
                 form.StartPosition = FormStartPosition.CenterScreen;
                 form.FormBorderStyle = FormBorderStyle.FixedDialog;

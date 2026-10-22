@@ -65,13 +65,16 @@ namespace TxTools.LineToSolid
         // ── 日志 ────────────────────────────────────────────────────────
         private Panel _logPanel;
         private RichTextBox _logBox;
-        private bool _logCollapsed;
+        private bool _logCollapsed = true;
+        private TableLayoutPanel _bodyLayout;
+        private Control _sectionCard;
+        private bool _fittingSection;
 
         // ── 数据 ────────────────────────────────────────────────────────
         private List<LineSegment> _currentSegments = new List<LineSegment>();
 
         // ── DPI ─────────────────────────────────────────────────────────
-        private static readonly Size _designSize = new Size(720, 660);
+        private static readonly Size _designSize = new Size(720, 460);
         private bool _dpiApplied;
 
         // =================================================================
@@ -81,7 +84,7 @@ namespace TxTools.LineToSolid
         {
             SemiModal = false;
             FormUiKit.InitStandardForm(this, "线生成实体 - TxTools.LineToSolid",
-                _designSize, new Size(620, 500));
+                _designSize, new Size(680, 420));
             this.Padding = new Padding(4);
 
             BuildToolStrip();
@@ -99,6 +102,7 @@ namespace TxTools.LineToSolid
         {
             base.OnLoad(e);
             FormUiKit.ApplyDpiScaling(this, ref _dpiApplied, _designSize);
+            FitSectionLayout();
 
             // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点
             FormUiKit.GridPickFocus.Wire(_featureGrid);
@@ -118,7 +122,7 @@ namespace TxTools.LineToSolid
             _btnRefresh = new ToolStripButton("刷新段信息");
             _btnRefresh.Click += (s, e) => RefreshSegmentInfo();
 
-            _btnToggleLog = new ToolStripButton("折叠日志");
+            _btnToggleLog = new ToolStripButton("展开日志");
             _btnToggleLog.Click += (s, e) => ToggleLog();
 
             _toolStrip.Items.Add(_btnRefresh);
@@ -146,6 +150,7 @@ namespace TxTools.LineToSolid
 
             body.Controls.Add(BuildLeftColumn(), 0, 0);
             body.Controls.Add(BuildRightColumn(), 1, 0);
+            _bodyLayout = body;
             this.Controls.Add(body);
         }
 
@@ -242,6 +247,7 @@ namespace TxTools.LineToSolid
                 ForeColor = Theme.CardTitle,
                 Padding = new Padding(8, 18, 8, 8)
             };
+            _sectionCard = card;
 
             _tabs = new TabControl
             {
@@ -265,7 +271,7 @@ namespace TxTools.LineToSolid
 
             _tabs.TabPages.Add(_tabRect);
             _tabs.TabPages.Add(_tabCyl);
-            _tabs.SelectedIndexChanged += (s, e) => UpdateBuildButtonText();
+            _tabs.SelectedIndexChanged += (s, e) => { UpdateBuildButtonText(); FitSectionLayout(); };
 
             // 底部生成按钮（随选项卡切换文案，点击按选项卡分发）
             var btnHost = new Panel
@@ -291,6 +297,26 @@ namespace TxTools.LineToSolid
             card.Controls.Add(btnHost);
             UpdateBuildButtonText();
             return card;
+        }
+
+        private void FitSectionLayout()
+        {
+            if (!_dpiApplied || _fittingSection || _bodyLayout == null || _sectionCard == null
+                || _tabs.SelectedTab == null || _tabs.SelectedTab.Controls.Count == 0) return;
+            _fittingSection = true;
+            try
+            {
+                PerformLayout();
+                var page = _tabs.SelectedTab;
+                int parameters = page.Controls[0].GetPreferredSize(new Size(Math.Max(1, page.ClientSize.Width), 0)).Height;
+                int frame = _sectionCard.Height - page.ClientSize.Height;
+                int outside = Height - _bodyLayout.Height;
+                int minimum = (int)Math.Round(280 * FormUiKit.GetLayoutScale(this));
+                int target = outside + Math.Max(minimum, parameters + page.Padding.Vertical + frame);
+                int maxHeight = Screen.FromControl(this).WorkingArea.Height - 16;
+                Height = Math.Min(maxHeight, Math.Max(MinimumSize.Height, target));
+            }
+            finally { _fittingSection = false; }
         }
 
         private void UpdateBuildButtonText()
@@ -510,13 +536,17 @@ namespace TxTools.LineToSolid
             };
             _logPanel.Controls.Add(_logBox);
             this.Controls.Add(_logPanel);
+            PluginLog.Register(_logPanel, false, _btnToggleLog);
+            _logPanel.VisibleChanged += (s, e) => FitSectionLayout();
         }
 
         private void ToggleLog()
         {
+            if (!PluginLog.Enabled) return;
             _logCollapsed = !_logCollapsed;
-            _logPanel.Visible = !_logCollapsed;
+            PluginLog.SetVisible(_logPanel, !_logCollapsed);
             _btnToggleLog.Text = _logCollapsed ? "展开日志" : "折叠日志";
+            FitSectionLayout();
         }
 
         // =================================================================

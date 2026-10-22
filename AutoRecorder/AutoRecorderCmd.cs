@@ -7,12 +7,13 @@ namespace TxTools.AutoRecorder
 {
     public class AutoRecorderCmd : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.AutoRecorder.bmp";
+        public override string LargeBitmap => "image.AutoRecorder.png";
+
         public override string Name { get { return ".操作录像"; } }
         public override string Category { get { return "TxTools"; } }
         public override string Tooltip { get { return "录制选定操作的仿真过程"; } }
         public override string Description { get { return "自动录制选定操作的仿真过程为视频文件"; } }
-        public override string Bitmap { get { return base.Bitmap; } }
-        public override string LargeBitmap { get { return "image.AutoRecorder.png"; } }
 
         public override void Execute(object cmdParams)
         {

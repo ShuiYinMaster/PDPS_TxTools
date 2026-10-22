@@ -68,6 +68,7 @@ namespace TxTools.ExportGun
         //    两者都为空 → 沿用 GunInfo 中已解析的默认 TCP
         public string TcpName;
         public double[] TcpCustomMatrix;
+        internal Dictionary<string, double[]> ResolvedTcpMatrices;
 
         // —— 焊枪导出模式（默认共享几何，体积最小） ——
     }
@@ -102,6 +103,7 @@ namespace TxTools.ExportGun
     {
         private INFITF.Application _catia;
         private bool _disposed;
+        internal Exception LastConnectionError { get; private set; }
 
         // ════════════════════════════════════════════════════════════
         //  选中点过滤辅助
@@ -140,6 +142,7 @@ namespace TxTools.ExportGun
         public bool Connect(out string error)
         {
             error = null;
+            LastConnectionError = null;
             try
             {
                 _catia = (INFITF.Application)Marshal.GetActiveObject("CATIA.Application");
@@ -147,17 +150,21 @@ namespace TxTools.ExportGun
                 try { _catia.Visible = true; } catch { }
                 return true;
             }
-            catch (COMException)
+            catch (COMException ex)
             {
                 // ROT 中未找到 CATIA.Application（典型 HRESULT MK_E_UNAVAILABLE 0x800401E3），
                 // 说明 CATIA 没有运行；按需求不再自动启动 CATIA。
                 _catia = null;
-                error = "未检测到正在运行的 CATIA V5，请先手动打开 CATIA 后再执行此操作。";
+                LastConnectionError = ex;
+                error = ex.ErrorCode == unchecked((int)0x800401E3)
+                    ? "未检测到正在运行的 CATIA V5，请先手动打开 CATIA 后再执行此操作。"
+                    : "连接 CATIA V5 失败：" + ex.Message + " (HRESULT=0x" + ex.ErrorCode.ToString("X8") + ")";
                 return false;
             }
             catch (Exception ex)
             {
                 _catia = null;
+                LastConnectionError = ex;
                 error = "连接 CATIA V5 失败：" + ex.Message + "。请确认 CATIA V5 已完全启动后再试。";
                 return false;
             }
@@ -186,7 +193,7 @@ namespace TxTools.ExportGun
                     if (IsPointSelected(p.SelectedKeys, op.Name, pt.Name))
                         allPts.Add(pt);
             }
-            if (allPts.Count == 0) { onLog("  ! 无可导出的点（请检查勾选）"); return; }
+            if (allPts.Count == 0) throw new InvalidOperationException("无可导出的点，请检查勾选和点类型筛选。");
 
             int total = allPts.Count;
             string geomSetName = string.IsNullOrEmpty(p.GeomSetName) ? "Geometry_Spheres" : p.GeomSetName;
@@ -194,11 +201,14 @@ namespace TxTools.ExportGun
             double radius = p.BallDiameter / 2.0;
 
             PartDocument partDoc = null;
+            string stage = "获取/新建 Part 文档";
             try
             {
                 // —— 获取/创建 PartDocument ——
                 if (p.ExportToCurrentDoc)
                 {
+                    if (_catia.Documents.Count == 0)
+                        throw new InvalidOperationException("没有活动文档，请先打开 Part/Product，或选择新建零件导出。");
                     Document active = _catia.ActiveDocument;
                     if (active is PartDocument pd)
                     {
@@ -242,9 +252,10 @@ namespace TxTools.ExportGun
                     onLog("[Catia] 新建 Part：" + partDoc.get_Name());
                 }
 
-                if (partDoc == null) { onLog("[Catia] x 无法获取/创建 PartDocument"); return; }
+                if (partDoc == null) throw new InvalidOperationException("无法获取/创建 PartDocument，请激活 Part 或 Product 文档。");
 
                 Part part = partDoc.Part;
+                stage = "获取几何工厂及几何集";
                 HybridShapeFactory sf = (HybridShapeFactory)part.HybridShapeFactory;
 
                 // —— 获取/创建几何集 ——
@@ -264,6 +275,8 @@ namespace TxTools.ExportGun
                 // —— 阶段1：创建点 ——
                 onLog($"[Catia] 创建 {total} 个点...");
                 var createdPoints = new List<HybridShapePointCoord>();
+                var createdNames = new List<string>();
+                Exception firstFailure = null;
                 for (int i = 0; i < allPts.Count; i++)
                 {
                     try
@@ -274,11 +287,14 @@ namespace TxTools.ExportGun
                         HybridShapePointCoord pt = sf.AddNewPointCoord(m[3], m[7], m[11]);
                         geomSet.AppendHybridShape(pt);
                         createdPoints.Add(pt);
+                        createdNames.Add(allPts[i].Name);
                     }
-                    catch (Exception ex) { onLog($"  ! 点{i + 1} 异常：{ex.Message}"); continue; }
+                    catch (Exception ex)
+                    { firstFailure = firstFailure ?? ex; onLog($"  ! 点{i + 1} 异常：{ex.Message}"); continue; }
                     onProgress?.Invoke(new ExportProgress { Total = total * 2, Current = i + 1, CurrentItem = allPts[i].Name });
                 }
                 onLog($"[Catia] 已创建 {createdPoints.Count} 个点");
+                stage = "更新轨迹点";
                 part.Update();
 
                 // —— 阶段2：创建球体 ——
@@ -286,7 +302,7 @@ namespace TxTools.ExportGun
                 int ok = 0, fail = 0;
                 for (int i = 0; i < createdPoints.Count; i++)
                 {
-                    string ballName = Sanitize(namePrefix + "_" + (i < allPts.Count ? allPts[i].Name : (i + 1).ToString()));
+                    string ballName = Sanitize(namePrefix + "_" + createdNames[i]);
                     try
                     {
                         Reference ptRef = part.CreateReferenceFromObject(createdPoints[i]);
@@ -296,21 +312,31 @@ namespace TxTools.ExportGun
                         ok++;
                         Marshal.ReleaseComObject(ptRef);
                     }
-                    catch (Exception ex) { onLog($"  ! [{ballName}] {ex.Message}"); fail++; continue; }
+                    catch (Exception ex)
+                    { firstFailure = firstFailure ?? ex; onLog($"  ! [{ballName}] {ex.Message}"); fail++; continue; }
                     onProgress?.Invoke(new ExportProgress { Total = createdPoints.Count * 2, Current = createdPoints.Count + i + 1, CurrentItem = ballName });
                 }
+                stage = "更新点球";
                 part.Update();
                 onLog($"[Catia] 点球完成：成功 {ok}，失败 {fail}");
+                if (createdPoints.Count != total || fail > 0)
+                    throw new InvalidOperationException($"点球未完整导出：点 {createdPoints.Count}/{total}，球 {ok}/{total}。已创建的几何保留在 CATIA 中，请查看日志。", firstFailure);
 
+                stage = "保存零件";
                 if (!p.ExportToCurrentDoc)
                 {
                     string outFile = BuildPath(p.OutputPath, Sanitize(customPartName ?? "WeldPoints_Spheres"), "CATPart");
                     partDoc.SaveAs(outFile);
                     onLog("[Catia] 已保存：" + outFile);
                 }
-                else partDoc.Save();
+                else if (!string.IsNullOrEmpty(partDoc.Path)) partDoc.Save();
+                else onLog("[Catia] 当前零件尚未保存，点球已写入，请在 CATIA 中另存为。");
             }
-            catch (Exception ex) { onLog($"[Catia] x 导出点球异常：{ex.Message}"); }
+            catch (Exception ex)
+            {
+                onLog($"[Catia] x 导出点球异常：{ex.Message}");
+                throw new InvalidOperationException("CATIA 点球导出失败，步骤：" + stage + "。" + ex.Message, ex);
+            }
             finally { if (initialWindow != null) try { initialWindow.Activate(); } catch { } }
         }
 
@@ -458,11 +484,14 @@ namespace TxTools.ExportGun
             INFITF.Window initialWindow = null;
             try { initialWindow = _catia.ActiveWindow; } catch { }
 
+            string stage = "获取/新建 Product 文档";
             try
             {
                 // 1. Product 文档：优先复用活动 Product，否则新建
                 ProductDocument productDoc;
-                if (_catia.ActiveDocument is ProductDocument existingPd)
+                // CATIA 已启动但没有打开文档时，ActiveDocument 会直接抛出 E_FAIL。
+                Document activeDoc = _catia.Documents.Count > 0 ? _catia.ActiveDocument : null;
+                if (activeDoc is ProductDocument existingPd)
                 {
                     productDoc = existingPd;
                     onLog?.Invoke("[Catia] 使用当前 Product 文档");
@@ -470,14 +499,26 @@ namespace TxTools.ExportGun
                 else
                 {
                     productDoc = (ProductDocument)_catia.Documents.Add("Product");
-                    if (!string.IsNullOrWhiteSpace(p.CustomProductName))
-                        try { productDoc.Product.set_PartNumber(p.CustomProductName.Trim()); } catch { }
                     onLog?.Invoke("[Catia] 新建 Product 文档");
                 }
 
                 Product rootProduct = productDoc.Product;
+                if (!string.IsNullOrWhiteSpace(p.CustomProductName))
+                {
+                    stage = "设置产品名称";
+                    string productName = p.CustomProductName.Trim();
+                    rootProduct.set_PartNumber(productName);
+                    rootProduct.set_Name(productName);
+                    if (rootProduct.get_PartNumber() != productName || rootProduct.get_Name() != productName)
+                        throw new InvalidOperationException("CATIA 未接受产品名称：" + productName);
+                    onLog?.Invoke("[Catia] 产品名称：" + productName);
+                }
                 Products rootProducts = rootProduct.Products;
                 Selection sel = productDoc.Selection;
+                DateTime exportedAt = DateTime.Now;
+                var reservedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                stage = "检查已有装配名称";
+                CollectProductNames(rootProduct, reservedNames, new HashSet<object>(), onLog);
 
                 // 2. 统计总数
                 int total = 0;
@@ -488,6 +529,9 @@ namespace TxTools.ExportGun
                         if (IsPointSelected(p.SelectedKeys, op.Name, pt.Name)) total++;
                 }
                 int current = 0;
+                int inserted = 0;
+                int failed = 0;
+                Exception firstFailure = null;
 
                 // 3. Reference 复用缓存（跨 Operation）
                 var sourceCache = new Dictionary<string, Product>(StringComparer.OrdinalIgnoreCase);
@@ -505,6 +549,8 @@ namespace TxTools.ExportGun
                     if (modelPath == null)
                     {
                         onLog?.Invoke($"  ! [{op.Name}] 未找到模型文件");
+                        foreach (var pt in op.Points)
+                            if (IsPointSelected(p.SelectedKeys, op.Name, pt.Name)) failed++;
                         continue;
                     }
 
@@ -516,10 +562,12 @@ namespace TxTools.ExportGun
                     // TCP 覆盖
                     ApplyTcpOverride(p, op, gun, onLog);
 
-                    // 容器：同名冲突自动加后缀
-                    // 关键修正：op.Name 含 ':' 等 CATIA 非法字符，必须 Sanitize
-                    string containerName = GetUniqueChildName(rootProducts, Sanitize(op.Name));
+                    // 操作名称-年月日-序号，同时避开现有子产品/零件的实例名及零件号。
+                    reservedNames.Add(SysPath.GetFileNameWithoutExtension(modelPath));
+                    string containerName = GunExportNaming.NextOperationName(op.Name, exportedAt, reservedNames);
+                    stage = "创建操作容器：" + op.Name;
                     Product container = rootProducts.AddNewComponent("Product", containerName);
+                    onLog?.Invoke("[Catia] 操作容器：" + containerName);
                     int containerIndex = rootProducts.Count;   // 按索引锁定，不依赖名字
                     try { container.set_PartNumber(containerName); } catch { }
                     // 容器改名同样并入批处理（ContainerIndex=0 表示根层级）——
@@ -543,11 +591,17 @@ namespace TxTools.ExportGun
                     {
                         try
                         {
+                            stage = "加载模型：" + modelPath;
+                            int before = targetProducts.Count;
                             targetProducts.AddComponentsFromFiles(new object[] { modelPath }, "All");
+                            if (targetProducts.Count <= before)
+                                throw new InvalidOperationException("加载模型后组件数未增加");
                         }
                         catch (Exception ex)
                         {
                             onLog?.Invoke($"    x [{op.Name}] 加载 CGR 失败: {ex.Message}");
+                            firstFailure = firstFailure ?? ex;
+                            failed += opPts.Count;
                             continue;
                         }
 
@@ -564,6 +618,7 @@ namespace TxTools.ExportGun
                         {
                             double[] placed0 = ComputePlaced(p, gun, pt0);
                             sourceInst.Position.SetComponents(ToSetComp(placed0));
+                            inserted++;
 
                             // 记录改名任务：读当前 Name（CATIA 分配的，如 sample-part）作为锚点
                             string curName = GetInstanceNameByReflection(targetProducts, sourceIdx);
@@ -587,6 +642,8 @@ namespace TxTools.ExportGun
                         catch (Exception ex)
                         {
                             onLog?.Invoke($"    x 首实例设置失败 [{pt0.Name}]: {ex.Message}");
+                            firstFailure = firstFailure ?? ex;
+                            failed++;
                         }
 
                         startIdx = 1;
@@ -598,6 +655,8 @@ namespace TxTools.ExportGun
                     }
 
                     // Copy 源
+                    // 只有一个点时无需剪贴板调用；CATIA 无可复制上下文时 Copy 会抛 E_FAIL。
+                    if (startIdx >= opPts.Count) continue;
                     try
                     {
                         sel.Clear();
@@ -607,6 +666,8 @@ namespace TxTools.ExportGun
                     catch (Exception ex)
                     {
                         onLog?.Invoke($"    x [{op.Name}] Copy 源实例失败: {ex.Message}");
+                        firstFailure = firstFailure ?? ex;
+                        failed += opPts.Count - startIdx;
                         continue;
                     }
 
@@ -654,6 +715,7 @@ namespace TxTools.ExportGun
                             Product inst = targetProducts.Item(afterCount);
                             double[] placed = ComputePlaced(p, gun, pt);
                             inst.Position.SetComponents(ToSetComp(placed));
+                            inserted++;
 
                             // 记录改名任务（阶段 A 只收集，阶段 B 批量改名）
                             string curName2 = GetInstanceNameByReflection(targetProducts, afterCount);
@@ -673,10 +735,12 @@ namespace TxTools.ExportGun
                         catch (Exception ex)
                         {
                             onLog?.Invoke($"    x 插入失败 [{pt.Name}]: {ex.Message}");
+                            firstFailure = firstFailure ?? ex;
+                            failed++;
                         }
                     }
 
-                    onLog?.Invoke($"  [{op.Name}] 已插入 {opPts.Count} 个焊点实例（共享 Reference）");
+                    onLog?.Invoke($"  [{op.Name}] 已处理 {opPts.Count} 个焊点（共享 Reference）");
                 }
 
                 // 阶段 A 结束：所有实例已插入并定位
@@ -686,13 +750,20 @@ namespace TxTools.ExportGun
                 //   1) 清空 Selection，释放 Copy/Paste 命令残留状态
                 //   2) 恢复 RefreshDisplay / DisplayFileAlerts（脚本验证时这两个标志是正常的）
                 //   3) 激活目标 Product 文档，保证 ActiveDocument 解析链指向它
-                onLog?.Invoke($"[Catia] 插枪完成（共享几何：{sourceCache.Count} 份几何，{current}/{total} 个实例）");
+                onLog?.Invoke($"[Catia] 插枪结果（共享几何：{sourceCache.Count} 份，成功定位 {inserted}/{total}，失败 {failed}）");
                 try { sel.Clear(); } catch { }
                 try { ((dynamic)_catia).RefreshDisplay = savedRefreshDisplay; } catch { }
                 try { ((dynamic)_catia).DisplayFileAlerts = savedDisplayAlerts; } catch { }
                 try { productDoc.Activate(); } catch { }
                 onLog?.Invoke($"      开始批量改名（共 {pendingRenames.Count} 个实例）...");
+                stage = "批量更新及命名";
                 BatchRename(pendingRenames, rootProduct, onLog);
+                if (failed > 0 || inserted != total || total == 0)
+                    throw new InvalidOperationException($"插枪未完整导出：成功定位 {inserted}/{total}，失败 {failed}。已创建的组件保留在 CATIA 中，请查看日志。", firstFailure);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("CATIA 导出失败，步骤：" + stage + "。" + ex.Message, ex);
             }
             finally
             {
@@ -725,7 +796,13 @@ namespace TxTools.ExportGun
             if (!p.GunOriginAtTCP) return;
             if (p.TcpCustomMatrix == null && string.IsNullOrEmpty(p.TcpName)) return;
 
-            double[] tcpWorld = p.TcpCustomMatrix ?? PsReader.ResolveTcpWorldByName(op, p.TcpName, onLog);
+            double[] tcpWorld = p.TcpCustomMatrix;
+            if (tcpWorld == null)
+            {
+                if (p.ResolvedTcpMatrices != null)
+                    p.ResolvedTcpMatrices.TryGetValue(op.Name, out tcpWorld);
+                else tcpWorld = PsReader.ResolveTcpWorldByName(op, p.TcpName, onLog);
+            }
             if (tcpWorld == null)
             {
                 onLog?.Invoke($"    ! 未能解析所选 TCP（{p.TcpName}），改用默认 TCP");
@@ -738,31 +815,28 @@ namespace TxTools.ExportGun
             onLog?.Invoke($"    TCP 覆盖：{(p.TcpCustomMatrix != null ? "自定义坐标" : p.TcpName)}");
         }
 
-        // ---------- 辅助：容器同名冲突处理（自动加 _2 / _3 后缀） ----------
-        private static string GetUniqueChildName(Products parent, string baseName)
+        // 收集整个现有装配中的名称，包含嵌套零件；共享 Reference 只遍历一次。
+        private static void CollectProductNames(Product product, ISet<string> names, HashSet<object> visited,
+            Action<string> onLog)
         {
-            var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            int cnt = 0;
-            try { cnt = parent.Count; } catch { }
-            for (int i = 1; i <= cnt; i++)
+            try { names.Add(product.get_Name()); } catch { }
+            try { names.Add(product.get_PartNumber()); } catch { }
+            object reference = product;
+            try { reference = product.ReferenceProduct ?? product; } catch { }
+            if (!visited.Add(reference)) return;
+            Products children;
+            int count;
+            try { children = product.Products; count = children.Count; }
+            catch (Exception ex)
             {
-                try
-                {
-                    Product ch = parent.Item(i);
-                    try { existing.Add(ch.get_Name()); } catch { }
-                    try { existing.Add(ch.get_PartNumber()); } catch { }
-                }
-                catch { }
+                onLog?.Invoke("[Catia] 名称检查：无法读取子装配，" + ex.Message);
+                return;
             }
-
-            if (!existing.Contains(baseName)) return baseName;
-
-            for (int i = 2; i <= 999; i++)
+            for (int i = 1; i <= count; i++)
             {
-                string tryName = baseName + "_" + i;
-                if (!existing.Contains(tryName)) return tryName;
+                Product child = children.Item(i);
+                CollectProductNames(child, names, visited, onLog);
             }
-            return baseName + "_" + Guid.NewGuid().ToString("N").Substring(0, 6);
         }
 
         // ---------- 辅助：待改名任务 ----------

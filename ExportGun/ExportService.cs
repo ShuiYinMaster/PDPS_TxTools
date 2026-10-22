@@ -10,12 +10,13 @@ namespace TxTools.ExportGun
     public class ExportService : IDisposable
     {
         private readonly SynchronizationContext _psCtx;
-        private          CatiaBridge            _bridge;
         private          bool                   _disposed;
 
         public ExportService(SynchronizationContext psCtx)
         {
-            _psCtx = psCtx ?? new SynchronizationContext();
+            // 基类 SynchronizationContext.Send 在调用线程内直接执行，不能用于 PS API。
+            _psCtx = psCtx != null && psCtx.GetType() != typeof(SynchronizationContext)
+                ? psCtx : new System.Windows.Forms.WindowsFormsSynchronizationContext();
         }
 
         // ── 公开：供外部路由到 PS 主线程 ─────────────────────────────
@@ -41,7 +42,7 @@ namespace TxTools.ExportGun
             {
                 try { action(); } catch (Exception e) { ex = e; }
             }, null);
-            if (ex != null) throw ex;
+            if (ex != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex).Throw();
         }
 
         private T OnPs<T>(Func<T> func)
@@ -51,7 +52,7 @@ namespace TxTools.ExportGun
             {
                 try { val = func(); } catch (Exception e) { ex = e; }
             }, null);
-            if (ex != null) throw ex;
+            if (ex != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex).Throw();
             return val;
         }
 
@@ -104,8 +105,9 @@ namespace TxTools.ExportGun
                                      Action<ExportProgress> onProgress,
                                      Action<bool, string> onComplete)
         {
-            ThreadPool.QueueUserWorkItem(delegate (object s)
+            RunCatiaExport(delegate ()
             {
+                string stage = "PS 读取点数据";
                 try
                 {
                     // ── Step 1: 重新填充点（应用 PointFilter / UseMfgName 筛选） ─
@@ -134,29 +136,37 @@ namespace TxTools.ExportGun
 
                     // ── Step 2: 读取焊钳信息 ─────────────────────────────
                     SafeLog(onLog, "[PS] 读取插枪信息...");
+                    stage = "PS 读取插枪信息";
                     OnPs(delegate ()
                     {
+                        if (p.GunOriginAtTCP && p.TcpCustomMatrix == null && !string.IsNullOrEmpty(p.TcpName))
+                            p.ResolvedTcpMatrices = new Dictionary<string, double[]>();
                         foreach (OperationInfo op in p.Operations)
                         {
                             op.Gun = PsReader.GetGunFromOperation(
                                 op, p.CustomModelPath, onLog);
+                            if (p.ResolvedTcpMatrices != null && op.Gun != null)
+                                p.ResolvedTcpMatrices[op.Name] = PsReader.ResolveTcpWorldByName(op, p.TcpName, onLog);
                             if (op.Gun == null)
                                 SafeLog(onLog, "  ⚠ [" + op.Name + "] 无绑定 Robot");
                         }
                     });
 
                     // ── Step 3: 连接 CATIA 并导出 ─────────────────────────
-                    if (!Connect(onLog))
-                    { SafeComplete(onComplete, false, "无法连接 CATIA，请确认已启动"); return; }
-
-                    SafeLog(onLog, "[Catia] 开始导出插枪...");
-                    _bridge.ExportGuns(p,
-                        delegate (ExportProgress pg) { SafeProgress(onProgress, pg); },
-                        delegate (string msg) { SafeLog(onLog, msg); });
-                    SafeComplete(onComplete, true, "插枪导出完成");
+                    using (var bridge = new CatiaBridge())
+                    {
+                        stage = "连接 CATIA";
+                        Connect(bridge, onLog);
+                        stage = "CATIA 插枪导出";
+                        SafeLog(onLog, "[Catia] 开始导出插枪...");
+                        bridge.ExportGuns(p,
+                            delegate (ExportProgress pg) { SafeProgress(onProgress, pg); },
+                            delegate (string msg) { SafeLog(onLog, msg); });
+                        SafeComplete(onComplete, true, "插枪导出完成");
+                    }
                 }
                 catch (Exception ex)
-                { SafeLog(onLog, "[错误] " + ex.Message); SafeComplete(onComplete, false, ex.Message); }
+                { ReportFailure(new InvalidOperationException(stage + "：" + ex.Message, ex), onLog, onComplete); }
             });
         }
 
@@ -166,8 +176,9 @@ namespace TxTools.ExportGun
                                       Action<ExportProgress> onProgress,
                                       Action<bool, string>   onComplete)
         {
-            ThreadPool.QueueUserWorkItem(delegate(object s)
+            RunCatiaExport(delegate ()
             {
+                string stage = "PS 读取点数据";
                 try
                 {
                     int totalPts = 0;
@@ -195,18 +206,21 @@ namespace TxTools.ExportGun
                     }
                     SafeLog(onLog, "[PS] 合计 " + totalPts + " 个点");
 
-                    if (!Connect(onLog))
-                    { SafeComplete(onComplete, false, "无法连接 CATIA"); return; }
-
-                    SafeLog(onLog, "[Catia] 开始创建点球...");
-                    _bridge.ExportBalls(p,
-                        delegate(ExportProgress pg) { SafeProgress(onProgress, pg); },
-                        delegate(string msg)         { SafeLog(onLog, msg); });
-                    SafeComplete(onComplete, true,
-                        "点球导出完成，共 " + totalPts + " 个点");
+                    using (var bridge = new CatiaBridge())
+                    {
+                        stage = "连接 CATIA";
+                        Connect(bridge, onLog);
+                        stage = "CATIA 点球导出";
+                        SafeLog(onLog, "[Catia] 开始创建点球...");
+                        bridge.ExportBalls(p,
+                            delegate(ExportProgress pg) { SafeProgress(onProgress, pg); },
+                            delegate(string msg)         { SafeLog(onLog, msg); });
+                        SafeComplete(onComplete, true,
+                            "点球导出完成，共 " + totalPts + " 个点");
+                    }
                 }
                 catch (Exception ex)
-                { SafeLog(onLog, "[错误] " + ex.Message); SafeComplete(onComplete, false, ex.Message); }
+                { ReportFailure(new InvalidOperationException(stage + "：" + ex.Message, ex), onLog, onComplete); }
             });
         }
 
@@ -271,15 +285,32 @@ namespace TxTools.ExportGun
         }
 
         // ── CATIA 连接 ────────────────────────────────────────────────
-        private bool Connect(Action<string> log)
+        private static void Connect(CatiaBridge bridge, Action<string> log)
         {
-            if (_bridge == null) _bridge = new CatiaBridge();
             string err;
-            if (_bridge.Connect(out err))
-            { SafeLog(log, "✓ 已连接 CATIA"); return true; }
+            if (bridge.Connect(out err))
+            { SafeLog(log, "✓ 已连接 CATIA"); return; }
             SafeLog(log, "✗ " + err);
-            _bridge.Dispose(); _bridge = null;
-            return false;
+            throw new InvalidOperationException(err ?? "无法连接 CATIA", bridge.LastConnectionError);
+        }
+
+        // 每次任务在同一 STA 中连接、使用并释放 CATIA，避免跨任务复用 RCW。
+        private void RunCatiaExport(Action work)
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(ExportService));
+            var thread = new Thread(() => work()) { IsBackground = true, Name = "TxTools CATIA export" };
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+        }
+
+        private static void ReportFailure(Exception ex, Action<string> onLog, Action<bool, string> onComplete)
+        {
+            Exception cause = ex;
+            while (cause.InnerException != null) cause = cause.InnerException;
+            string message = ex.Message + (cause != ex ? "\n" + cause.Message : "")
+                + "\nHRESULT=0x" + cause.HResult.ToString("X8");
+            SafeLog(onLog, "[错误] " + ex);
+            SafeComplete(onComplete, false, message);
         }
 
         private static void SafeLog(Action<string> cb, string msg)
@@ -293,7 +324,6 @@ namespace TxTools.ExportGun
         public void Dispose()
         {
             if (_disposed) return;
-            if (_bridge != null) { _bridge.Dispose(); _bridge = null; }
             _disposed = true;
         }
     }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -35,9 +35,19 @@ namespace TxTools.ExportByColor
         private string _lastLogMessage;
         private const int MaxLogCharacters = 60000;
 
+        private sealed class ExportMode
+        {
+            internal readonly string Label, Format;
+            internal readonly CgrBackend Backend;
+            internal readonly bool ReconstructCylinders;
+            internal ExportMode(string label, string format, CgrBackend backend, bool reconstructCylinders = false)
+            { Label = label; Format = format; Backend = backend; ReconstructCylinders = reconstructCylinders; }
+            public override string ToString() { return Label; }
+        }
+
         private bool _scaled;
-        private readonly Size _designSize = new Size(960, 740);
-        private readonly Size _minSize = new Size(740, 540);
+        private readonly Size _designSize = new Size(960, 540);
+        private readonly Size _minSize = new Size(740, 500);
 
         public ExportByColorForm(SynchronizationContext psCtx)
         {
@@ -79,8 +89,8 @@ namespace TxTools.ExportByColor
                 ColumnCount = 1,
                 RowCount = 2
             };
-            body.RowStyles.Add(new RowStyle(SizeType.Percent, 62));
-            body.RowStyles.Add(new RowStyle(SizeType.Percent, 38));
+            body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            body.RowStyles.Add(new RowStyle(SizeType.Absolute, 90));
 
             var top = new TableLayoutPanel
             {
@@ -107,6 +117,7 @@ namespace TxTools.ExportByColor
                 Margin = new Padding(6, 2, 6, 4)
             };
             body.Controls.Add(_rtbLog, 0, 1);
+            PluginLog.Register(_rtbLog);
 
             return body;
         }
@@ -115,6 +126,8 @@ namespace TxTools.ExportByColor
         {
             FlowLayoutPanel content;
             var card = FormUiKit.MkCard("资源（在 PS 中拾取）", 400, 320, out content);
+            card.Dock = DockStyle.Fill;
+            content.AutoScroll = false;
 
             var hint = FormUiKit.MkLabel("在 PS 场景中点击对象即加入列表（可多选）。勾选【导出所有可见资源】则忽略列表，导出场景全部可见设备。", false);
             FormUiKit.WrapLabelInFlow(content, hint);
@@ -162,6 +175,24 @@ namespace TxTools.ExportByColor
             row.Controls.Add(btnClear);
             content.Controls.Add(row);
 
+            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3,
+                Padding = new Padding(8, 6, 8, 6), Margin = Padding.Empty };
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.Controls.Add(hint, 0, 0);
+            gridPanel.Dock = DockStyle.Fill;
+            layout.Controls.Add(gridPanel, 0, 1);
+            row.Dock = DockStyle.Top;
+            layout.Controls.Add(row, 0, 2);
+            layout.SizeChanged += (s, e) => hint.MaximumSize = new Size(Math.Max(1,
+                layout.ClientSize.Width - layout.Padding.Horizontal - hint.Margin.Horizontal), 0);
+            card.Controls.Remove(content);
+            card.Controls.Add(layout);
+            card.Controls.SetChildIndex(layout, 0);
+            content.Dispose();
+
             return card;
         }
 
@@ -169,6 +200,8 @@ namespace TxTools.ExportByColor
         {
             FlowLayoutPanel content;
             var card = FormUiKit.MkCard("参数", 400, 320, out content);
+            card.Dock = DockStyle.Top;
+            content.AutoScroll = false;
 
             var rowOrigin = FormUiKit.MkRowFlow();
             rowOrigin.Controls.Add(FormUiKit.MkFieldLabel("原点设备:"));
@@ -189,12 +222,21 @@ namespace TxTools.ExportByColor
             _exportTabs = new TabControl { Width = 340, Height = 190, Font = FormUiKit.BaseFont };
             var cgrTab = new TabPage("3DXML / CGR");
             _cgrMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Left = 12, Top = 12, Width = 285, DropDownWidth = 460 };
-            _cgrMode.Items.AddRange(new object[] { "直出 3DXML（推荐）", "直出 3DXML（R38线面几何·试用）", "CGR → CATIA（原方案）", "CGR → CATIA（线面压缩·试用）", "CGR → CATIA（逐平面兼容）", "读取 JT → CGR → CATIA", "读取 JT → CGR → CATIA（线面压缩·试用）", "读取 JT → CGR → CATIA（逐平面兼容·试用）", "读取 JT → 内外圆柱重建 CGR → CATIA（试用）" });
+            _cgrMode.Items.AddRange(new object[] {
+                new ExportMode("直出 3DXML（推荐）", "3DXML", CgrBackend.Compact),
+                new ExportMode("直出 3DXML（R38线面几何·试用）", "3DXML", CgrBackend.LineFace),
+                new ExportMode("CGR → CATIA（原方案）", "CGR", CgrBackend.Compact),
+                new ExportMode("PS 三角面 → CGR → CATIA（线面压缩）", "CGR", CgrBackend.LineFace),
+                new ExportMode("PS 三角面 → CGR → CATIA（内外圆柱重建）", "CGR", CgrBackend.LineFace, true),
+                new ExportMode("读取 JT → CGR → CATIA", "JT_CGR", CgrBackend.Compact),
+                new ExportMode("读取 JT → CGR → CATIA（线面压缩·试用）", "JT_CGR", CgrBackend.LineFace),
+                new ExportMode("读取 JT → 内外圆柱重建 CGR → CATIA（试用）", "JT_CGR", CgrBackend.LineFace, true)
+            });
             _cgrMode.SelectedIndex = 0;
             cgrTab.Controls.Add(_cgrMode);
             cgrTab.Controls.Add(new Label
             {
-                Text = "直出 3DXML 保留装配层级，无需 CATIA。\r\nR38 线面试用沿用其网格分块，再桥接为 CFV3；3DXML 当前不含 CGR 的线、面选择记录。CGR 线面压缩可在 CATIA 中测量；逐平面兼容保留细分面选择。",
+                Text = "直出 3DXML 保留装配层级，无需 CATIA。\r\nPS 线面压缩直接处理原网格；内外圆柱重建另行识别圆柱并生成测量属性，未通过检查的区域保留原网格。R38 线面几何桥接的 3DXML 当前不含 CGR 线、面选择记录。",
                 Left = 12,
                 Top = 50,
                 Width = 300,
@@ -368,12 +410,11 @@ namespace TxTools.ExportByColor
                 }
             }
             string origin = GetOriginName();
+            var route = (ExportMode)_cgrMode.SelectedItem;
             string format = _exportTabs.SelectedIndex == 0
-                ? (_cgrMode.SelectedIndex <= 1 ? "3DXML" : (_cgrMode.SelectedIndex >= 5 ? "JT_CGR" : "CGR"))
+                ? route.Format
                 : new[] { "STL", "OBJ", "PLY", "FBX_BINARY", "FBX_ASCII" }[_meshFormat.SelectedIndex];
-            CgrBackend cgrBackend = format == "3DXML"
-                ? (_cgrMode.SelectedIndex == 1 ? CgrBackend.LineFace : CgrBackend.Compact)
-                : (format == "CGR" ? (_cgrMode.SelectedIndex == 3 ? CgrBackend.LineFace : _cgrMode.SelectedIndex == 4 ? CgrBackend.LineFacePlanar : CgrBackend.Compact) : CgrBackend.Compact);
+            CgrBackend cgrBackend = route.Backend;
             string output = null;
             if (format == "3DXML")
             {
@@ -426,12 +467,12 @@ namespace TxTools.ExportByColor
             };
             if (format == "JT_CGR")
             {
-                Log("JT 模式：从资源 StorageObject/表示属性解析 JT 文件，再生成 CGR 并插入 CATIA。");
-                _svc.RunJtToCgrAsync(picked, Log, SetProgress, complete, (_cgrMode.SelectedIndex == 6 || _cgrMode.SelectedIndex == 8) ? CgrBackend.LineFace : _cgrMode.SelectedIndex == 7 ? CgrBackend.LineFacePlanar : CgrBackend.Compact, _cgrMode.SelectedIndex == 8);
+                Log("JT 模式：从资源解析 JT 文件生成 CGR；外观读取关联零件三角面并变换到外观位置，再插入 CATIA。");
+                _svc.RunJtToCgrAsync(picked, Log, SetProgress, complete, route.Backend, route.ReconstructCylinders);
             }
             else
             {
-                _svc.RunAsync(picked, origin, format, output, format != "CGR" && format != "3DXML" && _mergeMeshes.Checked, Log, SetProgress, complete, cgrBackend);
+                _svc.RunAsync(picked, origin, format, output, format != "CGR" && format != "3DXML" && _mergeMeshes.Checked, Log, SetProgress, complete, cgrBackend, format == "CGR" && route.ReconstructCylinders);
             }
         }
 

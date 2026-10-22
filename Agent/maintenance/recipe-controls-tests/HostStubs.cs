@@ -81,12 +81,15 @@ namespace TxTools.Agent.Ps
     public static class PsBridge
     {
         public static string Code;
+        public static int Executed;
         public static ManualResetEventSlim Gate = new ManualResetEventSlim(true);
         public static string RunCSharp(string code, out bool ok, string label, Func<string> validate = null)
         {
             Code = code;
             if (!Gate.Wait(TimeSpan.FromSeconds(5))) throw new Exception("Test gate timed out");
-            var error = validate?.Invoke(); ok = error == null; return error ?? "test host accepted generated code";
+            var error = validate?.Invoke(); ok = error == null;
+            if (ok) Interlocked.Increment(ref Executed);
+            return error ?? "test host accepted generated code";
         }
     }
 }

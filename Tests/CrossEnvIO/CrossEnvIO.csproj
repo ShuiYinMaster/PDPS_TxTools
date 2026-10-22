@@ -1,0 +1,34 @@
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" />
+  <PropertyGroup>
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <LangVersion>8.0</LangVersion>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <AssemblyName>CrossEnvIORegression</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>..\..\packages\Newtonsoft.Json.13.0.4\lib\net45\Newtonsoft.Json.dll</HintPath>
+    </Reference>
+    <Compile Include="..\..\CrossEnvIO\Core\TxMath.cs" Link="TxMath.cs" />
+    <Compile Include="..\..\CrossEnvIO\Core\CopyIdentity.cs" Link="CopyIdentity.cs" />
+    <Compile Include="..\..\CrossEnvIO\Core\DirectoryLinks.cs" Link="DirectoryLinks.cs" />
+    <Compile Include="..\..\CrossEnvIO\Core\TransferFile.cs" Link="TransferFile.cs" />
+    <Compile Include="..\..\CrossEnvIO\Core\CojtTransfer.cs" Link="CojtTransfer.cs" />
+    <Compile Include="..\..\CrossEnvIO\Core\PszPathFixer.cs" Link="PszPathFixer.cs" />
+    <Compile Include="..\..\CrossEnvIO\Core\StructureIO.cs" Link="StructureIO.cs" />
+    <Compile Include="..\..\CrossEnvIO\Core\WeldPointIO.cs" Link="WeldPointIO.cs" />
+    <Compile Include="..\..\CrossEnvIO\Core\CrossEnvRebuildTool.cs" Link="CrossEnvRebuildTool.cs" />
+    <Compile Include="HostStubs.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

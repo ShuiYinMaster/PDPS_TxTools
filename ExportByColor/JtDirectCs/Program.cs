@@ -9,7 +9,7 @@ using DLAT.JTReader;
 using Reader = DLAT.JTReader.StreamReader;
 
 // Standalone .NET Framework worker. PS objects never enter this process.
-class Program
+partial class Program
 {
     sealed class Segment { public Guid Id; public int Ordinal, Type; public byte[] Data; public Element Legacy; }
     sealed class Node { public string Type, Text; public int Id; public int[] Attributes = new int[0], Children = new int[0]; public Guid Segment; public double[] Matrix, RGBA; public uint Inhibit, Final; public byte State; }
@@ -58,6 +58,7 @@ class Program
     }
     // RangeLOD children are alternative representations, not assembly components.
     // Segment type 7 contains the highest-detail triangle data loaded by this worker.
+    static bool TriangleSegment(Segment s) { return s.Data!=null && (s.Type==7 || (sourceMajor==9 && s.Type==6)); }
     static bool HasTriangle(int id, bool requireLoaded, HashSet<int> path)
     {
         if (path.Count > 1000 || !path.Add(id)) throw new InvalidDataException("Cyclic JT LOD graph");
@@ -69,7 +70,7 @@ class Program
             Segment s;
             if (n.Segment == Guid.Empty || !segments.TryGetValue(n.Segment, out s))
                 throw new InvalidDataException("Missing shape binding in LOD node: " + id);
-            found = !requireLoaded || (s.Type == 7 && s.Data != null);
+            found = !requireLoaded || TriangleSegment(s);
         }
         if (!found) found = n.Children.Any(child => HasTriangle(child, requireLoaded, path));
         path.Remove(id);
@@ -78,7 +79,7 @@ class Program
     static void Walk(int id, double[] matrix, double[] rgba, uint final, HashSet<int> path)
     {
         if (path.Count > 1000 || !path.Add(id)) throw new InvalidDataException("Cyclic JT graph"); var n = nodes[id]; rgba = (double[])rgba.Clone();
-        foreach (int attr in n.Attributes) { var a = nodes[attr]; if (a.RGBA != null && (a.State & 4) == 0) { uint allowed = ~a.Inhibit & ((a.State & 2) != 0 ? uint.MaxValue : ~final); if ((allowed & 64) != 0) Array.Copy(a.RGBA, rgba, 3); if ((allowed & 128) != 0) rgba[3] = a.RGBA[3]; final |= a.Final & allowed; } if (a.Matrix != null) { if (sourceMajor != 8 && n.Type != "10dd102a") throw new InvalidDataException("Transform on non-instance node"); matrix = Multiply(a.Matrix, matrix); } }
+        foreach (int attr in n.Attributes) { var a = nodes[attr]; if (a.RGBA != null && (a.State & 4) == 0) { uint allowed = ~a.Inhibit & ((a.State & 2) != 0 ? uint.MaxValue : ~final); if ((allowed & 64) != 0) Array.Copy(a.RGBA, rgba, 3); if ((allowed & 128) != 0) rgba[3] = a.RGBA[3]; final |= a.Final & allowed; } if (a.Matrix != null) { if (sourceMajor > 9 && n.Type != "10dd102a") throw new InvalidDataException("Transform on non-instance node"); matrix = Multiply(a.Matrix, matrix); } }
         if (n.Type == "10dd1077") { Segment s; if (n.Segment == Guid.Empty || !segments.TryGetValue(n.Segment, out s)) throw new InvalidDataException("Missing shape binding"); if (rgba.Take(3).Any(double.IsNaN)) { for(int i=0;i<3;i++)if(double.IsNaN(rgba[i]))rgba[i]=0.8; defaultMaterialShapes++; Console.WriteLine("MATERIAL_DEFAULT node="+id+" RGB=204,204,204; application neutral default for undefined diffuse RGB"); } Rigid(matrix); bindings.Add(new Binding { Segment = s, Matrix = matrix, RGBA = rgba }); }
         var selectedChildren = n.Children;
         if (n.Type == "10dd104c" && n.Children.Length > 1)
@@ -109,16 +110,17 @@ class Program
     static Guid LegacyGuid(GUID id) { return Guid.ParseExact(id.ToString().Replace("-", ""), "N"); }
     static void ParseLegacyFile(string input)
     {
-        // JT 8 uses 32-bit TOC offsets, body object IDs, zlib LSG and strip LODs.
+        // JT 8/9 use 32-bit TOC offsets. Element IDs, LSG attributes and
+        // compression are read by the version-aware reader.
         var file = new JTFile(input);
         int ordinal = 0;
         foreach (var segment in file.segments.Values)
         {
             var result = new Segment { Id=LegacyGuid(segment.segmentID), Type=segment.segmentType, Ordinal=ordinal++ };
-            if (segment.segmentType==7)
+            if (segment.segmentType==7 || (sourceMajor==9 && segment.segmentType==6))
             {
                 var lods=segment.elements.Where(e=>e.elementType==typeof(Tri_StripSetShapeLODData)).ToArray();
-                if(lods.Length>1)throw new NotSupportedException("Multiple JT8 highest-detail payloads");
+                if(lods.Length>1)throw new NotSupportedException("Multiple legacy JT highest-detail payloads");
                 if(lods.Length==1){result.Legacy=lods[0];result.Data=new byte[0];}
             }
             segments.Add(result.Id,result);
@@ -158,6 +160,8 @@ class Program
         foreach(var table in file.propertyTable.nodePropertyTable)
             foreach(var property in table.Value.propertyAtomObjectID)
                 if(nodes[property.Key].Text=="JT_LLPROP_SHAPEIMPL")nodes[table.Key].Segment=nodes[property.Value].Segment;
+        Console.WriteLine("JT_LEGACY_GRAPH major="+sourceMajor+" segments="+segments.Count+" types="+string.Join(",",segments.Values.GroupBy(s=>s.Type).Select(g=>g.Key+":"+g.Count()))+" nodes="+nodes.Count+" partitions="+nodes.Values.Count(n=>n.Type=="10dd103e"));
+        if(sourceMajor==9)Console.WriteLine("JT9_NODE_TYPES "+string.Join(",",nodes.Values.GroupBy(n=>n.Type).Select(g=>g.Key+":"+g.Count())));
     }
     static void DecodeLegacy(Binding binding,int surface)
     {
@@ -199,24 +203,24 @@ class Program
     {
         string header=Encoding.ASCII.GetString(Bytes(r,80)).TrimEnd('\0',' ','\r','\n');
         byte order=r.ReadByte();
-        Console.WriteLine("DECODER=TxTools.JtDecoder jt8.0-10.0-10.6-rgba-v8");
+        Console.WriteLine("DECODER=TxTools.JtDecoder jt8.0-9.5-10.0-10.6-rgba-v9");
         Console.WriteLine("INPUT="+input);
         Console.WriteLine("JT_HEADER="+header+" BYTE_ORDER="+order);
         var version=System.Text.RegularExpressions.Regex.Match(header,@"^Version\s+(\d+)\.(\d+)\s+JT(?:\s|$)");
         if(!version.Success)throw new InvalidDataException("Invalid JT header: "+header);
         int major=int.Parse(version.Groups[1].Value),minor=int.Parse(version.Groups[2].Value); sourceMajor=major; sourceMinor=minor;
         if(order>1)throw new InvalidDataException("Invalid JT byte-order marker: "+order);
-        if(order!=0||!((major==10&&(minor==0||minor==6))||(major==8&&minor==0)))
+        if(order!=0||!((major==10&&(minor==0||minor==6))||(major==9&&minor==5)||(major==8&&minor==0)))
             throw new NotSupportedException("Direct decoder does not support JT "+major+"."+minor+
                 " byteOrder="+order+"; use the loaded PS native representation. Source: "+input);
     }
     static void Run(string input, string output)
     {
-        byte[] bytes = File.ReadAllBytes(input), hash; using (var h = SHA256.Create()) hash = h.ComputeHash(bytes); using (var r = R(bytes)) ValidateHeader(r,input); if(sourceMajor==8) ParseLegacyFile(input); else using (var r = R(bytes)) { r.BaseStream.Position=81; r.ReadInt32(); long toc = r.ReadInt64(); r.BaseStream.Position = toc; int count = Count(r); for (int i = 0; i < count; i++) { Guid id = GuidAt(r); long offset = r.ReadInt64(); int len = Count(r); r.ReadUInt32(); long back = r.BaseStream.Position; r.BaseStream.Position = offset + 16; int type = r.ReadInt32(); if (r.ReadInt32() != len) throw new InvalidDataException("Segment length mismatch"); byte[] data = Bytes(r, len - 24); if (type == 1) { using (var cr = R(data)) { if (cr.ReadInt32() != 3) throw new InvalidDataException("LSG codec unsupported"); int cl = Count(cr); if (cr.ReadByte() != 3) throw new InvalidDataException("LSG codec unsupported"); using (var xz = CODEC.DecompressLZMA(new MemoryStream(Bytes(cr, cl - 1)))) { if (xz.Length > 512 * 1024 * 1024) throw new InvalidDataException("LSG size limit"); using (var br = new BinaryReader(xz)) data = br.ReadBytes((int)xz.Length); } } } else if (type == 7) { using (var er = R(data)) { int el = Count(er); Guid g = GuidAt(er); er.ReadByte(); er.ReadInt32(); data = Type(g) == "10dd10ab" ? Bytes(er, el - 21) : null; } } else data = null; segments.Add(id, new Segment { Id = id, Type = type, Ordinal = i, Data = data }); r.BaseStream.Position = back; } }
-        var lsg = segments.Values.Single(s => s.Type == 1); if(sourceMajor!=8)ParseLSG(lsg.Data); var root = nodes.Values.Single(n => n.Type == "10dd103e"); Walk(root.Id, Identity(), new[] { double.NaN, double.NaN, double.NaN, 1.0 }, 0, new HashSet<int>());
-        var expected = new HashSet<Guid>(segments.Values.Where(s => s.Type == 7 && s.Data != null).Select(s => s.Id)); if (!expected.SetEquals(bindings.Select(b => b.Segment.Id))) throw new InvalidDataException("Unreferenced/unsupported triangle LOD"); Console.WriteLine("MATERIAL_ALPHA " + string.Join("; ", bindings.GroupBy(b => (byte)Math.Round(b.RGBA[3] * 255)).OrderBy(g => g.Key).Select(g => "alpha=" + g.Key + " shapes=" + g.Count()))); var file = Blank<JTFile>(); file.majorVersion = sourceMajor; file.minorVersion = sourceMinor; int surface = 0; foreach (var b in bindings.OrderBy(b => b.Segment.Ordinal)) { if(sourceMajor==8)DecodeLegacy(b, ++surface); else Decode(b, ++surface, file); } if (vertices.Count == 0 || faces.Count == 0) throw new InvalidDataException("Empty JT mesh"); using (var h = SHA256.Create()) using (var s = File.OpenRead(input)) if (!hash.SequenceEqual(h.ComputeHash(s))) throw new InvalidDataException("JT changed during conversion");
+        byte[] bytes = File.ReadAllBytes(input), hash; using (var h = SHA256.Create()) hash = h.ComputeHash(bytes); using (var r = R(bytes)) ValidateHeader(r,input); if(sourceMajor<=9) ParseLegacyFile(input); else using (var r = R(bytes)) { r.BaseStream.Position=81; r.ReadInt32(); long toc = r.ReadInt64(); r.BaseStream.Position = toc; int count = Count(r); for (int i = 0; i < count; i++) { Guid id = GuidAt(r); long offset = r.ReadInt64(); int len = Count(r); r.ReadUInt32(); long back = r.BaseStream.Position; r.BaseStream.Position = offset + 16; int type = r.ReadInt32(); if (r.ReadInt32() != len) throw new InvalidDataException("Segment length mismatch"); byte[] data = Bytes(r, len - 24); if (type == 1) { using (var cr = R(data)) { if (cr.ReadInt32() != 3) throw new InvalidDataException("LSG codec unsupported"); int cl = Count(cr); if (cr.ReadByte() != 3) throw new InvalidDataException("LSG codec unsupported"); using (var xz = CODEC.DecompressLZMA(new MemoryStream(Bytes(cr, cl - 1)))) { if (xz.Length > 512 * 1024 * 1024) throw new InvalidDataException("LSG size limit"); using (var br = new BinaryReader(xz)) data = br.ReadBytes((int)xz.Length); } } } else if (type == 7) { using (var er = R(data)) { int el = Count(er); Guid g = GuidAt(er); er.ReadByte(); er.ReadInt32(); data = Type(g) == "10dd10ab" ? Bytes(er, el - 21) : null; } } else data = null; segments.Add(id, new Segment { Id = id, Type = type, Ordinal = i, Data = data }); r.BaseStream.Position = back; } }
+        var lsg = segments.Values.Single(s => s.Type == 1); if(sourceMajor>9)ParseLSG(lsg.Data); var root = sourceMajor==9 ? Root9() : nodes.Values.Single(n => n.Type == "10dd103e"); Walk(root.Id, Identity(), new[] { double.NaN, double.NaN, double.NaN, 1.0 }, 0, new HashSet<int>());
+        var expected = new HashSet<Guid>(segments.Values.Where(TriangleSegment).Select(s => s.Id)); if (!expected.SetEquals(bindings.Select(b => b.Segment.Id))) throw new InvalidDataException("Unreferenced/unsupported triangle LOD"); Console.WriteLine("MATERIAL_ALPHA " + string.Join("; ", bindings.GroupBy(b => (byte)Math.Round(b.RGBA[3] * 255)).OrderBy(g => g.Key).Select(g => "alpha=" + g.Key + " shapes=" + g.Count()))); var file = Blank<JTFile>(); file.majorVersion = sourceMajor; file.minorVersion = sourceMinor; int surface = 0; foreach (var b in bindings.OrderBy(b => b.Segment.Ordinal)) { if(sourceMajor==8)DecodeLegacy(b, ++surface); else if(sourceMajor==9)Decode9(b, ++surface); else Decode(b, ++surface, file); } if (vertices.Count == 0 || faces.Count == 0) throw new InvalidDataException("Empty JT mesh"); using (var h = SHA256.Create()) using (var s = File.OpenRead(input)) if (!hash.SequenceEqual(h.ComputeHash(s))) throw new InvalidDataException("JT changed during conversion");
         string tmp = output + ".tmp"; try { using (var w = new BinaryWriter(File.Create(tmp))) { w.Write(Encoding.ASCII.GetBytes("JTMESH02")); w.Write(2); w.Write(hash); w.Write(vertices.Count); w.Write(faces.Count); foreach (var p in vertices) foreach (double v in p) w.Write(F(v)); foreach (var f in faces) { foreach (int i in f.Ids) w.Write(i); w.Write(f.RGB); w.Write(f.Alpha); w.Write(f.Surface); foreach (double v in f.Normal) w.Write(F(v)); } } File.Move(tmp, output); } finally { if (File.Exists(tmp)) File.Delete(tmp); }
         Console.WriteLine("PASS defaultMaterialShapes=" + defaultMaterialShapes + " vertices=" + vertices.Count + " faces=" + faces.Count + " shapes=" + surface + " colors=" + faces.Select(f => BitConverter.ToString(f.RGB)).Distinct().Count());
     }
-    static int Main(string[] args) { try { if (args.Length != 2) throw new ArgumentException("Usage: TxTools.JtDecoder input.jt output.jtmesh"); Run(Path.GetFullPath(args[0]), Path.GetFullPath(args[1])); return 0; } catch (NotSupportedException e) { Console.WriteLine("COMPAT_REQUIRED "+e.Message); return 2; } catch (Exception e) { Console.Error.WriteLine(e); return 1; } }
+    static int Main(string[] args) { Console.OutputEncoding = new UTF8Encoding(false); try { if (args.Length != 2) throw new ArgumentException("Usage: TxTools.JtDecoder input.jt output.jtmesh"); Run(Path.GetFullPath(args[0]), Path.GetFullPath(args[1])); return 0; } catch (NotSupportedException e) { Console.WriteLine("COMPAT_REQUIRED "+e.Message); return 2; } catch (Exception e) { Console.Error.WriteLine(e); return 1; } }
 }

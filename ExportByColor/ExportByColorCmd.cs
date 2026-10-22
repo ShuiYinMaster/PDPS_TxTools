@@ -6,6 +6,9 @@ namespace TxTools.ExportByColor
 {
     public class ExportByColorCmd : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.ExportByColor.bmp";
+        public override string LargeBitmap => "image.ExportByColor.png";
+
         public override string Name { get { return ".直出3DXML / CGR / 网格"; } }
         public override string Category { get { return "TxTools"; } }
         public override string Tooltip { get { return "从 Process Simulate 直出保留装配层级的 3DXML，也可使用 CGR→CATIA 或通用网格兼容模式"; } }
@@ -13,11 +16,13 @@ namespace TxTools.ExportByColor
 
         public override void Execute(object cmdParams)
         {
-            SynchronizationContext psCtx = SynchronizationContext.Current
-                                          ?? new SynchronizationContext();
-
             try
             {
+                // Created here on PS's command/UI thread. A plain context would
+                // dispatch Post to the pool and violate the PS SDK boundary.
+                SynchronizationContext psCtx = SynchronizationContext.Current;
+                if (psCtx == null || psCtx.GetType().GetMethod("Post", new[] { typeof(SendOrPostCallback), typeof(object) }).DeclaringType == typeof(SynchronizationContext))
+                    psCtx = new System.Windows.Forms.WindowsFormsSynchronizationContext();
                 if (ExportByColorForm.Instance == null || ExportByColorForm.Instance.IsDisposed)
                 {
                     ExportByColorForm.Instance = new ExportByColorForm(psCtx);

@@ -25,7 +25,7 @@ namespace TxTools.ThemeTuner
         private Dictionary<string, string> _palette = new Dictionary<string, string>();
         private readonly Dictionary<string, FlatColorButton> _swatches =
             new Dictionary<string, FlatColorButton>();
-        private static readonly Size _designSize = new Size(680, 740);
+        private static readonly Size _designSize = new Size(680, 540);
         private bool _dpiApplied;
         private bool _loadingPreset;
 
@@ -61,7 +61,7 @@ namespace TxTools.ThemeTuner
             SemiModal = false;
 
             FormUiKit.InitStandardForm(this, "主题调整 (ThemeTuner)",
-                _designSize, new Size(600, 620), sizable: true);
+                _designSize, new Size(640, 540), sizable: true);
             this.Padding = new Padding(4);
 
             foreach (var kv in Theme.SnapshotToStrings())
@@ -88,12 +88,31 @@ namespace TxTools.ThemeTuner
         // ════════════════════════════════════════════════════════════════
         private void BuildBody()
         {
-            var col = FormUiKit.BuildCardColumn(660);
-            col.Controls.Add(BuildPresetCard());
-            col.Controls.Add(BuildColorCard());
-            col.Controls.Add(BuildPreviewCard());
-            col.Controls.Add(BuildStatusCard());
-            this.Controls.Add(col);
+            var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2,
+                Padding = new Padding(6), Margin = Padding.Empty };
+            body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
+            body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
+            body.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            var preset = BuildPresetCard();
+            preset.Dock = DockStyle.Top;
+            body.Controls.Add(preset, 0, 0);
+            body.SetColumnSpan(preset, 2);
+            var colors = BuildColorCard();
+            colors.Dock = DockStyle.Fill;
+            body.Controls.Add(colors, 0, 1);
+            var feedback = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+            feedback.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            feedback.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            feedback.RowStyles.Add(new RowStyle(SizeType.Absolute, 136));
+            var preview = BuildPreviewCard();
+            preview.Dock = DockStyle.Fill;
+            var status = BuildStatusCard();
+            status.Dock = DockStyle.Fill;
+            feedback.Controls.Add(preview, 0, 0);
+            feedback.Controls.Add(status, 0, 1);
+            body.Controls.Add(feedback, 1, 1);
+            this.Controls.Add(body);
         }
 
         private Control BuildPresetCard()
@@ -142,11 +161,9 @@ namespace TxTools.ThemeTuner
                 Padding = Padding.Empty
             };
             var left = NewSlotColumn();
-            var right = NewSlotColumn();
             for (int i = 0; i < Slots.Length; i++)
-                (i % 2 == 0 ? left : right).Controls.Add(MakeSlotRow(Slots[i][0], Slots[i][1]));
+                left.Controls.Add(MakeSlotRow(Slots[i][0], Slots[i][1]));
             twoCol.Controls.Add(left);
-            twoCol.Controls.Add(right);
             content.Controls.Add(twoCol);
             return card;
         }
@@ -168,8 +185,10 @@ namespace TxTools.ThemeTuner
         private Control MakeSlotRow(string key, string label)
         {
             var row = FormUiKit.MkRowFlow();
+            row.Margin = Padding.Empty;
             var lbl = FormUiKit.MkFieldLabel(label);
-            lbl.Margin = new Padding(0, 8, 8, 0);
+            lbl.Margin = new Padding(0, 2, 8, 0);
+            lbl.Height = 22;
             lbl.Width = 70;
             lbl.AutoSize = false;
             row.Controls.Add(lbl);
@@ -233,6 +252,7 @@ namespace TxTools.ThemeTuner
                 WordWrap = false,
                 Font = FormUiKit.BaseFont
             };
+            PluginLog.Register(_previewLog);
 
             _previewHost.Controls.Add(_previewLog);
             _previewHost.Controls.Add(btnRow);
@@ -259,8 +279,10 @@ namespace TxTools.ThemeTuner
         private Control BuildStatusCard()
         {
             var card = FormUiKit.MkCard("状态", 660, 96, out var content);
+            PluginLog.Register(card);
             _rtbStatus = new RichTextBox
             {
+                AutoSize = false,
                 Width = 660 - 18,
                 Height = 80,
                 BackColor = Theme.LogBg,
@@ -303,6 +325,10 @@ namespace TxTools.ThemeTuner
             bar.Controls.Add(btnFlat);
             bar.Controls.Add(btnReset);
             bar.Controls.Add(btnClose);
+            var showLogs = new CheckBox { Text = "显示插件日志", AutoSize = true,
+                Checked = PluginLog.Enabled, Visible = PluginLog.Available, Margin = new Padding(8, 6, 0, 0) };
+            showLogs.CheckedChanged += (s, e) => PluginLog.Enabled = showLogs.Checked;
+            bar.Controls.Add(showLogs);
             this.Controls.Add(bar);
             SyncColorUiState();
         }

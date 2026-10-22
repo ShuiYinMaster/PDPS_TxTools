@@ -10,12 +10,14 @@ namespace TxTools.WeldSpotGrouper
 {
     public class WeldSpotGrouperCmd : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.WeldSpotGrouper.bmp";
+        public override string LargeBitmap => "image.WeldSpotGrouper.png";
+
         private static GrouperForm _form;
 
         public override string Name { get { return ".焊点快速分组"; } }
         public override string Category { get { return "TxTools"; } }
         public override string Description => "对所选焊点按照所绑定的零件进行自动分组";
-        public override string LargeBitmap => "image.WeldSpotGrouper.png";
         public override void Execute(object cmdParams)
         {
             try

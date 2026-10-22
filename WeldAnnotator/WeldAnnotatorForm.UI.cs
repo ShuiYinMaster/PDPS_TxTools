@@ -20,7 +20,7 @@ namespace TxTools.WeldAnnotator
             {
                 Dock = DockStyle.Left,
                 Width = 270,
-                AutoScroll = true,
+                AutoScroll = false,
                 BackColor = FormUiKit.CardBack,
                 Padding = new Padding(6, 4, 6, 4)
             };
@@ -192,13 +192,22 @@ namespace TxTools.WeldAnnotator
             actCard.Controls.Add(subGrid);
             actCard.Controls.Add(_lblCount);
 
-            stack.Controls.Add(opCard);
-            stack.Controls.Add(snapCard);
             stack.Controls.Add(cfgCard);
             stack.Controls.Add(actCard);
 
             rail.Controls.Add(stack);
             Controls.Add(rail);
+            var selection = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top, Height = 166, ColumnCount = 2, RowCount = 1,
+                Padding = new Padding(6, 4, 6, 0)
+            };
+            selection.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 270));
+            selection.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            opCard.Dock = snapCard.Dock = DockStyle.Fill;
+            selection.Controls.Add(opCard, 0, 0);
+            selection.Controls.Add(snapCard, 1, 0);
+            Controls.Add(selection);
         }
 
         // ── 卡片 / 按钮工厂 ──────────────────────────────────────────────
@@ -330,6 +339,7 @@ namespace TxTools.WeldAnnotator
             };
             var tsLog = new ToolStripButton("日志 ▲");
             tsLog.Click += (s, e) => ToggleLog(tsLog);
+            PluginLog.Register(_logPanel, false, tsLog);
             _status.Items.AddRange(new ToolStripItem[] { _lblStatus, _progress, tsLog });
             Controls.Add(_status);
         }
@@ -348,8 +358,9 @@ namespace TxTools.WeldAnnotator
 
         private void ToggleLog(ToolStripButton btn)
         {
+            if (!PluginLog.Enabled) return;
             _logVisible = !_logVisible;
-            _logPanel.Visible = _logVisible;
+            PluginLog.SetVisible(_logPanel, _logVisible);
             btn.Text = _logVisible ? "日志 ▼" : "日志 ▲";
         }
     }

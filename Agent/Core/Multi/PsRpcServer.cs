@@ -26,6 +26,7 @@ namespace TxTools.Agent.Core
 {
     public sealed class PsRpcServer : IDisposable
     {
+        internal static Func<JObject, JObject> PetUiHandler;
         private readonly ToolRegistry _tools;
         private readonly Func<string> _studyGetter;
         private Thread _thread;
@@ -150,6 +151,9 @@ namespace TxTools.Agent.Core
             {
                 switch (op)
                 {
+                    case "pet_ui":
+                        if (PetUiHandler == null) return Err("本进程桌宠入口尚未就绪。");
+                        return JsonConvert.SerializeObject(PsContext.Current.Run(() => PetUiHandler(req["input"] as JObject ?? new JObject())));
                     case "ping":
                         return Ping();
 

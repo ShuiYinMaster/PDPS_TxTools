@@ -51,7 +51,7 @@ namespace TxTools.ExportByColor
             var minimum=Enumerable.Range(0,3).Select(k=>rawRims.Min(v=>v[k])-.0001).ToArray();var maximum=Enumerable.Range(0,3).Select(k=>rawRims.Max(v=>v[k])+.0001).ToArray();
             var rawIds=new HashSet<int>();for(int i=0;i<originalVertices.Count;i++){var v=originalVertices[i];if(v[0]>=minimum[0]&&v[0]<=maximum[0]&&v[1]>=minimum[1]&&v[1]<=maximum[1]&&v[2]>=minimum[2]&&v[2]<=maximum[2]&&rawKeys.Contains(Tuple.Create(v[0],v[1],v[2])))rawIds.Add(i);}
             var originalWalls=new HashSet<int>(h.WallTriangles);var capShapes=new HashSet<int>();for(int fi=0;fi<originalFaces.Count;fi++)if(!originalWalls.Contains(fi)&&originalFaces[fi].Idx.Count(v=>rawIds.Contains(v))>=2)capShapes.Add(originalFaces[fi].Surface);
-            var incidence=new Dictionary<long,List<int>>();var local=new Dictionary<int,int[]>();
+            var incidence=new Dictionary<long,List<int>>(CylinderEdgeComparer.Instance);var local=new Dictionary<int,int[]>();
             for(int fi=0;fi<faces.Count;fi++)if(capShapes.Contains(faces[fi].Surface)&&!walls.Contains(fi))
             {
                 local[fi]=faces[fi].Idx.Select(v=>coordinate(D(source[v]))).ToArray();
@@ -150,7 +150,7 @@ namespace TxTools.ExportByColor
                     // A planar counterbore end is an annular step: its rim can
                     // be the cap's outer boundary. The existing whole-patch
                     // triangulator supports both inner and outer circular rims.
-                    var rimEdges=new Dictionary<long,RimEdge>();var capEdges=new Dictionary<int,List<RimEdge>>();
+                    var rimEdges=new Dictionary<long,RimEdge>(CylinderEdgeComparer.Instance);var capEdges=new Dictionary<int,List<RimEdge>>();
                     for(int i=0;i<rims[ring].Length;i++)
                     {
                         int a=coordinate(rims[ring][i]),b=coordinate(rims[ring][(i+1)%rims[ring].Length]);int cap=incidence[Edge(a,b)][0];

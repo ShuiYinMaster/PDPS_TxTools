@@ -10,10 +10,12 @@ namespace TxTools.WeldSpotAllocator
 {
     public class AllocatorCommand : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.WeldSpotAllocator.bmp";
+        public override string LargeBitmap => "WeldSpotAllocator.png";
+
         public override string Name => "焊点分配 / 更新";
         public override string Category => "TxTools";
         public override string Description => "打开焊点分配界面，根据已有焊点来分配新的焊点";
-        public override string LargeBitmap { get { return "WeldSpotAllocator.png"; } }
 
         public override void Execute(object cmdParams)
         {

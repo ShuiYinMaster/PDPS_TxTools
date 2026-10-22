@@ -32,7 +32,7 @@ WeldSpotGrouper/
 
 整个执行包在一个场景撤销事务里，成功和失败都结束分组。部分失败会报告已保留的变更，需在当前 PS 工程按 Ctrl+Z 撤销；不宣称自动回滚。
 
-## 首跑要看的两处日志（`%TEMP%\WeldSpotGrouper.log`，窗体点「日志」也能看）
+## 首跑要看的两处日志（统一临时根目录下的 `WeldSpotGrouper\WeldSpotGrouper.log`，窗体点「日志」也能看）
 
 1. **`[建] ...`** — 建焊接操作走的哪条。SDK 命名规律：`ITxWeldLocationOperationCreation`
    建的是「焊点位(子)」；本插件要的是同族 `ITxWeldOperationCreation.CreateWeldOperation(TxWeldOperationCreationData)`

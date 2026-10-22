@@ -211,15 +211,20 @@ namespace TxTools.Agent.Core
             return new JObject { ["type"] = type, ["ok"] = false, ["error"] = error, ["recipeId"] = id };
         }
 
-        public static void Run(int seq, JObject msg, Action<int, JObject> reply)
+        public static void Run(int seq, JObject msg, Action<int, JObject> reply, Func<string> validateTarget = null)
         {
             string id = (string)msg["recipeId"];
             var r = RecipeStore.Get(id);
             if (r == null) { reply(seq, Error("recipe.run.result", "配方不存在，可能已被删除。", id)); return; }
             bool checkStudy = msg["study"] != null;
             string expectedStudy = (string)msg["study"];
-            Func<string> validateStudy = () => checkStudy && !string.Equals(expectedStudy, CurrentStudyKey(), StringComparison.Ordinal)
-                ? "当前研究已切换，请重新选取对象后执行。" : null;
+            Func<string> validateStudy = () =>
+            {
+                string targetError = validateTarget?.Invoke();
+                if (targetError != null) return targetError;
+                return checkStudy && !string.Equals(expectedStudy, CurrentStudyKey(), StringComparison.Ordinal)
+                    ? "当前研究已切换，请重新选取对象后执行。" : null;
+            };
             string error = validateStudy();
             if (error != null) { reply(seq, Error("recipe.run.result", error, id)); return; }
             var args = new Dictionary<string, string>();

@@ -118,3 +118,13 @@ console.log('PASS: quick dynamic scene categories, refresh, removed category res
 const autoTypes=[];context.setTimeout=(fn,delay)=>{if(delay===0)autoTypes.push(fn);return 1;};button('‹').onclick();const lazyRecipe=JSON.parse(JSON.stringify(queryRecipe));lazyRecipe.params[0].objectTypes=[];lazyRecipe.params[0].objectTypesLoaded=false;
 receive({data:{...list,study:'Study B',recipes:[lazyRecipe]}});assert.equal(autoTypes.length,0,'recipe list never scans scene categories');node(e=>e.className==='card-main').onclick();assert(autoTypes.length>0,'opening object controls queues catalog load');while(autoTypes.length)autoTypes.shift()();const lazyTypes=messages.pop();assert.equal(lazyTypes.type,'recipe.objectTypes');reply(lazyTypes,{ok:true,study:'Study B',objectTypes:[{label:'全部类型',value:'all'}]});
 console.log('PASS: quick recipe list defers scene scanning until object controls are visible');
+
+button('取当前选择').onclick();
+reply(messages.pop(), {ok:true,id:'3,20',name:'前台对象',count:1,study:'Study B'});
+assert(!button('应用颜色').disabled);
+const beforeTargetChange = messages.length;
+receive({data:{type:'quick.targetChanged'}});
+assert(button('应用颜色').disabled, 'foreground change invalidates bound objects');
+assert(node(e => e.className === 'bound' && e.textContent === '尚未选择对象'));
+assert.equal(messages.length, beforeTargetChange, 'inactive panel does not query another scene');
+console.log('PASS: foreground change clears object bindings and blocks execution');

@@ -24,6 +24,7 @@ namespace TxTools.Agent.UI
 
         public ApiKeyDialog()
         {
+            TxTools.Common.PluginUiPolicy.Attach(this);
             BuildUi();
             AutoScaleMode = AutoScaleMode.Dpi;
             AutoScaleDimensions = new SizeF(96F, 96F);

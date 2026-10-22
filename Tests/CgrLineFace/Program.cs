@@ -26,10 +26,11 @@ internal static class Program
             }
             if(args.Length<3)throw new ArgumentException("model.json output.cgr compact|features|features-planar [maxFaces] [cfv3]");
             if(args[2]!="compact"&&args[2]!="features"&&args[2]!="features-planar")throw new ArgumentException("Unknown encoder mode");
-            var vertices=new List<float[]>();var faces=new List<CgrWriter.Face>();
+            var vertices=new List<float[]>();var faces=new List<CgrWriter.Face>();bool preserveSourceWinding=false;
             using(var document=JsonDocument.Parse(File.ReadAllText(args[0])))
             {
-                var root=document.RootElement;JsonElement colors,surfaces;
+                var root=document.RootElement;JsonElement colors,surfaces,retained;
+                preserveSourceWinding=root.TryGetProperty("preserveSourceWinding",out retained)&&retained.GetBoolean();
                 bool hasColors=root.TryGetProperty("colors",out colors),hasSurfaces=root.TryGetProperty("surfaces",out surfaces);
                 // JsonElement's array indexer scans to the requested element. Repeated
                 // colors[ordinal] on PS captures makes input loading quadratic.
@@ -63,9 +64,15 @@ internal static class Program
             }
             else
             {
-                var method=typeof(CgrWriter).GetMethod("BuildFile",new[]{typeof(List<float[]>),typeof(List<CgrWriter.Face>),typeof(string),mode,typeof(int),typeof(Action<string>)});
+                var method=typeof(CgrWriter).GetMethod("BuildFile",new[]{typeof(List<float[]>),typeof(List<CgrWriter.Face>),typeof(string),mode,typeof(int),typeof(Action<string>),typeof(bool)});
                 object selected=Enum.Parse(mode,args[2]=="features"?"LineFace":args[2]=="features-planar"?"LineFacePlanar":"Compact");
-                method.Invoke(null,new object[]{vertices,faces,args[1],selected,limit,new Action<string>(Console.WriteLine)});
+                if(method!=null)method.Invoke(null,new object[]{vertices,faces,args[1],selected,limit,new Action<string>(Console.WriteLine),preserveSourceWinding});
+                else
+                {
+                    if(preserveSourceWinding)throw new NotSupportedException("Archived encoder cannot retain source winding");
+                    method=typeof(CgrWriter).GetMethod("BuildFile",new[]{typeof(List<float[]>),typeof(List<CgrWriter.Face>),typeof(string),mode,typeof(int),typeof(Action<string>)});
+                    method.Invoke(null,new object[]{vertices,faces,args[1],selected,limit,new Action<string>(Console.WriteLine)});
+                }
             }
             if(args.Length>4&&args[4]=="cfv3")
             {

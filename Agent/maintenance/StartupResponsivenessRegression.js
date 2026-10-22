@@ -7,9 +7,23 @@ using System.Reflection;
 using System.Threading;
 using System.Windows.Forms;
 using Newtonsoft.Json.Linq;
+using TxTools.Agent.Core;
+namespace TxTools.Agent.Core {
+ internal sealed class DesktopPetSnapshot {public int OwnerPid=1;public bool Visible;public string State,Task;}
+ internal static class PsInstanceRegistry {public static int SelfPid=>1;}
+ internal static class DesktopPetSession {
+  static readonly object Gate=new object();static bool initialized,visible;
+  internal static DesktopPetSnapshot Poll(bool initial){lock(Gate){if(!initialized){visible=initial;initialized=true;}return new DesktopPetSnapshot{Visible=visible};}}
+  internal static void SetVisible(bool value){lock(Gate){visible=value;initialized=true;}}
+  internal static void SetState(string state,string task){} internal static void SetHelper(int pid){}
+  internal static IDisposable WatchForeground()=>null;
+  internal static void Release(){lock(Gate)initialized=false;}
+ }
+}
 namespace TxTools.Agent {
 ${controller}
 internal sealed class DshPetHost : IDisposable {
+ public bool SingletonBusy=>false;public int HelperPid=>1;
  public static int Created, Disposed; public static bool ThrowNext; public static ManualResetEventSlim Entered=new ManualResetEventSlim();
  public string LogPath=>"test-helper.log"; public bool IsDisposed; public DshPetHost(Control dispatcher){Interlocked.Increment(ref Created);Entered.Set();Thread.Sleep(650);if(ThrowNext){ThrowNext=false;throw new Exception("slow start failed");}}
  public event EventHandler OpenAssistantRequested, HideRequested, Closed; public event Action<JObject> OpenRecipesRequested; public event Action<string> Failed;
@@ -21,7 +35,7 @@ class StartupResponsivenessRegression {
  [STAThread] static int Main(){try{
   var controller=new DshPetController(true,_=>{},()=>{});int beats=0;var timer=new System.Windows.Forms.Timer{Interval=20};timer.Tick+=(s,e)=>beats++;timer.Start();
   var elapsed=Stopwatch.StartNew();Application.DoEvents();Check(elapsed.ElapsedMilliseconds<250,"queued pet startup returns without waiting for slow Process.Start");
-  Check(DshPetHost.Entered.Wait(1000),"pet initialization runs on a worker");Pump(350);Check(beats>=5,"UI message loop remains responsive during 650 ms pet initialization");
+  Pump(100);Check(DshPetHost.Entered.Wait(1000),"pet initialization runs on a worker");Pump(250);Check(beats>=5,"UI message loop remains responsive during 650 ms pet initialization");
   controller.SetEnabled(false);Pump(500);Check(DshPetHost.Disposed==1,"disabling during startup disposes the completed helper");controller.Dispose();
   int before=DshPetHost.Created;var hidden=new DshPetController(false,_=>{},()=>{});Pump(100);Check(DshPetHost.Created==before,"hidden pets do not launch a helper");hidden.SetEnabled(true);hidden.SetEnabled(true);Pump(850);Check(DshPetHost.Created==before+1,"repeated enable requests launch only one helper");hidden.Dispose();Check(DshPetHost.Disposed==2,"controller disposal releases the active helper");
   DshPetHost.ThrowNext=true;int uiThread=Thread.CurrentThread.ManagedThreadId,callbackThread=0;var failing=new DshPetController(true,_=>{},()=>{});failing.Failed+=message=>callbackThread=Thread.CurrentThread.ManagedThreadId;Pump(850);Check(callbackThread==uiThread,"worker startup failure returns to the UI thread");failing.Dispose();timer.Dispose();Console.WriteLine("PASS: startup responsiveness ("+checks+" checks)");return 0;

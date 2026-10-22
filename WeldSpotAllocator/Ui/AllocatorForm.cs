@@ -32,7 +32,7 @@ namespace TxTools.WeldSpotAllocator
         private bool _inited;
         private bool _scaled;
 
-        private readonly Size _design = new Size(840, 820);
+        private readonly Size _design = new Size(840, 720);
 
         private List<OpData> _refOps = new List<OpData>();
         private List<OpData> _targetOps = new List<OpData>();
@@ -54,6 +54,8 @@ namespace TxTools.WeldSpotAllocator
         private TextBox _txtPrefix;
         private DataGridView _grid;
         private TextBox _log;
+        private Control _logRegion;
+        private Button _btnToggleLog;
 
         public static void ShowSingleton(SynchronizationContext ctx)
         {
@@ -82,7 +84,7 @@ namespace TxTools.WeldSpotAllocator
             this.FormClosed += new System.Windows.Forms.FormClosedEventHandler(this.AllocatorForm_Closed);
 
             FormUiKit.InitStandardForm(this, "焊点分配 / 更新", _design,
-                new Size(700, 500), sizable: true);
+                new Size(800, 640), sizable: true);
             try { SemiModal = false; } catch { }
 
             BuildUi();
@@ -148,18 +150,29 @@ namespace TxTools.WeldSpotAllocator
         // ── 整体：可滚动垂直 stack ─────────────────────────────────────────
         private void BuildUi()
         {
-            _scrollPanel = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(10), BackColor = FormUiKit.WinBg };
-            _stackPanel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 7, BackColor = FormUiKit.WinBg };
+            _scrollPanel = new Panel { Dock = DockStyle.Fill, AutoScroll = false, Padding = new Padding(8), BackColor = FormUiKit.WinBg };
+            _stackPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 7, BackColor = FormUiKit.WinBg };
             _stackPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            for (int i = 0; i < 7; i++) _stackPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            for (int i = 0; i < 7; i++)
+                _stackPanel.RowStyles.Add(i == 2 ? new RowStyle(SizeType.Absolute, 224) : i == 5
+                    ? new RowStyle(SizeType.Percent, 100) : i == 6
+                    ? new RowStyle(SizeType.Absolute, 50) : new RowStyle(SizeType.AutoSize));
 
             _stackPanel.Controls.Add(BuildModeCard(), 0, 0);
             _stackPanel.Controls.Add(BuildHint(), 0, 1);
-            _stackPanel.Controls.Add(BuildDataCard(), 0, 2);
+            var dataCard = BuildDataCard();
+            _stackPanel.Controls.Add(dataCard, 0, 2);
             _stackPanel.Controls.Add(BuildOptionCard(), 0, 3);
             _stackPanel.Controls.Add(BuildActionRow(), 0, 4);
-            _stackPanel.Controls.Add(BuildPreviewCard(), 0, 5);
-            _stackPanel.Controls.Add(BuildLogCard(), 0, 6);
+            var previewCard = BuildPreviewCard();
+            _stackPanel.Controls.Add(previewCard, 0, 5);
+            var logCard = BuildLogCard();
+            _stackPanel.Controls.Add(logCard, 0, 6);
+            foreach (Control card in new[] { dataCard, previewCard, logCard })
+            {
+                card.AutoSize = false;
+                card.Dock = DockStyle.Fill;
+            }
 
             _scrollPanel.Controls.Add(_stackPanel);
             Controls.Add(_scrollPanel);
@@ -209,6 +222,8 @@ namespace TxTools.WeldSpotAllocator
         private Control BuildModeCard()
         {
             var flow = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true };
+            flow.Dock = DockStyle.Top;
+            flow.Controls.Add(new Label { Text = "模式：", AutoSize = true, Font = FormUiKit.BoldFont, Margin = new Padding(3, 6, 6, 0) });
             _rbA = NewRb("A 位置更新"); _rbA.Checked = true;
             _rbB = NewRb("B 新焊点分配");
             _rbC = NewRb("C 对称分配");
@@ -216,7 +231,7 @@ namespace TxTools.WeldSpotAllocator
             _rbB.CheckedChanged += (s, e) => { if (_rbB.Checked) SyncModeUi(); };
             _rbC.CheckedChanged += (s, e) => { if (_rbC.Checked) SyncModeUi(); };
             flow.Controls.Add(_rbA); flow.Controls.Add(_rbB); flow.Controls.Add(_rbC);
-            return MkCard("模式（单选）", flow);
+            return flow;
         }
 
         private Control BuildHint()
@@ -227,7 +242,7 @@ namespace TxTools.WeldSpotAllocator
 
         private Control BuildDataCard()
         {
-            var two = new TableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 2, RowCount = 1, BackColor = FormUiKit.WinBg };
+            var two = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = FormUiKit.WinBg };
             two.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             two.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
 
@@ -239,14 +254,16 @@ namespace TxTools.WeldSpotAllocator
             two.Controls.Add(BuildSide("参考集", _refHostPanel, _lblRef), 0, 0);
             two.Controls.Add(BuildSide("目标集", _tgtHostPanel, _lblTarget), 1, 0);
 
-            return MkCard("操作选择（仅焊接操作：点网格内的拾取行，再去 PS 树/3D 点选对象）", two);
+            var card = MkCard("操作选择（仅焊接操作）", two);
+            two.Dock = DockStyle.Fill;
+            return card;
         }
 
         private Control BuildSide(string title, Panel hostPanel, Label info)
         {
-            var t = new TableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Margin = new Padding(2) };
+            var t = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Margin = new Padding(2) };
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            t.RowStyles.Add(new RowStyle(SizeType.Absolute, 200));   // 网格固定高
+            t.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             t.Controls.Add(new Label { Text = title, AutoSize = true, Font = FormUiKit.BoldFont, Margin = new Padding(3, 2, 3, 2), BackColor = Color.Transparent }, 0, 0);
@@ -283,8 +300,8 @@ namespace TxTools.WeldSpotAllocator
             flow.Controls.Add(LabeledPair("镜像翻轴(X前后/Y左右/Z上下)", _cboFlip));
             flow.Controls.Add(_chkVias);
             flow.Controls.Add(_chkParams);
-            flow.Controls.Add(_chkConsume);
             AddBreak(flow);
+            flow.Controls.Add(_chkConsume);
             flow.Controls.Add(_chkCountStrict);
             flow.Controls.Add(_chkPosOnly);
             return MkCard("匹配条件 + 分配后处理", flow);
@@ -300,6 +317,13 @@ namespace TxTools.WeldSpotAllocator
             var bClearAll = NewBtn("清空列表", Theme.BtnMuted);
             bClearAll.Click += (s, e) => { _refHost.Clear(); _tgtHost.Clear(); _lblRef.Text = RefText(); _lblTarget.Text = TgtText(); _grid.Rows.Clear(); _btnApply.Enabled = false; };
             flow.Controls.Add(_btnPreview); flow.Controls.Add(_btnApply); flow.Controls.Add(_btnExport); flow.Controls.Add(bSwap); flow.Controls.Add(bClearAll);
+            _btnToggleLog = NewBtn("日志", Theme.BtnMuted);
+            _btnToggleLog.Click += (s, e) =>
+            {
+                if (_logRegion != null && PluginLog.Enabled)
+                    PluginLog.SetVisible(_logRegion, !_logRegion.Visible);
+            };
+            flow.Controls.Add(_btnToggleLog);
             return flow;
         }
 
@@ -322,7 +346,10 @@ namespace TxTools.WeldSpotAllocator
         private Control BuildLogCard()
         {
             _log = new TextBox { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Vertical, ReadOnly = true, Font = FormUiKit.MonoFont, BackColor = Theme.LogBg, ForeColor = Theme.LogText };
-            return MkFixedCard("日志", 130, _log);
+            var card = MkFixedCard("日志", 70, _log);
+            _logRegion = card;
+            PluginLog.Register(card, false, _btnToggleLog);
+            return card;
         }
 
         // 工厂（统一收编到 FormUiKit）

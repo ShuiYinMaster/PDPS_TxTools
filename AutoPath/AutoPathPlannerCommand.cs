@@ -7,6 +7,9 @@ namespace TxTools.AutoPathPlanner
     /// <summary>TxTools 功能区注册入口 — 机器人组</summary>
     public class AutoPathPlannerCommand : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.AutoPath.bmp";
+        public override string LargeBitmap => "image.AutoPath.png";
+
         public override string Category { get { return "TxTools"; } }
         public override string Name { get { return "自动路径规划(RRT)"; } }
 

@@ -12,6 +12,7 @@ using System.Reflection;
 using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
+using TxTools.Common;
 using Theme = TxTools.Common.FormUiKit.Theme;
 
 namespace TxTools.DeviceZAligner
@@ -37,13 +38,13 @@ namespace TxTools.DeviceZAligner
         // PS SDK 中 Bitmap/LargeBitmap 是 string 类型 = 图标文件的路径
         public override string Bitmap
         {
-            get { return ""; }
+            get { return "image.Small.DeviceZAligner.bmp"; }
         }
 
         // ── 大图标（32×32，Ribbon） ─────────────────────────────────
         public override string LargeBitmap
         {
-            get { return ""; }
+            get { return "image.DeviceZAligner.png"; }
         }
     }
 
@@ -146,6 +147,7 @@ namespace TxTools.DeviceZAligner
             BuildTopCards();
             BuildGrid();
             BuildLogPanel();
+            PluginUiPolicy.Attach(this);
             BuildStatusBar();
 
             ResumeLayout(false);
@@ -184,7 +186,7 @@ namespace TxTools.DeviceZAligner
             _btnLog.Click += (s, e) =>
             {
                 _logVisible = _btnLog.Checked;
-                _logPanel.Visible = _logVisible;
+                PluginLog.SetVisible(_logPanel, _logVisible);
             };
             ts.Items.Add(_btnLog);
 
@@ -348,6 +350,7 @@ namespace TxTools.DeviceZAligner
             _logPanel.Controls.Add(_logBox);
 
             Controls.Add(_logPanel);
+            PluginLog.Register(_logPanel, false, _btnLog);
         }
 
         // ── 底部状态栏 ──────────────────────────────────────────────────
@@ -1320,7 +1323,7 @@ namespace TxTools.DeviceZAligner
             if ((level == "ERR" || level == "WARN") && !_logVisible)
             {
                 _logVisible = true;
-                _logPanel.Visible = true;
+                PluginLog.SetVisible(_logPanel, true);
                 if (_btnLog != null) _btnLog.Checked = true;
             }
         }

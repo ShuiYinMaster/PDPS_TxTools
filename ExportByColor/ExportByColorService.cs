@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -11,18 +11,11 @@ using ProductStructureTypeLib;
 using Tecnomatix.Engineering;
 using TxTools.Agent.Core;
 using SysFile = System.IO.File;
+using GeometryInstance = TxTools.ExportByColor.AppearanceGeometrySource.GeometryInstance;
+using AppearanceReadScope = TxTools.ExportByColor.AppearanceGeometrySource.ReadScope;
 
 namespace TxTools.ExportByColor
 {
-    public sealed class ColorGroup
-    {
-        public byte R, G, B;
-        // Surface identity prevents separately-instanced geometry with the same
-        // RGB value from being welded into one smoothing island downstream.
-        public int Surface;
-        public List<float[]> Tris = new List<float[]>();   // 每条 float[9] = 世界坐标三角形
-    }
-
     public sealed class DeviceData
     {
         public string Name;
@@ -87,6 +80,23 @@ namespace TxTools.ExportByColor
             return val;
         }
 
+        private T OnPsJt<T>(Func<T> func)
+        {
+            if (_psCtx.GetType().GetMethod("Post", new[] { typeof(SendOrPostCallback), typeof(object) }).DeclaringType == typeof(SynchronizationContext))
+                throw new InvalidOperationException("JT 资源读取需要 PS 主线程上下文，请从 PS 导出命令启动");
+            var completion = new TaskCompletionSource<T>(); int expired = 0;
+            _psCtx.Post(s => {
+                if (Interlocked.CompareExchange(ref expired, 0, 0) != 0) return;
+                try { completion.TrySetResult(func()); } catch (Exception ex) { completion.TrySetException(ex); }
+            }, null);
+            if (Task.WaitAny(new Task[] { completion.Task }, 120000) < 0)
+            {
+                Interlocked.Exchange(ref expired, 1);
+                throw new TimeoutException("PS 资源元数据读取超过 120 秒，请确认主界面未被对话框阻塞");
+            }
+            return completion.Task.GetAwaiter().GetResult();
+        }
+
         // ── 枚举场景所有可见设备（保留可见性过滤）───────────────────────
         public List<ITxObject> EnumerateVisibleDevices(Action<string> onLog)
         {
@@ -137,7 +147,7 @@ namespace TxTools.ExportByColor
             public string ExportName;
             public string Path;
             public string SourcePath;
-            public List<RoundHoleReconstruction.Hole> Holes;
+            public int[] CylinderCounts;
             public ThreeDXmlWriter.PartTicket PackagePart;
             public Cfv3EncodingStats Cfv3Stats;
             public Exception Error;
@@ -181,6 +191,12 @@ namespace TxTools.ExportByColor
         public void RunAsync(List<ITxObject> picked, string originName, string format, string outputRoot, bool mergeMeshes,
                              Action<string> onLog, Action<ExportProgressInfo> onProgress, Action<bool, string> onComplete,CgrBackend backend)
         {
+            RunAsync(picked,originName,format,outputRoot,mergeMeshes,onLog,onProgress,onComplete,backend,false);
+        }
+
+        public void RunAsync(List<ITxObject> picked, string originName, string format, string outputRoot, bool mergeMeshes,
+                             Action<string> onLog, Action<ExportProgressInfo> onProgress, Action<bool, string> onComplete,CgrBackend backend,bool reconstructCylinders)
+        {
             // Capture the choice per export; never change a process-wide environment variable
             // while the two device workers are encoding.  R38 feature CGR is bridged to
             // compact geometry only at the CFV3 boundary; compact capacity limits may split it.
@@ -195,6 +211,8 @@ namespace TxTools.ExportByColor
                 ThreeDXmlWriter package = null;
                 try
                 {
+                    if(reconstructCylinders&&(format!="CGR"||runBackend!=CgrBackend.LineFace))
+                        throw new ArgumentException("PS 内外圆柱重建需要选择 CGR 线面压缩路线");
                     if(format=="3DXML"&&runBackend==CgrBackend.LineFacePlanar)
                         throw new ArgumentException("逐平面兼容方案尚未接入 3DXML，请选择默认直出或 R38 线面几何试用方案");
                     if (format != "3DXML" && format != "CGR" && format != "STL" && format != "OBJ" && format != "PLY" && format != "FBX" && format != "FBX_BINARY" && format != "FBX_ASCII")
@@ -233,7 +251,7 @@ namespace TxTools.ExportByColor
                     var progress = new ExportProgressState(devices.Count);
                     progress.Report(onProgress, "准备导出", null);
                     SafeLog(onLog, "[导出] " + devices.Count + " 个设备；" + (format == "3DXML" ? "直出装配 3DXML" : format) + "；编码并发 " + workers + " 路");
-                    if(format=="CGR")SafeLog(onLog,runBackend==CgrBackend.LineFace?"[CGR] 线面压缩：连续曲面合域，保留网格测量；可切回逐平面兼容或原方案":runBackend==CgrBackend.LineFacePlanar?"[CGR] 逐平面兼容：保留细分面域及边关联":"[CGR] 原有生成方案");
+                    if(format=="CGR")SafeLog(onLog,reconstructCylinders?"[CGR] PS 三角网格 → 内外圆柱重建 → CATIA":runBackend==CgrBackend.LineFace?"[CGR] 线面压缩：连续曲面合域，保留网格测量":"[CGR] 原有生成方案");
                     if(format=="3DXML"&&runBackend==CgrBackend.LineFace)SafeLog(onLog,"[3DXML] R38 线面几何试用：保留几何和源组后桥接 CFV3；3DXML 不携带 CGR 线/面选择记录");
                     var names = new ExportNames();
                     if (mergeMeshes && format != "CGR" && format != "3DXML") merged = new MeshExport.Archive(output);
@@ -242,10 +260,15 @@ namespace TxTools.ExportByColor
                         if (pending.Count >= workers) FinishExport(pending.Dequeue().GetAwaiter().GetResult(), format, package, onLog, progress, onProgress, ref ok, ref failed);
                         string name = names.Next(OnPs(() => device.Name));
                         progress.Report(onProgress, "采集几何", name);
+                        bool collectionCounted=false;
                         try
                         {
                             bool submitted = false;
-                            var data = CollectDeviceGroups(new List<ITxObject> { device }, originName, onLog, true,
+                            var data = CollectDeviceGroups(new List<ITxObject> { device }, originName, message =>
+                            {
+                                if(message.StartsWith("[PS restore]",StringComparison.Ordinal))progress.Report(onProgress,"恢复 PS 表示",name);
+                                SafeLog(onLog,message);
+                            }, true,
                                 merged == null ? null : new Action<DeviceData>(batch =>
                                 {
                                     long batchTriangles = 0;
@@ -255,11 +278,15 @@ namespace TxTools.ExportByColor
                                     DetailLog(onLog, "[合并缓存] " + name + "：批次 " + batchTriangles + " 面；已落盘");
                                     batch.Colors.Clear();
                                 }));
+                            progress.Collected++;
+                            collectionCounted=true;
                             foreach (var dd in data)
                             {
                                 long triangleCount = 0;
                                 foreach (var group in dd.Colors) triangleCount += group.Tris.Count;
                                 if (triangleCount == 0) continue;
+                                progress.Report(onProgress, reconstructCylinders ? "圆柱重建" : "编码/写入", name);
+                                SafeLog(onLog,"[采集完成] "+name+"："+triangleCount+" 个三角面，开始后台处理");
                                 if (merged != null)
                                 {
                                     try { merged.Add(dd, name); DetailLog(onLog, "[合并缓存] " + name + "：" + triangleCount + " 面"); submitted = true; }
@@ -277,7 +304,16 @@ namespace TxTools.ExportByColor
                                     {
                                         if (format == "CGR" || format == "3DXML")
                                         {
-                                            string cgr = BuildCgr(dd.Colors, name, workDir, message => DetailLog(onLog, "[" + name + "] " + message),runBackend);
+                                            string cgr = BuildCgr(dd.Colors, name, workDir, message =>
+                                            {
+                                                if(message.StartsWith("[PS stage]",StringComparison.Ordinal))
+                                                {
+                                                    progress.Report(onProgress,message,name);
+                                                    SafeLog(onLog,"["+name+"] "+message);
+                                                }
+                                                else if(message.StartsWith("[PS cylinders]",StringComparison.Ordinal))SafeLog(onLog,"["+name+"] "+message);
+                                                else DetailLog(onLog,"["+name+"] "+message);
+                                            },runBackend,reconstructCylinders);
                                             if (format == "3DXML")
                                             {
                                                 result.SourcePath = cgr;
@@ -293,16 +329,15 @@ namespace TxTools.ExportByColor
                                     return result;
                                 }));
                                 submitted = true;
-                                if (triangleCount > 500000) FinishExport(pending.Dequeue().GetAwaiter().GetResult(), format, package, onLog, progress, onProgress, ref ok, ref failed);
+                                if (triangleCount > 500000) FinishExport(WaitForPsEncoding(pending.Dequeue(),name,onLog), format, package, onLog, progress, onProgress, ref ok, ref failed);
                             }
-                            progress.Collected++;
                             if (merged != null || !submitted) progress.Completed++;
                             progress.Report(onProgress, submitted ? "编码/写入" : "无有效三角面，已跳过", name);
                         }
                         catch (Exception ex)
                         {
                             failed++;
-                            progress.Collected++;
+                            if(!collectionCounted)progress.Collected++;
                             progress.Completed++;
                             progress.Failed++;
                             progress.Report(onProgress, "读取失败", name);
@@ -357,6 +392,13 @@ namespace TxTools.ExportByColor
             thread.IsBackground = true;
             thread.SetApartmentState(ApartmentState.STA);
             thread.Start();
+        }
+
+        private static EncodedDevice WaitForPsEncoding(Task<EncodedDevice> task,string name,Action<string> log)
+        {
+            var elapsed=System.Diagnostics.Stopwatch.StartNew();
+            while(!task.Wait(15000))SafeLog(log,"[后台处理中] "+name+"：等待 "+elapsed.Elapsed.TotalSeconds.ToString("F0")+" 秒，尚未完成");
+            return task.GetAwaiter().GetResult();
         }
 
         private void FinishExport(EncodedDevice result, string format, ThreeDXmlWriter package, Action<string> onLog,
@@ -419,36 +461,15 @@ namespace TxTools.ExportByColor
             catch (Exception ex) { DetailLog(onLog, "[临时文件] " + path + "：" + ex.Message); }
         }
 
-        private static string BuildCgr(List<ColorGroup> groups, string name, string tmpDir, Action<string> onLog,CgrBackend backend=CgrBackend.Configured)
+        private static string BuildCgr(List<ColorGroup> groups, string name, string tmpDir, Action<string> onLog,CgrBackend backend=CgrBackend.Configured,bool reconstructCylinders=false)
         {
-            var vertices=new List<float[]>();var faces=new List<CgrWriter.Face>();
-            // Keep color groups' vertex identity separate: touching independent solids must not
-            // become nonmanifold through coordinate welding. All groups still share ONE file.
-            int surface=0;
-            foreach(var group in groups)
-            {
-                surface++;
-                var map=new Dictionary<Tuple<float,float,float>,int>();
-                foreach(var t in group.Tris)
-                {
-                    if(t==null||t.Length!=9) throw new ArgumentException("三角形数据必须为 9 个坐标值");
-                    var ids=new int[3];
-                    for(int k=0;k<3;k++)
-                    {
-                        var key=Tuple.Create(t[3*k],t[3*k+1],t[3*k+2]);int id;
-                        if(!map.TryGetValue(key,out id)) { id=vertices.Count;map.Add(key,id);vertices.Add(new[]{key.Item1,key.Item2,key.Item3}); } ids[k]=id;
-                    }
-                    faces.Add(new CgrWriter.Face{Idx=ids,R=group.R,G=group.G,B=group.B,Surface=surface});
-                }
-            }
-            if(faces.Count==0) throw new InvalidOperationException("设备无有效三角面");
             string path=Path.Combine(tmpDir,name+".cgr");
-            CgrWriter.BuildFile(vertices,faces,path,backend,progress:onLog);
+            PsCgrPipeline.BuildFile(groups,path,backend,reconstructCylinders,onLog);
             return path;
         }
 
         /// <summary>
-        /// 从 PS 中已加载的单个资源采集几何并生成 CGR。供 ExportGun 等旧调用方复用。
+        /// 从 PS 中已加载的单个资源采集几何，以工具自身坐标生成线面 CGR，供 ExportGun 复用。
         /// </summary>
         public string GenerateCgrForObject(ITxObject source, string outputPath, Action<string> onLog)
         {
@@ -475,7 +496,9 @@ namespace TxTools.ExportByColor
             if (groups.Count == 0) throw new InvalidOperationException("工具中未读取到有效三角面");
 
             string name = Path.GetFileNameWithoutExtension(outputPath);
-            string generated = BuildCgr(groups, name, outputDir, onLog);
+            // 导插枪固定使用线面记录，与全局默认编码方案无关。
+            SafeLog(onLog, "[CGR] 导插枪采用线面生成：连续面域与边界折线");
+            string generated = BuildCgr(groups, name, outputDir, onLog, CgrBackend.LineFace);
             if (!string.Equals(generated, outputPath, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("生成的 CGR 路径与请求路径不一致：" + generated);
             return generated;
@@ -483,8 +506,7 @@ namespace TxTools.ExportByColor
 
         private sealed class PendingJtConversion
         {
-            // PS reference is used only by the coordinator for compatibility collection.
-            internal ITxObject Source;
+            internal EncodedDevice Result;
             internal Task<EncodedDevice> Task;
             internal List<string> Logs;
         }
@@ -496,8 +518,10 @@ namespace TxTools.ExportByColor
             {
                 try
                 {
-                    if (reconstructRoundHoles) result.Holes = JtDirectBridge.ConvertToCgrWithHoles(result.SourcePath, directory, decoder, result.Path, placement, backend, logs.Add);
-                    else JtDirectBridge.ConvertToCgr(result.SourcePath, directory, decoder, result.Path, placement, backend, logs.Add);
+                    result.CylinderCounts = JtCgrProcessBridge.Convert(result.SourcePath, directory, decoder,
+                        result.Path, placement, backend, reconstructRoundHoles, message => {
+                            if (logs.Count < 4096) logs.Add(message);
+                        });
                 }
                 catch (Exception ex) { result.Error = ex; }
                 return result;
@@ -516,7 +540,7 @@ namespace TxTools.ExportByColor
             var thread = new Thread(() =>
             {
                 int ok = 0, failed = 0;
-                var pending = new Queue<PendingJtConversion>();
+                var pending = new List<PendingJtConversion>();
                 string workDir = Path.Combine(Path.GetTempPath(),
                     "TxTools_JT_CGR_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" +
                     Guid.NewGuid().ToString("N").Substring(0, 8));
@@ -526,60 +550,26 @@ namespace TxTools.ExportByColor
                     if (!Connect(out error)) throw new InvalidOperationException(error);
                     EnsureProductDocument(onLog);
                     Directory.CreateDirectory(workDir);
-                    var devices = OnPs(() =>
-                    {
-                        var result = new List<ITxObject>();
-                        var keys = new HashSet<string>();
-                        foreach (var item in picked)
-                            foreach (var device in ExpandPicked(item, onLog))
-                                if (keys.Add(ObjKey(device))) result.Add(device);
-                        return result;
-                    });
+                    var devices = OnPsJt(() => ExpandJtPicked(picked, onLog));
                     if (devices.Count == 0) throw new InvalidOperationException("没有可转换的设备");
                     var progress = new ExportProgressState(devices.Count);
                     int workers = JtDirectBridge.ConversionWorkers;
                     string decoder = Path.Combine(Path.GetDirectoryName(typeof(ExportByColorService).Assembly.Location),
                         "JtDirectCs", "TxTools.JtDecoder.exe");
                     progress.Report(onProgress, "JT 准备", null);
-                    SafeLog(onLog, "[JT→CGR parallel] workers=" + workers + "; backend=" + backend + "; resources=" + devices.Count + "; output=" + workDir);
-                    SafeLog(onLog, "[JT 直接保色] 使用 JT 文件内姿态和颜色，应用资源整体放置；未采集 PS 运动部件当前姿态");
+                    SafeLog(onLog, "[JT→CGR parallel R56] isolated workers=" + workers + "; timeoutSeconds=" + JtCgrProcessBridge.TimeoutMs/1000 + "; backend=" + backend + "; resources=" + devices.Count + "; output=" + workDir);
+                    SafeLog(onLog, "[JT 直接保色] 普通资源使用 JT 文件内姿态和颜色并应用整体放置；外观读取关联零件几何并映射到外观世界位置");
                     var names = new ExportNames();
                     Action<PendingJtConversion> finish = item =>
                     {
-                        var result = item.Task.GetAwaiter().GetResult();
-                        foreach (string message in item.Logs) DetailLog(onLog, "[" + result.ExportName + "] " + message);
+                        var result = item.Result;
                         try
                         {
-                            var unsupported = result.Error as NotSupportedException;
-                            if (unsupported != null && !reconstructRoundHoles)
+                            result = item.Task.GetAwaiter().GetResult();
+                            foreach (string message in item.Logs) DetailLog(onLog, "[" + result.ExportName + "] " + message);
+                            if (result.Error == null && reconstructRoundHoles && result.CylinderCounts != null)
                             {
-                                SafeLog(onLog, "[JT compatibility] " + unsupported.Message);
-                                SafeLog(onLog, "[JT compatibility] Using loaded PS geometry/design colors and current PS pose; direct JT face-color decoder is not used.");
-                                progress.Report(onProgress, "PS compatibility collection", result.ExportName);
-                                var nativeData = CollectDeviceGroups(new List<ITxObject> { item.Source }, null, onLog, true);
-                                if (nativeData == null || nativeData.Count == 0)
-                                    throw new InvalidOperationException("Native JT compatibility found no loaded PS geometry; " + unsupported.Message);
-                                var nativeGroups = new List<ColorGroup>();
-                                try
-                                {
-                                    foreach (var data in nativeData) nativeGroups.AddRange(data.Colors);
-                                    if (nativeGroups.Count == 0) throw new InvalidOperationException("Native PS compatibility found no triangles");
-                                    // Detached native groups are encoded off PS too. This coordinator
-                                    // blocks until ready, while other direct conversion workers continue.
-                                    result.Path = Task.Run(() => BuildCgr(nativeGroups, result.ExportName, workDir,
-                                        message => DetailLog(onLog, "[" + result.ExportName + "] " + message), backend))
-                                        .GetAwaiter().GetResult();
-                                    result.Error = null;
-                                }
-                                finally
-                                {
-                                    nativeGroups.Clear();
-                                    foreach (var data in nativeData) data.Colors.Clear();
-                                }
-                            }
-                            if (result.Error == null && reconstructRoundHoles && result.Holes != null)
-                            {
-                                SafeLog(onLog, "[圆柱 CGR] 内孔="+result.Holes.FindAll(h=>!h.ExternalCylinder).Count+"，外圆柱="+result.Holes.FindAll(h=>h.ExternalCylinder).Count+"；圆柱壁与圆形端边已直接编码到单个 CGR；其余保留源网格");
+                                SafeLog(onLog, "[圆柱 CGR] 内孔="+result.CylinderCounts[0]+"，外圆柱="+result.CylinderCounts[1]+"；圆柱壁与圆形端边已直接编码到单个 CGR；其余保留源网格");
                             }
                             FinishExport(result, "CGR", null, onLog, progress, onProgress, ref ok, ref failed);
                         }
@@ -594,14 +584,46 @@ namespace TxTools.ExportByColor
                     foreach (var device in devices)
                     {
                         // Drain before the next snapshot: at most 'workers' meshes in flight.
-                        // FIFO publication preserves selection order in CATIA.
-                        if (pending.Count >= workers) finish(pending.Dequeue());
+                        // A slow/bad first resource cannot hold up completed siblings.
+                        if (pending.Count >= workers) finish(JtBatchSafety.TakeCompleted(pending, p => p.Task));
                         string name = null;
                         try
                         {
+                            // Appearances have no independent JT storage. Reading OriginPart's
+                            // file would lose the appearance instance's current pose and colors.
+                            // Collect on PS, then send only detached triangles to the encoder.
+                            bool appearance = OnPsJt(() => AppearanceGeometrySource.IsAppearance(device));
+                            if (appearance)
+                            {
+                                name = names.Next(OnPsJt(() => device.Name));
+                                progress.Report(onProgress, "外观三角面采集", name);
+                                SafeLog(onLog, "[外观→CGR] " + name + "：按需临时显示关联零件，读取三角面和设计色，再映射到外观世界位置");
+                                if (reconstructRoundHoles)
+                                    SafeLog(onLog, "[外观→CGR] 外观保留 PS 三角面；JT 内外圆柱重建不应用于外观网格");
+                                var nativeData = CollectDeviceGroups(new List<ITxObject> { device }, null, onLog, true);
+                                var appearanceSnapshot = new DeviceData { Name = name };
+                                foreach (var data in nativeData)
+                                {
+                                    appearanceSnapshot.Path = data.Path;
+                                    appearanceSnapshot.Colors.AddRange(data.Colors);
+                                }
+                                var appearanceResult = new EncodedDevice { Device = appearanceSnapshot, ExportName = name };
+                                var appearanceLogs = new List<string>();
+                                var appearanceTask = Task.Run(() =>
+                                {
+                                    try { appearanceResult.Path = BuildCgr(appearanceSnapshot.Colors, appearanceResult.ExportName, workDir, message => { if (appearanceLogs.Count < 4096) appearanceLogs.Add(message); }, backend); }
+                                    catch (Exception ex) { appearanceResult.Error = ex; }
+                                    finally { appearanceSnapshot.Colors.Clear(); }
+                                    return appearanceResult;
+                                });
+                                pending.Add(new PendingJtConversion { Result = appearanceResult, Task = appearanceTask, Logs = appearanceLogs });
+                                progress.Collected++;
+                                progress.Report(onProgress, "外观 CGR 编码", name);
+                                continue;
+                            }
                             string jtPath = null, trace = null;
                             double[] placement = null;
-                            DeviceData snapshot = OnPs(() =>
+                            DeviceData snapshot = OnPsJt(() =>
                             {
                                 name = names.Next(device.Name);
                                 if (!JtResourceResolver.TryResolve(device, out jtPath, out trace) || string.IsNullOrWhiteSpace(jtPath))
@@ -625,7 +647,7 @@ namespace TxTools.ExportByColor
                             var result = new EncodedDevice { Device=snapshot, ExportName=name,
                                 Path=Path.Combine(workDir, name + ".cgr"), SourcePath=jtPath };
                             var task = StartJtConversion(result, workDir, decoder, placement, logs, backend, reconstructRoundHoles);
-                            pending.Enqueue(new PendingJtConversion { Source=device, Task=task, Logs=logs });
+                            pending.Add(new PendingJtConversion { Result=result, Task=task, Logs=logs });
                             progress.Collected++;
                             progress.Report(onProgress, "JT 并行转码", name);
                         }
@@ -637,16 +659,20 @@ namespace TxTools.ExportByColor
                             DetailLog(onLog, "[JT 失败详情] " + ex);
                         }
                     }
-                    while (pending.Count > 0) finish(pending.Dequeue());
+                    while (pending.Count > 0) finish(JtBatchSafety.TakeCompleted(pending, p => p.Task));
                     progress.Failed = failed;
                     progress.Report(onProgress, failed == 0 ? "JT→CGR 完成" : "JT→CGR 结束，存在失败", null);
                     SafeComplete(onComplete, ok > 0 && failed == 0,
-                        ok + " 个 JT 资源已转换并插入 CATIA，" + failed + " 个失败；CGR 保留在 " + workDir);
+                        ok + " 个资源（JT/外观）已转换并插入 CATIA，" + failed + " 个失败；CGR 保留在 " + workDir);
                 }
                 catch (Exception ex)
                 {
-                    // Wait for owned workers before reporting completion or abandoning this batch.
-                    while (pending.Count > 0) pending.Dequeue().Task.GetAwaiter().GetResult();
+                    // Never synchronously drain jobs after a coordinator failure.
+                    // The bounded, isolated workers can finish to recovery files;
+                    // observe faults without making another CATIA or PS call.
+                    foreach (var item in pending)
+                        item.Task.ContinueWith(t => { if (t.IsFaulted) { var observed = t.Exception; }
+                            SafeLog(onLog, "[JT 后台任务已结束] " + item.Result.ExportName); }, TaskScheduler.Default);
                     SafeLog(onLog, "[JT→CGR 详细错误] " + ex);
                     SafeComplete(onComplete, false, ex.Message + "；恢复目录: " + workDir);
                 }
@@ -691,6 +717,62 @@ namespace TxTools.ExportByColor
             if(best!=null){r=best.Red;g=best.Green;b=best.Blue;}
         }
 
+        private static bool IsJtContainer(ITxObject obj)
+        {
+            if (AppearanceGeometrySource.IsAppearance(obj)) return false;
+            if (obj is TxPhysicalRoot) return true;
+            for (var type = obj.GetType(); type != null; type = type.BaseType)
+                if (type.Name.IndexOf("EquipmentPrototype", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            // PS also exposes the prototype as a regular TxComponent.
+            try { return string.Equals(obj.Name, "EquipmentPrototype", StringComparison.OrdinalIgnoreCase); }
+            catch { return false; }
+        }
+
+        private static List<ITxObject> ExpandJtPicked(IEnumerable<ITxObject> picked, Action<string> onLog)
+        {
+            var resources = JtBatchSafety.Expand(picked, ObjKey, IsJtContainer, obj => {
+                if (AppearanceGeometrySource.IsAppearance(obj)) return true;
+                string path, trace;
+                if (!JtResourceResolver.TryResolve(obj, out path, out trace)) return false;
+                try { return SysFile.Exists(JtDirectBridge.ResolveFile(path)); }
+                catch { return false; }
+            }, obj => EnumerateJtKids(obj, onLog), (obj, ex) => SafeLog(onLog, "[JT 子项读取失败] " + ObjKey(obj) + ": " + ex.Message));
+            SafeLog(onLog, "[JT 资源展开] EquipmentPrototype/无 JT 容器展开后=" + resources.Count + " 个；每个子项使用自身绝对放置");
+            return resources;
+        }
+
+        private static List<ITxObject> EnumerateJtKids(ITxObject obj, Action<string> onLog)
+        {
+            var kids = new List<ITxObject>(); var keys = new HashSet<string>();
+            Action<ITxObject> add = child => {
+                if (child != null && IsDeviceLike(child) && ObjKey(child) != ObjKey(obj) && keys.Add(ObjKey(child))) kids.Add(child);
+            };
+            try
+            {
+                var enumerable = obj as System.Collections.IEnumerable;
+                if (enumerable != null) foreach (object child in enumerable) add(child as ITxObject);
+            }
+            catch (Exception ex) { DetailLog(onLog, "[JT 子项枚举] " + ex.Message); }
+            AddPrototypeSubsetChildren(obj, add, onLog);
+            if (kids.Count == 0) foreach (var child in EnumerateKids(obj)) add(child);
+            // GetAllDescendants is a fallback, not a list of independent export
+            // units. Remove entries under another returned resource/container.
+            var direct = new List<ITxObject>();
+            foreach (var child in kids)
+            {
+                var guard = new HashSet<string>(); bool nested = false;
+                var parent = GetParentObject(child) as ITxObject;
+                while (parent != null && ObjKey(parent) != ObjKey(obj) && guard.Add(ObjKey(parent)))
+                {
+                    if (keys.Contains(ObjKey(parent))) { nested = true; break; }
+                    parent = GetParentObject(parent) as ITxObject;
+                }
+                if (!nested) direct.Add(child);
+            }
+            if (direct.Count != 0) SafeLog(onLog, "[JT 子项展开] " + obj.Name + " → " + direct.Count + " 个直接资源/子集");
+            return direct;
+        }
+
         // ── 展开：叶子设备直接加入；纯容器递归展开；静态资源兜底整体导出 ──
         // 判定逻辑（实测验证）：
         //   · 叶子设备 = 实现 ITxStorable（有 StorageObject）的对象
@@ -714,6 +796,14 @@ namespace TxTools.ExportByColor
             {
                 foreach (var kid in EnumerateKids(obj))
                     list.AddRange(ExpandPicked(kid, onLog));
+                return list;
+            }
+
+            // Appearance devices are also collections, but their child parts
+            // belong to this placed instance and must remain one export unit.
+            if (AppearanceGeometrySource.IsAppearance(obj))
+            {
+                list.Add(obj);
                 return list;
             }
 
@@ -819,7 +909,6 @@ namespace TxTools.ExportByColor
             if (o is TxViewCamera) return false;
             if (o is TxNote) return false;
             if (o is TxLinearDimension) return false;
-            if (o is TxPartAppearance) return false;
             if (o is TxSweptVolume) return false;
             return true;
         }
@@ -918,8 +1007,8 @@ namespace TxTools.ExportByColor
             if (coll == null) return false;
             try
             {
-                // 注意：TxSolid 不是 TxGeometry 子类，需两个类型一起过滤
-                var geomFilter = new TxTypeFilter(new Type[] { typeof(TxGeometry), typeof(TxSolid) });
+                // Include SDK geometry implementations/proxies through their interface.
+                var geomFilter = new TxTypeFilter(typeof(ITxGeometry));
                 var geoms = coll.GetAllDescendants(geomFilter);
                 return geoms != null && geoms.Count > 0;
             }
@@ -963,11 +1052,12 @@ namespace TxTools.ExportByColor
                 var result = new List<DeviceData>();
                 foreach (var dev in devices)
                 {
+                    using var appearanceScope = new AppearanceReadScope(message => DetailLog(onLog, message));
                     var dd = new DeviceData { Name = dev.Name };
                     dd.Path = GetTreePath(dev, onLog);
 
                     TxLibraryStorage st = null;
-                    List<ITxGeometry> geoms = EnumDeviceGeometries(dev, ref st, onLog);
+                    List<GeometryInstance> geoms = EnumDeviceGeometries(dev, ref st, onLog, appearanceScope);
                     if (geoms == null || geoms.Count == 0)
                     {
                         // 区分：无几何（对象本身就不含几何） vs 枚举失败（有 StorageObject 但拿不到）
@@ -985,8 +1075,9 @@ namespace TxTools.ExportByColor
                     long totalTriangles = 0;
                     int colorFallbacks = 0;
                     int surfaceId = 0;
-                    foreach (var g in geoms)
+                    foreach (var instance in geoms)
                     {
+                        var g = instance.Geometry;
                         surfaceId++;
                         byte r = 160, gg2 = 160, bb2 = 160;
                         bool actualColor = false;
@@ -1038,7 +1129,7 @@ namespace TxTools.ExportByColor
                             DetailLog(onLog, "[几何读取完成] " + dev.Name + "/" + surfaceId + "；" + ObjKey(g));
                             if (a == null || a.Points == null || a.Points.Length < 3) continue;
                             var pts = a.Points;
-                            var outputTransform = ((ITxLocatableObject)g).AbsoluteLocation;
+                            var outputTransform = instance.WorldLocation;
                             if (originInverse != null) outputTransform = TxTransformation.Multiply(originInverse, outputTransform);
                             if (extraInverse != null) outputTransform = TxTransformation.Multiply(extraInverse, outputTransform);
                             foreach (var prim in a.Primitives)
@@ -1049,38 +1140,38 @@ namespace TxTools.ExportByColor
                                 if (Environment.GetEnvironmentVariable("TXTOOLS_CGR_PRIMITIVE_COLORS") == "1")
                                 { byte tr, tg2, tb; if (TryPrimitiveColor(prim, out tr, out tg2, out tb)) { pr = tr; pg = tg2; pb = tb; } }
                                 string primitiveRgb = surfaceId + ":" + pr + "," + pg + "," + pb;
-                                ColorGroup primitiveGroup;
-                                if (!colorIndex.TryGetValue(primitiveRgb, out primitiveGroup))
+                                foreach (var idx in ApproximationTriangles.Indices(prim, pts.Length))
                                 {
-                                    primitiveGroup = new ColorGroup { R = pr, G = pg, B = pb, Surface = surfaceId };
-                                    colorIndex[primitiveRgb] = primitiveGroup;
-                                    dd.Colors.Add(primitiveGroup);
-                                }
-                                var idx = prim.Indices;
-                                if (idx == null || idx.Length < 3) continue;
-                                if (idx.Length != 3) throw new InvalidDataException("不支持的面索引数量 " + idx.Length + "，停止该设备以避免截断几何");
-                                var p0 = outputTransform.Transform(pts[idx[0]]);
-                                var p1 = outputTransform.Transform(pts[idx[1]]);
-                                var p2 = outputTransform.Transform(pts[idx[2]]);
-                                primitiveGroup.Tris.Add(new float[]
-                                {
-                                    (float)p0.X, (float)p0.Y, (float)p0.Z,
-                                    (float)p1.X, (float)p1.Y, (float)p1.Z,
-                                    (float)p2.X, (float)p2.Y, (float)p2.Z
-                                });
-                                bufferedTriangles++;
-                                totalTriangles++;
-                                if (streamSink != null && bufferedTriangles >= streamBatchTriangles)
-                                {
-                                    streamSink(dd);
-                                    dd = new DeviceData { Name = dev.Name, Path = dd.Path };
-                                    colorIndex.Clear();
-                                    bufferedTriangles = 0;
-                                    if (!colorIndex.TryGetValue(rgb, out cg))
+                                    ColorGroup primitiveGroup;
+                                    if (!colorIndex.TryGetValue(primitiveRgb, out primitiveGroup))
                                     {
-                                        cg = new ColorGroup { R = r, G = gg2, B = bb2, Surface = surfaceId };
-                                        colorIndex[rgb] = cg;
-                                        dd.Colors.Add(cg);
+                                        primitiveGroup = new ColorGroup { R = pr, G = pg, B = pb, Surface = surfaceId };
+                                        colorIndex[primitiveRgb] = primitiveGroup;
+                                        dd.Colors.Add(primitiveGroup);
+                                    }
+                                    var p0 = outputTransform.Transform(pts[idx[0]]);
+                                    var p1 = outputTransform.Transform(pts[idx[1]]);
+                                    var p2 = outputTransform.Transform(pts[idx[2]]);
+                                    primitiveGroup.Tris.Add(new float[]
+                                    {
+                                        (float)p0.X, (float)p0.Y, (float)p0.Z,
+                                        (float)p1.X, (float)p1.Y, (float)p1.Z,
+                                        (float)p2.X, (float)p2.Y, (float)p2.Z
+                                    });
+                                    bufferedTriangles++;
+                                    totalTriangles++;
+                                    if (streamSink != null && bufferedTriangles >= streamBatchTriangles)
+                                    {
+                                        streamSink(dd);
+                                        dd = new DeviceData { Name = dev.Name, Path = dd.Path };
+                                        colorIndex.Clear();
+                                        bufferedTriangles = 0;
+                                        if (!colorIndex.TryGetValue(rgb, out cg))
+                                        {
+                                            cg = new ColorGroup { R = r, G = gg2, B = bb2, Surface = surfaceId };
+                                            colorIndex[rgb] = cg;
+                                            dd.Colors.Add(cg);
+                                        }
                                     }
                                 }
                             }
@@ -1092,22 +1183,33 @@ namespace TxTools.ExportByColor
                     }
                     SafeLog(onLog, "[采集] " + dev.Name + "：" + geoms.Count + " 个几何，" + totalTriangles + " 个三角面" +
                         (colorFallbacks == 0 ? "" : "，" + colorFallbacks + " 个使用默认灰色"));
+                    if (AppearanceGeometrySource.IsAppearance(dev) && totalTriangles == 0)
+                        throw new InvalidOperationException("外观关联零件未提供有效三角面：" + dev.Name);
+                    appearanceScope.Dispose(); // restore before any storage reload can invalidate objects
                     if (streamSink != null && bufferedTriangles > 0)
                     {
                         streamSink(dd);
                         dd = new DeviceData { Name = dev.Name, Path = dd.Path };
                         colorIndex.Clear();
                     }
-                    try { if (st != null) st.Reload(TxRepresentationLevel.United); } catch { }
+                    if(st!=null)
+                    {
+                        var restoreWatch=System.Diagnostics.Stopwatch.StartNew();
+                        SafeLog(onLog,"[PS restore] "+dev.Name+"：网格已采集，开始恢复 United 表示");
+                        try { st.Reload(TxRepresentationLevel.United); }
+                        catch(Exception restoreError){SafeLog(onLog,"[PS restore] 恢复失败："+restoreError.Message);}
+                        SafeLog(onLog,"[PS restore] "+dev.Name+"：恢复调用返回，用时 "+restoreWatch.Elapsed.TotalSeconds.ToString("F1")+" 秒");
+                    }
                     if (streamSink == null && dd.Colors.Count > 0) result.Add(dd);
                 }
                 return result;
             });
         }
 
-        private static List<ITxGeometry> EnumDeviceGeometries(ITxObject dev, ref TxLibraryStorage st, Action<string> onLog)
+        private static List<GeometryInstance> EnumDeviceGeometries(ITxObject dev, ref TxLibraryStorage st,
+            Action<string> onLog, AppearanceReadScope appearanceScope)
         {
-            var list = new List<ITxGeometry>();
+            var list = new List<GeometryInstance>();
             var rootStorable = dev as ITxStorable;
             if (rootStorable != null)
             {
@@ -1118,42 +1220,34 @@ namespace TxTools.ExportByColor
             // A prototype frequently consists of nested storable subsets.  A single
             // GetAllDescendants call made before their Detailed reload sees only its
             // coarse proxy (or no child at all), which was the EquipmentPrototype loss.
-            CollectGeometryChildren(dev, list, new HashSet<string>(), new HashSet<TxLibraryStorage>(), onLog);
+            CollectGeometryChildren(dev, list, new HashSet<string>(), new HashSet<TxLibraryStorage>(), onLog, appearanceScope);
             DetailLog(onLog, "  " + dev.Name + ": 几何 " + list.Count + " 个（Detailed，去重后）");
             return list;
         }
 
-        private static void CollectGeometryChildren(ITxObject node, List<ITxGeometry> output,
-            HashSet<string> seen, HashSet<TxLibraryStorage> loaded, Action<string> onLog)
+        private static void CollectGeometryChildren(ITxObject node, List<GeometryInstance> output,
+            HashSet<string> seen, HashSet<TxLibraryStorage> loaded, Action<string> onLog, AppearanceReadScope appearanceScope)
         {
             if (node == null || !seen.Add(ObjKey(node))) return;
+            if (AppearanceGeometrySource.IsAppearance(node))
+            {
+                var appearanceGeometry = appearanceScope.Collect(node);
+                foreach (var item in appearanceGeometry)
+                    if (seen.Add(item.InstanceKey)) output.Add(item);
+                SafeLog(onLog, "[外观几何] " + node.Name + "：" + appearanceGeometry.Count +
+                    " 个关联零件几何；按需显示并加载实体级后读取网格，按外观世界位置变换");
+                return;
+            }
             var geometry = node as ITxGeometry;
             // Kinematic links publish an aggregate proxy alongside their children;
             // preserve the children rather than exporting that uncoloured proxy twice.
             if (geometry != null && !(node is TxKinematicLink))
             {
-                output.Add(geometry);
+                output.Add(new GeometryInstance(geometry, ObjKey(geometry)));
                 return;
             }
 
-            var stored = node as ITxStorable;
-            if (stored != null)
-            {
-                try
-                {
-                    var storage = stored.StorageObject as TxLibraryStorage;
-                    if (storage != null && loaded.Add(storage))
-                    {
-                        DetailLog(onLog, "[Detailed 开始] " + node.Name + "；" + ObjKey(node));
-                        storage.Reload(TxRepresentationLevel.Detailed);
-                        DetailLog(onLog, "[Detailed 完成] " + node.Name);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    throw new InvalidOperationException("Detailed 加载失败：" + node.Name + "；" + ObjKey(node), ex);
-                }
-            }
+            GeometryEntityLoader.Load(node, loaded, message => DetailLog(onLog, message));
 
             var children = new List<ITxObject>();
             var childKeys = new HashSet<string>();
@@ -1191,11 +1285,11 @@ namespace TxTools.ExportByColor
                 }
             }
 
-            foreach (var child in children) CollectGeometryChildren(child, output, seen, loaded, onLog);
+            foreach (var child in children) CollectGeometryChildren(child, output, seen, loaded, onLog, appearanceScope);
             if (node is TxKinematicLink && children.Count == 0 && geometry != null)
             {
                 DetailLog(onLog, "[连杆回退] " + node.Name + " 无可枚举子项，保留整体网格");
-                output.Add(geometry);
+                output.Add(new GeometryInstance(geometry, ObjKey(geometry)));
             }
         }
 

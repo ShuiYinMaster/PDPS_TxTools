@@ -541,6 +541,7 @@ namespace TxTools.WeldPointMatrix
 
         internal PointInputDialog(bool weld, double[] matrix)
         {
+            PluginUiPolicy.Attach(this);
             _matrix = matrix;
             Text = weld ? "新增焊点" : "新增过渡点";
             FormBorderStyle = FormBorderStyle.FixedDialog;

@@ -96,7 +96,7 @@ namespace TxTools.ExportByColor
             bool complete=false;string pendingEdge="";
             for(int pass=0;pass<24;pass++)
             {
-                var edges=new Dictionary<long,RefEdge>();foreach(var t in triangles)for(int k=0;k<3;k++){int a=t.Ids[k],b=t.Ids[(k+1)%3];long edge=Edge(a,b);RefEdge e;if(!edges.TryGetValue(edge,out e))edges.Add(edge,e=new RefEdge{A=a,B=b});e.Faces.Add(t);}
+                var edges=new Dictionary<long,RefEdge>(CylinderEdgeComparer.Instance);foreach(var t in triangles)for(int k=0;k<3;k++){int a=t.Ids[k],b=t.Ids[(k+1)%3];long edge=Edge(a,b);RefEdge e;if(!edges.TryGetValue(edge,out e))edges.Add(edge,e=new RefEdge{A=a,B=b});e.Faces.Add(t);}
                 if(edges.Values.Any(e=>e.Faces.Count>2)){failure="source-nonmanifold pass="+pass;return false;}
                 int added=0;
                 foreach(var e in edges.Values)
@@ -176,7 +176,7 @@ namespace TxTools.ExportByColor
         {
             rebuilt=new List<RefFacet>();var caps=triangles;
             if(!work.Spend(2L*triangles.Count))return false;
-            var parents=Enumerable.Range(0,caps.Count).ToArray();var edges=new Dictionary<long,List<int>>();
+            var parents=Enumerable.Range(0,caps.Count).ToArray();var edges=new Dictionary<long,List<int>>(CylinderEdgeComparer.Instance);
             for(int i=0;i<caps.Count;i++)for(int k=0;k<3;k++){long edge=Edge(caps[i].Ids[k],caps[i].Ids[(k+1)%3]);List<int> list;if(!edges.TryGetValue(edge,out list))edges.Add(edge,list=new List<int>());list.Add(i);}
             foreach(var list in edges.Values.Where(l=>l.Count==2))
             {
@@ -190,7 +190,7 @@ namespace TxTools.ExportByColor
                 // Only a patch whose old diagonal flipped needs retriangulation.
                 if(group.All(t=>RefAlignment(t,points)>0)){rebuilt.AddRange(group);continue;}
                 if(group.Count==1){rebuilt.Add(first);continue;}
-                var boundary=new Dictionary<long,List<int[]>>();foreach(var t in group)for(int k=0;k<3;k++){int[] edge={t.Ids[k],t.Ids[(k+1)%3]};List<int[]> list;long id=Edge(edge[0],edge[1]);if(!boundary.TryGetValue(id,out list))boundary.Add(id,list=new List<int[]>());list.Add(edge);}
+                var boundary=new Dictionary<long,List<int[]>>(CylinderEdgeComparer.Instance);foreach(var t in group)for(int k=0;k<3;k++){int[] edge={t.Ids[k],t.Ids[(k+1)%3]};List<int[]> list;long id=Edge(edge[0],edge[1]);if(!boundary.TryGetValue(id,out list))boundary.Add(id,list=new List<int[]>());list.Add(edge);}
                 if(boundary.Values.Any(l=>l.Count>2))return false;
                 var n=first.Normal;var u=Unit(Cross(n,Math.Abs(n[0])<.8?new[]{1d,0d,0d}:new[]{0d,1d,0d}));var v=Cross(n,u);
                 Func<double[],double[]> xy=p=>{var d=Sub(p,first.Origin);return new[]{Dot(d,u),Dot(d,v)};};
