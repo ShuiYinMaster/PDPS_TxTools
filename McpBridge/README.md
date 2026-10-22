@@ -110,10 +110,11 @@ codex mcp add tx-tools -- "G:/Program Files/Tecnomatix_2402/eMPower/DotNetComman
 McpBridge/
   McpBridge.csproj    项目文件（.NET Framework 4.8）
   Program.cs          入口 / 参数解析
-  InstanceDiscovery.cs 读取 %TEMP%\TxAgent.Instances\*.json 发现实例
+  InstanceDiscovery.cs 读取统一临时根目录下的 TxTools\Instances\*.json 发现实例
   PipeClient.cs       命名管道客户端（帧协议与 PsRpcServer 对齐）
   McpServer.cs        MCP stdio server（JSON-RPC 2.0 / tools / ping / shutdown）
 ```
+
 ## 2026-10-07 更新
 
 更新两种构建配置的默认输出路径，并修正文档中的产物目录。协议和命令行行为沿用原实现；TxAgent 实例服务现在延后到宿主消息循环就绪后在后台初始化，PS 启动阶段短暂不可达时可稍后重试。

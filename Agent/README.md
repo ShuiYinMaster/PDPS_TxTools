@@ -2,9 +2,23 @@
 
 An in-process AI assistant for Tecnomatix Process Simulate, with scene tools, reusable C# / Python recipes and multi-instance collaboration.
 
+## 配方分享与待固化片段
+
+展开聊天区右侧的配方栏，在已有配方卡片内点击“导出”，即可保存可分享的 `.md` 文件。接收者点击配方栏顶部“导入”并选择文件；同名配方另存为带“导入”序号的新副本，不覆盖原配方。导入会校验参数和代码格式，只保存定义，执行前需重新选取当前工程的对象。
+
+配方栏分为“我的配方（数量）”和“待固化（数量）”两个页签，默认显示“我的配方”。已固化配方使用蓝绿色状态标签和实线卡片；待固化片段使用橙色“待整理”标签、浅色背景和虚线卡片。切换页签会保留已填写的参数和对象绑定。
+
+待固化片段优先显示用途说明中的可读能力名称，原始片段名放在副标题中，并显示中文能力标签、脚本语言和成功/失败次数；“代码预览”可展开查看，“详情”将完整说明和代码显示到对话中。“整理为配方”会预填整理指令，发送后由 AI 生成带中文说明和参数标签的配方。配方栏的说明和对话中的配方文档均渲染 Markdown；已有配方的 `⟨⟩` 按钮可在对话中查看完整文档。
+
+## 架构一览
+
 源码版本：2026-10-07。TxAgent 在 Process Simulate 2402 中提供聊天、工具调用、代码片段、配方和多实例协作。入口是 `TxAgentCommand.cs`，详细项目环境见 [总 README](../README.md)。
 
 ## 环境与启动
+
+聊天界面已拆为共享 `UserControl`，支持由 PS 可停靠 Viewer 承载。目标机器注册
+`TxAgentDockViewer` 后，原 TxAgent 命令自动使用停靠面板；未注册时继续使用独立窗口。
+注册参数、当前验证范围及目标机器验收步骤见 [停靠 Viewer 部署说明](deployment/DockingViewer.md)。
 
 - 主插件为 .NET Framework 4.8 / x64；`TxTools.csproj` 当前设置 `LangVersion=8.0`，PS 脚本与配方中的 C# 保持 C# 7.3 兼容。
 - 聊天和配方界面使用 WebView2；模型请求由 C# 客户端发出。桌面宠物使用独立 Electron 进程，不在 PS 内解码动画。
@@ -61,6 +75,10 @@ An in-process AI assistant for Tecnomatix Process Simulate, with scene tools, re
 `audit.log` 的 `[Startup]` 记录是后台初始化耗时，不是 PS 完整启动时间。
 
 ## 桌面宠物组件
+
+同一 Windows 桌面会话共用一只鲸鱼娘。先把目标 Process Simulate 窗口切到前台，再点击鲸鱼娘打开快捷配方；菜单获得焦点时沿用点击前的目标。快捷配方的对象选择、条件查询和执行均在该进程内完成。切换前台会收起旧面板并清除对象绑定；排队执行的配方在修改场景前再次确认前台和研究。
+
+Agent GUI 的桌宠开关控制共享显示状态并记忆隐藏。宿主进程退出后，剩余插件进程自动接管；最后一个进程关闭时桌宠退出。更新需要同时复制新版 DLL/PDB 和 `Agent/UI/pet/dsh-pet` 目录，并重启所有 PS 进程。实现与验证记录见 [共享桌宠说明](maintenance/SharedDesktopPet.md)。
 
 源码包含适配脚本；Electron 与动画素材按需恢复，不提交下载的运行组件。安装、固定版本和校验方法见 [桌宠组件说明](maintenance/DesktopPetComponents.md)。
 
