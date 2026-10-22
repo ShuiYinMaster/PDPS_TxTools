@@ -25,12 +25,14 @@ namespace TxTools.OpenResourceFolder
 {
     public class OpenResourceFolderCmd : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.OpenResourceFolder.bmp";
+        public override string LargeBitmap => "image.file.png";
+
         private const string LOG_PREFIX = "[OpenResFolder] ";
 
         public override string Name => ".打开资源所在目录";
         public override string Description { get { return "打开选中资源所在目录"; } }
         public override string Category => "TxTools";
-        public override string LargeBitmap => "image.file.png";
 
         public override void Execute(object cmdParams)
         {

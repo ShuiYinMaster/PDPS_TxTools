@@ -10,7 +10,10 @@ namespace TxTools.MechArena
     /// TxToolsInstaller 会通过 AssemblyInspector 反射扫描并注入 Ribbon。
     /// </summary>
     public class MechArenaStartCommand : TxButtonCommand
-    {        // 必须实现抽象属性
+    {
+        public override string Bitmap => "image.Small.MechArena.bmp";
+        public override string LargeBitmap => "image.MechArena.png";
+        // 必须实现抽象属性
         public override string Name => ".机器人竞技场";
         public override string Category => "TxTools";
 

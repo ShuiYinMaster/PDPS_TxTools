@@ -60,14 +60,15 @@ namespace TxTools.RobotBaseChecker
                 RowCount = 3,
                 Padding = new Padding(8)
             };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 85));   // 工具栏（容差两行 + GroupBox）
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 70));    // 表格
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 30));    // 日志
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // 表格
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 90));   // 日志
 
             // ---- 工具栏：左卡片(容差) + 右卡片(操作) ----
             var toolbar = new TableLayoutPanel
             {
-                Dock = DockStyle.Fill,
+                Dock = DockStyle.Top,
+                AutoSize = true,
                 ColumnCount = 2,
                 RowCount = 1
             };
@@ -78,6 +79,9 @@ namespace TxTools.RobotBaseChecker
             var tolGroup = new FormUiKit.ColoredGroupBox
             {
                 Text = "容差参数",
+                MinimumSize = new Size(220, 0),
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 TitleColor = Theme.CardTitle,
                 BorderColor = FormUiKit.CardBorder,
                 Dock = DockStyle.Fill,
@@ -87,7 +91,8 @@ namespace TxTools.RobotBaseChecker
             };
             var tolPanel = new TableLayoutPanel
             {
-                Dock = DockStyle.Fill,
+                Dock = DockStyle.Top,
+                AutoSize = true,
                 ColumnCount = 2,
                 RowCount = 2
             };
@@ -111,6 +116,8 @@ namespace TxTools.RobotBaseChecker
             var opGroup = new FormUiKit.ColoredGroupBox
             {
                 Text = "操作",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 TitleColor = Theme.CardTitle,
                 BorderColor = FormUiKit.CardBorder,
                 Dock = DockStyle.Fill,
@@ -118,7 +125,7 @@ namespace TxTools.RobotBaseChecker
                 Font = FormUiKit.BoldFont,
                 BackColor = FormUiKit.CardBack
             };
-            var opPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
+            var opPanel = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = true, AutoScroll = false };
 
             opPanel.Controls.Add(new Label { Text = "品牌:", AutoSize = true, Font = FormUiKit.BaseFont, Padding = new Padding(0, 6, 0, 0) });
             _brandMode = FormUiKit.MkComboBox(130);
@@ -194,6 +201,7 @@ namespace TxTools.RobotBaseChecker
                 WordWrap = false
             };
             root.Controls.Add(_logBox, 0, 2);
+            PluginLog.Register(_logBox);
 
             Controls.Add(root);
         }

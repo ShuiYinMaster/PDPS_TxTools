@@ -71,7 +71,7 @@ namespace TxTools.WeldGunDefiner.UI
 
         // ── DPI（FormUiKit 标准方案）────────────────────────────────────────
         private bool _dpiApplied;
-        private static readonly Size _designSize = new Size(560, 680);
+        private static readonly Size _designSize = new Size(900, 640);
 
         // ── 步骤导航 ─────────────────────────────────────────────────────
         private Panel[] _stepPanels;
@@ -87,7 +87,7 @@ namespace TxTools.WeldGunDefiner.UI
             FormUiKit.InitStandardForm(this,
                 "X 型焊枪快速定义向导",
                 _designSize,
-                new Size(480, 520),
+                new Size(860, 420),
                 sizable: true);
             StartPosition = FormStartPosition.CenterParent;
             FormClosed += (s, e) =>
@@ -117,6 +117,7 @@ namespace TxTools.WeldGunDefiner.UI
             base.OnLoad(e);
             // FormUiKit 标准 DPI 缩放（AutoScaleMode.None + 手动 Scale，ExportGun 同款）
             FormUiKit.ApplyDpiScaling(this, ref _dpiApplied, _designSize);
+            FitStepHeight();
         }
 
         // ═════════════════════════════════════════════════════════════════
@@ -341,14 +342,14 @@ namespace TxTools.WeldGunDefiner.UI
             // ── 铰点卡：3列（标签100 + Grid300 + 误差80），行高130（约6行）──
             var hingeLayout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3 };
             hingeLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
-            hingeLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
+            hingeLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             hingeLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
             int hrow = 0;
 
             void AddHingeRow(string lbl, ref TxObjGridCtrl grid, ref Label errLbl, string tag)
             {
                 string t = tag;
-                hingeLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 130));
+                hingeLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
                 hingeLayout.Controls.Add(new Label { Text = lbl, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(0, 0, 6, 0) }, 0, hrow);
                 // PickLevel.Entity：允许选子零件/Frame（修复子项无法选择的问题）
                 var g = new TxObjGridCtrl { Dock = DockStyle.Fill, EnableMultipleSelection = false, PickLevel = TxPickLevel.Entity };
@@ -382,12 +383,12 @@ namespace TxTools.WeldGunDefiner.UI
             // ── 活塞杆 & 电极帽：2列（标签100 + Grid300），行高130 ──
             var miscLayout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
             miscLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
-            miscLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
+            miscLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             int mrow = 0;
 
             void AddMiscRow(string lbl, ref TxObjGridCtrl grid, Action<ITxObject> onInsert, Action onDelete)
             {
-                miscLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 130));
+                miscLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
                 miscLayout.Controls.Add(new Label { Text = lbl, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(0, 0, 6, 0) }, 0, mrow);
                 var g = new TxObjGridCtrl { Dock = DockStyle.Fill, EnableMultipleSelection = false, PickLevel = TxPickLevel.Entity };
                 WireGridPick(g);
@@ -506,6 +507,38 @@ namespace TxTools.WeldGunDefiner.UI
 
             stack.Controls.Add(MkCard("Link 几何体绑定（可多选，Component 级）", linkGrid), 0, 2);
 
+            // 左侧选铰点/电极，右侧绑定 Link；列表内部滚动，整页保持一屏。
+            var hingeCard = stack.GetControlFromPosition(0, 0);
+            var electrodeCard = stack.GetControlFromPosition(0, 1);
+            var linkCard = stack.GetControlFromPosition(0, 2);
+            stack.Controls.Clear();
+            stack.Dock = DockStyle.Fill;
+            stack.AutoSize = false;
+            stack.ColumnCount = 2;
+            stack.RowCount = 2;
+            stack.ColumnStyles.Clear();
+            stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            stack.RowStyles.Clear();
+            stack.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            stack.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            foreach (Control card in new[] { hingeCard, electrodeCard, linkCard })
+            {
+                card.AutoSize = false;
+                card.Dock = DockStyle.Fill;
+                foreach (Control inner in card.Controls) { inner.AutoSize = false; inner.Dock = DockStyle.Fill; }
+            }
+            hingeWrap.AutoSize = hingeLayout.AutoSize = miscLayout.AutoSize = linkGrid.AutoSize = false;
+            hingeLayout.Dock = miscLayout.Dock = linkGrid.Dock = DockStyle.Fill;
+            hintHinge.Dock = DockStyle.Bottom;
+            linkGrid.RowStyles.Clear();
+            for (int i = 0; i < 3; i++) linkGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / 3));
+            foreach (Control cell in linkGrid.Controls) { cell.AutoSize = false; cell.Dock = DockStyle.Fill; }
+            stack.Controls.Add(hingeCard, 0, 0);
+            stack.Controls.Add(electrodeCard, 0, 1);
+            stack.Controls.Add(linkCard, 1, 0);
+            stack.SetRowSpan(linkCard, 2);
+
             scroll.Controls.Add(stack);
             var p = new Panel { Dock = DockStyle.Fill };
             p.Controls.Add(scroll);
@@ -573,7 +606,13 @@ namespace TxTools.WeldGunDefiner.UI
                 Font = new Font("Consolas", 8),
                 Text = "（请先完成铰点选取，参数将自动填入）"
             };
-            stack.Controls.Add(MkFixedCard("RPRR 向导坐标参考", 120, _txtCoordCard), 0, 2);
+            var coordinates = MkFixedCard("RPRR 向导坐标参考", 120, _txtCoordCard);
+            coordinates.Dock = DockStyle.Fill;
+            stack.Controls.Add(coordinates, 0, 2);
+            stack.Dock = DockStyle.Fill;
+            stack.AutoSize = false;
+            stack.RowStyles[2].SizeType = SizeType.Percent;
+            stack.RowStyles[2].Height = 100;
 
             scroll.Controls.Add(stack);
             var p = new Panel { Dock = DockStyle.Fill };
@@ -648,7 +687,8 @@ namespace TxTools.WeldGunDefiner.UI
 
             // 结果
             _txtResult = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Theme.InputBg };
-            stack.Controls.Add(MkFixedCard("生成结果", 200, _txtResult), 0, 2);
+            var resultCard = MkFixedCard("生成结果", 100, _txtResult);
+            stack.Controls.Add(resultCard, 0, 2);
 
             scroll.Controls.Add(stack);
             var p = new Panel { Dock = DockStyle.Fill };
@@ -698,7 +738,7 @@ namespace TxTools.WeldGunDefiner.UI
             return g;
         }
         private static Panel MkScroll()
-            => new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(6) };
+            => new Panel { Dock = DockStyle.Fill, AutoScroll = false, Padding = new Padding(6) };
         private static TableLayoutPanel MkStack(int rows)
         {
             var t = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = rows };
@@ -1215,6 +1255,16 @@ namespace TxTools.WeldGunDefiner.UI
                     else { lbl.BackColor = FormUiKit.CardBack; lbl.ForeColor = Theme.BtnFore; }
                 }
             }
+            FitStepHeight();
+        }
+
+        private void FitStepHeight()
+        {
+            if (!_dpiApplied) return;
+            int[] designHeights = { 420, 640, 640, 560 };
+            int target = (int)System.Math.Round(designHeights[_currentStep] * FormUiKit.GetLayoutScale(this));
+            int available = Screen.FromControl(this).WorkingArea.Height - 16;
+            Height = System.Math.Min(available, System.Math.Max(MinimumSize.Height, target));
         }
     }
 }

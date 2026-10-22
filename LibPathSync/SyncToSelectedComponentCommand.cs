@@ -12,6 +12,9 @@ namespace TxTools.LibPathSync
     /// </summary>
     public class SyncToSelectedComponentCommand : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.SyncToSelectedComponent.bmp";
+        public override string LargeBitmap => "image.SyncToSelectedComponent.png";
+
         public override string Name => ".同步到所选组件";
         public override string Category => "TxTools";
         public override string Description => "将目录路径同步为当前选中组件的库存储目录";

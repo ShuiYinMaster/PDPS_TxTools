@@ -8,6 +8,9 @@ namespace TxTools.CatiaPartTree
 {
     public class CatiaPartTreeCmd : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.CatiaPartTree.bmp";
+        public override string LargeBitmap => "image.CatiaPartTree.png";
+
         public override string Name { get { return ".目录树建零件树"; } }
         public override string Category { get { return "TxTools"; } }
         public override string Tooltip { get { return "读取 CATIA 目录树创建 PS 零件树并对已导入零件归类"; } }

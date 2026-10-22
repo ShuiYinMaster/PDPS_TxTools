@@ -13,6 +13,9 @@ namespace TxTools.LineToSolid
     [Guid("9A2B7F1C-3D88-4E2E-9A77-7E2B45C901AA")]
     public class LineToSolidCommand : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.LineToSolid.bmp";
+        public override string LargeBitmap => "image.linetosoild.png";
+
         public override string Category
         {
             get { return "TxTools"; }
@@ -27,7 +30,6 @@ namespace TxTools.LineToSolid
             get { return "以多段线/直线/圆弧特征为基线创建长方体/圆柱体"; }
         }
 
-        public override string LargeBitmap { get { return "image.linetosoild.png"; } }
 
         public override void Execute(object cmdParams)
         {

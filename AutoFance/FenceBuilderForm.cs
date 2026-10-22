@@ -63,7 +63,7 @@ namespace TxTools.FenceBuilder
         // 字体（统一走 FormUiKit，OS 已 DPI 缩放）
         private readonly Font _baseFont = FormUiKit.BaseFont;
         private readonly Font _boldFont = FormUiKit.BoldFont;
-        private static readonly Size _designSize = new Size(1100, 720);
+        private static readonly Size _designSize = new Size(1100, 640);
         private bool _dpiApplied;
 
         public FenceBuilderForm()
@@ -125,12 +125,12 @@ namespace TxTools.FenceBuilder
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
-                AutoScroll = true,
+                AutoScroll = false,
                 Padding = new Padding(0)
             };
             sidePanel.Controls.Add(BuildMeshCard());
             sidePanel.Controls.Add(BuildPostCard());
-            sidePanel.Controls.Add(BuildOptionCard());
+            var optionsCard = BuildOptionCard();
             root.Controls.Add(sidePanel, 0, 0);
 
             // ===== 右侧: 3 行 1 列 TableLayoutPanel (基线 170固定 / 操作 44固定 / 日志 Fill) =====
@@ -138,14 +138,17 @@ namespace TxTools.FenceBuilder
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 3,
+                RowCount = 4,
                 Padding = new Padding(8, 0, 0, 0)
             };
             rightLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            rightLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 210));  // 基线
+            rightLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            rightLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // 基线列表
             rightLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));   // 操作
-            rightLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));  // 日志
+            rightLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 100));  // 日志
             root.Controls.Add(rightLayout, 1, 0);
+            optionsCard.Dock = DockStyle.Top;
+            rightLayout.Controls.Add(optionsCard, 0, 0);
 
             // --- 右侧第 1 行: 基线列表卡片 ---
             GroupBox grpBase = new GroupBox
@@ -188,7 +191,7 @@ namespace TxTools.FenceBuilder
             baseInner.Controls.Add(baseBtns, 1, 0);
 
             grpBase.Controls.Add(baseInner);
-            rightLayout.Controls.Add(grpBase, 0, 0);
+            rightLayout.Controls.Add(grpBase, 0, 1);
 
             // --- 右侧第 2 行: 操作按钮条 ---
             FlowLayoutPanel actFlow = new FlowLayoutPanel
@@ -210,11 +213,11 @@ namespace TxTools.FenceBuilder
             _btnToggleLog.Click += (s, e) =>
             {
                 _logVisible = !_logVisible;
-                _logPanel.Visible = _logVisible;
+                PluginLog.SetVisible(_logPanel, _logVisible);
                 _btnToggleLog.Text = _logVisible ? "隐藏日志" : "显示日志";
             };
             actFlow.Controls.Add(_btnToggleLog);
-            rightLayout.Controls.Add(actFlow, 0, 1);
+            rightLayout.Controls.Add(actFlow, 0, 2);
 
             // --- 右侧第 3 行: 日志面板 ---
             _logPanel = new Panel
@@ -232,7 +235,8 @@ namespace TxTools.FenceBuilder
                 BorderStyle = BorderStyle.None
             };
             _logPanel.Controls.Add(_logBox);
-            rightLayout.Controls.Add(_logPanel, 0, 2);
+            rightLayout.Controls.Add(_logPanel, 0, 3);
+            PluginLog.Register(_logPanel, true, _btnToggleLog);
         }
 
         // ===================== 卡片构建 =====================
@@ -316,7 +320,7 @@ namespace TxTools.FenceBuilder
                 Checked = true,
                 AutoSize = true,
                 Font = _baseFont,
-                Margin = new Padding(0, 2, 0, 2)
+                Margin = new Padding(0, 1, 0, 1)
             };
             f.Controls.Add(_chkShareCorner);
 
@@ -362,11 +366,11 @@ namespace TxTools.FenceBuilder
             {
                 Text = title,
                 Font = _boldFont,
-                Width = 290,
-                MinimumSize = new Size(290, 0),
+                Width = 306,
+                MinimumSize = new Size(306, 0),
                 Margin = new Padding(0, 0, 0, 8),
                 AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowOnly,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 HeaderColor = Theme.CardTitle,
                 ForeColor = Theme.CardTitle
             };
@@ -393,7 +397,7 @@ namespace TxTools.FenceBuilder
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 WrapContents = false,
-                Margin = new Padding(0, 2, 0, 2)
+                Margin = new Padding(0, 1, 0, 1)
             };
 
             Label lbl = new Label
@@ -403,12 +407,14 @@ namespace TxTools.FenceBuilder
                 Width = 160,
                 TextAlign = ContentAlignment.MiddleLeft,
                 Font = _baseFont,
-                Height = 24
+                Height = 24,
+                Margin = Padding.Empty
             };
             nud = new NumericUpDown
             {
                 Width = 95,
                 Height = 24,
+                Margin = new Padding(6, 0, 0, 0),
                 Minimum = min,
                 Maximum = max,
                 Value = val,
@@ -430,7 +436,7 @@ namespace TxTools.FenceBuilder
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 WrapContents = false,
-                Margin = new Padding(0, 2, 0, 2)
+                Margin = new Padding(0, 1, 0, 1)
             };
 
             Label lbl = new Label
@@ -440,7 +446,8 @@ namespace TxTools.FenceBuilder
                 Width = 160,
                 TextAlign = ContentAlignment.MiddleLeft,
                 Font = _baseFont,
-                Height = 26
+                Height = 26,
+                Margin = Padding.Empty
             };
 
             // 颜色控件用 Panel 而不是 Button: Panel 的 BackColor 变化立即重绘,

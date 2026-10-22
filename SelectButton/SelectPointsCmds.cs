@@ -50,10 +50,12 @@ namespace TxTools.SelectPoints
 
     public class SelectAllWeldPointsCmd : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.WeldPoint.bmp";
+        public override string LargeBitmap => "image.WeldPoint.png";
+
         public override string Name => ".选中所有焊点";
         public override string Category => "TxTools";
         public override string Description => "选中所有焊点";
-        public override string Bitmap => "image.weldpoint.bmp";
         public override void Execute(object cmdParams)
         {
             SelectPointsCore.Run(PointKind.Weld, "焊点");
@@ -62,10 +64,12 @@ namespace TxTools.SelectPoints
 
     public class SelectAllPathPointsCmd : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.ViaPoint.bmp";
+        public override string LargeBitmap => "image.ViaPoint.png";
+
         public override string Name => ".选中所有过渡点";
         public override string Category => "TxTools";
         public override string Description => "选中所有过渡点";
-        public override string Bitmap => "image.via.bmp";
         public override void Execute(object cmdParams)
         {
             SelectPointsCore.Run(PointKind.Path, "过渡点");
@@ -74,10 +78,12 @@ namespace TxTools.SelectPoints
 
     public class SelectAllContinuousPointsCmd : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.SeamPoint.bmp";
+        public override string LargeBitmap => "image.SeamPoint.png";
+
         public override string Name => ".选中所有连续点";
         public override string Category => "TxTools";
         public override string Description => "选中所有连续点";
-        public override string Bitmap => "image.seam.bmp";
         public override void Execute(object cmdParams)
         {
             SelectPointsCore.Run(PointKind.Continuous, "连续点");

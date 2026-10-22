@@ -124,7 +124,7 @@ namespace TxTools.AutoPathPlanner
         private static AutoPathPlannerForm _instance;
         private volatile bool _stopRequested;
         private bool _dpiApplied;
-        private readonly Size _designSize = new Size(760, 812);   // v5.5: Tab参数区
+        private readonly Size _designSize = new Size(760, 760);
         #endregion
 
         // ════════════════════════════════════════════════════════════
@@ -258,29 +258,29 @@ namespace TxTools.AutoPathPlanner
             SuspendLayout();
 
             // ══════════ 卡片1: 操作选择 ══════════
-            var cardOps = MakeCard("焊接操作 (规划范围)", Theme.CardOps, 180);
+            var cardOps = MakeCard("焊接操作 (规划范围)", Theme.CardOps, 146);
             {
                 _gridOps = new TxObjGridCtrl
                 {
                     Location = new Point(10, 24),
-                    Size = new Size(690, 120)
+                    Size = new Size(690, 80)
                 };
                 // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点
                 FormUiKit.GridPickFocus.Wire(_gridOps);
                 cardOps.Controls.Add(_gridOps);
 
-                _btnAddOps = MakeBtn("添加选中", Theme.BtnPrimary, 10, 150);
+                _btnAddOps = MakeBtn("添加选中", Theme.BtnPrimary, 10, 110);
                 _btnAddOps.Click += delegate { AppendOpsSelection(); };
                 cardOps.Controls.Add(_btnAddOps);
 
-                _btnClearOps = MakeBtn("清空", Theme.BtnMuted, 110, 150);
+                _btnClearOps = MakeBtn("清空", Theme.BtnMuted, 110, 110);
                 _btnClearOps.Click += delegate { ClearGrid(_gridOps); };
                 cardOps.Controls.Add(_btnClearOps);
             }
             Controls.Add(cardOps);
 
             // ══════════ 卡片2: 干涉集 (机器人 vs 场景, 自动收集) ══════════
-            var cardCS = MakeCard("干涉集 (机器人 vs 场景, 自动收集)", Theme.CardObs, 90);
+            var cardCS = MakeCard("干涉集 (机器人 vs 场景, 自动收集)", Theme.CardObs, 72);
             {
                 _btnAutoCollisionSet = MakeBtn("自动创建干涉集", Theme.BtnSecondary,
                     10, 30, 160, 30);
@@ -299,12 +299,12 @@ namespace TxTools.AutoPathPlanner
             Controls.Add(cardCS);
 
             // ══════════ 卡片3: 规划参数 (v5.5 全量暴露, Tab 分组) ══════════
-            var cardParams = MakeCard("规划参数", Theme.CardParams, 232);
+            var cardParams = MakeCard("规划参数", Theme.CardParams, 274);
             {
                 var tabs = new TabControl
                 {
                     Location = new Point(10, 22),
-                    Size = new Size(700, 172),
+                    Size = new Size(700, 214),
                     Appearance = TabAppearance.Normal
                 };
 
@@ -470,9 +470,16 @@ namespace TxTools.AutoPathPlanner
 
                 cardParams.Controls.Add(tabs);
 
-                _btnResetParams = MakeBtn("恢复默认", Theme.BtnMuted, 600, 198, 110, 26);
+                _btnResetParams = MakeBtn("恢复默认", Theme.BtnMuted, 600, 240, 110, 26);
                 _btnResetParams.Click += delegate { ResetParamsToDefault(); };
                 cardParams.Controls.Add(_btnResetParams);
+                cardParams.Layout += (s, e) =>
+                {
+                    tabs.Width = Math.Max(100, cardParams.ClientSize.Width - 20);
+                    _btnResetParams.Left = Math.Max(10,
+                        cardParams.ClientSize.Width - _btnResetParams.Width - 12);
+                };
+                _btnResetParams.SizeChanged += (s, e) => cardParams.PerformLayout();
             }
             Controls.Add(cardParams);
 
@@ -536,6 +543,7 @@ namespace TxTools.AutoPathPlanner
                 cardLog.Controls.Add(_rtbLog);
             }
             Controls.Add(cardLog);
+            PluginLog.Register(cardLog);
             cardLog.BringToFront();
 
             ResumeLayout(false);

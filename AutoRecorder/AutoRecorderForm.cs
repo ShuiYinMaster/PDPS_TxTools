@@ -105,7 +105,7 @@ namespace TxTools.AutoRecorder
         private const float RIGHT_PCT = 46F;   // 右列（视角关键帧）宽度占比
         private const int CARD1_H = 258;
         private const int LOG_H = 130;
-        private const int FORM_H_FALLBACK = 798;   // 全折叠时的兜底高度（沿用原版实测值）
+        private const int FORM_H_FALLBACK = 700;
         private static readonly Size _designSize = new Size(FORM_W, FORM_H_FALLBACK);
         private bool _dpiApplied;
 
@@ -220,7 +220,7 @@ namespace TxTools.AutoRecorder
             _leftPanel = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                AutoSize = true,
+                AutoSize = false,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 ColumnCount = 1,
                 RowCount = 0,
@@ -316,14 +316,26 @@ namespace TxTools.AutoRecorder
 
             grp1.Controls.Add(gridPanel);      // Fill（先 Add）
             grp1.Controls.Add(grp1Bottom);     // Bottom（后 Add → 占住底边）
-            AddRootRow(grp1, SizeType.Absolute, CARD1_H, dockFill: true);
+            AddRootRow(grp1, SizeType.Percent, 100, dockFill: true);
 
             // ---------- 卡片 2：录像参数 ----------
             var grp2 = NewGroupBox("录像参数");
-            grp2.AutoSize = true;
-            grp2.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            grp2.AutoSize = false;
             grp2.Padding = new Padding(10, 20, 10, 10);
-            grp2.Controls.Add(BuildParamsTable());
+            var paramsTable = BuildParamsTable();
+            grp2.Controls.Add(paramsTable);
+            bool fittingParams = false;
+            paramsTable.Layout += (s, e) =>
+            {
+                if (fittingParams) return;
+                fittingParams = true;
+                try
+                {
+                    int height = paramsTable.Bottom + grp2.Padding.Bottom;
+                    if (height > 0 && grp2.Height != height) grp2.Height = height;
+                }
+                finally { fittingParams = false; }
+            };
             AddRootRow(grp2, SizeType.AutoSize, 0, dockFill: false);
 
             // ---------- 按钮行 ----------
@@ -381,6 +393,7 @@ namespace TxTools.AutoRecorder
             };
             _pnlLogContainer.Controls.Add(_rtbLog);
             AddRootRow(_pnlLogContainer, SizeType.AutoSize, 0, dockFill: false);
+            PluginLog.Register(_pnlLogContainer, false, _btnToggleLog);
 
             // ---------- 右列：视角关键帧（占满全部高度） ----------
             BuildKeyframeCard();
@@ -418,8 +431,8 @@ namespace TxTools.AutoRecorder
         {
             int r = _leftPanel.RowCount;
             _leftPanel.RowCount = r + 1;
-            _leftPanel.RowStyles.Add(sizeType == SizeType.Absolute
-                ? new RowStyle(SizeType.Absolute, height)
+            _leftPanel.RowStyles.Add(sizeType != SizeType.AutoSize
+                ? new RowStyle(sizeType, height)
                 : new RowStyle(SizeType.AutoSize));
 
             if (dockFill) ctrl.Dock = DockStyle.Fill;
@@ -605,6 +618,7 @@ namespace TxTools.AutoRecorder
             _cmbSpeedup.SelectedIndex = 0;
 
             var spdFlow = MkInlineFlow();
+            spdFlow.Padding = new Padding(0, 0, 0, 4);
             spdFlow.Controls.Add(_cmbSpeedup);
             AddParamRow(t, ParamLabel("录后加速："), spdFlow);
 
@@ -1077,17 +1091,8 @@ namespace TxTools.AutoRecorder
             var wa = Screen.FromControl(this).WorkingArea;
             int chromeHeight = this.Height - this.ClientSize.Height;
             int maxClientHeight = Math.Max(1, wa.Height - chromeHeight - 32);
-            int scrollWidth = AutoScrollMinSize.Width;
-            if (h > maxClientHeight)
-            {
-                AutoScroll = true;
-                AutoScrollMinSize = new Size(Math.Max(scrollWidth, ClientSize.Width), h);
-            }
-            else
-            {
-                AutoScrollMinSize = scrollWidth > ClientSize.Width
-                    ? new Size(scrollWidth, 0) : Size.Empty;
-            }
+            AutoScroll = false;
+            AutoScrollMinSize = Size.Empty;
             this.ClientSize = new Size(this.ClientSize.Width, Math.Min(h, maxClientHeight));
             if (_statusStrip != null) _statusStrip.BringToFront();
         }
@@ -1773,9 +1778,10 @@ namespace TxTools.AutoRecorder
         // ============================================================
         private void OnToggleLog(object sender, EventArgs e)
         {
+            if (!PluginLog.Enabled) return;
             _logExpanded = !_logExpanded;
-            _pnlLogContainer.Visible = _logExpanded;
-            _pnlLogContainer.Height = _logExpanded ? LOG_H : 0;
+            PluginLog.SetVisible(_pnlLogContainer, _logExpanded);
+            _pnlLogContainer.Height = _logExpanded ? (int)Math.Round(LOG_H * FormUiKit.GetLayoutScale(this)) : 0;
             _btnToggleLog.Text = _logExpanded ? "▲ 收起日志" : "▼ 展开日志";
 
             // 根表 AutoSize 行自动回流，只需重设窗体总高

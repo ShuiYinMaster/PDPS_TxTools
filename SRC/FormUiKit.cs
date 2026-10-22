@@ -694,10 +694,9 @@ namespace TxTools.Common
             form.Text = title;
             form.BackColor = WinBg;
             form.StartPosition = FormStartPosition.CenterScreen;
-            // 默认固定大小（ExportGun 同款 FixedDialog）
-            form.FormBorderStyle = sizable ? FormBorderStyle.Sizable
-                                           : FormBorderStyle.FixedDialog;
-            form.MaximizeBox = sizable;
+            // 统一固定边框；sizable 参数仅保留旧调用的源代码兼容性。
+            form.FormBorderStyle = FormBorderStyle.FixedDialog;
+            form.MaximizeBox = false;
             form.MinimizeBox = true;
             form.MinimumSize = minSize;     // 必须先设 MinimumSize
             form.Size = size;        // 再设 Size，否则被 MinimumSize 钳制
@@ -781,13 +780,19 @@ namespace TxTools.Common
             catch { return 1f; }
         }
 
-        // 设计稿原按较大的窗口绘制。在 100% 缩放下收紧到 85%，高 DPI 下仍按
-        // 设备 DPI 等比放大；字体使用系统 DPI 字体，保持文字可读。
-        private const float CompactScale = 0.85f;
-
         public static float GetLayoutScale(Control c)
         {
-            return Math.Max(0.5f, GetDpiScale(c) * CompactScale);
+            // 控件尺寸必须与系统字体使用同一 DPI 基准。缩小控件而保留原字号
+            // 会使按钮、标签和表格行内的文字互相挤压。
+            return Math.Max(1f, GetDpiScale(c));
+        }
+
+        /// <summary>仅收紧窗口视口，不缩放控件；高 DPI 时优先保留完整内容。</summary>
+        public static float GetPreferredWindowRatio(float dpiScale)
+        {
+            // Each form owns its compact design size. Shrinking only its outer window
+            // leaves fixed parameter rows unchanged and steals space from lists.
+            return 1f;
         }
 
         /// <summary>
@@ -807,33 +812,38 @@ namespace TxTools.Common
             applied = true;
             try
             {
-                // MinimumSize 可能与设计尺寸相同；先解除限制，才能在 100% 下缩小。
+                // 先解除尺寸限制，再从设计尺寸出发，避免 TxForm 恢复的尺寸逐次叠加。
                 Size designMinimum = form.MinimumSize;
                 form.MinimumSize = Size.Empty;
-                // 重置为设计尺寸，防止 TxForm 持久化尺寸叠加放大。
                 form.Size = designSize;
+                PluginUiPolicy.Prepare(form);
                 float sc = GetLayoutScale(form);
                 if (Math.Abs(sc - 1f) > 0.01f)
                     form.Scale(new SizeF(sc, sc));
 
-                // 缩放后的完整内容保持原尺寸；屏幕较小时只缩小可见窗口并提供滚动。
-                // 这样 175% 及以上的小屏仍使用适合 DPI 的控件和文字尺寸。
-                Size fullClient = form.ClientSize;
+                // 按各窗体自己的设计尺寸缩放，只有超出屏幕工作区时才限制窗口。
+                // 不再单独压缩外框，否则参数高度不变而列表空间被挤掉。
                 Size fullWindow = form.Size;
                 Rectangle work = Screen.FromControl(form).WorkingArea;
                 int maxWidth = Math.Max(1, work.Width - Math.Max(32, work.Width / 12));
                 int maxHeight = Math.Max(1, work.Height - Math.Max(32, work.Height / 12));
-                int width = Math.Min(fullWindow.Width, maxWidth);
-                int height = Math.Min(fullWindow.Height, maxHeight);
-                bool clipped = width < fullWindow.Width || height < fullWindow.Height;
-                if (clipped)
-                {
-                    form.AutoScroll = true;
-                    form.AutoScrollMinSize = fullClient;
-                }
+                // 没声明最小尺寸的窗口可能包含固定列（如 ExportGun 的三栏）。
+                // 这类窗口不推断可安全压缩的宽高，避免把中间工作区挤没。
+                int minimumWidth = designMinimum.Width > 0
+                    ? (int)Math.Round(designMinimum.Width * sc) : fullWindow.Width;
+                int minimumHeight = designMinimum.Height > 0
+                    ? (int)Math.Round(designMinimum.Height * sc) : fullWindow.Height;
+                float windowRatio = GetPreferredWindowRatio(sc);
+                int width = Math.Min(maxWidth, Math.Min(fullWindow.Width,
+                    Math.Max(minimumWidth, (int)Math.Round(fullWindow.Width * windowRatio))));
+                int height = Math.Min(maxHeight, Math.Min(fullWindow.Height,
+                    Math.Max(minimumHeight, (int)Math.Round(fullWindow.Height * windowRatio))));
+                // 列表使用弹性空间；参数区不启用整页滚动。
+                form.AutoScroll = false;
+                form.AutoScrollMinSize = Size.Empty;
                 form.MinimumSize = new Size(
-                    Math.Min(width, (int)Math.Round(designMinimum.Width * sc)),
-                    Math.Min(height, (int)Math.Round(designMinimum.Height * sc)));
+                    Math.Min(width, minimumWidth),
+                    Math.Min(height, minimumHeight));
                 form.Size = new Size(width, height);
                 form.Location = new Point(
                     Math.Max(work.Left, Math.Min(form.Left, work.Right - form.Width)),
@@ -841,6 +851,12 @@ namespace TxTools.Common
                 onScaled?.Invoke(sc);
             }
             catch { }
+            finally
+            {
+                try { PluginUiPolicy.Finish(form); }
+                catch { }
+                PluginLog.Apply(form);
+            }
         }
 
         // ====================================================================
@@ -883,7 +899,7 @@ namespace TxTools.Common
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
-                AutoScroll = true,
+                AutoScroll = false,
                 Width = width,
                 Padding = new Padding(0, 4, 0, 4),
                 BackColor = CardBack
@@ -946,6 +962,19 @@ namespace TxTools.Common
 
             card.Controls.Add(content);
             card.Controls.Add(titleBar);
+            var cardContent = content;
+            cardContent.Layout += (s, e) =>
+            {
+                if (card.IsDisposed || card.Disposing || card.Dock == DockStyle.Fill) return;
+                bool shown = card.FindForm()?.Visible == true;
+                int bottom = cardContent.Controls.Cast<Control>()
+                    .Where(c => !shown || c.Visible)
+                    .Select(c => c.Bottom + c.Margin.Bottom)
+                    .DefaultIfEmpty(cardContent.Padding.Top).Max();
+                int height = titleBar.Height + bottom + cardContent.Padding.Bottom + 2;
+                if (height > titleBar.Height && card.Height != height) card.Height = height;
+            };
+            card.VisibleChanged += (s, e) => { if (!cardContent.IsDisposed) cardContent.PerformLayout(); };
             return card;
         }
 
@@ -1035,9 +1064,9 @@ namespace TxTools.Common
             return new FlatColorButton
             {
                 Text = text,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Height = 26,
+                AutoSize = false,
+                Width = PluginUiPolicy.MeasureButtonWidth(text, BaseFont),
+                Height = PluginUiPolicy.ButtonHeight,
                 Font = BaseFont,
                 BgColor = bgColor,
                 // 文字色按背景亮度自动取黑/白：深色按钮（如 TxAccent/TxBall）用白字，
@@ -1057,8 +1086,8 @@ namespace TxTools.Common
             {
                 Text = text,
                 AutoSize = false,
-                Width = width,
-                Height = height,
+                Width = PluginUiPolicy.MeasureButtonWidth(text, BaseFont),
+                Height = PluginUiPolicy.ButtonHeight,
                 Font = BaseFont,
                 BgColor = bgColor,
                 ForeColor = bgColor.GetBrightness() > 0.62f ? Theme.BtnFore : Color.White,
@@ -1099,11 +1128,14 @@ namespace TxTools.Common
             if (flow == null || child == null) return;
             EventHandler h = delegate (object s, EventArgs ev)
             {
+                if (flow.IsDisposed || child.IsDisposed || child.Parent != flow) return;
                 int w = flow.ClientSize.Width - flow.Padding.Horizontal - child.Margin.Horizontal;
                 if (w > 0 && child.Width != w) child.Width = w;
             };
             flow.ClientSizeChanged += h;
             flow.SizeChanged += h;
+            flow.Layout += (s, e) => h(s, e);
+            child.SizeChanged += h;
             h(flow, EventArgs.Empty);
         }
 
@@ -1114,11 +1146,14 @@ namespace TxTools.Common
             lbl.AutoSize = true;
             EventHandler h = delegate (object s, EventArgs ev)
             {
+                if (flow.IsDisposed || lbl.IsDisposed || lbl.Parent != flow) return;
                 int w = flow.ClientSize.Width - flow.Padding.Horizontal - lbl.Margin.Horizontal;
-                if (w > 20) lbl.MaximumSize = new Size(w, 0);
+                if (w > 20 && lbl.MaximumSize.Width != w) lbl.MaximumSize = new Size(w, 0);
             };
             flow.ClientSizeChanged += h;
             flow.SizeChanged += h;
+            flow.Layout += (s, e) => h(s, e);
+            lbl.SizeChanged += h;
             h(flow, EventArgs.Empty);
         }
 
@@ -1218,7 +1253,7 @@ namespace TxTools.Common
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
-                AutoScroll = true,
+                AutoScroll = false,
                 BackColor = CardBack,
                 Padding = new Padding(2, 4, 2, 2),
                 Font = BaseFont
@@ -1260,8 +1295,9 @@ namespace TxTools.Common
             {
                 Text = text,
                 Font = primary ? BoldFont : BaseFont,
-                AutoSize = width <= 0,
-                Height = height,
+                AutoSize = false,
+                Width = PluginUiPolicy.MeasureButtonWidth(text, primary ? BoldFont : BaseFont),
+                Height = PluginUiPolicy.ButtonHeight,
                 Margin = new Padding(3),
                 FlatStyle = FlatStyle.Flat,
                 BgColor = primary ? PrimaryBack : SystemColors.ControlLight,
@@ -1269,7 +1305,6 @@ namespace TxTools.Common
                 BorderColor = Theme.BtnBorder,
                 HoverColor = Theme.BtnHover
             };
-            if (width > 0) b.Width = width;
             return b;
         }
 

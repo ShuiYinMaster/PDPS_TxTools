@@ -63,7 +63,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
         }
 
         // =====================================================================
-        // 5 张卡片 — 水平等分顶部，自适应高度
+        // 参数区保持单行：短标签、按内容分配列宽，完整说明放入提示。
         // =====================================================================
         private void BuildCardsPanel()
         {
@@ -72,6 +72,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 Dock = DockStyle.Top,
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                AutoScroll = false,
                 BackColor = FormUiKit.CardBack,
                 Padding = new Padding(3, 3, 3, 3)
             };
@@ -86,8 +87,8 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 BackColor = Color.Transparent,
                 Padding = new Padding(0)
             };
-            for (int i = 0; i < 5; i++)
-                table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20f));
+            foreach (float width in new[] { 24f, 18f, 18f, 15f, 25f })
+                table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, width));
             table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             table.Controls.Add(BuildCard1_Target(),       0, 0);
@@ -95,6 +96,15 @@ namespace TxTools.RobotReachabilityChecker.Ui
             table.Controls.Add(BuildCard3_JointMargin(),  2, 0);
             table.Controls.Add(BuildCard4_Interference(), 3, 0);
             table.Controls.Add(BuildCard5_Functions(),    4, 0);
+            var tips = new ToolTip();
+            tips.SetToolTip(_txtOpNode, "拾取需要检查的机器人操作节点（OP）");
+            tips.SetToolTip(_cbPointTypeFilter, "筛选需要检查的点位类型");
+            tips.SetToolTip(_cbBrand, "机器人品牌（自动或指定品牌）");
+            tips.SetToolTip(_chkTcpXyz, "检查点位 TCP 在 XYZ 方向的可达余量");
+            tips.SetToolTip(_chkJointMargin, "检查各轴距离软限位的角度余量");
+            tips.SetToolTip(_chkStaticInterference, "检查点位姿态的静态干涉");
+            tips.SetToolTip(_chkDynamicInterference, "动态干涉检查（当前版本不可用）");
+            Disposed += (s, e) => tips.Dispose();
 
             _cardsPanel.Controls.Add(table);
             Controls.Add(_cardsPanel);
@@ -132,12 +142,12 @@ namespace TxTools.RobotReachabilityChecker.Ui
         // ---------------------------------------------------------------------
         private GroupBox BuildCard1_Target()
         {
-            var card = MkCard("1. 检查目标及筛选");
+            var card = MkCard("检查目标");
             var flow = MkCardContent();
 
             // 行1：OP节点 拾取器
             var row1 = MkInlineRow();
-            row1.Controls.Add(MkLabel("OP节点"));
+            row1.Controls.Add(MkLabel("OP"));
             _txtOpNode = new TxObjEditBoxCtrl
             {
                 Width = 120, Height = 22, Font = FormUiKit.BaseFont,
@@ -178,7 +188,13 @@ namespace TxTools.RobotReachabilityChecker.Ui
             _cbBrand.SelectedIndex = 0;
             AutoFitComboBoxWidth(_cbBrand);
             row3.Controls.Add(_cbBrand);
-            flow.Controls.Add(row3);
+            // 类型下拉和品牌放在同一行，减少目标区高度和其余卡片的留白。
+            var typeLabel = row2.Controls[0];
+            row2.Controls.Remove(typeLabel);
+            typeLabel.Dispose();
+            row2.Controls.Add(row3.Controls[0]);
+            row2.Controls.Add(_cbBrand);
+            row3.Dispose();
 
             // 行4：隐藏正常结果项
             _chkHideNormal = new CheckBox
@@ -199,7 +215,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
         // ---------------------------------------------------------------------
         private GroupBox BuildCard2_TcpMargin()
         {
-            var card = MkCard("2. TCP余量检查");
+            var card = MkCard("TCP 余量");
             var flow = MkCardContent();
 
             _chkTcpXyz = new CheckBox
@@ -232,12 +248,12 @@ namespace TxTools.RobotReachabilityChecker.Ui
         // ---------------------------------------------------------------------
         private GroupBox BuildCard3_JointMargin()
         {
-            var card = MkCard("3. 轴角度余量检查");
+            var card = MkCard("轴限位余量");
             var flow = MkCardContent();
 
             _chkJointMargin = new CheckBox
             {
-                Text = "各轴软限位余量检查",
+                Text = "启用轴限位检查",
                 Checked = true, AutoSize = true,
                 Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 2, 0, 4)
@@ -265,19 +281,19 @@ namespace TxTools.RobotReachabilityChecker.Ui
         // ---------------------------------------------------------------------
         private GroupBox BuildCard4_Interference()
         {
-            var card = MkCard("4. 点位干涉检查");
+            var card = MkCard("干涉检查");
             var flow = MkCardContent();
 
             _chkStaticInterference = new CheckBox
             {
-                Text = "启用静态干涉检查",
+                Text = "静态干涉",
                 AutoSize = true, Enabled = true,
                 Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 2, 0, 4)
             };
             _chkDynamicInterference = new CheckBox
             {
-                Text = "启用动态干涉检查",
+                Text = "动态干涉",
                 AutoSize = true, Enabled = false,
                 Font = FormUiKit.BaseFont,
                 Margin = new Padding(0, 0, 0, 0)
@@ -293,7 +309,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
         // ---------------------------------------------------------------------
         private GroupBox BuildCard5_Functions()
         {
-            var card = MkCard("5. 功能区");
+            var card = MkCard("操作");
             var outerFlow = MkCardContent();
 
             // 四个按钮等宽：上面两个 + 下面两个
@@ -390,9 +406,10 @@ namespace TxTools.RobotReachabilityChecker.Ui
 
         private void ToggleLogPanel()
         {
+            if (!PluginLog.Enabled) return;
             if (_logPanel == null) return;
             _logVisible = !_logVisible;
-            _logPanel.Visible = _logVisible;
+            PluginLog.SetVisible(_logPanel, _logVisible);
             if (_btnFooterLog != null) _btnFooterLog.Text = _logVisible ? "▼ 隐藏日志" : "▲ 显示日志";
         }
 
@@ -416,6 +433,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 AutoSize = true
             };
             tsLogBtn.Click += (s, e) => ToggleLogPanel();
+            PluginLog.Register(_logPanel, false, tsLogBtn);
 
             _statusStrip.Items.Add(_lblStatus);
             _statusStrip.Items.Add(tsLogBtn);

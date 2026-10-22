@@ -7,11 +7,13 @@ namespace TxTools.RobotBaseChecker
     // 注册要求：public 类，继承 TxButtonCommand，实现 Name / Category / Execute
     public class RobotBaseCheckerCommand : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.RobotBaseChecker.bmp";
+        public override string LargeBitmap => "image.base0.png";
+
         public override string Name => ".BASE0 一致性检查校正";
 
         public override string Category => "TxTools";
         public override string Description => "检查BASE0是否符合标准，并一键校正";
-        public override string LargeBitmap => "image.base0.png";
 
         public override void Execute(object cmdParams)
         {

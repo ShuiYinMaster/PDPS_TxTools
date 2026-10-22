@@ -13,7 +13,7 @@
     <LangVersion>8.0</LangVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
-    <ProcessSimulateDllDir>G:\Program Files\Tecnomatix_2402\eMPower</ProcessSimulateDllDir>
+    <ProcessSimulateDllDir>$(MSBuildProjectDirectory)\..\2402dll</ProcessSimulateDllDir>
     <NuGetPackageImportStamp>
     </NuGetPackageImportStamp>
   </PropertyGroup>
@@ -21,7 +21,7 @@
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
-    <OutputPath>G:\Program Files\Tecnomatix_2402\eMPower\DotNetCommands\TxTools\</OutputPath>
+    <OutputPath>..\bin\</OutputPath>
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
@@ -33,7 +33,7 @@
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
-    <OutputPath>G:\Program Files\Tecnomatix_2402\eMPower\DotNetCommands\TxTools\</OutputPath>
+    <OutputPath>..\bin\</OutputPath>
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
@@ -500,6 +500,8 @@
     <Compile Include="ExportByColor\MeshExport.cs" />
     <Compile Include="ExportByColor\FbxExport.cs" />
     <Compile Include="SRC\FormUiKit.cs" />
+    <Compile Include="SRC\PluginUiPolicy.cs" />
+    <Compile Include="SRC\PluginLog.cs" />
     <Compile Include="SRC\PickFocus.cs" />
     <Compile Include="SRC\SceneUndoScope.cs" />
     <Compile Include="SRC\SceneCreationBatch.cs" />
@@ -1464,14 +1466,35 @@
     <EmbeddedResource Include="image\WeldSpotGrouper.png" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="image\Small\*.bmp" />
+    <EmbeddedResource Include="image\AutoPath.png" />
+    <EmbeddedResource Include="image\CrossEnvIO.png" />
+    <EmbeddedResource Include="image\ExportByColor.png" />
+    <EmbeddedResource Include="image\CatiaPartTree.png" />
+    <EmbeddedResource Include="image\ThemeTuner.png" />
+    <EmbeddedResource Include="image\MechArena.png" />
+    <EmbeddedResource Include="image\SnakeGame.png" />
+    <EmbeddedResource Include="image\WeldPointMatrix.png" />
+    <EmbeddedResource Include="image\SyncLibPath.png" />
+    <EmbeddedResource Include="image\SyncToSelectedComponent.png" />
+    <EmbeddedResource Include="image\DeviceZAligner.png" />
+    <EmbeddedResource Include="image\WeldPoint.png" />
+    <EmbeddedResource Include="image\ViaPoint.png" />
+    <EmbeddedResource Include="image\SeamPoint.png" />
+  </ItemGroup>
+  <ItemGroup>
     <WCFMetadata Include="Connected Services\" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Agent\UI\recipe-quick.html" />
     <EmbeddedResource Include="Agent\UI\chat.html" />
     <EmbeddedResource Include="Agent\UI\recipe-sidebar.css" />
+    <EmbeddedResource Include="Agent\UI\plugin-ui.css" />
     <EmbeddedResource Include="Agent\UI\recipe-sidebar.js" />
   </ItemGroup>
+  <PropertyGroup Condition="'$(TxToolsShowLogs)' == 'false'">
+    <DefineConstants>$(DefineConstants);TXTOOLS_HIDE_LOGS</DefineConstants>
+  </PropertyGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Import Project="packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets" Condition="Exists('packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets')" />
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">

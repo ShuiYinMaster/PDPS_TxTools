@@ -58,6 +58,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             FormBorderStyle = FormBorderStyle.SizableToolWindow;
             BackColor = FormUiKit.CardBack;
             Build();
+            PluginUiPolicy.Attach(this);
         }
 
         private void Build()

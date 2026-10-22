@@ -13,6 +13,9 @@ namespace TxTools.SnakeGame
     [Guid("7C3E9A54-2B18-4F6D-8E33-9A1D42B7C605")]
     public class SnakeGameCommand : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.SnakeGame.bmp";
+        public override string LargeBitmap => "image.SnakeGame.png";
+
         public override string Category
         {
             get { return "TxTools"; }
@@ -28,7 +31,6 @@ namespace TxTools.SnakeGame
             get { return "在 Process Simulate 场景内玩一局贪吃蛇（几何体+干涉集）"; }
         }
 
-        public override string LargeBitmap { get { return "image.snakegame.png"; } }
 
         public override void Execute(object cmdParams)
         {

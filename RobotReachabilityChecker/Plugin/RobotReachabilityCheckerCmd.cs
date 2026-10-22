@@ -12,11 +12,12 @@ namespace TxTools.RobotReachabilityChecker.Plugin
 {
     public class RobotReachabilityCheckerCmd : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.RobotReachabilityChecker.bmp";
+        public override string LargeBitmap => "image.RobotReachabilityChecker.png";
+
         public override string Category    => "TxTools";
         public override string Name        => ".可达性检查";
         public override string Description => "机器人路径可达性检查工具";
-        public override string Bitmap => base.Bitmap;
-        public override string LargeBitmap => "image.RobotReachabilityChecker.png";
 
         public override void Execute(object cmdParams)
         {

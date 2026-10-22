@@ -8,12 +8,13 @@ namespace TxTools.WeldAnnotator
     /// <summary>焊点标注截图插件入口。</summary>
     public class WeldPointAnnotatorCmd : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.WeldAnnotator.bmp";
+        public override string LargeBitmap => "image.WeldAnnotator.png";
+
         public override string Name        => ".焊点标注截图";
         public override string Category    => "TxTools";
         public override string Tooltip     => "焊点标注截图 → Excel";
         public override string Description => "将PS视口截图与焊点标注导出到活动Excel";
-        public override string Bitmap      => "image.WeldAnnotator.bmp";
-        public override string LargeBitmap => "image.WeldAnnotator.png";
 
         public override void Execute(object param)
         {

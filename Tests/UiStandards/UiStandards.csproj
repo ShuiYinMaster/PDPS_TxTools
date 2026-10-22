@@ -1,0 +1,21 @@
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <LangVersion>7.3</LangVersion><OutputPath>bin\</OutputPath><AssemblyName>UiStandardsRegression</AssemblyName>
+    <PlatformTarget>x64</PlatformTarget><Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(TxToolsShowLogs)' == 'false'">
+    <DefineConstants>$(DefineConstants);TXTOOLS_HIDE_LOGS</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System"/><Reference Include="System.Core"/><Reference Include="System.Drawing"/>
+    <Reference Include="System.Windows.Forms"/><Reference Include="System.Web.Extensions"/>
+    <Compile Include="Program.cs"/>
+    <Compile Include="ReachabilityLayoutHost.cs"/>
+    <Compile Include="..\..\RobotReachabilityChecker\Ui\ReachabilityCheckerForm.Layout.cs"><Link>ReachabilityCheckerForm.Layout.cs</Link></Compile>
+    <Compile Include="..\..\RobotReachabilityChecker\Ui\ReachabilityCheckerForm.Helpers.cs"><Link>ReachabilityCheckerForm.Helpers.cs</Link></Compile>
+    <Compile Include="..\..\SRC\PluginUiPolicy.cs"><Link>PluginUiPolicy.cs</Link></Compile>
+    <Compile Include="..\..\SRC\PluginLog.cs"><Link>PluginLog.cs</Link></Compile>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>
+</Project>

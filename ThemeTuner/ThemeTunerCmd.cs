@@ -8,6 +8,9 @@ namespace TxTools.ThemeTuner
 {
     public class ThemeTunerCmd : TxButtonCommand
     {
+        public override string Bitmap => "image.Small.ThemeTuner.bmp";
+        public override string LargeBitmap => "image.ThemeTuner.png";
+
         public override string Name { get { return ".主题调整"; } }
         public override string Category { get { return "TxTools"; } }
         public override string Tooltip { get { return "更换套件窗体的主题配色（暖色/冷色/浅色/琥珀/草木绿/自定义）"; } }

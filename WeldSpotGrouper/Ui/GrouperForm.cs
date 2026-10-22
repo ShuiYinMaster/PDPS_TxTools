@@ -149,6 +149,11 @@ namespace TxTools.WeldSpotGrouper
             _btnLog.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             _btnLog.Click += (s, e) => ToggleLog();
             Controls.Add(_btnLog);
+            var actions = new FlowLayoutPanel { Location = new Point(12, 266), Height = 32,
+                Width = ClientSize.Width - 24, WrapContents = false, Margin = Padding.Empty,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+            actions.Controls.AddRange(new Control[] { _btnScan, _btnApply, _btnClear, _btnLog });
+            Controls.Add(actions);
 
             // 4. 预览表
             _lblCount = new Label { Text = "预览：0 组", Location = new Point(12, 302), AutoSize = true, Font = FormUiKit.BaseFont };
@@ -182,6 +187,9 @@ namespace TxTools.WeldSpotGrouper
                 Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
             };
             Controls.Add(_txtLog);
+            PluginLog.Register(_txtLog, false, _btnLog);
+            _txtLog.VisibleChanged += (s, e) =>
+                _lv.Height = Math.Max(30, (_txtLog.Visible ? _txtLog.Top - 6 : ClientSize.Height - 12) - _lv.Top);
         }
 
         // ════════════════════════════════════════════════════════════
@@ -313,7 +321,8 @@ namespace TxTools.WeldSpotGrouper
 
         private void ToggleLog()
         {
-            _txtLog.Visible = !_txtLog.Visible;
+            if (!PluginLog.Enabled) return;
+            PluginLog.SetVisible(_txtLog, !_txtLog.Visible);
             // 给日志腾空间：可见时压缩预览表
             int bottom = _txtLog.Visible ? _txtLog.Top - 6 : ClientSize.Height - 12;
             _lv.Height = bottom - _lv.Top;

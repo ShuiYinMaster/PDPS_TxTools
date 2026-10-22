@@ -123,6 +123,7 @@ namespace TxTools.MechArena
 
             FlowLayoutPanel helpContent;
             var helpCard = FormUiKit.MkCard("操作说明", 260, 140, out helpContent);
+            helpContent.AutoScroll = false;
             var helpLabel = new FormUiKit.FlatColorLabel
             {
                 Text =
@@ -142,6 +143,7 @@ namespace TxTools.MechArena
 
             FlowLayoutPanel statusContent;
             var statusCard = FormUiKit.MkCard("游戏状态", 260, 180, out statusContent);
+            statusContent.AutoScroll = false;
             _lblStatus = new FormUiKit.FlatColorLabel
             {
                 Text = "未启动 —— 点击【开始】",
@@ -220,6 +222,7 @@ namespace TxTools.MechArena
                 Location = new Point(6, 4)
             };
             scroll.Controls.Add(_lblRobotList);
+            PluginUiPolicy.AllowListScrolling(scroll);
 
             // 注意添加顺序：先 Fill 后 Top，否则 Top 会盖住 Fill 的起始区域
             card.Controls.Add(scroll);

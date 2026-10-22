@@ -23,7 +23,7 @@ namespace TxTools.CatiaPartTree
         // ── 数据 ─────────────────────────────────────────────────────────
         private readonly CatiaPartTreeService _svc;
         private TreeEditNode _model;                 // 当前可编辑树（根）
-        private static readonly Size _designSize = new Size(1080, 720);
+        private static readonly Size _designSize = new Size(1080, 660);
         private bool _dpiApplied;
 
         // ── 左侧：树编辑 ─────────────────────────────────────────────────
@@ -131,15 +131,16 @@ namespace TxTools.CatiaPartTree
                 Margin = Padding.Empty,
                 Padding = Padding.Empty
             };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             // 筛选行
             var filterRow = new FlowLayoutPanel
             {
-                Dock = DockStyle.Fill,
+                Dock = DockStyle.Top,
+                AutoSize = true,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
                 Padding = new Padding(0, 4, 0, 2),
@@ -179,7 +180,8 @@ namespace TxTools.CatiaPartTree
             // 功能按钮行（原工具条功能，放到树下方）
             var funcRow = new FlowLayoutPanel
             {
-                Dock = DockStyle.Fill,
+                Dock = DockStyle.Top,
+                AutoSize = true,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
                 Padding = new Padding(0, 4, 0, 2),
@@ -195,7 +197,8 @@ namespace TxTools.CatiaPartTree
             // 编辑按钮行
             var btnRow = new FlowLayoutPanel
             {
-                Dock = DockStyle.Fill,
+                Dock = DockStyle.Top,
+                AutoSize = true,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
                 Padding = new Padding(0, 2, 0, 0),
@@ -287,6 +290,8 @@ namespace TxTools.CatiaPartTree
             content.Controls.Add(_chkPreferPn);
             _chkLeafContainers = new CheckBox { Text = "叶子零件也建空集(默认不建)", AutoSize = true, Checked = false, Font = FormUiKit.BaseFont };
             content.Controls.Add(_chkLeafContainers);
+            foreach (Control item in content.Controls)
+                if (item is CheckBox) item.Margin = new Padding(0, 1, 0, 1);
             return card;
         }
 
@@ -298,7 +303,10 @@ namespace TxTools.CatiaPartTree
             btnBuild.Click += (s, e) => OnBuildTree();
             content.Controls.Add(btnBuild);
 
-            _chkReload = new CheckBox { Text = "建树后保存并重载（会写工程文件，影响撤销历史）", AutoSize = true, Checked = false, Font = FormUiKit.BaseFont };
+            _chkReload = new CheckBox { Text = "建树后保存并重载", AutoSize = true, Checked = false, Font = FormUiKit.BaseFont };
+            var reloadTip = new ToolTip();
+            reloadTip.SetToolTip(_chkReload, "保存并重载会写入工程文件，影响撤销历史。");
+            Disposed += (s, e) => reloadTip.Dispose();
             content.Controls.Add(_chkReload);
 
             var rowScope = FormUiKit.MkRowFlow();
@@ -330,16 +338,20 @@ namespace TxTools.CatiaPartTree
             var btnClear = FormUiKit.MkFuncButton("清空建树映射", Theme.BtnMuted);
             btnClear.Click += (s, e) => { _svc.ClearMapping(); Log("已清空建树映射。", LogLevel.Info); };
             content.Controls.Add(btnClear);
+            foreach (Control item in content.Controls)
+                if (item is CheckBox) item.Margin = new Padding(0, 1, 0, 1);
             return card;
         }
 
         private Control BuildLogCard()
         {
-            var card = FormUiKit.MkCard("日志", 330, 232, out var content);
+            var card = FormUiKit.MkCard("日志", 330, 96, out var content);
+            PluginLog.Register(card);
             _rtbLog = new RichTextBox
             {
+                AutoSize = false,
                 Width = 330 - 18,
-                Height = 220,
+                Height = 60,
                 BackColor = Theme.LogBg,
                 ForeColor = Theme.LogText,
                 BorderStyle = BorderStyle.None,

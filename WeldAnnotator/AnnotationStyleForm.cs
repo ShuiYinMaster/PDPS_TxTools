@@ -32,6 +32,7 @@ namespace TxTools.WeldAnnotator
 
         public AnnotationStyleForm(AnnotationStyle src)
         {
+            TxTools.Common.PluginUiPolicy.Attach(this);
             var catCopy = new Dictionary<string, int>();
             if (src.CategoryShapes != null)
                 foreach (var kv in src.CategoryShapes) catCopy[kv.Key] = kv.Value;
