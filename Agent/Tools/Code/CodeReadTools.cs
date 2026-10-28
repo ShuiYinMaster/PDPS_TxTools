@@ -62,8 +62,7 @@ namespace TxTools.Agent.Core
 
             try
             {
-                var projects = Directory.EnumerateFiles(root, "*.csproj", SearchOption.AllDirectories)
-                    .Where(f => !CodeWorkspace.IsSkipped(f)).Take(20).ToList();
+                var projects = CodeWorkspace.EnumerateFiles("*.csproj", 20);
                 var slns = Directory.EnumerateFiles(root, "*.sln", SearchOption.TopDirectoryOnly).Take(5).ToList();
 
                 if (slns.Count > 0)
@@ -237,10 +236,12 @@ namespace TxTools.Agent.Core
             try { lines = File.ReadAllLines(full); }
             catch (Exception ex) { return "Error: 读取失败 - " + ex.Message; }
 
+            if (lines.Length == 0) return CodeWorkspace.Relative(full) + "  (空文件，0 行)";
             var symbol = GetString(input, "symbol");
             int start = Int(input, "start_line", 0);
             int end = Int(input, "end_line", 0);
             int ctx = Int(input, "context", 3);
+            if (ctx < 0 || ctx > 100) return "Error: context 应为 0..100。";
 
             if (!string.IsNullOrWhiteSpace(symbol))
             {
@@ -379,10 +380,11 @@ namespace TxTools.Agent.Core
                       ? (int)input["max_results"] : MaxHits;
             if (max <= 0 || max > MaxHits) max = MaxHits;
 
+            if (ctx < 0 || ctx > 100) return "Error: context 应为 0..100。";
             Regex re = null;
             if (useRegex)
             {
-                try { re = new Regex(query, RegexOptions.Compiled); }
+                try { re = new Regex(query, RegexOptions.Compiled, TimeSpan.FromMilliseconds(500)); }
                 catch (Exception ex) { return "Error: 正则无效 - " + ex.Message; }
             }
 
@@ -401,9 +403,9 @@ namespace TxTools.Agent.Core
 
                 for (int i = 0; i < lines.Length && hits < max; i++)
                 {
-                    bool match = re != null
-                        ? re.IsMatch(lines[i])
-                        : lines[i].IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
+                    bool match;
+                    try { match = re != null ? re.IsMatch(lines[i]) : lines[i].IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0; }
+                    catch (RegexMatchTimeoutException) { return "Error: 正则匹配超时，请缩小表达式或搜索范围。"; }
                     if (!match) continue;
 
                     if (!headerWritten)

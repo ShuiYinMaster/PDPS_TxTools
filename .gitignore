@@ -393,6 +393,9 @@ packages/
 /Agent/UI/pet/dsh-pet/assets/
 
 # Local state, build reports and authoring inputs
+/Test/
+/Tests/
+/TxTools.Local/
 /.claude/
 /.workbuddy/
 /.codex/

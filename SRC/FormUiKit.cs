@@ -1542,9 +1542,9 @@ namespace TxTools.Common
                     {
                         try
                         {
-                            if (grid.Visible && grid.CanFocus)
+                            if (!grid.IsDisposed && grid.Visible && grid.CanFocus)
                             {
-                                grid.Focus();
+                                Activate(grid);
                                 try { grid.SetCurrentCell(0, 0); } catch { }
                             }
                         }
@@ -1561,14 +1561,7 @@ namespace TxTools.Common
 
             public static void Activate(TxObjGridCtrl grid)
             {
-                try
-                {
-                    grid.Focus();
-                    // 切换一次触发 PS 重新注册拾取提供者（首次显示时未注册的问题）
-                    grid.ListenToPick = false;
-                    grid.ListenToPick = true;
-                }
-                catch { }
+                PickFocus.Activate(grid);
             }
 
         }

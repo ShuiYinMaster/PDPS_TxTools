@@ -56,12 +56,14 @@ namespace TxTools.Agent.Tools
                 var headers = ToStringList(input["headers"] as JArray);
                 var rows = new List<IList<string>>();
                 var rowsArr = input["rows"] as JArray;
-                if (rowsArr != null)
-                    foreach (var r in rowsArr)
-                        rows.Add(ToStringList(r as JArray));
+                if (input["headers"] is JArray == false || rowsArr == null) return "Error: headers 和 rows 必须为数组。";
+                foreach (var r in rowsArr) {
+                    if (!(r is JArray)) return "Error: rows 每一行必须为数组。";
+                    rows.Add(ToStringList((JArray)r));
+                }
 
                 if (headers.Count == 0 && rows.Count == 0)
-                    return "没有可导出的数据(headers 和 rows 都为空)。";
+                    return "Error: 没有可导出的数据(headers 和 rows 都为空)。";
 
                 var folder = GetString(input, "folder", null);
                 if (string.IsNullOrWhiteSpace(folder))
@@ -73,14 +75,15 @@ namespace TxTools.Agent.Tools
                     filename = "TxAgent_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".xlsx";
                 if (!filename.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)) filename += ".xlsx";
 
+                filename = DocxExportTool.SafeFileName(filename);
                 var sheet = GetString(input, "sheet_name", "Sheet1");
-                var path = XlsxWriter.Write(Path.Combine(folder, filename), sheet, headers, rows);
+                var path = DocxExportTool.WriteExport(Path.Combine(folder, filename), staging => XlsxWriter.Write(staging, sheet, headers, rows));
 
                 return "已导出 " + rows.Count + " 行到: " + path;
             }
             catch (Exception ex)
             {
-                return "导出 Excel 失败: " + ex.Message;
+                return "Error: 导出 Excel 失败: " + ex.Message;
             }
         }
 

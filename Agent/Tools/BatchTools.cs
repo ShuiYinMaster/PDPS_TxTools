@@ -4,6 +4,7 @@
 // batch_rename 支持前缀/后缀/正则三种模式重命名，包 Undo 块可 Ctrl+Z 撤销。
 
 using System;
+using System.Linq;
 using System.Collections;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
@@ -54,7 +55,7 @@ namespace TxTools.Agent.Tools
                             ""enum"": [""physical"", ""operation"", ""mfg"", ""all""],
                             ""description"": ""搜索范围：physical=物理树, operation=操作树, mfg=制造树, all=全部，默认 all""
                         },
-                        ""max_results"": { ""type"": ""number"", ""description"": ""最大返回数量，默认 50"" }
+                        ""max_results"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 5000, ""description"": ""最大返回数量，默认 50"" }
                     }
                 }");
             }
@@ -71,6 +72,8 @@ namespace TxTools.Agent.Tools
             if (tMax != null && (tMax.Type == JTokenType.Integer || tMax.Type == JTokenType.Float))
                 maxResults = (int)tMax;
 
+            if (!new[] { "physical", "operation", "mfg", "all" }.Contains(root)) return "Error: root 必须为 physical/operation/mfg/all。";
+            if (maxResults < 1 || maxResults > 5000) return "Error: max_results 应为 1..5000。";
             return PsContext.Current.Run<string>(delegate
             {
                 try
@@ -199,7 +202,7 @@ namespace TxTools.Agent.Tools
 
         private static string ParentName(object o)
         {
-            try { dynamic d = o; dynamic p = d.Parent; if (p != null) return (string)p.Name ?? ""; } catch { }
+            try { dynamic d = o; dynamic p = d.Collection; if (p != null) return (string)p.Name ?? ""; } catch { }
             return "";
         }
     }
@@ -237,6 +240,7 @@ namespace TxTools.Agent.Tools
                 return JObject.Parse(@"{
                     ""type"": ""object"",
                     ""properties"": {
+                        ""object_ids"": {""type"":""array"",""items"":{""type"":""string""},""description"":""优先按 ID 定位，避免同名歧义""},
                         ""names"": {
                             ""type"": ""array"",
                             ""items"": { ""type"": ""string"" },
@@ -250,161 +254,59 @@ namespace TxTools.Agent.Tools
                         ""old_str"": { ""type"": ""string"", ""description"": ""要替换的字符串或正则表达式"" },
                         ""new_str"": { ""type"": ""string"", ""description"": ""替换结果字符串"" }
                     },
-                    ""required"": [""names"", ""mode"", ""old_str"", ""new_str""]
+                    ""required"": [""mode"", ""old_str"", ""new_str""], ""anyOf"":[{""required"":[""names""]},{""required"":[""object_ids""]}]
                 }");
             }
         }
 
         public override string Execute(JObject input)
         {
-            // 解析参数
-            var nameList = new List<string>();
-            var arr = input != null ? input["names"] as JArray : null;
-            if (arr != null)
-                foreach (var t in arr)
-                    if (t != null && t.Type == JTokenType.String) nameList.Add((string)t);
-
-            if (nameList.Count == 0) return "未提供要重命名的对象名列表(names)。";
-
+            var ids = input["object_ids"] as JArray;
+            var names = input["names"] as JArray;
+            var keys = ids != null && ids.Count > 0 ? ids : names;
+            if (keys == null || keys.Count == 0 || keys.Any(k => k.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)k)))
+                return "Error: 提供非空 names 或 object_ids 字符串数组。";
             var mode = GetString(input, "mode", "prefix_replace");
-            var oldStr = GetString(input, "old_str", null);
-            var newStr = GetString(input, "new_str", null);
-
-            if (string.IsNullOrEmpty(oldStr)) return "未提供 old_str(要替换的字符串/正则)。";
-            if (newStr == null) return "未提供 new_str(替换结果字符串)。";
-
-            return PsContext.Current.Run<string>(delegate
-            {
-                try
-                {
+            var oldText = GetString(input, "old_str"); var newText = GetString(input, "new_str");
+            if (string.IsNullOrEmpty(oldText) || newText == null) return "Error: old_str 不能为空，new_str 必须显式提供。";
+            if (mode != "prefix_replace" && mode != "suffix_replace" && mode != "regex_replace") return "Error: 无效的重命名模式。";
+            return PsContext.Current.Run<string>(() => {
+                try {
                     var doc = TxApplication.ActiveDocument;
-                    if (doc == null) return "没有打开的研究文档。";
-
-                    // 收集场景对象，建立名称→对象映射
-                    var all = CollectAllSceneObjects(doc);
-                    var nameMap = new Dictionary<string, ITxObject>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var o in all)
-                    {
-                        var n = SafeName(o);
-                        if (n != null && !nameMap.ContainsKey(n)) nameMap[n] = o;
+                    if (doc == null) return "Error: 没有打开的文档。";
+                    var targets = new List<ITxObject>(); var seen = new HashSet<string>();
+                    foreach (var key in keys) {
+                        ITxObject obj; string error;
+                        if (!PsBridge.TryResolve(keys == ids ? null : (string)key, keys == ids ? (string)key : null, out obj, out error)) return "Error: " + error;
+                        if (seen.Add(obj.Id)) targets.Add(obj);
                     }
-
-                    // 找出要重命名的对象
-                    var targets = new List<ITxObject>();
-                    var missingNames = new List<string>();
-                    foreach (var nm in nameList)
-                    {
-                        ITxObject obj;
-                        if (nameMap.TryGetValue(nm, out obj))
-                        {
-                            targets.Add(obj);
-                        }
-                        else
-                        {
-                            // 模糊匹配回退
-                            bool found = false;
-                            foreach (var o in all)
-                            {
-                                var n = SafeName(o);
-                                if (n != null && n.IndexOf(nm, StringComparison.OrdinalIgnoreCase) >= 0)
-                                {
-                                    targets.Add(o);
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if (!found) missingNames.Add(nm);
+                    var sceneObjects = CollectAllSceneObjects(doc);
+                    var planned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var changes = new List<Tuple<ITxObject, string, string>>();
+                    foreach (var obj in targets) {
+                        var current = obj.Name;
+                        var next = mode == "regex_replace" ? Regex.Replace(current, oldText, newText, RegexOptions.None, TimeSpan.FromMilliseconds(500)) :
+                            mode == "prefix_replace" ? (current.StartsWith(oldText, StringComparison.Ordinal) ? newText + current.Substring(oldText.Length) : current) :
+                            (current.EndsWith(oldText, StringComparison.Ordinal) ? current.Substring(0, current.Length - oldText.Length) + newText : current);
+                        if (next == current) continue;
+                        if (!obj.CanBeRenamed || !obj.CanBeModified || string.IsNullOrWhiteSpace(next)) return "Error: 对象不可重命名或新名称无效: " + PsBridge.Ref(obj);
+                        if (sceneObjects.Any(other => other.Id != obj.Id && string.Equals(other.Name, next, StringComparison.OrdinalIgnoreCase)) || !planned.Add(next)) return "Error: 新名称已被占用或批内冲突: " + next + "；未执行任何修改。";
+                        changes.Add(Tuple.Create(obj, current, next));
+                    }
+                    var details = new JArray();
+                    using (var undo = TxTools.Common.SceneUndoScope.Begin(doc, "批量重命名")) {
+                        foreach (var change in changes) {
+                            undo.EnsureDocument();
+                            try {
+                                change.Item1.Name = change.Item3;
+                                if (change.Item1.Name != change.Item3) throw new InvalidOperationException("写入后名称不匹配。");
+                                details.Add(new JObject { ["object_id"]=change.Item1.Id, ["old_name"]=change.Item2, ["new_name"]=change.Item3 });
+                            } catch (Exception ex) { return "Error: 批量重命名中断；此前已完成 " + details.Count + " 个，可 Ctrl+Z 撤销。" + ex.Message + "\n" + details; }
                         }
                     }
-
-                    if (targets.Count == 0)
-                        return "没有找到任何要重命名的对象。未找到: " + string.Join(", ", missingNames);
-
-                    // 开启 Undo 块（多策略反射，同 PsBridge 的模式）
-                    var undo = BeginUndo(doc, "batch_rename");
-
-                    int renamed = 0, skipped = 0;
-                    var details = new List<string>();
-                    try
-                    {
-                        foreach (var obj in targets)
-                        {
-                            var currentName = SafeName(obj);
-                            if (currentName == null) { skipped++; continue; }
-
-                            string newName;
-                            switch (mode)
-                            {
-                                case "regex_replace":
-                                    try
-                                    {
-                                        newName = Regex.Replace(currentName, oldStr, newStr);
-                                    }
-                                    catch (Exception rex)
-                                    {
-                                        skipped++;
-                                        details.Add(currentName + " → 正则替换失败: " + rex.Message);
-                                        continue;
-                                    }
-                                    break;
-                                case "suffix_replace":
-                                case "prefix_replace":
-                                default:
-                                    newName = currentName.Replace(oldStr, newStr);
-                                    break;
-                            }
-
-                            if (string.Equals(newName, currentName, StringComparison.Ordinal))
-                            {
-                                skipped++;
-                                details.Add(currentName + " → 无变化(old_str 未匹配)");
-                                continue;
-                            }
-
-                            // 检查新名是否已被占用（排除自身，因为重命名后旧名会释放）
-                            ITxObject existingObj;
-                            if (nameMap.TryGetValue(newName, out existingObj) && existingObj != obj)
-                            {
-                                skipped++;
-                                details.Add(currentName + " → " + newName + " (名称已存在，跳过)");
-                                continue;
-                            }
-
-                            // 设置新名称
-                            try
-                            {
-                                dynamic d = obj;
-                                d.Name = newName;
-                                renamed++;
-                                details.Add(currentName + " → " + newName);
-                            }
-                            catch (Exception ex)
-                            {
-                                skipped++;
-                                details.Add(currentName + " → 设置名称失败: " + ex.Message);
-                            }
-                        }
-                    }
-                    finally
-                    {
-                        if (undo != null) EndUndo(undo);
-                    }
-
-                    try { TxApplication.RefreshDisplay(); } catch { }
-
-                    var sb = new StringBuilder();
-                    sb.AppendLine("批量重命名完成：重命名 " + renamed + " 个 / 总共 " + targets.Count + " 个 / 跳过 " + skipped + " 个。");
-                    if (missingNames.Count > 0)
-                        sb.AppendLine("未找到的对象: " + string.Join(", ", missingNames));
-                    sb.AppendLine("变更明细:");
-                    int detailCap = Math.Min(details.Count, 40);
-                    for (int i = 0; i < detailCap; i++) sb.AppendLine("  " + details[i]);
-                    if (details.Count > detailCap)
-                        sb.AppendLine("  ...(其余 " + (details.Count - detailCap) + " 条省略)");
-                    if (undo != null) sb.AppendLine("可 Ctrl+Z 撤销");
-                    return sb.ToString();
-                }
-                catch (Exception ex) { return "批量重命名失败: " + ex.Message; }
+                    TxApplication.RefreshDisplay();
+                    return new JObject { ["renamed"]=details.Count, ["unchanged"]=targets.Count - details.Count, ["changes"]=details }.ToString();
+                } catch (Exception ex) { return "Error: 批量重命名失败: " + ex.Message; }
             });
         }
 
@@ -428,7 +330,7 @@ namespace TxTools.Agent.Tools
             var seen = new HashSet<int>();
             dynamic dDoc = doc;
 
-            foreach (var rn in new string[] { "PhysicalRoot", "ComponentRoot", "ResourceRoot" })
+            foreach (var rn in new string[] { "PhysicalRoot", "ComponentRoot", "ResourceRoot", "OperationRoot" })
             {
                 try
                 {
@@ -436,6 +338,7 @@ namespace TxTools.Agent.Tools
                     switch (rn)
                     {
                         case "PhysicalRoot": root = dDoc.PhysicalRoot; break;
+                        case "OperationRoot": root = dDoc.OperationRoot; break;
                         case "ComponentRoot": root = dDoc.ComponentRoot; break;
                         case "ResourceRoot": root = dDoc.ResourceRoot; break;
                     }

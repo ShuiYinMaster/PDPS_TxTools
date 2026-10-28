@@ -170,7 +170,7 @@ namespace TxTools.Agent.Core
 
         private static void WriteOne(Gotcha g)
         {
-            MdStore.Write(Folder, SlugOf(g.Signature), ToDoc(g));
+            if (!MdStore.Write(Folder, SlugOf(g.Signature), ToDoc(g))) throw new System.IO.IOException("踩坑记录保存失败，请检查存储目录和文件权限。");
         }
 
         private static string SlugOf(string signature)

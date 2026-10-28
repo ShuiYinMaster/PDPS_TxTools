@@ -71,13 +71,9 @@ namespace TxTools.Agent.Core
                             break;
                         }
                     case "viewer":
-                    default:
-                        {
-                            var hwnd = WindowsCapture.FindPsMainWindow();
-                            if (hwnd == IntPtr.Zero) return "Error: \u627e\u4e0d\u5230 PS \u4e3b\u7a97\u53e3";
-                            WindowsCapture.CaptureClientArea(hwnd, fullPath);
-                            break;
-                        }
+                        PsViewerHelper.CaptureToPng(fullPath, System.Drawing.Size.Empty, false);
+                        break;
+                    default: return "Error: mode 只支持 viewer/window/fullscreen。";
                 }
             }
             catch (Exception ex)

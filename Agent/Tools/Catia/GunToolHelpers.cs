@@ -1,17 +1,12 @@
 // TxTools.Agent / Tools / Ps / GunToolHelpers.cs
 // 焊枪导出相关工具的共享助手。
 //
-// v2 变更（依据真实对话中的失败样本）：
-//  1. 操作解析不再只看 PS 当前选中：选中里找不到时自动全局搜索 OperationRoot 树，
-//     并记录祖先链。此前智能体只能靠猜操作名，连续 4 次 arg 报错。
-//  2. 新增 LeadingPart 兜底：PsReader 的外观候选属性表里没有 LeadingPart，
-//     导致绑定了零件的焊点仍回退到世界系，智能体被迫用 Python 手算相对坐标。
-//  3. 机器人定位可沿祖先链上溯（机器人常绑在父级复合操作上，而 TxWeldOperation 没有 Parent）。
-//  4. 错误信息带可操作提示（留空参数 / 改用哪个名字），而不是只列当前选中。
+// 操作解析使用唯一对象标识，参考系冲突必须显式消解。
 //
 // 只读助手，不直接暴露为工具。
 
 using System;
+using System.Linq;
 using System.Collections;
 using System.Collections.Generic;
 using System.Text;
@@ -33,6 +28,19 @@ namespace TxTools.Agent.Core
     {
         private const int MaxTreeDepth = 12;
         private const int MaxTreeNodes = 20000;
+
+        public static AppearanceRef FindReference(string name, params List<AppearanceRef>[] lists)
+        {
+            var candidates = lists.Where(l => l != null).SelectMany(l => l).Where(a => a != null &&
+                string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase)).Distinct().ToList();
+            if (candidates.Count > 1) {
+                var first = candidates[0].Matrix;
+                if (first == null || candidates.Any(c => c.Matrix == null || c.Matrix.Length != first.Length ||
+                    c.Matrix.Where((v, i) => Math.Abs(v - first[i]) > 1e-6).Any()))
+                    throw new ArgumentException("参考系名称命中多个不同位姿，请用唯一名称或明确世界系。");
+            }
+            return candidates.FirstOrDefault();
+        }
 
         public static double[] Identity()
         {
@@ -83,7 +91,8 @@ namespace TxTools.Agent.Core
                 case "路径点": return PointType.PathPoint;
                 case "continuous":
                 case "连续点": return PointType.ContinuousPoint;
-                default: return PointType.All;
+                case "all": return PointType.All;
+                default: throw new ArgumentException("point_filter 只支持 weld/path/continuous/all。");
             }
         }
 
@@ -101,7 +110,7 @@ namespace TxTools.Agent.Core
         /// 给了名字但选中里没有时，自动到 OperationRoot 全树搜索并带回祖先链。
         /// </summary>
         public static OpResolution ResolveOperations(string operationName,
-            Action<string> log, out string error)
+            Action<string> log, out string error, string objectId = null)
         {
             error = null;
             var res = new OpResolution();
@@ -111,7 +120,7 @@ namespace TxTools.Agent.Core
             try { fromSel = PsReader.GetOperationsFromSelection(log); }
             catch (Exception ex) { log("读取选中异常: " + ex.Message); }
 
-            if (string.IsNullOrEmpty(operationName))
+            if (string.IsNullOrWhiteSpace(operationName) && string.IsNullOrWhiteSpace(objectId))
             {
                 if (fromSel == null || fromSel.Count == 0)
                 {
@@ -124,45 +133,17 @@ namespace TxTools.Agent.Core
                 return res;
             }
 
-            // ── 2. 选中里按名字匹配 ──
-            if (fromSel != null && fromSel.Count > 0)
-            {
-                var hit = MatchByName(fromSel, operationName);
-                if (hit.Count > 0)
-                {
-                    res.Operations = hit;
-                    res.SourceDesc = "PS 当前选中";
-                    return res;
-                }
-            }
-
-            // ── 3. 全局搜索 OperationRoot 树（关键补强） ──
-            List<ITxObject> ancestors;
-            ITxObject node = FindInOperationTree(operationName, out ancestors);
-            if (node != null)
-            {
-                List<OperationInfo> ops = null;
-                try { ops = PsReader.ParsePickedObjectToOperations(node); }
-                catch (Exception ex) { log("解析全局命中对象失败: " + ex.Message); }
-
-                if (ops == null || ops.Count == 0)
-                {
-                    try
-                    {
-                        var one = PsReader.WrapAsOperationInfo(node);
-                        if (one != null) ops = new List<OperationInfo> { one };
-                    }
-                    catch { }
-                }
-
-                if (ops != null && ops.Count > 0)
-                {
-                    res.Operations = ops;
-                    res.Ancestors = ancestors ?? new List<ITxObject>();
-                    res.SourceDesc = "全局搜索(OperationRoot)";
-                    log("[操作] 选中里无此名，已在操作树中找到 '" + SafeName(node) + "'");
-                    return res;
-                }
+            ITxObject node;
+            if (!TxTools.Agent.Ps.PsBridge.TryResolve(operationName, objectId, out node, out error)) return null;
+            if (!(node is ITxOperation)) { error = "指定对象不是操作。"; return null; }
+            var operations = PsReader.ParsePickedObjectToOperations(node);
+            if (operations != null && operations.Count > 0) {
+                res.Operations = operations;
+                res.SourceDesc = "唯一操作: " + TxTools.Agent.Ps.PsBridge.Ref(node);
+                var current = node.Collection as ITxObject;
+                var seen = new HashSet<string>();
+                while (current != null && seen.Add(current.Id)) { res.Ancestors.Add(current); current = current.Collection as ITxObject; }
+                return res;
             }
 
             // ── 4. 找不到：给出可操作的提示 ──

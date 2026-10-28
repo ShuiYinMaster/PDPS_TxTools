@@ -1,4 +1,4 @@
-﻿# WeldAnnotator — Weld Point Screenshots to Excel / 焊点标注截图
+# WeldAnnotator — Weld Point Screenshots to Excel / 焊点标注截图
 
 Write Process Simulate viewport screenshots, weld-point annotations and optional data tables to an active Excel workbook.
 
@@ -48,11 +48,11 @@ Write Process Simulate viewport screenshots, weld-point annotations and optional
 
 ## 回归验证
 
-`dotnet run --project Tests/WeldAnnotatorDisplay/WeldAnnotatorDisplay.csproj --configuration Release`
+显示会话回归位于独立测试目录，构建方式见 [构建与目录布局](../docs/build.md)。
 
 测试链接实际 `DisplaySession.cs`，使用 SDK 模型覆盖复合操作残留 `Partial`、父级级联、连续隔离、白名单 ID 匹配、失败重试、文档切换和窗口独立记录。模型测试不替代 Process Simulate 2402 中的真实场景验证。
 
-Windows 离线验证可运行 `powershell -NoProfile -File Tests/WeldAnnotatorDisplay/Run-Regression.ps1`，用本机 Roslyn 和 .NET Framework 引用编译为 C# 7.3，无需还原 NuGet 包。
+离线验证使用本机 Roslyn 和 .NET Framework 引用，不需要在线模型或真实工程。
 
 ## 界面与构建
 

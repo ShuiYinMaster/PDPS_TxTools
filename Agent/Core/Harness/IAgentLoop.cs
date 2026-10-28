@@ -45,6 +45,14 @@ namespace TxTools.Agent.Core
         Task<LessonExtractor.ExtractResult> ExtractLessonsAsync(CancellationToken ct);
     }
 
+    /// <summary>执行期间接受补充要求，在安全的模型/工具边界消费。</summary>
+    public interface ISteerableAgentLoop
+    {
+        bool TryQueueGuidance(string requestId, string text, out string error);
+        event Action<string> GuidanceApplied;
+        event Action<string, string> GuidanceNotApplied;
+    }
+
     /// <summary>
     /// 可选能力接口:思考内容流 + 流式重置。仅 HarnessAgentLoop 实现。
     /// UI 侧这样接:

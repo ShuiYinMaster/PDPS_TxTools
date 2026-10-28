@@ -44,7 +44,7 @@ namespace TxTools.Agent.Core
                     " \"old_text\": { \"type\":\"string\", \"description\":\"要替换的原文，须在该片段里唯一\" }," +
                     " \"new_text\": { \"type\":\"string\", \"description\":\"替换成的新内容。传空串表示删除这段\" }," +
                     " \"reason\":   { \"type\":\"string\", \"description\":\"为什么改，会记进修订历史\" }" +
-                    "}, \"required\":[\"name\",\"old_text\"] }");
+                    "}, \"required\":[\"name\",\"old_text\",\"new_text\"] }");
             }
         }
 
@@ -52,7 +52,8 @@ namespace TxTools.Agent.Core
         {
             var name = GetString(input, "name");
             var oldText = GetString(input, "old_text");
-            var newText = GetString(input, "new_text", "") ?? "";
+            if (input["new_text"] == null || input["new_text"].Type != JTokenType.String) return "Error: 必须显式提供字符串 new_text，删除请传空字符串。";
+            var newText = (string)input["new_text"];
             var reason = GetString(input, "reason");
 
             var result = SnippetStore.Patch(name, oldText, newText, reason);

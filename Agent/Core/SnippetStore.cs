@@ -213,7 +213,7 @@ namespace TxTools.Agent.Core
         private static void WriteOne(Snippet s)
         {
             var slug = MdStore.UniqueSlug(Folder, MarkdownDoc.Slug(s.Name), s.Name);
-            MdStore.Write(Folder, slug, ToDoc(s));
+            if (!MdStore.Write(Folder, slug, ToDoc(s))) throw new System.IO.IOException("代码片段保存失败，请检查存储目录和文件权限。");
         }
 
         private static string SlugOf(string name)

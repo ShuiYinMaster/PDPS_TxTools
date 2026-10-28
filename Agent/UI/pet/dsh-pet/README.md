@@ -13,6 +13,8 @@
 
 ## 构建与部署
 
+下载组件位于仓库外的 `TxTools.Local/dependencies/desktop-pet/`，由构建配置复制到插件输出；源码目录只保留适配脚本与配置。目录和构建参数见 [构建说明](../../../../docs/build.md)。
+
 运行 `Agent/maintenance/Install-DshPetComponents.ps1` 恢复 `electron/` 和 `assets/`，下载内容按固定上游版本校验。`DshPet.Build.targets` 将运行目录复制到构建输出的 `Agent/UI/pet/dsh-pet/`。部署时一起复制主 DLL、依赖及完整运行目录。
 
 `config.json` 控制大小、位置、动作权重和物理参数。`upstream/` 保存适配后的桌面实现，制作工具位于相邻 `dsh-pet-tools/`。重建共享核心需要固定版本的上游源码。

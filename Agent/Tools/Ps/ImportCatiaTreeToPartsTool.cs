@@ -4,10 +4,6 @@
 //   2) 递归在 PS Parts 树 (默认 PhysicalRoot 下) 创建对应的 CompoundPart 空集合层级
 //      TypeName = CATIA PartNumber, 便于后续按 PartNumber 匹配零件
 //
-// 用户场景 (对话 [146]):
-//   "根据 CATIA 架构树在 parts 中创建对应的空集合"
-//   —— 骨架先搭好, 具体零件后续按 PartNumber 匹配填入 (或者手动拖拽)。
-//
 // 变更工具, 需审批。审批时前端 modal 显示 CATIA 侧总节点数, 用户可以基于规模判断。
 
 using System;
@@ -29,7 +25,7 @@ namespace TxTools.Agent.Core
                        "\u9012\u5f52\u5728 PS Parts \u4e0b\u521b\u5efa\u5bf9\u5e94 CompoundPart \u7a7a\u96c6\u5408\u5c42\u7ea7\u3002" +
                        "\u53c2\u6570 parent_name (\u9ed8\u8ba4 PhysicalRoot), max_depth (\u9ed8\u8ba4 20), " +
                        "include_root (\u9ed8\u8ba4 true, false = \u53ea\u5efa\u6839\u4e0b\u5b50\u9879)\u3002" +
-                       "TypeName = CATIA PartNumber\u3002";
+                       "保留标准 CompoundPart 规划类型，实例名称来自 CATIA 节点。";
             }
         }
         public bool IsReadOnly { get { return false; } }
@@ -41,7 +37,8 @@ namespace TxTools.Agent.Core
                 return JObject.Parse(@"{
                     'type': 'object',
                     'properties': {
-                        'parent_name':  { 'type': 'string' },
+                        'parent_id': { 'type': 'string' },
+                         'parent_name':  { 'type': 'string' },
                         'max_depth':    { 'type': 'integer', 'default': 20 },
                         'include_root': { 'type': 'boolean', 'default': true }
                     }
@@ -53,6 +50,7 @@ namespace TxTools.Agent.Core
         {
             var parentName = ToolInputHelpers.String(input["parent_name"]);
             var maxDepth = ToolInputHelpers.Int(input["max_depth"], 20);
+            if (maxDepth < 1 || maxDepth > 50) return "Error: max_depth 应为 1..50。";
             var includeRoot = ToolInputHelpers.Bool(input["include_root"], true);
 
             // 1) 读 CATIA 树
@@ -64,7 +62,7 @@ namespace TxTools.Agent.Core
 
             // 2) 定位 PS 侧父级
             ITxObject psParent;
-            try { psParent = PsCompoundHelper.ResolveParent(parentName, typeof(Tecnomatix.Engineering.ITxCompoundPartCreation)); }
+            try { psParent = PsCompoundHelper.ResolveParent(parentName, typeof(Tecnomatix.Engineering.ITxCompoundPartCreation), ToolInputHelpers.String(input["parent_id"])); }
             catch (Exception ex) { return "Error: \u627e\u4e0d\u5230 PS \u7236\u5bf9\u8c61 - " + ex.Message; }
 
             // 3) 递归建 CompoundPart
@@ -75,6 +73,8 @@ namespace TxTools.Agent.Core
 
             int created = 0, failed = 0;
 
+            using (var undo = TxTools.Common.SceneUndoScope.Begin(TxApplication.ActiveDocument, "导入 CATIA 层级"))
+            {
             if (includeRoot)
             {
                 // 先建根,再递归子
@@ -87,10 +87,11 @@ namespace TxTools.Agent.Core
                 CreateChildren(psParent, root, log, ref created, ref failed);
             }
 
+            }
             log.AppendLine();
             log.AppendLine("\u5b8c\u6210: \u65b0\u5efa " + created + " \u4e2a CompoundPart" +
                            (failed > 0 ? "  \u5931\u8d25 " + failed + " \u4e2a" : ""));
-            return log.ToString();
+            return (failed > 0 ? "Error: 层级导入部分失败；已创建对象可 Ctrl+Z 撤销。\n" : "") + log.ToString();
         }
 
         // ── 递归 ──

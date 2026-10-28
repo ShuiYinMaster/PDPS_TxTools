@@ -17,6 +17,29 @@ namespace TxTools.Common
             internal TxUndoTransactionManager Manager;
             internal int Depth;
             internal bool CloseFailed;
+            internal long Generation;
+        }
+
+        private static readonly object DocumentSync = new object();
+        private static TxDocumentCollection _observedDocuments;
+        private static long _documentGeneration;
+        [ThreadStatic] private static long _failedGeneration;
+        /// <summary>2402 在工程重载后复用 TxDocument，因此以加载事件区分工程生命周期。</summary>
+        public static long DocumentGeneration
+        {
+            get {
+                lock (DocumentSync) {
+                    var documents = TxApplication.DocumentCollection;
+                    if (documents == null) throw new InvalidOperationException("无法观察工程加载事件，已停止场景操作。");
+                    if (!ReferenceEquals(documents, _observedDocuments)) {
+                        documents.DocumentLoaded += (sender, args) => Interlocked.Increment(ref _documentGeneration);
+                        documents.StudyModeChanging += (sender, args) => Interlocked.Increment(ref _documentGeneration);
+                        _observedDocuments = documents;
+                        Interlocked.Increment(ref _documentGeneration);
+                    }
+                    return Interlocked.Read(ref _documentGeneration);
+                }
+            }
         }
 
         [ThreadStatic] private static Transaction _current;
@@ -26,7 +49,7 @@ namespace TxTools.Common
         /// <summary>循环内放行 UI 消息后，禁止继续写入已切走的工程。</summary>
         public static void EnsureActiveDocument()
         {
-            if (_current != null && !Equals(_current.Document, TxApplication.ActiveDocument))
+            if (_current != null && (_current.Generation != DocumentGeneration || !Equals(_current.Document, TxApplication.ActiveDocument)))
                 throw new InvalidOperationException("事务执行期间工程已切换，已停止场景变更。");
         }
         private readonly Transaction _transaction;
@@ -52,11 +75,13 @@ namespace TxTools.Common
         {
             if (document == null || !Equals(document, TxApplication.ActiveDocument))
                 throw new InvalidOperationException("没有有效的活动工程，已取消场景变更：" + label);
+            var generation = DocumentGeneration;
+            if (_failedGeneration != generation) { _failedDocuments = null; _failedGeneration = generation; }
             if (_failedDocuments != null && _failedDocuments.Contains(document))
                 throw new InvalidOperationException("上次撤销事务关闭失败，请重新打开工程后再执行写操作。");
             if (_current != null)
             {
-                if (!Equals(_current.Document, document))
+                if (_current.Generation != generation || !Equals(_current.Document, document))
                 {
                     if (_current.Depth != 0)
                         throw new InvalidOperationException("事务执行期间工程已切换，已取消变更。");
@@ -72,7 +97,7 @@ namespace TxTools.Common
                     throw new InvalidOperationException("没有可用的撤销管理器，已取消场景变更：" + label);
                 // PS 2402 经 DLL/XML 验证的真实签名；开始失败不留下伪成功状态。
                 manager.StartTransaction();
-                _current = new Transaction { Document = document, Manager = manager };
+                _current = new Transaction { Document = document, Manager = manager, Generation = generation };
             }
             return new SceneUndoScope(_current);
         }
@@ -80,7 +105,7 @@ namespace TxTools.Common
         /// <summary>每次可能放行 UI 消息的循环写入前检查工程未切换。</summary>
         public void EnsureDocument()
         {
-            if (_disposed || !Equals(_transaction.Document, TxApplication.ActiveDocument))
+            if (_disposed || _transaction.Generation != DocumentGeneration || !Equals(_transaction.Document, TxApplication.ActiveDocument))
                 throw new InvalidOperationException("工程已切换或事务已结束，已停止场景变更。");
         }
 
@@ -92,6 +117,10 @@ namespace TxTools.Common
                 throw new InvalidOperationException("撤销事务必须在原线程按嵌套顺序结束。");
             _disposed = true;
             if (--_transaction.Depth != 0) return;
+            if (_transaction.Generation != DocumentGeneration) {
+                if (ReferenceEquals(_current, _transaction)) _current = null;
+                throw new InvalidOperationException("工程已重载，旧事务未在新工程上结束；已停止后续场景操作。");
+            }
             try
             {
                 _transaction.Manager.EndTransaction();

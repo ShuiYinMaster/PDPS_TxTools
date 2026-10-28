@@ -1,6 +1,6 @@
 ﻿// TxTools.Agent / Core / DeepSeekClient.cs
 // 直连 OpenAI 兼容 /v1/chat/completions 的薄客户端 (baseUrl 可配置)。
-// 类名沿用历史命名,内部完全 provider 中立 —— 换用 DeepSeek / Kimi / Qwen / OpenAI / Ollama 
+// 类名沿用历史命名,内部完全 provider 中立 —— 换用 DeepSeek / Kimi / Qwen / OpenAI / Ollama
 // 只需构造时传对应 baseUrl。网络要求: 目标 host 出站 HTTPS(Ollama 是本地 HTTP)可达。
 
 using System;

@@ -29,7 +29,8 @@ namespace TxTools.Agent.Core
                 return JObject.Parse(@"{
                     'type': 'object',
                     'properties': {
-                        'parent_name': { 'type': 'string', 'description': '父对象名(留空 = PhysicalRoot)' },
+                        'parent_id': { 'type': 'string', 'description': '父级唯一 ID，优先于名称' },
+                         'parent_name': { 'type': 'string', 'description': '父对象名(留空 = PhysicalRoot)' },
                         'type_name':   { 'type': 'string', 'description': '类型标签,如 Station/Zone/Line/Robot/Fixture' },
                         'name':        { 'type': 'string', 'description': '期望的对象名(尽力 rename;设不上会有警告)' }
                     }
@@ -44,11 +45,11 @@ namespace TxTools.Agent.Core
             var desiredName = ToolInputHelpers.String(input["name"]);
 
             ITxObject parent;
-            try { parent = PsCompoundHelper.ResolveParent(parentName, typeof(Tecnomatix.Engineering.ITxCompoundResourceCreation)); }
+            try { parent = PsCompoundHelper.ResolveParent(parentName, typeof(Tecnomatix.Engineering.ITxCompoundResourceCreation), ToolInputHelpers.String(input["parent_id"])); }
             catch (System.Exception ex) { return "Error: \u627e\u4e0d\u5230\u7236\u5bf9\u8c61 - " + ex.Message; }
 
             TxCompoundResource cr;
-            try { cr = PsCompoundHelper.CreateResource(parent, typeName, desiredName); }
+            try { using (var undo = TxTools.Common.SceneUndoScope.Begin(TxApplication.ActiveDocument, "创建 CompoundResource")) cr = PsCompoundHelper.CreateResource(parent, typeName, desiredName); }
             catch (System.Exception ex) { return "Error: " + ex.Message; }
 
             var finalName = (cr as ITxObject).Name;

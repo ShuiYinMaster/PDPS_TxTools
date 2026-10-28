@@ -110,7 +110,7 @@ namespace TxTools.Agent.Core
 
         private static void WriteOne(Fact f)
         {
-            MdStore.Write(Folder, SlugOf(f), ToDoc(f));
+            if (!MdStore.Write(Folder, SlugOf(f), ToDoc(f))) throw new System.IO.IOException("事实保存失败，请检查存储目录和文件权限。");
         }
 
         /// <summary>文件名用内容前 40 字,可读;撞名时 MdStore 会按 id 补后缀。</summary>

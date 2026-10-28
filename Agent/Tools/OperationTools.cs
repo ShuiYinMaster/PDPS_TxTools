@@ -32,37 +32,49 @@ namespace TxTools.Agent.Tools
         public override string Execute(JObject input) { return PsBridge.ListTcpOptions(); }
     }
 
-    /// <summary>对选中操作做快速可达性摘要(可达/不可达计数)。</summary>
+    /// <summary>复用可达性插件的完整分析。</summary>
     public sealed class CheckReachabilityTool : TxAgentToolBase
     {
         public override string Name { get { return "check_reachability"; } }
-
-        public override string Description
-        {
-            get
-            {
-                return "对机器人操作做快速可达性检查：给 operation(操作名，如 OP120)即可——会在操作树里按名找到该操作、" +
-                       "枚举其下机器人点位，逐点用 GetPoseAtLocation 判定可达，给出可达/不可达计数。" +
-                       "不必先选中；operation 省略时则检查当前选中的操作。只读、不驱动机器人；不含余量/奇异/碰撞分析。";
-            }
-        }
-
+        public override string Description { get { return "使用可达性插件检查机器人操作：多工具 TCP、IK 兜底、关节限位、奇异和临界状态；可选 TCP XYZ 余量和静态干涉。operation 精确名称优先，同名用 object_id。省略目标时检查当前选择；检查期间会临时切换姿态/TCPF，结束后恢复。返回各状态总数及点位明细，干涉未检查或异常不视为无碰撞。"; } }
         public override bool IsReadOnly { get { return true; } }
-
-        public override JObject InputSchema
+        public override JObject InputSchema { get { return JObject.Parse(@"{
+            'type':'object', 'properties':{
+                'operation':{'type':'string','description':'操作名，精确优先，模糊匹配必须唯一；省略则用当前选择'},
+                'object_id':{'type':'string','description':'操作唯一 ID，优先于 operation'},
+                'joint_margin_check':{'type':'boolean','default':true},
+                'joint_margin_deg':{'type':'number','minimum':0,'default':10},
+                'tcp_check':{'type':'boolean','default':false},
+                'tcp_margin_mm':{'type':'number','minimum':0,'default':200},
+                'interference':{'type':'boolean','default':false},
+                'brand':{'type':'string','enum':['Auto','KUKA','ABB','FANUC','Other'],'default':'Auto'},
+                'max_results':{'type':'integer','minimum':1,'maximum':1000,'default':100,'description':'每个操作的明细上限，优先返回异常点；汇总始终包含全部点'}
+            }}"); } }
+        public override string Execute(JObject input)
         {
-            get
+            input = input ?? new JObject();
+            try
             {
-                return JObject.Parse(@"{
-                    ""type"": ""object"",
-                    ""properties"": {
-                        ""operation"": { ""type"": ""string"", ""description"": ""操作名(模糊匹配, 如 OP120)。省略则用当前选中的操作。"" }
-                    }
-                }");
+                TxTools.RobotReachabilityChecker.Models.RobotBrand brand;
+                if (!System.Enum.TryParse(GetString(input, "brand", "Auto"), true, out brand)
+                    || !System.Enum.IsDefined(typeof(TxTools.RobotReachabilityChecker.Models.RobotBrand), brand))
+                    return "Error: brand 必须是 Auto/KUKA/ABB/FANUC/Other。";
+                var limit = ToolInputHelpers.Number(input["max_results"], 100, "max_results", 1);
+                if (limit > 1000 || limit != System.Math.Truncate(limit)) return "Error: max_results 必须是 1..1000 的整数。";
+                var options = new TxTools.RobotReachabilityChecker.Services.CheckOptions
+                {
+                    ShowRecoveryDialog = false,
+                    JointMarginCheckEnabled = ToolInputHelpers.Bool(input["joint_margin_check"], true),
+                    JointMarginThreshDeg = ToolInputHelpers.Number(input["joint_margin_deg"], 10, "joint_margin_deg"),
+                    TcpCheckEnabled = ToolInputHelpers.Bool(input["tcp_check"]),
+                    TcpMarginMm = ToolInputHelpers.Number(input["tcp_margin_mm"], 200, "tcp_margin_mm"),
+                    InterferenceEnabled = ToolInputHelpers.Bool(input["interference"]),
+                    UserSelectedBrand = brand
+                };
+                return PsBridge.CheckReachability(GetString(input, "operation", null), GetString(input, "object_id", null), options, (int)limit);
             }
+            catch (System.ArgumentException ex) { return "Error: " + ex.Message; }
         }
-
-        public override string Execute(JObject input) { return PsBridge.CheckReachability(GetString(input, "operation", null)); }
     }
 
     /// <summary>在操作树(OperationRoot)里按名查找操作。</summary>

@@ -75,7 +75,8 @@ namespace TxTools.Agent.Core
                     var presPart = doc.PresentationPart;
                     if (presPart == null) return "Error: pptx \u65e0 PresentationPart";
 
-                    var slideParts = presPart.SlideParts.ToList();
+                    var slideParts = presPart.Presentation.SlideIdList.Elements<DocumentFormat.OpenXml.Presentation.SlideId>()
+                        .Select(id => (SlidePart)presPart.GetPartById(id.RelationshipId)).ToList();
                     for (int i = 0; i < slideParts.Count; i++)
                     {
                         var sp = slideParts[i];
@@ -161,7 +162,7 @@ namespace TxTools.Agent.Core
 
             foreach (var s in slides)
             {
-                sb.AppendLine("\u2500\u2500 Slide " + s.Index + " \u2500\u2500");
+                sb.AppendLine("\u2500\u2500 Slide " + s.Index + " (template_slide_index=" + (s.Index - 1) + ") \u2500\u2500");
                 sb.AppendLine("  \u6587\u672c\u5360\u4f4d\u7b26: " +
                     (s.TextKeys.Count == 0 ? "(\u65e0)" : string.Join(", ", s.TextKeys)));
                 sb.AppendLine("  \u56fe\u7247\u5360\u4f4d\u7b26: " +
@@ -188,6 +189,7 @@ namespace TxTools.Agent.Core
                 arr.Add(new JObject
                 {
                     ["index"] = s.Index,
+                    ["template_slide_index"] = s.Index - 1,
                     ["text_placeholders"] = new JArray(s.TextKeys),
                     ["image_placeholders"] = new JArray(s.ImageNames),
                     ["sample_texts"] = new JArray(s.SampleTexts)

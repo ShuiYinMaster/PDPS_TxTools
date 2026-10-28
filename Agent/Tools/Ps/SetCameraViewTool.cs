@@ -33,6 +33,8 @@
 //   set_camera_view(view="iso",   capture=true, file_name="i")
 
 using System;
+using TxTools.Agent.Ps;
+using System.Linq;
 using System.Drawing;
 using System.IO;
 using Newtonsoft.Json.Linq;
@@ -65,7 +67,8 @@ namespace TxTools.Agent.Core
                     'type': 'object',
                     'properties': {
                         'view':      { 'type': 'string', 'enum': ['front','back','left','right','top','bottom','iso','custom'], 'default': 'iso' },
-                        'target':    { 'type': 'string', 'description': '对象名,以其 AbsoluteLocation 为相机聚焦点;空=保留当前' },
+                        'object_id': { 'type': 'string', 'description': '焦点对象唯一 ID，优先于 target' },
+                         'target':    { 'type': 'string', 'description': '对象名,以其 AbsoluteLocation 为相机聚焦点;空=保留当前' },
                         'distance':  { 'type': 'number',  'description': '相机距离 mm;缺省=用当前 CameraDistance' },
                         'ref_x': { 'type': 'number' }, 'ref_y': { 'type': 'number' }, 'ref_z': { 'type': 'number' },
                         'pos_x': { 'type': 'number' }, 'pos_y': { 'type': 'number' }, 'pos_z': { 'type': 'number' },
@@ -83,6 +86,9 @@ namespace TxTools.Agent.Core
         {
             var view = ToolInputHelpers.String(input["view"], "iso").ToLowerInvariant();
 
+            if (!new[] { "front", "back", "left", "right", "top", "bottom", "iso", "custom" }.Contains(view)) return "Error: 无效的 view。";
+            try { PsViewerHelper.ImageSize(ToolInputHelpers.Int(input["width"], 0), ToolInputHelpers.Int(input["height"], 0)); }
+            catch (ArgumentException ex) { return "Error: " + ex.Message; }
             var viewer = PsViewerHelper.GetViewer();
             if (viewer == null) return "Error: \u65e0\u6d3b\u52a8 GraphicViewer";
 
@@ -120,7 +126,7 @@ namespace TxTools.Agent.Core
 
                 var w = ToolInputHelpers.Int(input["width"], 0);
                 var h = ToolInputHelpers.Int(input["height"], 0);
-                Size size = (w > 0 && h > 0) ? new Size(w, h) : Size.Empty;
+                Size size = PsViewerHelper.ImageSize(w, h);
 
                 try
                 {
@@ -129,7 +135,7 @@ namespace TxTools.Agent.Core
                 }
                 catch (Exception ex)
                 {
-                    msg += "\n\u26a0 \u622a\u56fe\u5931\u8d25: " + ex.Message;
+                    return "Error: 相机已切换，但截图失败: " + ex.Message + "\n" + msg;
                 }
             }
 
@@ -141,42 +147,39 @@ namespace TxTools.Agent.Core
         /// <summary>custom 模式:三向量都从参数读,任缺就用 (0,0,0) 或默认。</summary>
         private static TxCamera BuildCustomCamera(JObject input)
         {
+            foreach (var key in new[] { "ref_x", "ref_y", "ref_z", "pos_x", "pos_y", "pos_z" })
+                if (input[key] == null || input[key].Type == JTokenType.Null) throw new ArgumentException("custom 缺少 " + key);
             var refPt = new TxVector(D(input["ref_x"]), D(input["ref_y"]), D(input["ref_z"]));
             var pos = new TxVector(D(input["pos_x"]), D(input["pos_y"]), D(input["pos_z"]));
             var up = new TxVector(D(input["up_x"]), D(input["up_y"]), D(input["up_z"], 1.0));
+            var dx = pos.X - refPt.X; var dy = pos.Y - refPt.Y; var dz = pos.Z - refPt.Z;
+            var length2 = dx * dx + dy * dy + dz * dz;
+            var up2 = up.X * up.X + up.Y * up.Y + up.Z * up.Z;
+            var dot = dx * up.X + dy * up.Y + dz * up.Z;
+            if (length2 < 1e-12 || up2 < 1e-12 || length2 * up2 - dot * dot <= length2 * up2 * 1e-12)
+                throw new ArgumentException("相机位置不能等于焦点，up 不能为零或平行于视线。");
             return new TxCamera(refPt, pos, up);
         }
 
         /// <summary>弹性读 double,缺省 0。</summary>
         private static double D(JToken tok, double fallback = 0.0)
         {
-            if (tok == null || tok.Type == JTokenType.Null) return fallback;
-            try
-            {
-                if (tok.Type == JTokenType.Float || tok.Type == JTokenType.Integer)
-                    return (double)tok;
-                if (tok.Type == JTokenType.String)
-                {
-                    double d;
-                    if (double.TryParse((string)tok, out d)) return d;
-                }
-            }
-            catch { }
-            return fallback;
+            return ToolInputHelpers.Number(tok, fallback, "相机参数", -double.MaxValue);
         }
 
         /// <summary>预设 6 方向 + iso。</summary>
         private static TxCamera BuildPresetCamera(TxGraphicViewer viewer, JObject input, string view)
         {
             // 1) 焦点 ReferencePoint
-            var refPt = ResolveReferencePoint(viewer, ToolInputHelpers.String(input["target"]));
+            var refPt = ResolveReferencePoint(viewer, ToolInputHelpers.String(input["target"]), ToolInputHelpers.String(input["object_id"]));
 
             // 2) 距离
             double distance = 0;
             var distTok = input["distance"];
             if (distTok != null && distTok.Type != JTokenType.Null)
             {
-                try { distance = (double)distTok; } catch { }
+                distance = D(distTok);
+                if (distance <= 0) throw new ArgumentException("distance 必须大于 0。");
             }
             if (distance <= 0)
                 distance = PsViewerHelper.GetCameraDistance(viewer, 3000.0);
@@ -214,20 +217,15 @@ namespace TxTools.Agent.Core
         ///   2) 当前相机 ReferencePoint (若非零)
         ///   3) ActiveSelection 首个对象 AbsoluteLocation.Translation
         ///   4) (0,0,0) 兜底
-        /// 对话摸出:仅走 (2) 时会拿到 SDK 初始的 (0,0,0),视图对准空气 —— 必须加 (3)。
         /// </summary>
-        private static TxVector ResolveReferencePoint(TxGraphicViewer viewer, string targetName)
+        private static TxVector ResolveReferencePoint(TxGraphicViewer viewer, string targetName, string objectId)
         {
-            // (1) 明确 target
-            if (!string.IsNullOrWhiteSpace(targetName))
-            {
-                var doc = TxApplication.ActiveDocument;
-                if (doc != null)
-                {
-                    var obj = FindByName(doc.PhysicalRoot, targetName);
-                    var loc = TryGetTranslation(obj);
-                    if (loc != null) return loc;
-                }
+            if (!string.IsNullOrWhiteSpace(targetName) || !string.IsNullOrWhiteSpace(objectId)) {
+                ITxObject obj; string error;
+                if (!PsBridge.TryResolve(targetName, objectId, out obj, out error)) throw new ArgumentException(error);
+                var point = TryGetTranslation(obj);
+                if (point == null) throw new ArgumentException("焦点对象没有可读取的位置。");
+                return point;
             }
 
             // (2) 当前相机 ReferencePoint (排除明显无效的 (0,0,0))
@@ -237,13 +235,12 @@ namespace TxTools.Agent.Core
                 try
                 {
                     var rp = cur.ReferencePoint;
-                    if (rp != null && (Math.Abs(rp.X) > 0.01 || Math.Abs(rp.Y) > 0.01 || Math.Abs(rp.Z) > 0.01))
+                    if (rp != null)
                         return rp;
                 }
                 catch { }
             }
 
-            // (3) ActiveSelection 首个对象 AbsoluteLocation —— 对话摸出的核心兜底
             try
             {
                 var sel = TxApplication.ActiveSelection;

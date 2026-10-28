@@ -27,28 +27,30 @@ namespace TxTools.Agent.Core
 {
     internal static class CodeBackup
     {
-        /// <summary>每次改动前备份。同一会话内同一文件只备份第一版,保留最初状态。</summary>
-        private static readonly HashSet<string> _done =
-            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
+        private static readonly Dictionary<string, string> Snapshots = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private static readonly string FallbackSession = Guid.NewGuid().ToString("N");
+        private static string Key(string fullPath) { return (AgentContext.CurrentConvId() ?? FallbackSession) + "|" + fullPath; }
+        internal static string Find(string fullPath) { lock (Snapshots) { string target; return Snapshots.TryGetValue(Key(fullPath), out target) ? target : null; } }
         public static string Ensure(string fullPath)
         {
-            try
-            {
-                var dir = Path.Combine(Path.GetDirectoryName(fullPath) ?? ".", ".txagent_backup");
-                var name = Path.GetFileName(fullPath) + "." + DateTime.Now.ToString("yyyyMMddHHmmss") + ".bak";
-                var target = Path.Combine(dir, name);
-
-                lock (_done)
-                {
-                    if (_done.Contains(fullPath)) return null;   // 已备份过最初版本
-                    Directory.CreateDirectory(dir);
-                    File.Copy(fullPath, target, true);
-                    _done.Add(fullPath);
+            lock (Snapshots) {
+                var key = Key(fullPath); string target;
+                if (Snapshots.TryGetValue(key, out target)) {
+                    if (!File.Exists(target)) throw new IOException("当前会话原始备份已丢失，停止修改。");
+                    return target;
                 }
+                var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TxTools", "CodeBackups");
+                var project = new DirectoryInfo(CodeWorkspace.Root);
+                for (int i = 0; i < 3 && project != null; i++, project = project.Parent)
+                    if (File.Exists(Path.Combine(project.FullName, "TxTools.csproj"))) {
+                        dir = Path.GetFullPath(Path.Combine(project.FullName, "..", "TxTools.Local", "backups", "agent-code")); break;
+                    }
+                Directory.CreateDirectory(dir);
+                target = Path.Combine(dir, Guid.NewGuid().ToString("N") + ".bak");
+                File.Copy(fullPath, target, false);
+                Snapshots.Add(key, target);
                 return target;
             }
-            catch { return null; }
         }
     }
 
@@ -65,7 +67,7 @@ namespace TxTools.Agent.Core
                      + "所以要带上足够的上下文行让它唯一(通常前后各带 1~3 行)。"
                      + "old_string 必须与文件内容逐字节一致，包括缩进和空白 —— "
                      + "先用 code_read 确认原文再改，不要凭记忆写。"
-                     + "首次修改某文件时会自动备份到同目录 .txagent_backup。"
+                     + "首次修改会保存本会话原始备份，备份放在源码目录之外。"
                      + "改完务必用 code_build 编译验证。";
             }
         }
@@ -82,7 +84,7 @@ namespace TxTools.Agent.Core
                     " \"file\": { \"type\":\"string\", \"description\":\"相对工作区根的路径\" }," +
                     " \"old_string\": { \"type\":\"string\", \"description\":\"要被替换的原文，须唯一\" }," +
                     " \"new_string\": { \"type\":\"string\", \"description\":\"替换成的新内容。传空串表示删除\" }" +
-                    "}, \"required\":[\"file\",\"old_string\"] }");
+                    "}, \"required\":[\"file\",\"old_string\",\"new_string\"] }");
             }
         }
 
@@ -94,7 +96,8 @@ namespace TxTools.Agent.Core
             if (!File.Exists(full)) return "Error: 文件不存在: " + CodeWorkspace.Relative(full);
 
             var oldStr = GetString(input, "old_string");
-            var newStr = GetString(input, "new_string", "") ?? "";
+            if (input["new_string"] == null || input["new_string"].Type != JTokenType.String) return "Error: 必须显式提供字符串 new_string；删除请传空字符串。";
+            var newStr = (string)input["new_string"];
 
             if (string.IsNullOrEmpty(oldStr))
                 return "Error: old_string 不能为空。要插入新内容，请把插入点附近的原文一起带上。";
@@ -123,7 +126,9 @@ namespace TxTools.Agent.Core
                 return "Error: old_string 在文件中出现 " + count + " 次，无法确定改哪一处。\n"
                      + "请往前后各多带 1~3 行上下文，使其唯一。";
 
-            var backup = CodeBackup.Ensure(full);
+            string backup;
+            try { backup = CodeBackup.Ensure(full); }
+            catch (Exception ex) { return "Error: 原始备份失败，未修改文件: " + ex.Message; }
 
             var updatedN = ReplaceFirst(textN, oldN, newStr.Replace("\r\n", "\n"));
             var updated = text.Contains("\r\n") ? updatedN.Replace("\n", "\r\n") : updatedN;
@@ -194,14 +199,14 @@ namespace TxTools.Agent.Core
         {
             var bytes = File.ReadAllBytes(path);
 
-            if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
-            {
-                enc = new UTF8Encoding(true);
-                return new UTF8Encoding(true).GetString(bytes, 3, bytes.Length - 3);
-            }
-
-            enc = new UTF8Encoding(false);
-            return new UTF8Encoding(false).GetString(bytes);
+            int offset = 0;
+            if (bytes.Length >= 4 && bytes[0] == 0xFF && bytes[1] == 0xFE && bytes[2] == 0 && bytes[3] == 0) { enc = new UTF32Encoding(false, true, true); offset = 4; }
+            else if (bytes.Length >= 4 && bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 0xFE && bytes[3] == 0xFF) { enc = new UTF32Encoding(true, true, true); offset = 4; }
+            else if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) { enc = new UnicodeEncoding(false, true, true); offset = 2; }
+            else if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF) { enc = new UnicodeEncoding(true, true, true); offset = 2; }
+            else if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF) { enc = new UTF8Encoding(true, true); offset = 3; }
+            else enc = new UTF8Encoding(false, true);
+            return enc.GetString(bytes, offset, bytes.Length - offset);
         }
     }
 
@@ -244,13 +249,15 @@ namespace TxTools.Agent.Core
             if (File.Exists(full))
                 return "Error: 文件已存在: " + CodeWorkspace.Relative(full) + "。改已有文件请用 code_edit。";
 
-            var content = GetString(input, "content", "") ?? "";
+            if (input["content"] == null || input["content"].Type != JTokenType.String) return "Error: 必须显式提供字符串 content。";
+            var content = (string)input["content"];
 
             try
             {
                 var dir = Path.GetDirectoryName(full);
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                File.WriteAllText(full, content, new UTF8Encoding(true));
+                using (var stream = new FileStream(full, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                using (var writer = new StreamWriter(stream, new UTF8Encoding(true))) writer.Write(content);
             }
             catch (Exception ex) { return "Error: 写入失败 - " + ex.Message; }
 
@@ -270,7 +277,7 @@ namespace TxTools.Agent.Core
         {
             get
             {
-                return "把某个文件回滚到本次会话首次修改前的状态(从 .txagent_backup 恢复)。"
+                return "把某个文件回滚到本次会话首次修改前的状态(只使用本会话备份)。"
                      + "改坏了、或者方向不对想重来时用。";
             }
         }
@@ -296,19 +303,10 @@ namespace TxTools.Agent.Core
 
             try
             {
-                var dir = Path.Combine(Path.GetDirectoryName(full) ?? ".", ".txagent_backup");
-                if (!Directory.Exists(dir)) return "Error: 没有找到备份目录，该文件未被修改过。";
-
-                var prefix = Path.GetFileName(full) + ".";
-                var backups = Directory.GetFiles(dir, prefix + "*.bak")
-                                       .OrderBy(f => f, StringComparer.Ordinal).ToList();
-
-                if (backups.Count == 0) return "Error: 该文件没有备份。";
-
-                // 取最早的:那是本次会话修改前的原始状态
-                File.Copy(backups[0], full, true);
-                return "已回滚 " + CodeWorkspace.Relative(full)
-                     + " 到 " + Path.GetFileName(backups[0]) + "。建议 code_build 确认恢复正常。";
+                var backup = CodeBackup.Find(full);
+                if (backup == null || !File.Exists(backup)) return "Error: 当前会话没有该文件的原始备份。";
+                File.Copy(backup, full, true);
+                return "已恢复本会话首次修改前的版本: " + CodeWorkspace.Relative(full);
             }
             catch (Exception ex) { return "Error: 回滚失败 - " + ex.Message; }
         }

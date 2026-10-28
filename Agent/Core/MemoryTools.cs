@@ -136,7 +136,7 @@ namespace TxTools.Agent.Core
             {
                 return JObject.Parse(
                     "{ \"type\": \"object\", \"properties\": {" +
-                    "  \"conv_id\": { \"type\": \"string\", \"description\": \"对话 id,形如 conv_20260727095802719\" }," +
+                    "  \"conv_id\": { \"type\": \"string\", \"description\": \"对话 id,形如 conv_YYYYMMDDhhmmssfff\" }," +
                     "  \"query\": { \"type\": \"string\", \"description\": \"可选。在原始消息里检索该关键字并返回完整片段\" }," +
                     "  \"max_excerpts\": { \"type\": \"integer\", \"description\": \"query 命中片段数上限,默认 5\" }" +
                     "}, \"required\": [\"conv_id\"] }");

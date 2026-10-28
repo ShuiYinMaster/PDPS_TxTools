@@ -27,8 +27,18 @@ namespace TxTools.Common
 #endif
         private static readonly List<Entry> Entries = new List<Entry>();
 
+        internal static bool IsLogRegion(Control control) => Entries.Any(e => e.Region == control);
+
+        internal static void RestoreScrolling(Control region)
+        {
+            if (region is TextBox text && text.Multiline) text.ScrollBars = ScrollBars.Both;
+            if (region is RichTextBox rich) rich.ScrollBars = RichTextBoxScrollBars.Both;
+            foreach (Control child in region.Controls) RestoreScrolling(child);
+        }
+
         public static void Register(Control region, bool visible = true, params object[] toggles)
         {
+            RestoreScrolling(region);
             var entry = new Entry(region, visible, toggles);
             Entries.Add(entry);
             region.Disposed += (s, e) => Entries.Remove(entry);

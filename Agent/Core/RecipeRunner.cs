@@ -166,7 +166,7 @@ namespace TxTools.Agent.Core
         {
             double d;
             if (!double.TryParse(raw, System.Globalization.NumberStyles.Float,
-                                 System.Globalization.CultureInfo.InvariantCulture, out d))
+                                 System.Globalization.CultureInfo.InvariantCulture, out d) || double.IsNaN(d) || double.IsInfinity(d))
             {
                 error = "参数 \"" + (p.Label ?? p.Name) + "\" 不是合法数字: " + raw;
                 return false;
@@ -175,7 +175,7 @@ namespace TxTools.Agent.Core
             var lit = d.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
             sb.AppendLine(lang == "python"
                 ? p.Name + " = " + lit
-                : "var " + p.Name + " = " + lit + ";");
+                : "var " + p.Name + " = " + lit + "d;");
             return true;
         }
 

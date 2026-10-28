@@ -1,7 +1,7 @@
 // TxTools.Agent / Tools / Ps / SetViewToObjectTool.cs
 // 把 PS 主视口聚焦到指定对象。
 //
-// 三个关键 API (从对话 conv_20260721 + AutoRecorder/PsReader 摸出):
+// 视口聚焦相关 API:
 //   - GetAllDescendants(null)                 → 拿所有后代 (传 TxTypeFilter(接口) 会不匹配返回空)
 //   - TxApplication.ActiveSelection.SetItems(TxObjectList)  → 正确的选中 API
 //   - TxApplication.CommandsManager.ExecuteCommand("GraphicViewer.ZoomToSelection")
@@ -120,7 +120,6 @@ namespace TxTools.Agent.Core
         private static string DoZoomToCurrentSelection(string label)
         {
             string used = null;
-            string err1 = null;
             try
             {
                 TxApplication.CommandsManager.ExecuteCommand("GraphicViewer.ZoomToSelection");
@@ -128,17 +127,7 @@ namespace TxTools.Agent.Core
             }
             catch (Exception ex1)
             {
-                err1 = ex1.Message;
-                // 兜底: viewer.ZoomToFit()
-                try
-                {
-                    var v = TxApplication.ViewersManager.GraphicViewer;
-                    if (v != null) { v.ZoomToFit(); used = "ZoomToFit(\u5168\u573a\u666f)"; }
-                }
-                catch (Exception ex2)
-                {
-                    return "Error: \u547d\u4ee4\u5931\u8d25 - " + err1 + " | \u5175\u5e95 ZoomToFit \u4e5f\u5931\u8d25 - " + ex2.Message;
-                }
+                return "Error: 对象已选中，但 ZoomToSelection 命令失败: " + ex1.Message;
             }
             try { TxApplication.RefreshDisplay(); } catch { }
 
@@ -160,7 +149,7 @@ namespace TxTools.Agent.Core
             try
             {
                 dynamic dp = root;
-                var all = dp.GetAllDescendants(null) as System.Collections.IEnumerable;
+                var all = dp.GetAllDescendants(new TxTypeFilter(typeof(ITxObject))) as System.Collections.IEnumerable;
                 if (all != null)
                 {
                     foreach (var item in all)
@@ -194,7 +183,7 @@ namespace TxTools.Agent.Core
                 }
                 if (method != null)
                 {
-                    var all = method.Invoke(root, new object[] { null }) as System.Collections.IEnumerable;
+                    var all = method.Invoke(root, new object[] { new TxTypeFilter(typeof(ITxObject)) }) as System.Collections.IEnumerable;
                     if (all != null)
                     {
                         foreach (var item in all)

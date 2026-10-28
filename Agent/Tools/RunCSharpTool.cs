@@ -18,7 +18,7 @@ using TxTools.Agent.Ps;
 
 namespace TxTools.Agent.Tools
 {
-    public sealed class RunCSharpTool : TxAgentToolBase
+    public sealed class RunCSharpTool : TxAgentToolBase, ITxOffUiThreadTool
     {
         /// <summary>
         /// 会话 ID 的取法。固化片段时记进 conv_id 便于回溯，取不到也不影响功能。
@@ -45,7 +45,7 @@ namespace TxTools.Agent.Tools
 
                        "【何时改用 Python】" +
                        "探测 SDK、查询、筛选、串联多个工具这类活，一律先用 probe_python —— " +
-                       "它免审批、由静态检查限制为只读探测、且有 tx_dir/tx_type/tx_sig 可以直接查出成员和签名，" +
+                       "它带静态误操作检查，并有 tx_dir/tx_type/tx_sig 可以直接查出成员和签名，" +
                        "比在这里靠猜 API 再编译试错快得多。" +
                        "本工具连续两次编译失败(尤其是 CS1061/CS0117 这类找不到成员的错误)时，" +
                        "不要继续猜，改用 probe_python 先把 API 查清楚。" +
@@ -96,7 +96,7 @@ namespace TxTools.Agent.Tools
                 PendingSnippetStore.ObserveAsync(code, convId, "csharp");
             }
 
-            return result;
+            return success ? result : "Error: " + result;
         }
     }
 }

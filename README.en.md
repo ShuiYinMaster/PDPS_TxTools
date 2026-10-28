@@ -1,4 +1,4 @@
-﻿# TxTools — Siemens Tecnomatix Process Simulate Plugins
+# TxTools — Siemens Tecnomatix Process Simulate Plugins
 
 [English](README.en.md) · [中文完整手册](README.md) · [Installation](#installation) · [Plugin directory](#plugin-directory)
 
@@ -28,7 +28,7 @@ The main project uses C# 8.0. Runtime C# scripts and recipes should remain compa
 1. Clone [ShuiYinMaster/PDPS_TxTools](https://github.com/ShuiYinMaster/PDPS_TxTools).
 2. Open `TxTools.slnx` in a compatible Visual Studio version, or open `TxTools.csproj` directly. Restore NuGet dependencies and prepare the required local SDK / COM references.
 3. Set `ProcessSimulateDllDir` to the SDK directory. Build the **Release / AnyCPU** configuration; the main DLL targets **x64**.
-4. The current project defaults to a machine-specific G: drive deployment directory. Override `OutputPath` and `OutDir` for a separate build output, as shown in the [Chinese build instructions](README.md#三快速安装与注册).
+4. Build outputs and intermediate files are written outside the source repository, under the sibling `TxTools.Local/build/` directory. See [build configuration](docs/build.md).
 5. Copy the DLL, dependencies and companion resources to your Process Simulate `eMPower/DotNetCommands/TxTools/` directory.
 6. Use the installation's `CommandReg.exe` to register the required command classes for Process Simulate, then add the commands to a toolbar through Customize.
 

@@ -43,7 +43,7 @@ namespace TxTools.Agent.Core
         {
             if (input == null) return fallback;
             var t = input[key];
-            return t == null || t.Type == JTokenType.Null ? fallback : (string)t;
+            return ToolInputHelpers.String(t, fallback);
         }
     }
 }

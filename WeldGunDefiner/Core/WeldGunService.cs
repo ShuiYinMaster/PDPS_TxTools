@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Xml.Linq;
 using Tecnomatix.Engineering;
 using TxTools.WeldGunDefiner.Math;
 
@@ -13,6 +14,9 @@ namespace TxTools.WeldGunDefiner.Core
         public Vec3 WorldO { get; set; }
         public Vec3 WorldA { get; set; }
         public Vec3 WorldC { get; set; }
+        public ITxObject HingeO { get; set; }
+        public ITxObject HingeA { get; set; }
+        public ITxObject HingeC { get; set; }
         public bool HasO { get; set; }
         public bool HasA { get; set; }
         public bool HasC { get; set; }
@@ -38,6 +42,7 @@ namespace TxTools.WeldGunDefiner.Core
         public Vec3 WorldMovingTip { get; set; }
         public Vec3 WorldGunTcp { get; set; }
         public TxFrame TcpFrame { get; set; }   // 焊钳TCP的Frame对象(选已有或新建TCPF)
+        public TxTransformation BaseLocation { get; set; } // 可选的世界坐标变换；空时使用组件自身坐标
 
         // 需求4：OPEN状态适配勾选项
         public bool OpenStateAdapt { get; set; } = false;
@@ -76,6 +81,111 @@ namespace TxTools.WeldGunDefiner.Core
         private readonly WeldGunModel _model;
 
         public WeldGunService(WeldGunModel model) { _model = model; }
+
+        private const string SetupAttribute = "TxTools.WeldGunSetup.v1";
+
+        private static XElement PointElement(string name, Vec3 point)
+            => new XElement(name, new XAttribute("x", point.X), new XAttribute("y", point.Y), new XAttribute("z", point.Z));
+        private static Vec3 ReadPoint(XElement root, string name)
+        {
+            var point = root.Element(name) ?? throw new InvalidOperationException("缺少选点 " + name);
+            return new Vec3((double)point.Attribute("x"), (double)point.Attribute("y"), (double)point.Attribute("z"));
+        }
+        private static XElement TransformElement(string name, TxTransformation location)
+        {
+            var node = new XElement(name);
+            if (location != null)
+                for (int row = 0; row < 4; row++)
+                    for (int col = 0; col < 4; col++)
+                        node.SetAttributeValue("m" + row + col, location[row, col]);
+            return node;
+        }
+        private static TxTransformation ReadTransform(XElement node)
+        {
+            if (node == null || node.Attribute("m00") == null) return null;
+            var value = new TxTransformation();
+            for (int row = 0; row < 4; row++)
+                for (int col = 0; col < 4; col++)
+                    value[row, col] = (double)node.Attribute("m" + row + col);
+            return value;
+        }
+
+        private void SaveSetup()
+        {
+            var links = RprrBuilder.GetOwnedLinks(_model.TargetKinematics);
+            var root = new XElement("WeldGunSetup",
+                new XAttribute("hingeO", _model.HingeO?.Id ?? ""),
+                new XAttribute("hingeA", _model.HingeA?.Id ?? ""),
+                new XAttribute("hingeC", _model.HingeC?.Id ?? ""),
+                new XAttribute("staticTip", _model.ObjStaticTip?.Id ?? ""),
+                new XAttribute("movingTip", _model.ObjMovingTip?.Id ?? ""),
+                new XAttribute("tcp", _model.TcpFrame?.Id ?? ""),
+                new XAttribute("stroke", _model.PistonStroke), new XAttribute("gap", _model.OpenGap),
+                new XAttribute("wear", _model.WearAllowance), new XAttribute("openAdapt", _model.OpenStateAdapt),
+                PointElement("O", _model.WorldO), PointElement("A", _model.WorldA),
+                PointElement("C", _model.WorldC), PointElement("N", _model.PlaneNormal),
+                TransformElement("base", _model.BaseLocation),
+                TransformElement("device", (_model.TargetComponent as ITxLocatableObject)?.AbsoluteLocation));
+            links["fixed_link"].SetAttribute(new TxStringAttribute(SetupAttribute, root.ToString(SaveOptions.DisableFormatting)));
+        }
+
+        public bool TryRestoreSetup(out string status)
+        {
+            status = null;
+            try
+            {
+                var links = RprrBuilder.GetOwnedLinks(_model.TargetKinematics);
+                foreach (var name in new[] { "fixed_link", "input_link", "coupler_link", "output_link", "dummy_link", "lnk1", "lnk2" })
+                    if (!links.ContainsKey(name)) { status = "插件 Link 不完整，请完成第二步"; return false; }
+                var attribute = links["fixed_link"].GetAttribute(SetupAttribute) as TxStringAttribute;
+                if (attribute == null) { status = "已有 Link 缺少选点记录，请完成一次第二步"; return false; }
+                var root = XElement.Parse(attribute.Value);
+                ITxObject Resolve(string name)
+                {
+                    var id = (string)root.Attribute(name);
+                    var obj = string.IsNullOrEmpty(id) ? null : TxApplication.ActiveDocument.GetObjectById(id);
+                    if (obj == null || !obj.IsValid()) throw new InvalidOperationException("已保存资源失效: " + name);
+                    return obj;
+                }
+                var hingeO = Resolve("hingeO"); var hingeA = Resolve("hingeA"); var hingeC = Resolve("hingeC");
+                var staticTip = Resolve("staticTip");
+                var movingTip = Resolve("movingTip");
+                var tcp = Resolve("tcp") as TxFrame;
+                if (tcp == null) throw new InvalidOperationException("已保存 TCP 不是 Frame");
+                Vec3 o = ReadPoint(root, "O"), a = ReadPoint(root, "A"), c = ReadPoint(root, "C"), n = ReadPoint(root, "N");
+                var savedDevice = ReadTransform(root.Element("device"));
+                var currentDevice = (_model.TargetComponent as ITxLocatableObject)?.AbsoluteLocation;
+                if (savedDevice != null && currentDevice != null)
+                {
+                    var delta = currentDevice * savedDevice.Inverse;
+                    Vec3 Transform(Vec3 v, bool normal) => new Vec3(
+                        delta[0,0]*v.X + delta[0,1]*v.Y + delta[0,2]*v.Z + (normal ? 0 : delta[0,3]),
+                        delta[1,0]*v.X + delta[1,1]*v.Y + delta[1,2]*v.Z + (normal ? 0 : delta[1,3]),
+                        delta[2,0]*v.X + delta[2,1]*v.Y + delta[2,2]*v.Z + (normal ? 0 : delta[2,3]));
+                    o = Transform(o, false); a = Transform(a, false); c = Transform(c, false); n = Transform(n, true);
+                }
+                var bodyLists = new List<ITxObject>[5];
+                var bodyNames = new[] { "fixed_link", "input_link", "coupler_link", "output_link", "lnk2" };
+                for (int index = 0; index < 5; index++) bodyLists[index] = RprrBuilder.ReadLinkBodies(links[bodyNames[index]]);
+                double stroke = (double)root.Attribute("stroke"), gap = (double)root.Attribute("gap"), wear = (double)root.Attribute("wear");
+                var baseLocation = ReadTransform(root.Element("base"));
+                bool openAdapt = (bool)root.Attribute("openAdapt");
+                _model.HingeO = hingeO; _model.HingeA = hingeA; _model.HingeC = hingeC;
+                _model.WorldO = o; _model.WorldA = a; _model.WorldC = c; _model.PlaneNormal = n;
+                _model.HasO = _model.HasA = _model.HasC = true;
+                _model.ObjStaticTip = staticTip; _model.ObjMovingTip = movingTip; _model.TcpFrame = tcp;
+                var loc = tcp.AbsoluteLocation;
+                _model.WorldGunTcp = new Vec3(loc[0,3], loc[1,3], loc[2,3]);
+                _model.BaseLocation = baseLocation;
+                _model.PistonStroke = stroke; _model.OpenGap = gap; _model.WearAllowance = wear; _model.OpenStateAdapt = openAdapt;
+                var targets = new[] { _model.FixedLinkBodies, _model.InputLinkBodies, _model.CouplerLinkBodies, _model.OutputLinkBodies, _model.Lnk2Bodies };
+                for (int index = 0; index < 5; index++) { targets[index].Clear(); targets[index].AddRange(bodyLists[index]); }
+                if (!UpdateHingePoints(out status) || !ComputeMechanismFromPoints(out status)) return false;
+                status = "已恢复插件 Link、几何绑定与选点，可跳过第二步";
+                return true;
+            }
+            catch (Exception ex) { status = "无法恢复已有定义，请完成第二步: " + ex.Message; return false; }
+        }
 
         // ── 参考平面 ──
 
@@ -259,6 +369,16 @@ namespace TxTools.WeldGunDefiner.Core
 
                 // 执行构建
                 var builder = new RprrBuilder(_model.TargetKinematics, p);
+                builder.LinksCreated = () =>
+                {
+                    try { SaveSetup(); }
+                    catch (Exception ex) { result.AddInfo("[!] 无法保存下次复用的选点记录: " + ex.Message); }
+                };
+                builder.OpenAdaptationStarting = () =>
+                {
+                    var links = RprrBuilder.GetOwnedLinks(_model.TargetKinematics);
+                    links["fixed_link"].RemoveAttribute(SetupAttribute);
+                };
                 string buildErr;
                 if (!builder.Build(out buildErr))
                 {
@@ -266,6 +386,13 @@ namespace TxTools.WeldGunDefiner.Core
                     result.AddInfo(builder.Log);
                     return result;
                 }
+                if (!builder.VerifyKinematics(out buildErr))
+                {
+                    result.AddError("机构验证失败: " + buildErr);
+                    result.AddInfo(builder.Log);
+                    return result;
+                }
+                _model.TargetDevice = _model.TargetKinematics as ITxDevice;
                 result.AddSuccess("RPRR运动学结构创建完成（7 Link + 6 Joint）");
                 result.AddInfo(builder.Log);
 
@@ -275,25 +402,35 @@ namespace TxTools.WeldGunDefiner.Core
                 result.AddInfo("=== 几何常数 ===");
                 result.AddInfo($"a=|OA|={formulas.Const_a:F2}  b=连杆={formulas.Const_b:F2}  r=|OC|={formulas.Const_r:F2}  s0={formulas.Const_s0:F2}");
 
-                // Pose：拖动主动轴 j1（焊钳开口）
-                if (_model.TargetDevice != null)
+                // 自动姿态是可选步骤，失败仅提示手动补建，不阻止后续焊钳定义。
+                bool poseReady = builder.VerifyReadyForPoses(out string poseReadyError);
+                if (poseReady && _model.TargetDevice != null)
                 {
                     var closeVals = new System.Collections.Generic.Dictionary<TxJoint, double>();
                     var openVals = new System.Collections.Generic.Dictionary<TxJoint, double>();
                     if (builder.J1 != null)
                     {
-                        // Close = j1 @ High(+磨量), Open = j1 @ Low(-开口)
-                        closeVals[builder.J1] = formulas.J1_High;
+                        // CLOSE = 零位，OPEN = 负开口；正磨量不属于闭合姿态。
+                        closeVals[builder.J1] = 0;
                         openVals[builder.J1] = formulas.J1_Low;
                     }
                     string pcErr, poErr;
                     bool pc = PsSdkHelper.CreatePose(_model.TargetDevice, "CLOSE", closeVals, out pcErr);
-                    result.AddInfo(pc ? "[OK] Pose: CLOSE" : "[X] Pose: CLOSE 失败 - " + pcErr);
+                    result.AddInfo(pc ? "[OK] Pose: CLOSE" : "[!] CLOSE 自动创建失败，可手动创建（j1=0）: " + pcErr);
                     bool po = PsSdkHelper.CreatePose(_model.TargetDevice, "OPEN", openVals, out poErr);
-                    result.AddInfo(po ? "[OK] Pose: OPEN" : "[X] Pose: OPEN 失败 - " + poErr);
+                    result.AddInfo(po ? "[OK] Pose: OPEN" : $"[!] OPEN 自动创建失败，可手动创建（j1={formulas.J1_Low:F2}）: " + poErr);
 
-                    bool lb = PsSdkHelper.CreateSimpleLogicBlock(_model.TargetDevice, "GUN_OPEN", "OPEN", "CLOSE");
-                    result.AddInfo(lb ? "[OK] Logic Block" : "[!] Logic Block 需手动配置");
+                    if (pc && po)
+                    {
+                        bool lb = PsSdkHelper.CreateSimpleLogicBlock(_model.TargetDevice, "GUN_OPEN", "OPEN", "CLOSE");
+                        result.AddInfo(lb ? "[OK] Logic Block" : "[!] Logic Block 需手动配置");
+                    }
+                    else result.AddInfo("[!] 姿态未全部就绪，请手动补建后配置 Logic Block");
+                }
+                else
+                {
+                    result.AddInfo("[!] 自动姿态前置检查未通过，已跳过 CLOSE/OPEN: " + poseReadyError);
+                    result.AddInfo($"[!] 可手动创建 CLOSE（j1=0）、OPEN（j1={formulas.J1_Low:F2}），再配置 Logic Block");
                 }
 
                 // ── 焊钳定义（Servo Gun）：写完Pose后添加 ──
@@ -302,9 +439,12 @@ namespace TxTools.WeldGunDefiner.Core
                 if (_model.TargetKinematics != null)
                 {
                     // Base = 焊钳组件自身坐标系
-                    TxTransformation baseLoc = null;
-                    try { baseLoc = (_model.TargetComponent as ITxLocatableObject)?.AbsoluteLocation; }
-                    catch { baseLoc = null; }
+                    TxTransformation baseLoc = _model.BaseLocation;
+                    if (baseLoc == null)
+                    {
+                        try { baseLoc = (_model.TargetComponent as ITxLocatableObject)?.AbsoluteLocation; }
+                        catch { baseLoc = null; }
+                    }
 
                     // 不检测干涉的实体：两个电极帽
                     var nonColliding = new System.Collections.Generic.List<ITxObject>();
@@ -314,6 +454,7 @@ namespace TxTools.WeldGunDefiner.Core
                     string gunErr;
                     bool gun = PsSdkHelper.DefineAsServoGun(
                         _model.TargetKinematics, _model.TcpFrame, baseLoc, nonColliding, out gunErr);
+                    if (!gun) result.AddError(gunErr);
                     result.AddInfo(gun
                         ? $"[OK] 焊钳定义: Servo Gun (TCP={(_model.TcpFrame != null ? _model.TcpFrame.Name : "未设")}, 不检测干涉×{nonColliding.Count})"
                         : "[!] 焊钳定义部分失败 - " + gunErr);

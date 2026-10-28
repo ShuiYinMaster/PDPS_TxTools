@@ -197,6 +197,15 @@ namespace TxTools.ExportByColor
         public void RunAsync(List<ITxObject> picked, string originName, string format, string outputRoot, bool mergeMeshes,
                              Action<string> onLog, Action<ExportProgressInfo> onProgress, Action<bool, string> onComplete,CgrBackend backend,bool reconstructCylinders)
         {
+            RunAsync(picked, originName, format, outputRoot, mergeMeshes, onLog, onProgress, onComplete,
+                backend, reconstructCylinders, null);
+        }
+
+        public void RunAsync(List<ITxObject> picked, string originName, string format, string outputRoot, bool mergeMeshes,
+                             Action<string> onLog, Action<ExportProgressInfo> onProgress, Action<bool, string> onComplete,
+                             CgrBackend backend, bool reconstructCylinders, TxTransformation originLocation)
+        {
+            var selectedOriginInverse = originLocation == null ? null : new TxTransformation(originLocation).Inverse;
             // Capture the choice per export; never change a process-wide environment variable
             // while the two device workers are encoding.  R38 feature CGR is bridged to
             // compact geometry only at the CFV3 boundary; compact capacity limits may split it.
@@ -277,7 +286,7 @@ namespace TxTools.ExportByColor
                                     merged.Add(batch, name);
                                     DetailLog(onLog, "[合并缓存] " + name + "：批次 " + batchTriangles + " 面；已落盘");
                                     batch.Colors.Clear();
-                                }));
+                                }), originInverseOverride: selectedOriginInverse);
                             progress.Collected++;
                             collectionCounted=true;
                             foreach (var dd in data)
@@ -537,6 +546,14 @@ namespace TxTools.ExportByColor
                                     Action<ExportProgressInfo> onProgress,
                                     Action<bool, string> onComplete, CgrBackend backend = CgrBackend.Compact, bool reconstructRoundHoles = false)
         {
+            RunJtToCgrAsync(picked, onLog, onProgress, onComplete, backend, reconstructRoundHoles, null);
+        }
+
+        public void RunJtToCgrAsync(List<ITxObject> picked, Action<string> onLog,
+                                    Action<ExportProgressInfo> onProgress, Action<bool, string> onComplete,
+                                    CgrBackend backend, bool reconstructRoundHoles, TxTransformation originLocation)
+        {
+            var selectedOriginInverse = originLocation == null ? null : new TxTransformation(originLocation).Inverse;
             var thread = new Thread(() =>
             {
                 int ok = 0, failed = 0;
@@ -600,7 +617,7 @@ namespace TxTools.ExportByColor
                                 SafeLog(onLog, "[外观→CGR] " + name + "：按需临时显示关联零件，读取三角面和设计色，再映射到外观世界位置");
                                 if (reconstructRoundHoles)
                                     SafeLog(onLog, "[外观→CGR] 外观保留 PS 三角面；JT 内外圆柱重建不应用于外观网格");
-                                var nativeData = CollectDeviceGroups(new List<ITxObject> { device }, null, onLog, true);
+                                var nativeData = CollectDeviceGroups(new List<ITxObject> { device }, null, onLog, true, originInverseOverride: selectedOriginInverse);
                                 var appearanceSnapshot = new DeviceData { Name = name };
                                 foreach (var data in nativeData)
                                 {
@@ -631,6 +648,7 @@ namespace TxTools.ExportByColor
                                 var located = device as ITxLocatableObject;
                                 if (located == null) throw new InvalidOperationException("资源没有可读取的放置坐标");
                                 var loc = located.AbsoluteLocation;
+                                if (selectedOriginInverse != null) loc = TxTransformation.Multiply(selectedOriginInverse, loc);
                                 var o = loc.Transform(new TxVector(0, 0, 0));
                                 var x = loc.Transform(new TxVector(1, 0, 0));
                                 var y = loc.Transform(new TxVector(0, 1, 0));
@@ -1016,7 +1034,7 @@ namespace TxTools.ExportByColor
         }
 
         // ── 分组：PS 主线程枚举几何，按(设备×颜色)收集世界三角形 ──────────
-        private List<DeviceData> CollectDeviceGroups(List<ITxObject> picked, string originName, Action<string> onLog, bool expandedAlready = false, Action<DeviceData> streamSink = null, TxTransformation extraInverse = null)
+        private List<DeviceData> CollectDeviceGroups(List<ITxObject> picked, string originName, Action<string> onLog, bool expandedAlready = false, Action<DeviceData> streamSink = null, TxTransformation extraInverse = null, TxTransformation originInverseOverride = null)
         {
             return OnPs(delegate()
             {
@@ -1033,8 +1051,8 @@ namespace TxTools.ExportByColor
                 if (devices.Count == 0) return new List<DeviceData>();
 
                 // 2) 输出坐标系：不能只减平移，原点对象可能包含旋转。
-                TxTransformation originInverse = null;
-                if (!string.IsNullOrEmpty(originName))
+                TxTransformation originInverse = originInverseOverride;
+                if (originInverse == null && !string.IsNullOrEmpty(originName))
                 {
                     var lst = TxApplication.ActiveDocument.GetObjectsByName(originName);
                     if (lst != null && lst.Count > 0)

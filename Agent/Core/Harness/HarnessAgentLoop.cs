@@ -28,7 +28,7 @@ using ToolCall = TxTools.Agent.Core.ToolCall;
 
 namespace TxTools.Agent.Harness
 {
-    public sealed class HarnessAgentLoop : IAgentLoop, IStreamingAgentLoop
+    public sealed class HarnessAgentLoop : IAgentLoop, IStreamingAgentLoop, ISteerableAgentLoop
     {
         // [P2] 静态入口:供 AskUserTool / 记忆工具获取当前 harness 实例的 AskUserRequest/convId
         public static HarnessAgentLoop Current { get; private set; }
@@ -46,6 +46,69 @@ namespace TxTools.Agent.Harness
 
         // 本轮思考段落状态,用于触发 ReasoningStarted / ReasoningEnded
         private bool _inReasoning;
+        private readonly object _guidanceGate = new object();
+        private readonly Queue<KeyValuePair<string, string>> _guidance = new Queue<KeyValuePair<string, string>>();
+        private readonly HashSet<string> _guidanceIds = new HashSet<string>(StringComparer.Ordinal);
+        private bool _acceptingGuidance;
+        public event Action<string> GuidanceApplied;
+        public event Action<string, string> GuidanceNotApplied;
+
+        public bool TryQueueGuidance(string requestId, string text, out string error)
+        {
+            error = null;
+            lock (_guidanceGate)
+            {
+                if (!_acceptingGuidance) { error = "本轮已结束或尚未开始，请重新发送。"; return false; }
+                if (string.IsNullOrWhiteSpace(requestId) || string.IsNullOrWhiteSpace(text))
+                { error = "补充引导不能为空。"; return false; }
+                if (!_guidanceIds.Add(requestId)) return true;
+                _guidance.Enqueue(new KeyValuePair<string, string>(requestId, text));
+                return true;
+            }
+        }
+
+        private bool HasGuidance()
+        {
+            lock (_guidanceGate) return _guidance.Count != 0;
+        }
+
+        private bool CompleteGuidanceTurn()
+        {
+            lock (_guidanceGate)
+            {
+                if (_guidance.Count != 0) return false;
+                _acceptingGuidance = false;
+                return true;
+            }
+        }
+
+        private bool ApplyGuidance(AgentSession session, int baseCount)
+        {
+            var inputs = new List<KeyValuePair<string, string>>();
+            lock (_guidanceGate) while (_guidance.Count != 0) inputs.Add(_guidance.Dequeue());
+            if (inputs.Count == 0) return false;
+            foreach (var input in inputs) session.AddUser(input.Value);
+            SyncIncrementalFromSession(session, baseCount);
+            foreach (var input in inputs)
+            {
+                try { GuidanceApplied?.Invoke(input.Key); } catch { }
+            }
+            return true;
+        }
+
+        private void EndGuidanceTurn()
+        {
+            var pending = new List<string>();
+            lock (_guidanceGate)
+            {
+                _acceptingGuidance = false;
+                while (_guidance.Count != 0) pending.Add(_guidance.Dequeue().Key);
+            }
+            foreach (var id in pending)
+            {
+                try { GuidanceNotApplied?.Invoke(id, "本轮已停止或达到执行限制，补充引导尚未应用，请重新发送。"); } catch { }
+            }
+        }
 
         // ── IAgentLoop 表面 ──
 
@@ -238,6 +301,12 @@ namespace TxTools.Agent.Harness
             AgentSession session = null;
             int baseCount = 0;
 
+            lock (_guidanceGate)
+            {
+                _guidanceIds.Clear();
+                _acceptingGuidance = true;
+            }
+
             try
             {
                 // 会话中途 save/delete 的配方在这里生效(见方法注释)
@@ -271,6 +340,9 @@ namespace TxTools.Agent.Harness
                 };
 
                 var loop = new TxAgent.Core.AgentLoop(_llm, _harnessReg, _host, loopOptions);
+                loop.HasPendingInput = HasGuidance;
+                loop.ApplyPendingInput = current => ApplyGuidance(current, baseCount);
+                loop.TryCompleteTurn = CompleteGuidanceTurn;
 
                 loop.Progress += OnProgress;
                 loop.ContentDelta += OnContentDelta;
@@ -319,6 +391,7 @@ namespace TxTools.Agent.Harness
             }
             finally
             {
+                EndGuidanceTurn();
                 // 【无论正常结束、报错还是用户点停止,都要把本轮已产生的消息归档】
                 // 中途停止时,模型此前说过的话、调过的工具结果都已经在 session 里,
                 // 不同步的话界面上看得见、重开对话却没了。

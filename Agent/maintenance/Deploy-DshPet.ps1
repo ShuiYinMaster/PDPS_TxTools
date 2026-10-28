@@ -1,6 +1,7 @@
 ﻿param(
-    [string]$Source = (Join-Path $PSScriptRoot '..\artifacts\dsh-pet-build'),
+    [string]$Source = (Join-Path $PSScriptRoot '..\..\..\TxTools.Local\build\bin\TxTools\Release'),
     [string]$Destination = (Join-Path $PSScriptRoot '..\..\..\bin'),
+    [string]$BackupDirectory = (Join-Path $PSScriptRoot '..\..\..\TxTools.Local\backups\deployments'),
     [switch]$Apply
 )
 $ErrorActionPreference = 'Stop'
@@ -25,7 +26,7 @@ if (!$Apply) {
 $active = @(Get-Process -Name 'Tune*','ProcessSimulate*' -ErrorAction SilentlyContinue)
 if ($active.Count -gt 0) { throw '请先保存工程并关闭 Process Simulate，再部署。' }
 New-Item -ItemType Directory -Path $deployRoot -Force | Out-Null
-$backup = Join-Path $deployRoot ('maintenance-backup\dsh-pet-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+$backup = Join-Path $BackupDirectory ('dsh-pet-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
 New-Item -ItemType Directory -Path $backup -Force | Out-Null
 $petDestination = Join-Path $deployRoot $relativePet
 foreach ($name in @('TxTools.dll','TxTools.pdb')) {

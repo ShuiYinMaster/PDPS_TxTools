@@ -328,8 +328,50 @@
         var meta = el('div', 'rcp-card-meta');
         meta.appendChild(el('span', 'rcp-status rcp-status-ready', '已固化'));
         meta.appendChild(el('span', 'rcp-lang', rec.lang === 'python' ? 'PY' : 'C#'));
+        var deleteBtn = el('button', 'rcp-iconbtn rcp-delete');
+        deleteBtn.title = '删除此配方';
+        deleteBtn.setAttribute('aria-label', '删除此配方');
+        deleteBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6"/></svg>';
+        deleteBtn.disabled = anyRecipeRunning();
+        var deleteConfirm = el('div', 'rcp-delete-confirm');
+        deleteConfirm.hidden = true;
+        deleteConfirm.setAttribute('role', 'group');
+        deleteConfirm.setAttribute('aria-label', '删除配方确认');
+        deleteConfirm.appendChild(el('p', 'rcp-delete-question', '确定删除“' + rec.name + '”吗？'));
+        var confirmActions = el('div', 'rcp-confirm-actions');
+        var cancelDelete = el('button', 'rcp-btn', '取消');
+        var confirmDelete = el('button', 'rcp-btn rcp-danger', '确认删除');
+        function closeDeleteConfirm() { deleteConfirm.hidden = true; deleteBtn.focus(); }
+        cancelDelete.onclick = closeDeleteConfirm;
+        deleteConfirm.onkeydown = function (event) {
+            if (event.key === 'Escape' && !cancelDelete.disabled) { event.preventDefault(); closeDeleteConfirm(); }
+        };
+        deleteBtn.onclick = function () {
+            if (anyRecipeRunning() || deleteBtn.disabled) return;
+            deleteConfirm.hidden = false;
+            cancelDelete.focus();
+        };
+        confirmDelete.onclick = function () {
+            if (deleteConfirm.hidden || anyRecipeRunning() || confirmDelete.disabled) return;
+            deleteBtn.disabled = confirmDelete.disabled = cancelDelete.disabled = true;
+            send('recipe.delete', { recipeId: rec.id }, function (r) {
+                deleteBtn.disabled = confirmDelete.disabled = anyRecipeRunning();
+                cancelDelete.disabled = false;
+                notice(!!(r && r.ok), (r && (r.text || r.error)) || '删除失败。');
+                if (!r || !r.ok) return;
+                delete state.bindings[rec.id];
+                delete state.open[rec.id];
+                delete state.schemas[rec.id];
+                if (state.lastResult) delete state.lastResult[rec.id];
+                refresh();
+            });
+        };
+        confirmActions.appendChild(cancelDelete);
+        confirmActions.appendChild(confirmDelete);
+        deleteConfirm.appendChild(confirmActions);
+        meta.appendChild(deleteBtn);
         card.appendChild(meta);
-
+        card.appendChild(deleteConfirm);
         // 体
         var body = el('div', 'rcp-card-body');
         if (rec.description) body.appendChild(renderDescription('rcp-desc', rec.description));
@@ -729,8 +771,9 @@
         head.appendChild(el('span', 'rcp-title', '配方'));
 
         var importBtn = el('button', 'rcp-btn rcp-import', '导入');
-        importBtn.title = '导入配方 Markdown 文件，同名配方保存为新副本';
+        importBtn.title = '导入配方；同名时可增加副本或更新已有配方';
         importBtn.onclick = function () {
+            if (anyRecipeRunning()) { notice(false, '配方正在执行，请完成后再导入。'); return; }
             importBtn.disabled = true;
             send('recipe.import', {}, function (r) {
                 importBtn.disabled = false;
@@ -738,7 +781,7 @@
                 notice(!!(r && r.ok), (r && (r.text || r.error)) || '导入失败。');
                 if (r && r.ok) {
                     state.activeTab = 'recipes';
-                    if (r.recipeId) state.open[r.recipeId] = true;
+                    if (r.recipeId) { state.open[r.recipeId] = true; delete state.bindings[r.recipeId]; }
                     refresh();
                 }
             });

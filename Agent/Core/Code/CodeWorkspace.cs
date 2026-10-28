@@ -120,6 +120,16 @@ namespace TxTools.Agent.Core
                     return null;
                 }
 
+                var suffix = full.Length > root.TrimEnd('\\', '/').Length ? full.Substring(root.TrimEnd('\\', '/').Length).TrimStart('\\', '/') : "";
+                if (suffix.IndexOf(':') >= 0) { error = "不支持附加数据流路径。"; return null; }
+                var current = full;
+                while (!string.Equals(current.TrimEnd('\\', '/'), root.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase)) {
+                    if ((File.Exists(current) || Directory.Exists(current)) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) {
+                        error = "工作区内不跟随符号链接或目录联接: " + current; return null;
+                    }
+                    current = Path.GetDirectoryName(current);
+                    if (current == null) { error = "无法确认路径边界。"; return null; }
+                }
                 return full;
             }
             catch (Exception ex) { error = ex.Message; return null; }
@@ -138,7 +148,7 @@ namespace TxTools.Agent.Core
         // ── 文件枚举 ──
 
         private static readonly string[] SkipDirs =
-            { "\\bin\\", "\\obj\\", "\\.git\\", "\\.vs\\", "\\packages\\", "\\node_modules\\", "\\.svn\\" };
+            { "\\bin\\", "\\obj\\", "\\.git\\", "\\.vs\\", "\\packages\\", "\\node_modules\\", "\\.svn\\", "\\.txagent_backup\\" };
 
         public static bool IsSkipped(string fullPath)
         {
@@ -154,16 +164,20 @@ namespace TxTools.Agent.Core
             var root = Root;
             if (string.IsNullOrEmpty(root)) return list;
 
-            try
-            {
-                foreach (var f in Directory.EnumerateFiles(root, pattern, SearchOption.AllDirectories))
-                {
-                    if (IsSkipped(f)) continue;
-                    list.Add(f);
-                    if (list.Count >= max) break;
-                }
+            if (max <= 0 || pattern.IndexOfAny(new[] { '\\', '/', ':' }) >= 0) return list;
+            var pending = new Stack<string>(); pending.Push(root);
+            while (pending.Count > 0 && list.Count < max) {
+                var dir = pending.Pop();
+                try {
+                    foreach (var f in Directory.EnumerateFiles(dir, pattern, SearchOption.TopDirectoryOnly)) {
+                        string error; var safe = Resolve(f, out error);
+                        if (safe != null && !IsSkipped(f)) list.Add(safe);
+                        if (list.Count >= max) break;
+                    }
+                    foreach (var child in Directory.EnumerateDirectories(dir).OrderByDescending(p => p, StringComparer.OrdinalIgnoreCase))
+                        if (!IsSkipped(child) && (File.GetAttributes(child) & FileAttributes.ReparsePoint) == 0) pending.Push(child);
+                } catch (IOException) { } catch (UnauthorizedAccessException) { }
             }
-            catch { }
             return list;
         }
 

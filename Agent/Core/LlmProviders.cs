@@ -64,7 +64,7 @@ namespace TxTools.Agent.Core
                 BaseUrl = "https://dashscope.aliyuncs.com/compatible-mode",
                 Models = new[] { "Qwen3.7-Plus", "Qwen3.7-Max", "Qwen3.6-Plus", "Qwen3.6-Max" },
                 KeyPageUrl = "https://dashscope.console.aliyun.com/apiKey"
-            },  
+            },
             new LlmProvider
             {
                 Id = "openai",

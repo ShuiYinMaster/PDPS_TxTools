@@ -66,6 +66,22 @@ namespace TxTools.Agent.Core
             return list;
         }
 
+        /// <summary>同目录临时文件完成落盘后原子替换；失败保留原文件并向调用方抛出。</summary>
+        internal static void WriteTextAtomic(string path, string text)
+        {
+            var directory = Path.GetDirectoryName(Path.GetFullPath(path));
+            Directory.CreateDirectory(directory);
+            var temporary = Path.Combine(directory, ".txmemory_" + Guid.NewGuid().ToString("N") + ".tmp");
+            try {
+                using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                using (var writer = new StreamWriter(stream, new UTF8Encoding(true))) {
+                    writer.Write(text); writer.Flush(); stream.Flush(true);
+                }
+                if (File.Exists(path)) File.Replace(temporary, path, null);
+                else File.Move(temporary, path);
+            } finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
+
         public static bool Write(string folderName, string slug, MarkdownDoc doc)
         {
             if (doc == null || string.IsNullOrWhiteSpace(slug)) return false;

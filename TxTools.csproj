@@ -21,7 +21,7 @@
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
-    <OutputPath>..\bin\</OutputPath>
+    <OutputPath>$(TxToolsOutputDir)</OutputPath>
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
@@ -33,7 +33,7 @@
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
-    <OutputPath>..\bin\</OutputPath>
+    <OutputPath>$(TxToolsOutputDir)</OutputPath>
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
@@ -125,42 +125,42 @@
       <Private>False</Private>
     </Reference>
     <Reference Include="DocumentFormat.OpenXml, Version=3.5.1.0, Culture=neutral, PublicKeyToken=8fb06cb64d019a17, processorArchitecture=MSIL">
-      <HintPath>packages\DocumentFormat.OpenXml.3.5.1\lib\net46\DocumentFormat.OpenXml.dll</HintPath>
+      <HintPath>$(TxToolsNuGetDir)DocumentFormat.OpenXml.3.5.1\lib\net46\DocumentFormat.OpenXml.dll</HintPath>
     </Reference>
     <Reference Include="DocumentFormat.OpenXml.Framework, Version=3.5.1.0, Culture=neutral, PublicKeyToken=8fb06cb64d019a17, processorArchitecture=MSIL">
-      <HintPath>packages\DocumentFormat.OpenXml.Framework.3.5.1\lib\net46\DocumentFormat.OpenXml.Framework.dll</HintPath>
+      <HintPath>$(TxToolsNuGetDir)DocumentFormat.OpenXml.Framework.3.5.1\lib\net46\DocumentFormat.OpenXml.Framework.dll</HintPath>
     </Reference>
     <Reference Include="Microsoft.ML.OnnxRuntime">
-      <HintPath>packages\Microsoft.ML.OnnxRuntime.Managed.1.17.1\lib\netstandard2.0\Microsoft.ML.OnnxRuntime.dll</HintPath>
+      <HintPath>$(TxToolsNuGetDir)Microsoft.ML.OnnxRuntime.Managed.1.17.1\lib\netstandard2.0\Microsoft.ML.OnnxRuntime.dll</HintPath>
       <Private>True</Private>
     </Reference>
     <Reference Include="System.Buffers, Version=4.0.3.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
-      <HintPath>packages\System.Buffers.4.5.1\lib\net461\System.Buffers.dll</HintPath>
+      <HintPath>$(TxToolsNuGetDir)System.Buffers.4.5.1\lib\net461\System.Buffers.dll</HintPath>
       <Private>True</Private>
     </Reference>
     <Reference Include="System.Memory, Version=4.0.1.2, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
-      <HintPath>packages\System.Memory.4.5.5\lib\net461\System.Memory.dll</HintPath>
+      <HintPath>$(TxToolsNuGetDir)System.Memory.4.5.5\lib\net461\System.Memory.dll</HintPath>
       <Private>True</Private>
     </Reference>
     <Reference Include="System.Numerics.Vectors, Version=4.1.4.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
-      <HintPath>packages\System.Numerics.Vectors.4.5.0\lib\net46\System.Numerics.Vectors.dll</HintPath>
+      <HintPath>$(TxToolsNuGetDir)System.Numerics.Vectors.4.5.0\lib\net46\System.Numerics.Vectors.dll</HintPath>
       <Private>True</Private>
     </Reference>
     <Reference Include="System.Runtime.CompilerServices.Unsafe, Version=4.0.4.1, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
-      <HintPath>packages\System.Runtime.CompilerServices.Unsafe.4.5.3\lib\net461\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
+      <HintPath>$(TxToolsNuGetDir)System.Runtime.CompilerServices.Unsafe.4.5.3\lib\net461\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
       <Private>True</Private>
     </Reference>
     <Reference Include="Microsoft.Web.WebView2.Core, Version=1.0.4022.49, Culture=neutral, PublicKeyToken=2a8ab48044d2601e, processorArchitecture=MSIL">
-      <HintPath>packages\Microsoft.Web.WebView2.1.0.4022.49\lib\net462\Microsoft.Web.WebView2.Core.dll</HintPath>
+      <HintPath>$(TxToolsNuGetDir)Microsoft.Web.WebView2.1.0.4022.49\lib\net462\Microsoft.Web.WebView2.Core.dll</HintPath>
     </Reference>
     <Reference Include="Microsoft.Web.WebView2.WinForms, Version=1.0.4022.49, Culture=neutral, PublicKeyToken=2a8ab48044d2601e, processorArchitecture=MSIL">
-      <HintPath>packages\Microsoft.Web.WebView2.1.0.4022.49\lib\net462\Microsoft.Web.WebView2.WinForms.dll</HintPath>
+      <HintPath>$(TxToolsNuGetDir)Microsoft.Web.WebView2.1.0.4022.49\lib\net462\Microsoft.Web.WebView2.WinForms.dll</HintPath>
     </Reference>
     <Reference Include="Microsoft.Web.WebView2.Wpf, Version=1.0.4022.49, Culture=neutral, PublicKeyToken=2a8ab48044d2601e, processorArchitecture=MSIL">
-      <HintPath>packages\Microsoft.Web.WebView2.1.0.4022.49\lib\net462\Microsoft.Web.WebView2.Wpf.dll</HintPath>
+      <HintPath>$(TxToolsNuGetDir)Microsoft.Web.WebView2.1.0.4022.49\lib\net462\Microsoft.Web.WebView2.Wpf.dll</HintPath>
     </Reference>
     <Reference Include="Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
-      <HintPath>packages\Newtonsoft.Json.13.0.4\lib\net45\Newtonsoft.Json.dll</HintPath>
+      <HintPath>$(TxToolsNuGetDir)Newtonsoft.Json.13.0.4\lib\net45\Newtonsoft.Json.dll</HintPath>
       <Private>True</Private>
     </Reference>
     <Reference Include="PresentationCore" />
@@ -174,7 +174,7 @@
     <Reference Include="System.IO.Compression.FileSystem" />
     <Reference Include="System.Security" />
     <Reference Include="System.Security.Cryptography.ProtectedData, Version=10.0.0.9, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
-      <HintPath>packages\System.Security.Cryptography.ProtectedData.10.0.9\lib\net462\System.Security.Cryptography.ProtectedData.dll</HintPath>
+      <HintPath>$(TxToolsNuGetDir)System.Security.Cryptography.ProtectedData.10.0.9\lib\net462\System.Security.Cryptography.ProtectedData.dll</HintPath>
     </Reference>
     <Reference Include="System.Windows" />
     <Reference Include="System.Windows.Controls.Ribbon" />
@@ -339,6 +339,8 @@
     <Compile Include="Agent\Ps\ApiInspector.cs" />
     <Compile Include="Agent\Ps\CSharpRunner.cs" />
     <Compile Include="Agent\Ps\DeviceZAlignService.cs" />
+    <Compile Include="Agent\Ps\DeviceZMath.cs" />
+    <Compile Include="Agent\Ps\WorldTriangleReader.cs" />
     <Compile Include="Agent\Ps\PsBridge.cs" />
     <Compile Include="Agent\Tools\ActionTools.cs" />
     <Compile Include="Agent\Tools\AlignDevicesZTool.cs" />
@@ -531,6 +533,7 @@
     </Compile>
     <Compile Include="SRC\PsReader.cs" />
     <Compile Include="WeldAnnotator\AnnotationStyle.cs" />
+    <Compile Include="WeldAnnotator\AnnotationExportService.cs" />
     <Compile Include="WeldAnnotator\DisplaySession.cs" />
     <Compile Include="WeldAnnotator\AnnotationStyleForm.cs">
       <SubType>Form</SubType>
@@ -576,6 +579,12 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="WeldPointMatrix\PointService.cs" />
+    <Compile Include="WeldPointMatrix\WeldPointMatrixForm.Playback.cs" />
+    <Compile Include="WeldPointMatrix\WeldPointMatrixForm.Interlock.cs" />
+    <Compile Include="WeldPointMatrix\SequencePlaybackScope.cs" />
+    <Compile Include="WeldPointMatrix\SequenceEditorSession.cs" />
+    <Compile Include="WeldPointMatrix\NativeLocationCommands.cs" />
+    <Compile Include="WeldPointMatrix\PointMatrixGrid.cs" />
     <Compile Include="WeldSpotGrouper\Core\GroupModels.cs" />
     <Compile Include="WeldSpotGrouper\Ps\GroupWriter.cs" />
     <Compile Include="WeldSpotGrouper\Ps\SpotGrouper.cs" />
@@ -628,11 +637,11 @@
   </ItemGroup>
   <ItemGroup>
     <!-- ONNX Runtime 原生 DLL (本地嵌入路线)。OnnxEmbedder 运行前必须有 onnxruntime.dll 在输出目录。 -->
-    <None Include="packages\Microsoft.ML.OnnxRuntime.1.17.1\runtimes\win-x64\native\onnxruntime.dll">
+    <None Include="$(TxToolsNuGetDir)Microsoft.ML.OnnxRuntime.1.17.1\runtimes\win-x64\native\onnxruntime.dll">
       <Link>onnxruntime.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Include="packages\Microsoft.ML.OnnxRuntime.1.17.1\runtimes\win-x64\native\onnxruntime_providers_shared.dll">
+    <None Include="$(TxToolsNuGetDir)Microsoft.ML.OnnxRuntime.1.17.1\runtimes\win-x64\native\onnxruntime_providers_shared.dll">
       <Link>onnxruntime_providers_shared.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
@@ -1519,12 +1528,12 @@
     <DefineConstants>$(DefineConstants);TXTOOLS_HIDE_LOGS</DefineConstants>
   </PropertyGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
-  <Import Project="packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets" Condition="Exists('packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets')" />
+  <Import Project="$(TxToolsNuGetDir)Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets" Condition="Exists('$(TxToolsNuGetDir)Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets')" />
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <ErrorText>��̨�������ȱ�ٴ���Ŀ���õ� NuGet �������ʹ�á�NuGet �������ԭ�����������Щ��������йظ�����Ϣ����μ� http://go.microsoft.com/fwlink/?LinkID=322105��ȱ�ٵ��ļ��� {0}��</ErrorText>
     </PropertyGroup>
-    <Error Condition="!Exists('packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets'))" />
+    <Error Condition="!Exists('$(TxToolsNuGetDir)Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets')" Text="$([System.String]::Format('$(ErrorText)', '$(TxToolsNuGetDir)Microsoft.Web.WebView2.1.0.4022.49\build\Microsoft.Web.WebView2.targets'))" />
   </Target>
   <!-- 编译 MCP 桥，并把 exe 输出到与插件 DLL 相同的目录（PS 的 DotNetCommands 加载目录）。 -->
   <Target Name="BuildMcpBridge" AfterTargets="Build" Condition="Exists('McpBridge\McpBridge.csproj')">
@@ -1535,11 +1544,11 @@
   <Target Name="BuildJtDirectCs" AfterTargets="Build">
     <MSBuild Projects="$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\Worker.csproj" Targets="Build" Properties="Configuration=Release;Platform=AnyCPU" RemoveProperties="OutputPath;OutDir" />
     <ItemGroup>
-      <JtDecoderFiles Include="$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\TxTools.JtDecoder.exe*;$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\*.dll;$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\LICENSE.JTReader;$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\bin\Release\THIRD-PARTY-NOTICES.txt" />
+      <JtDecoderFiles Include="$(TxToolsBuildRoot)bin\JtDecoder\Release\TxTools.JtDecoder.exe*;$(TxToolsBuildRoot)bin\JtDecoder\Release\*.dll;$(TxToolsBuildRoot)bin\JtDecoder\Release\LICENSE.JTReader;$(TxToolsBuildRoot)bin\JtDecoder\Release\THIRD-PARTY-NOTICES.txt" />
     </ItemGroup>
     <Copy SourceFiles="@(JtDecoderFiles)" DestinationFolder="$(TargetDir)JtDirectCs" SkipUnchangedFiles="true" />
     <MSBuild Projects="$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\CgrWorker.csproj" Targets="Build" Properties="Configuration=Release;Platform=AnyCPU;TxToolsAssembly=$(TargetPath)" RemoveProperties="OutputPath;OutDir" />
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\ExportByColor\JtDirectCs\cgr_bin\Release\TxTools.JtCgrWorker.exe" DestinationFolder="$(TargetDir)JtDirectCs" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(TxToolsBuildRoot)bin\JtCgrWorker\Release\TxTools.JtCgrWorker.exe" DestinationFolder="$(TargetDir)JtDirectCs" SkipUnchangedFiles="true" />
   </Target>
   <ItemGroup>
     <EmbeddedResource Include="ExportByColor\Vendor\EarCut\LICENSE">

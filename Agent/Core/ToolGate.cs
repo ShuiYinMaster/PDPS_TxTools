@@ -38,7 +38,7 @@ namespace TxTools.Agent.Core
 
                 // CEE 逻辑/信号/传感器。只在做虚拟调试类任务时需要
                 { "cee", new[] {
-                    "get_resource_logic_status", "list_cee_signals", "add_logic_to_resource",
+                    "get_resource_logic_status", "list_cee_signals", "list_cee_modules", "add_logic_to_resource",
                     "create_scl_container", "create_cee_module", "create_cee_signal",
                     "create_lb_sensor", "list_lb_elements", "connect_signal_to_lb", "copy_logic" } },
 
@@ -50,7 +50,7 @@ namespace TxTools.Agent.Core
                 // 视图与截图
                 { "view", new[] {
                     "capture_viewer_image", "screenshot_window", "set_camera_view",
-                    "set_view_to_object", "analyze_viewport", "analyze_image" } },
+                    "set_view_to_object", "analyze_viewport", "analyze_image", "export_weld_screenshots" } },
 
                 // CATIA 集成
                 { "catia", new[] { "catia_read_tree", "import_catia_tree_to_parts" } },
@@ -141,7 +141,7 @@ namespace TxTools.Agent.Core
             {
                 var prefs = UserPrefsStore.Load();
                 var saved = prefs.EnabledToolGroups;
-                if (saved == null || saved.Count == 0) return;   // 未设置过,用默认
+                if (saved == null) return;   // 未设置过,用默认
 
                 lock (_sync)
                 {

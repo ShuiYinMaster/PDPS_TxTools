@@ -59,7 +59,8 @@ namespace TxTools.Agent.Core
                     throw new InvalidOperationException("\u6a21\u677f\u65e0 PresentationPart");
 
                 // 缓存所有模板 slide part 的引用(供 clone 用)
-                var templateSlideParts = new List<SlidePart>(presPart.SlideParts);
+                var templateSlideParts = presPart.Presentation.SlideIdList.Elements<P.SlideId>()
+                    .Select(id => (SlidePart)presPart.GetPartById(id.RelationshipId)).ToList();
                 if (templateSlideParts.Count == 0)
                     throw new InvalidOperationException("\u6a21\u677f pptx \u91cc\u4e00\u5f20 slide \u90fd\u6ca1\u6709");
 
@@ -67,7 +68,8 @@ namespace TxTools.Agent.Core
                 var newSlideParts = new List<SlidePart>();
                 foreach (var data in slides)
                 {
-                    var idx = Math.Max(0, Math.Min(templateSlideParts.Count - 1, data.TemplateSlideIndex));
+                    var idx = data.TemplateSlideIndex;
+                    if (idx < 0 || idx >= templateSlideParts.Count) throw new ArgumentException("template_slide_index 超出范围（0-based）。");
                     var src = templateSlideParts[idx];
                     newSlideParts.Add(CloneSlide(presPart, src));
                 }
@@ -168,14 +170,19 @@ namespace TxTools.Agent.Core
             // 1) 文本占位符替换
             if (data.Replacements != null && data.Replacements.Count > 0)
             {
-                foreach (var para in slidePart.Slide.Descendants<A.Paragraph>())
-                    ReplaceInParagraph(para, data.Replacements);
+                var paragraphs = slidePart.Slide.Descendants<A.Paragraph>().ToList();
+                var keys = new HashSet<string>(paragraphs.SelectMany(p => PlaceholderRegex.Matches(string.Concat(p.Elements<A.Run>().Select(r => r.Text?.Text ?? ""))).Cast<Match>().Select(m => m.Groups[1].Value)), StringComparer.Ordinal);
+                foreach (var key in data.Replacements.Keys) if (!keys.Contains(key)) throw new ArgumentException("模板不存在文本占位符: " + key);
+                foreach (var para in paragraphs) ReplaceInParagraph(para, data.Replacements);
             }
 
             // 2) 图片占位符 —— 按 shape.Name 匹配
             if (data.Images != null && data.Images.Count > 0)
             {
                 var shapes = slidePart.Slide.Descendants<P.Shape>().ToList();
+                foreach (var key in data.Images.Keys)
+                    if (!shapes.Any(s => s.NonVisualShapeProperties?.NonVisualDrawingProperties?.Name?.Value == key))
+                        throw new ArgumentException("模板不存在图片占位形状: " + key);
                 foreach (var sp in shapes)
                 {
                     var nv = sp.NonVisualShapeProperties?.NonVisualDrawingProperties;
@@ -184,7 +191,7 @@ namespace TxTools.Agent.Core
 
                     string imgPath;
                     if (!data.Images.TryGetValue(name, out imgPath)) continue;
-                    if (string.IsNullOrEmpty(imgPath) || !File.Exists(imgPath)) continue;
+                    if (string.IsNullOrEmpty(imgPath) || !File.Exists(imgPath)) throw new FileNotFoundException("图片不存在。", imgPath);
 
                     ReplaceShapeWithImage(slidePart, sp, imgPath, name);
                 }

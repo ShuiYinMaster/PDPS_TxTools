@@ -158,8 +158,15 @@ namespace TxAgent.Core
         /// <summary>单次 LLM 调用的 token 用量（prompt, completion）。</summary>
         public event Action<int, int> Usage;
 
+        /// <summary>可选运行中输入通道。仅在工具调用配对完整的边界修改 session。</summary>
+        public Func<bool> HasPendingInput { get; set; }
+        public Func<AgentSession, bool> ApplyPendingInput { get; set; }
+        /// <summary>结束前与输入生产者握手；返回 false 表示还有补充输入需要处理。</summary>
+        public Func<bool> TryCompleteTurn { get; set; }
+
         public async Task<AgentRunResult> RunAsync(AgentSession session, CancellationToken ct)
         {
+            if (session == null) throw new ArgumentNullException("session");
             try
             {
                 return await RunCoreAsync(session, ct).ConfigureAwait(false);
@@ -170,6 +177,21 @@ namespace TxAgent.Core
                 // 让"界面显示的"和"保存下来的"一致。
                 FlushPartial(session);
                 throw;
+            }
+            finally
+            {
+                // 停止/熔断发生在一批调用中间时，也要保持下一次请求的工具配对合法。
+                var pending = new Dictionary<string, ToolCall>(StringComparer.Ordinal);
+                foreach (var message in session.Messages)
+                {
+                    if (message.HasToolCalls)
+                        foreach (var call in message.ToolCalls)
+                            if (!string.IsNullOrEmpty(call.Id)) pending[call.Id] = call;
+                    if (message.Role == MessageRole.Tool && message.ToolCallId != null) pending.Remove(message.ToolCallId);
+                }
+                foreach (var call in pending.Values)
+                    session.Add(ChatMessage.CreateToolResult(call.Id,
+                        "Error: 本轮已结束，调用未完成或结果未返回。请核对场景与已有结果后再决定是否重试。"));
             }
         }
 
@@ -194,6 +216,8 @@ namespace TxAgent.Core
             {
                 ct.ThrowIfCancellationRequested();
                 result.Iterations = iter;
+
+                if (ApplyPendingInput != null) ApplyPendingInput(session);
 
                 session.TrimToBudget();
 
@@ -254,6 +278,8 @@ namespace TxAgent.Core
                     _host.Log("warn", "模型返回空内容且无工具调用，已丢弃该轮消息以免污染历史");
                 }
 
+                if (response.HasToolCalls && RedirectPendingCalls(session, response.ToolCalls, 0)) continue;
+
                 // 输出陷入重复循环，客户端已主动截断。
                 // 【不能当正常结束】那一大坨重复文字不是答案。
                 // 把纠正提示作为一条 user 消息入会话，让模型换个做法继续 ——
@@ -282,6 +308,8 @@ namespace TxAgent.Core
                 // 没有工具调用 = 模型认为任务结束
                 if (!response.HasToolCalls)
                 {
+                    if (ApplyPendingInput != null && ApplyPendingInput(session)) continue;
+                    if (TryCompleteTurn != null && !TryCompleteTurn()) continue;
                     result.Completed = hasPayload;
                     result.FinalMessage = response.Content;
 
@@ -306,9 +334,11 @@ namespace TxAgent.Core
                 // 跨轮相同调用往往是合理的（先查一次、改完再查一次核对）。
                 var doneThisTurn = new HashSet<string>(StringComparer.Ordinal);
 
-                foreach (var call in response.ToolCalls)
+                for (int callIndex = 0; callIndex < response.ToolCalls.Count; callIndex++)
                 {
                     ct.ThrowIfCancellationRequested();
+                    if (RedirectPendingCalls(session, response.ToolCalls, callIndex)) break;
+                    var call = response.ToolCalls[callIndex];
                     result.ToolCallCount++;
 
                     // 参数不同的并行调用是合理的（同一工具查不同 scope），不能一起挡掉，
@@ -435,6 +465,9 @@ namespace TxAgent.Core
                         }
                     }
 
+                    // 审批过程中也可能收到引导，重新检查后再开始执行。
+                    if (RedirectPendingCalls(session, response.ToolCalls, callIndex)) break;
+
                     // 工具卡片在执行「前」就发出，UI 才能看到"正在执行"的中间态
                     RaiseToolStarting(call);
                     RaiseProgress("执行 " + tool.Name);
@@ -486,6 +519,16 @@ namespace TxAgent.Core
             result.StopReason = "达到最大轮数 " + _options.MaxIterations + "，任务未完成";
             result.RestorePoint = restorePoint;
             return result;
+        }
+
+        private bool RedirectPendingCalls(AgentSession session, IList<ToolCall> calls, int start)
+        {
+            if (HasPendingInput == null || !HasPendingInput() || ApplyPendingInput == null) return false;
+            // 先补齐被新要求取代的剩余调用结果，再加入 user 消息，保持 API 工具协议有效。
+            for (int i = start; i < calls.Count; i++)
+                session.Add(ChatMessage.CreateToolResult(calls[i].Id,
+                    "未执行：用户补充了新的执行要求，请根据最新用户消息重新规划后续步骤。"));
+            return ApplyPendingInput(session);
         }
 
         private async Task<LlmResponse> CallLlmWithRetryAsync(

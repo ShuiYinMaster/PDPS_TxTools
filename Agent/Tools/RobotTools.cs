@@ -1,5 +1,5 @@
 // TxTools.Agent / Tools / RobotTools.cs
-// 机器人相关只读原子工具：基座校验、运动学检查、操作→机器人查找。
+// 机器人工具：BASE0 检查/校正、运动学检查、操作→机器人查找。
 // 所有 PS SDK 调用经 PsBridge -> PsContext.Current.Run(...) 路由回 PS 主线程。
 
 using Newtonsoft.Json.Linq;
@@ -8,74 +8,43 @@ using TxTools.Agent.Ps;
 
 namespace TxTools.Agent.Tools
 {
-    // ─────────────────────────────────────────────────────────────
-    // 1) check_robot_base — 机器人 BASE0 基座校验（接 RobotBaseReader）
-    // ─────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// 校验场景内所有机器人的 BASE0 是否与期望一致。
-    /// 调用 RobotBaseReader.Analyze 分析当前存储 BASE0 与品牌感知的期望 BASE0，
-    /// 给出各机器人的 Verdict（一致 / 存在偏差 / 无法对比 / 无当前BASE0）。
-    /// 只读、不修改场景。
-    /// </summary>
-    public sealed class CheckRobotBaseTool : TxAgentToolBase
+    /// <summary>检查或校正机器人 BASE0，复用插件品牌基准和同步实现。</summary>
+    public class CheckRobotBaseTool : TxAgentToolBase
     {
         public override string Name { get { return "check_robot_base"; } }
-
-        public override string Description
-        {
-            get
-            {
-                return "校验场景内所有机器人的 BASE0（控制器基坐标）是否与期望一致。" +
-                       "tolerance_mm 控制平移容差(mm)，tolerance_rot 控制旋转容差(度)；" +
-                       "brand_mode 可选 Auto/Fanuc/Generic（Auto 自动识别品牌）。" +
-                       "只读，不修改场景。回答机器人 BASE0 是否正确时用它。";
-            }
-        }
-
+        public override string Description { get { return "检查机器人 BASE0 与品牌期望基准的一致性；区分一致、偏差、无 BASE0 和无法对比。可用 name/object_id 限定机器人，省略则检查全部。容差默认与 BASE0 插件一致：位置 0.5mm，旋转 0.01（PS RPY 原生单位，与插件旋转容差相同）。"; } }
         public override bool IsReadOnly { get { return true; } }
-
-        public override JObject InputSchema
-        {
-            get
-            {
-                return JObject.Parse(@"{
-                    ""type"": ""object"",
-                    ""properties"": {
-                        ""tolerance_mm"": {
-                            ""type"": ""number"",
-                            ""description"": ""平移容差(mm)，默认 5.0""
-                        },
-                        ""tolerance_rot"": {
-                            ""type"": ""number"",
-                            ""description"": ""旋转容差(度)，默认 0.5""
-                        },
-                        ""brand_mode"": {
-                            ""type"": ""string"",
-                            ""enum"": [""Auto"", ""Fanuc"", ""Generic""],
-                            ""description"": ""品牌识别模式，默认 Auto""
-                        }
-                    }
-                }");
-            }
-        }
-
+        public override JObject InputSchema { get { return JObject.Parse(@"{
+            'type':'object','properties':{
+                'name':{'type':'string','description':'机器人名称；同名时使用 object_id'},
+                'object_id':{'type':'string','description':'机器人唯一 ID，优先于 name；省略目标则处理全部机器人'},
+                'tolerance_mm':{'type':'number','minimum':0,'default':0.5},
+                'tolerance_rot':{'type':'number','minimum':0,'default':0.01,'description':'PS RPY 原生单位，与插件旋转容差一致'},
+                'brand_mode':{'type':'string','enum':['Auto','Fanuc','Generic'],'default':'Auto'}
+            }}"); } }
         public override string Execute(JObject input)
         {
-            double posTol = 5.0;
-            double rotTol = 0.5;
-            string brandMode = GetString(input, "brand_mode", "Auto");
-
-            var tPos = input != null ? input["tolerance_mm"] : null;
-            if (tPos != null && tPos.Type == JTokenType.Float) posTol = (double)tPos;
-            else if (tPos != null && tPos.Type == JTokenType.Integer) posTol = (double)(int)tPos;
-
-            var tRot = input != null ? input["tolerance_rot"] : null;
-            if (tRot != null && tRot.Type == JTokenType.Float) rotTol = (double)tRot;
-            else if (tRot != null && tRot.Type == JTokenType.Integer) rotTol = (double)(int)tRot;
-
-            return PsBridge.CheckRobotBase(posTol, rotTol, brandMode);
+            input = input ?? new JObject();
+            try
+            {
+                var brand = GetString(input, "brand_mode", "Auto");
+                TxTools.RobotBaseChecker.BrandMode mode;
+                if (!System.Enum.TryParse(brand, true, out mode) || !System.Enum.IsDefined(typeof(TxTools.RobotBaseChecker.BrandMode), mode))
+                    return "Error: brand_mode 必须是 Auto/Fanuc/Generic。";
+                return PsBridge.CheckRobotBase(
+                    ToolInputHelpers.Number(input["tolerance_mm"], 0.5, "tolerance_mm"),
+                    ToolInputHelpers.Number(input["tolerance_rot"], 0.01, "tolerance_rot"),
+                    brand, GetString(input, "name", null), GetString(input, "object_id", null), !IsReadOnly);
+            }
+            catch (System.ArgumentException ex) { return "Error: " + ex.Message; }
         }
+    }
+
+    public sealed class CorrectRobotBaseTool : CheckRobotBaseTool
+    {
+        public override string Name { get { return "correct_robot_base"; } }
+        public override string Description { get { return "校正机器人 BASE0：重新检查后，仅把可比较且存在偏差的 BASE0 同步到品牌期望坐标。FANUC 使用 J1/J2 运动学交点；Generic 使用机器人安装坐标。同名用 object_id，省略目标则校正全部偏差机器人。需要审批，使用一个场景撤销分组，可 Ctrl+Z 撤销；返回成功/跳过/失败和校正后复查结果。容差单位与 check_robot_base 一致。"; } }
+        public override bool IsReadOnly { get { return false; } }
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -115,7 +84,7 @@ namespace TxTools.Agent.Tools
                             ""description"": ""对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 object_id 就会忽略 name。""
                         }
                     },
-                    ""required"": [""name""]
+                    ""anyOf"": [{""required"": [""name""]}, {""required"": [""object_id""]}]
                 }");
             }
         }

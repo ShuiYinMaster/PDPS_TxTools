@@ -44,7 +44,8 @@ namespace TxTools.Agent.Core
                 return JObject.Parse(@"{
                     'type': 'object',
                     'properties': {
-                        'operation_name': { 'type': 'string',  'description': '操作名(留空=PS 当前选中;找不到会全局搜索)' },
+                        'object_id': { 'type': 'string', 'description': '操作唯一 ID，优先于 operation_name' },
+                         'operation_name': { 'type': 'string',  'description': '操作名(留空=PS 当前选中;找不到会全局搜索)' },
                         'ref_mode':       { 'type': 'string',  'description': 'auto=自动解析参考系; world=保持世界坐标(默认 auto)' },
                         'ref_name':       { 'type': 'string',  'description': '指定参考系名(零件/夹具/LeadingPart),优先于 auto' },
                         'point_filter':   { 'type': 'string',  'description': 'weld / path / continuous / all(默认 all)' },
@@ -76,18 +77,19 @@ namespace TxTools.Agent.Core
             Action<string> log = GunToolHelpers.Collector(logSb);
 
             string err;
-            OpResolution res = GunToolHelpers.ResolveOperations(opName, log, out err);
+            OpResolution res = GunToolHelpers.ResolveOperations(opName, log, out err, ToolInputHelpers.String(input["object_id"]));
             if (res == null) return "Error: " + err;
 
             var sb = new StringBuilder();
             sb.Append("来源: ").Append(res.SourceDesc).Append('\n');
 
+            int failures = 0;
             foreach (var op in res.Operations)
             {
                 sb.Append("\n操作: ").Append(op.Name).Append('\n');
 
                 try { PsReader.FillPoints(op, filter, useMfg, log); }
-                catch (Exception ex) { sb.Append("  Error: 读取点失败 - ").Append(ex.Message).Append('\n'); continue; }
+                catch (Exception ex) { failures++; sb.Append("  Error: 读取点失败 - ").Append(ex.Message).Append('\n'); continue; }
 
                 if (op.Points == null || op.Points.Count == 0)
                 {
@@ -108,7 +110,7 @@ namespace TxTools.Agent.Core
                 {
                     PsReader.RefFrameResult r = null;
                     try { r = PsReader.ResolveOperationRefFrame(op, false, log); }
-                    catch (Exception ex) { sb.Append("  Error: 参考坐标解析失败 - ").Append(ex.Message).Append('\n'); continue; }
+                    catch (Exception ex) { failures++; sb.Append("  Error: 参考坐标解析失败 - ").Append(ex.Message).Append('\n'); continue; }
 
                     List<AppearanceRef> leading = null;
                     try { leading = GunToolHelpers.CollectLeadingParts(op); }
@@ -117,9 +119,7 @@ namespace TxTools.Agent.Core
                     if (!string.IsNullOrEmpty(refName))
                     {
                         // 三处都找：零件候选 / 夹具候选 / LeadingPart
-                        AppearanceRef picked = Find(r != null ? r.PartCandidates : null, refName)
-                                            ?? Find(r != null ? r.FixtureCandidates : null, refName)
-                                            ?? Find(leading, refName);
+                        AppearanceRef picked = GunToolHelpers.FindReference(refName, r != null ? r.PartCandidates : null, r != null ? r.FixtureCandidates : null, leading);
                         if (picked == null)
                         {
                             var e = new StringBuilder();
@@ -127,6 +127,7 @@ namespace TxTools.Agent.Core
                             AppendNames(e, r != null ? r.PartCandidates : null, "零件");
                             AppendNames(e, r != null ? r.FixtureCandidates : null, "夹具");
                             AppendNames(e, leading, "LeadingPart");
+                            failures++;
                             sb.Append(e.ToString());
                             continue;
                         }
@@ -137,12 +138,11 @@ namespace TxTools.Agent.Core
                     {
                         refMatrix = r.Matrix;
                         refLabel = r.Name;
-                        if (r.NeedsUserChoice)
-                            sb.Append("  ⚠ 零件与夹具坐标不一致(").Append(r.ConflictReason)
-                              .Append("),当前按默认候选换算;如需改用其它候选请传 ref_name\n");
+                        if (r.NeedsUserChoice) return "Error: 参考系冲突，未换算；请传 ref_name 或 ref_mode=world。";
                     }
                     else if (leading != null && leading.Count > 0)
                     {
+                        if (leading.Count != 1) return "Error: 多个 LeadingPart 候选，未换算；请传 ref_name 或 ref_mode=world。";
                         // 标准解析为空，LeadingPart 兜底
                         refMatrix = leading[0].Matrix;
                         refLabel = leading[0].Name + "(LeadingPart 兜底)";
@@ -176,6 +176,7 @@ namespace TxTools.Agent.Core
                     double[] world = pt.TCPMatrix;
                     if (world == null || world.Length < 16)
                     {
+                        failures++;
                         sb.Append("    ").Append(n).Append(". ").Append(pt.Name).Append("  ⚠ 无矩阵数据\n");
                         continue;
                     }
@@ -184,6 +185,7 @@ namespace TxTools.Agent.Core
                     try { rel = PsReader.ToRelative(world, refMatrix); }
                     catch (Exception ex)
                     {
+                        failures++;
                         sb.Append("    ").Append(n).Append(". ").Append(pt.Name)
                           .Append("  ⚠ 换算失败: ").Append(ex.Message).Append('\n');
                         continue;
@@ -202,7 +204,7 @@ namespace TxTools.Agent.Core
             if (verbose && logSb.Length > 0)
                 sb.Append("\n[PS 日志]\n").Append(logSb.ToString());
 
-            return sb.ToString().TrimEnd();
+            return (failures > 0 ? "Error: 部分操作读取或换算失败（" + failures + " 项）。\n" : "") + sb.ToString().TrimEnd();
         }
 
         private static AppearanceRef Find(List<AppearanceRef> list, string name)

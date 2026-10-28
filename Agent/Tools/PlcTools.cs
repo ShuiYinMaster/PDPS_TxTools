@@ -367,7 +367,7 @@ namespace TxTools.Agent.Tools
                             ""description"": ""目标对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 target_id 就会忽略 target_name。""
                         }
                     },
-                    ""required"": [""source_name"", ""target_name""]
+                    ""allOf"": [{""anyOf"":[{""required"":[""source_name""]},{""required"":[""source_id""]}]},{""anyOf"":[{""required"":[""target_name""]},{""required"":[""target_id""]}]}]
                 }");
             }
         }
@@ -565,7 +565,7 @@ namespace TxTools.Agent.Tools
                 return "将 PLC 信号连接到资源的 LogicBehavior 引脚：" +
                        "entry(入口,传感器/指令信号→LB)、exit(出口,LB→执行信号)。" +
                        "连接后信号可触发或反映 LB 逻辑行为。" +
-                       "signal_name/pin_type 均为必填，pin_name 可为空(自动匹配第一个同类型引脚)。" +
+                       "signal_name/pin_type 均为必填，pin_name 为精确名称，可为空但同类型引脚必须唯一。" +
                        "变更操作，需审批。";
             }
         }
@@ -594,7 +594,7 @@ namespace TxTools.Agent.Tools
                         },
                         ""pin_name"": {
                             ""type"": ""string"",
-                            ""description"": ""引脚名称(模糊匹配)，留空匹配第一个同名类型引脚""
+                            ""description"": ""引脚精确名称；留空时同类型引脚必须唯一""
                         },
                         ""object_id"": {
                             ""type"": ""string"",

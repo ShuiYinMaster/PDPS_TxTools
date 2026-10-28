@@ -6,7 +6,7 @@
 //   为保持 CatiaBridge 与 run_csharp 里的探测代码可以互换 (用户可能贴 run_csharp
 //   snippet 复用其中的调用模式), 这里也走反射, 编程模型一致。
 //
-// COM 集合调用的关键坑 (对话 [140-142] 摸出来的):
+// COM 集合调用要求:
 //   Collection.Item(i) 在 CATIA COM 里必须用 BindingFlags.InvokeMethod,
 //   如果用 GetProperty 会抛 "Exception has been thrown by the target of an invocation"。
 //   Products / Documents / 所有 IDispatch 集合都遵守这个规则。
@@ -168,7 +168,7 @@ namespace TxTools.Agent.Core.Catia
                 {
                     try
                     {
-                        // 关键: Item 必须用 InvokeMethod,不是 GetProperty (对话摸出)
+                        // 关键: Item 必须用 InvokeMethod,不是 GetProperty
                         var child = CatiaBridge.InvokeMethod(subs, "Item", i);
                         if (child != null)
                             node.Children.Add(ReadRecursive(child, depth + 1, maxDepth));

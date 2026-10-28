@@ -58,7 +58,9 @@ namespace TxTools.Agent.Core
             var outDir = DocxExportTool.GetExportDir();
             var fullPath = Path.Combine(outDir, fileName);
 
-            Size size = (width > 0 && height > 0) ? new Size(width, height) : Size.Empty;
+            Size size;
+            try { size = PsViewerHelper.ImageSize(width, height); }
+            catch (ArgumentException ex) { return "Error: " + ex.Message; }
 
             try
             {

@@ -15,6 +15,21 @@ select{font:inherit}.field select{width:100%;border:1px solid #dce4f0;background
 .markdown .md-table-wrap{max-width:100%;overflow-x:auto;margin:7px 0}.markdown table{border-collapse:collapse;font-size:11px;min-width:100%;color:inherit}.markdown th,.markdown td{border:1px solid #d8e1ee;padding:5px 7px;vertical-align:top}.markdown th{background:#eaf0f8;font-weight:600}
 .md-preview{max-height:3.3em;overflow:hidden}.md-preview h1,.md-preview h2,.md-preview h3,.md-preview h4,.md-preview h5,.md-preview h6{font-size:1em;margin:0}.md-preview p,.md-preview ul,.md-preview ol{margin:0}.md-preview .code-block{margin:0}.result-detail{margin-top:7px;max-height:280px;overflow:auto}.result .result-detail pre{white-space:pre;font-family:Consolas,monospace}
 .object-filters{display:grid;grid-template-columns:65px minmax(0,1fr);align-items:center;gap:6px;margin-top:8px;padding:9px;background:#edf3ff;border-radius:7px}.object-filters label{font-weight:400;color:#6c7d98;margin:0}.query-search,.object-filters>.help{grid-column:1/-1}.query-search{border:1px solid #cbdaf0;border-radius:6px;background:white;color:#466b9f;padding:7px}.field input.color-picker{display:inline-block;width:64px;height:35px;padding:2px;vertical-align:middle;cursor:pointer}.color-value{font:11px Consolas,monospace;margin-left:8px}.palette{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px}.swatch{width:24px;height:24px;border:1px solid #b7c1cc;border-radius:5px}.swatch:focus-visible{outline:2px solid #527fca;outline-offset:2px}
+
+/* Keep recipe actions consistent with the management sidebar. */
+.icon, .primary, .pick button, .query-search, footer button {
+ display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:30px;padding:0 10px;
+ border:1px solid #e5e7eb;border-radius:6px;background:#fff;color:#374151;
+ font-family:inherit;font-size:12px;font-weight:500;line-height:1.2;white-space:nowrap;
+ transition:background .12s,border-color .12s,color .12s,opacity .12s;
+}
+#refresh,#close{width:30px;height:30px;padding:0}
+.icon:hover:not(:disabled),.pick button:hover:not(:disabled),.query-search:hover:not(:disabled),footer button:hover:not(:disabled){border-color:#3b82f6;background:#f9fafb;color:#3b82f6}
+.primary{border-color:#3b82f6;background:#3b82f6;color:#fff;font-weight:600}
+.primary:hover:not(:disabled){filter:brightness(.94)}
+.icon:focus-visible,.primary:focus-visible,.pick button:focus-visible,.query-search:focus-visible,footer button:focus-visible{outline:2px solid #3b82f6;outline-offset:2px}
+.icon:disabled,.primary:disabled,.pick button:disabled,.query-search:disabled,footer button:disabled{opacity:.45;cursor:default;filter:none}
+.tab{min-height:30px;border-radius:6px;font-size:12px}
 </style></head><body><div id="app">
 <header><div class="heading"><h1>🐳 快捷配方</h1><button class="icon" id="refresh" title="刷新配方" aria-label="刷新配方">↻</button><button class="icon" id="close" title="收起" aria-label="收起">×</button></div><div id="study">正在读取研究…</div><input id="search" type="search" placeholder="搜索名称或用途…" aria-label="搜索配方"><nav class="tabs" aria-label="配方分类"><button class="tab active" data-tab="home">常用</button><button class="tab" data-tab="recent">最近</button><button class="tab" data-tab="all">全部</button></nav></header>
 <main id="content"><div class="empty">正在加载配方…</div></main><div id="notice" role="status"></div><footer><span id="count"></span><button id="manage">配方管理 ↗</button></footer></div>

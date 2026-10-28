@@ -162,7 +162,7 @@ namespace TxTools.Agent.Core
                             var arr = new JArray();
                             if (_tools != null)
                                 foreach (var t in _tools.Tools)
-                                    if (t != null)
+                                    if (t != null && ToolGate.ShouldExpose(t.Name))
                                         arr.Add(new JObject
                                         {
                                             ["name"] = t.Name,
@@ -170,7 +170,7 @@ namespace TxTools.Agent.Core
                                             ["description"] = t.Description ?? "",
                                             ["input_schema"] = t.InputSchema ?? new JObject()
                                         });
-                            return Ok(new JObject { ["tools"] = arr });
+                            return Ok(new JObject { ["tools"] = arr, ["enforces_read_only"] = true });
                         }
 
                     case "invoke":
@@ -221,6 +221,10 @@ namespace TxTools.Agent.Core
             if (_tools == null || !_tools.TryGet(name, out tool) || tool == null)
                 return Err("本环境没有名为 \"" + name + "\" 的工具。");
 
+            if (!ToolGate.ShouldExpose(name)) return Err("目标工具组未启用。");
+            if ((bool?)req["require_read_only"] == true && !tool.IsReadOnly) return Err("比较只允许调用只读工具。");
+            if (!tool.IsReadOnly && !AllowRemoteWrite) return Err("目标环境已禁用远程写入。");
+            if (name == "run_in_environment" || name == "compare_environments") return Err("不支持嵌套跨环境调用。");
             var input = req["input"] as JObject ?? new JObject();
 
             // 【主被控互访】允许远程调用全部工具(含写操作)。
@@ -229,13 +233,15 @@ namespace TxTools.Agent.Core
             try
             {
                 // 管道在后台线程，PS API 必须回主线程
-                output = PsContext.Current.Run<string>(delegate { return tool.Execute(input); });
+                output = tool is ITxOffUiThreadTool ? tool.Execute(input) :
+                    PsContext.Current.Run<string>(delegate { return tool.Execute(input); });
             }
             catch (Exception ex)
             {
                 return Err("工具执行异常 - " + ex.GetType().Name + ": " + ex.Message);
             }
 
+            if (TxTools.Agent.Harness.TxAgentToolAdapter.ClassifyInlineFailure(output, name) != null) return Err(output);
             return Ok(new JObject { ["output"] = output ?? "" });
         }
 

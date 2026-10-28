@@ -46,6 +46,14 @@ namespace TxTools.Agent.Core
         /// transparent=true 会去掉背景色。截图前临时隐藏导航辅助控件。
         /// 抛异常表示 SDK 侧返回 null 或 IO 失败。
         /// </summary>
+        public static Size ImageSize(int width, int height)
+        {
+            if (width == 0 && height == 0) return Size.Empty;
+            if (width <= 0 || height <= 0 || width > 8192 || height > 8192 || (long)width * height > 32000000)
+                throw new ArgumentException("width/height 应同时为 0（原生尺寸），或均为 1..8192，且总像素不超过 3200 万。");
+            return new Size(width, height);
+        }
+
         public static string CaptureToPng(string outputPath, Size size, bool transparent)
         {
             var viewer = GetViewer();
@@ -64,6 +72,7 @@ namespace TxTools.Agent.Core
                 if (size.IsEmpty) size = new Size(1920, 1080);   // WeldAnnotator 同款默认值
             }
 
+            ImageSize(size.Width, size.Height);
             var dir = Path.GetDirectoryName(outputPath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 

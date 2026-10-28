@@ -53,7 +53,7 @@ p_export = extraInverse × originInverse × A × inverse(S) × G × p
 
 ## 验证
 
-运行 [外观回归脚本](../Tests/AppearanceExport/Run-Regression.ps1)，显式传入真实 SDK 和已有 CATIA Interop 目录：
+运行 外观回归脚本，显式传入真实 SDK 和已有 CATIA Interop 目录：
 
 ~~~powershell
 rtk proxy powershell -NoProfile -ExecutionPolicy Bypass -File Tests/AppearanceExport/Run-Regression.ps1 -SdkDirectory "<PS SDK目录>" -InteropDirectory "<CATIA Interop目录>"

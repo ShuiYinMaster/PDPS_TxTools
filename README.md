@@ -68,21 +68,20 @@ flowchart LR
    ```
 
 2. 将 `ProcessSimulateDllDir` 配置为本机 PS 的 `eMPower` SDK 目录，检查 CATIA COM 引用及 JT 解码器依赖。
-3. 使用 `Release / AnyCPU` 构建。**AnyCPU 是配置名称，主插件实际目标为 x64。** 当前工程默认直接输出到 G 盘安装目录，建议先构建到独立目录。
+3. 使用 `Release / AnyCPU` 构建。**AnyCPU 是配置名称，主插件实际目标为 x64。** 默认输出到仓库外的 `TxTools.Local/build/bin/TxTools/<Configuration>/`。
 
    在 VS Developer PowerShell 中运行，按本机路径修改 `$psSdk`：
 
    ```powershell
    $psSdk = 'G:\Program Files\Tecnomatix_2402\eMPower'
-   $buildOut = Join-Path (Get-Location) 'artifacts\release'
-   MSBuild.exe TxTools.csproj /t:Build /p:Configuration=Release "/p:ProcessSimulateDllDir=$psSdk" "/p:OutputPath=$buildOut/" "/p:OutDir=$buildOut/"
+   rtk proxy powershell -NoProfile -ExecutionPolicy Bypass -File tools/Build.ps1 -Configuration Release -SdkDirectory $psSdk
    ```
 
 4. 将主 DLL、依赖及资源部署到 `<Tecnomatix 安装目录>\eMPower\DotNetCommands\TxTools\`。保留构建生成的相对目录结构。
 5. 运行 `eMPower\CommandReg.exe`，Assembly 选择 `TxTools.dll`，勾选需要的 `TxButtonCommand` 类和 **Process Simulate** 产品，选择或创建注册 XML，然后点击 **Register**。
 6. 启动或重启 PS，通过 **Customize** 把已注册命令加入工具栏。
 
-卸载命令时，在 CommandReg 中选择同一注册 XML，点击 **Unregister**。完整构建回归入口见 [配方与启动验证说明](Agent/maintenance/recipe-controls-tests/README.md)。
+卸载命令时，在 CommandReg 中选择同一注册 XML，点击 **Unregister**。构建参数和独立测试入口见 [构建与目录布局](docs/build.md)。
 
 ## 四、主要插件与功能简介
 
@@ -197,7 +196,7 @@ flowchart LR
 
 遵守 [贡献指南](CONTRIBUTING.md)：主项目当前为 C# 8.0 配置，运行时代码片段与 PS 脚本保持 C# 7.3 兼容；不猜测 SDK 成员，不将 SDK DLL、API Key、下载的运行组件或构建产物提交到仓库。
 
-相关验证入口：[配方与启动](Agent/maintenance/recipe-controls-tests/README.md) · [拾取焦点](Tests/PickFocus/PickFocus.csproj) · [显示会话](WeldAnnotator/README.md) · [撤销安全](docs/undo-safety.md#已完成验证)。
+构建配置和独立测试入口见 [构建与目录布局](docs/build.md)。
 
 ## 十一、许可与联系方式
 
@@ -216,7 +215,7 @@ flowchart LR
 | `ExportGun/` / `ExportByColor/` | 导出、CATIA 桥与几何后处理 |
 | `CrossEnvIO/` / `CatiaPartTree/` | 跨环境结构数据与产品树 |
 | `SRC/` / `Common/` | 共享 UI、拾取、场景事务、生成批次和工程快照 |
-| `Tests/` / `Agent/maintenance/` | 回归工具与维护说明 |
+| `build/` / `Agent/maintenance/` | 构建配置、资源校验和维护工具 |
 | `docs/` / `Image/` | 恢复与验收说明、首页图片、命令图标 |
 | `TxTools.csproj` | 主构建入口；14 份配方资源在构建后校验 |
 

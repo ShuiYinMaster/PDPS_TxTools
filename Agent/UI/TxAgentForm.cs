@@ -48,6 +48,8 @@ namespace TxTools.Agent.UI
         /// <summary>是否正在处理一轮发送。防止用户连续点发送导致两个循环并发跑、
         /// _cts 被后一个覆盖、前一个 finally 误 Dispose 后一个的令牌。</summary>
         private bool _isSending;
+        private string _activeTurnId;
+        private IAgentLoop _sendingLoop;
         private Conversation _current;
 
         // ── LLM Provider / Model 状态 ──
@@ -55,7 +57,7 @@ namespace TxTools.Agent.UI
         private string _currentModel = LlmProviders.All[0].Models[0];
 
         /// <summary>
-        /// 审批模式,session 级(关窗归位): 
+        /// 审批模式,session 级(关窗归位):
         ///   ask       每次弹窗询问(默认,安全)
         ///   auto_safe run_csharp 仍弹代码审阅框,其他变更工具自动通过
         ///   auto_all  全部自动通过(含代码执行,危险)
@@ -434,6 +436,12 @@ namespace TxTools.Agent.UI
             }
 
             var type = (string)msg["type"];
+            if (_isSending && (type == "setApiKey" || type == "switchModel" || type == "newConv"
+                || type == "openConv" || type == "deleteConv" || type == "undoLastUser" || type == "removeProvider"))
+            {
+                PostStatus("执行中可直接补充引导；切换模型或会话请先停止当前执行。");
+                return;
+            }
 
             // 配方侧边栏消息分流:recipe.* 全部交给侧边栏处理器,不进对话逻辑
             if (type != null && type.StartsWith("recipe.", StringComparison.Ordinal))
@@ -580,6 +588,10 @@ namespace TxTools.Agent.UI
                         _ = HandleUserSendAsync((string)msg["text"], msg["attachments"] as JArray);
                         break;
 
+                    case "userSteer":
+                        HandleUserSteer(msg);
+                        break;
+
                     case "userStop":
                         try { if (_cts != null) _cts.Cancel(); } catch { }
                         // 若此时正等待审批/askUser,视为取消解除阻塞,让 SendAsync 尽快返回
@@ -679,6 +691,7 @@ namespace TxTools.Agent.UI
                 case "recipe.promote":       HandleRecipePromote(seq, msg); break;
                 case "recipe.import":        HandleRecipeImport(seq); break;
                 case "recipe.export":        HandleRecipeExport(seq, msg); break;
+                case "recipe.delete":        HandleRecipeDelete(seq, msg); break;
                 case "recipe.sidebar":       HandleRecipeSidebar(seq, msg); break;
             }
         }
@@ -876,31 +889,108 @@ namespace TxTools.Agent.UI
             }
         }
 
-        private void HandleRecipeImport(int seq)
+        private void HandleRecipeDelete(int seq, JObject msg)
         {
-            using (var dialog = new OpenFileDialog
+            ReplyToWeb(seq, RecipeUiActions.Delete((string)msg["recipeId"]));
+        }
+
+        private string ChooseRecipeImportTarget(Recipe definition, Recipe[] matches, out bool cancelled)
+        {
+            cancelled = false;
+            using (var dialog = new Form
             {
-                Title = "导入分享的配方", Filter = "配方 Markdown (*.md)|*.md",
-                CheckFileExists = true, Multiselect = false, RestoreDirectory = true
+                Text = "导入同名配方", Font = Font, StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog, MinimizeBox = false, MaximizeBox = false,
+                ShowInTaskbar = false, AutoScaleMode = AutoScaleMode.Dpi,
+                AutoScaleDimensions = new System.Drawing.SizeF(96F, 96F),
+                ClientSize = new System.Drawing.Size(500, 185)
             })
             {
-                if (dialog.ShowDialog(this) != DialogResult.OK)
-                {
-                    ReplyToWeb(seq, new JObject { ["type"] = "recipe.import.result", ["ok"] = true, ["cancelled"] = true });
-                    return;
-                }
-                if (new FileInfo(dialog.FileName).Length > 10 * 1024 * 1024)
-                    throw new InvalidDataException("配方文件超过 10 MB，请检查所选文件。");
-                Recipe imported;
-                string error;
-                if (!RecipeStore.TryImportMarkdown(File.ReadAllText(dialog.FileName, System.Text.Encoding.UTF8), out imported, out error))
-                {
-                    ReplyToWeb(seq, new JObject { ["type"] = "recipe.import.result", ["ok"] = false, ["error"] = error });
-                    return;
-                }
-                ReplyToWeb(seq, new JObject { ["type"] = "recipe.import.result", ["ok"] = true,
-                    ["recipeId"] = imported.Id, ["text"] = "已导入配方：" + imported.Name + "。选取本工程对象后即可执行。" });
+                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 1, RowCount = 3 };
+                layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+                layout.Controls.Add(new Label { Text = "已有同名配方“" + definition.Name + "”。请选择增加副本，或更新已有配方。", Dock = DockStyle.Fill, AutoSize = false }, 0, 0);
+                var targets = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+                for (int i = 0; i < matches.Length; i++)
+                    targets.Items.Add((i + 1) + ". " + matches[i].Name + "（成功 " + matches[i].RunCount + " 次，失败 " + matches[i].FailCount + " 次）");
+                targets.SelectedIndex = 0;
+                layout.Controls.Add(targets, 0, 1);
+                var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false };
+                var cancel = new Button { Text = "取消", AutoSize = true, DialogResult = DialogResult.Cancel };
+                var update = new Button { Text = "更新已有配方", AutoSize = true, DialogResult = DialogResult.No };
+                var add = new Button { Text = "增加配方", AutoSize = true, DialogResult = DialogResult.Yes };
+                buttons.Controls.Add(cancel); buttons.Controls.Add(update); buttons.Controls.Add(add);
+                layout.Controls.Add(buttons, 0, 2);
+                dialog.Controls.Add(layout);
+                dialog.AcceptButton = add; dialog.CancelButton = cancel;
+                var result = dialog.ShowDialog(this);
+                if (result == DialogResult.Yes) return null;
+                if (result == DialogResult.No) return matches[targets.SelectedIndex].Id;
+                cancelled = true;
+                return null;
             }
+        }
+
+        private void HandleRecipeImport(int seq)
+        {
+            if (RecipeUiActions.IsRunning)
+            {
+                ReplyToWeb(seq, RecipeUiActions.Error("recipe.import.result", "配方正在执行，请完成后再导入。"));
+                return;
+            }
+            try
+            {
+                using (var dialog = new OpenFileDialog
+                {
+                    Title = "导入分享的配方", Filter = "配方 Markdown (*.md)|*.md",
+                    CheckFileExists = true, Multiselect = false, RestoreDirectory = true
+                })
+                {
+                    if (dialog.ShowDialog(this) != DialogResult.OK)
+                    {
+                        ReplyToWeb(seq, new JObject { ["type"] = "recipe.import.result", ["ok"] = true, ["cancelled"] = true });
+                        return;
+                    }
+                    if (new FileInfo(dialog.FileName).Length > 10 * 1024 * 1024)
+                        throw new InvalidDataException("配方文件超过 10 MB，请检查所选文件。");
+                    string text = File.ReadAllText(dialog.FileName, System.Text.Encoding.UTF8);
+                    Recipe definition;
+                    string error;
+                    if (!RecipeStore.TryParseImportMarkdown(text, out definition, out error))
+                    {
+                        ReplyToWeb(seq, RecipeUiActions.Error("recipe.import.result", error));
+                        return;
+                    }
+                    string updateId = null;
+                    var matches = RecipeStore.All().Where(r => string.Equals(r.Name.Trim(), definition.Name, StringComparison.OrdinalIgnoreCase))
+                        .OrderByDescending(r => r.LastRunUtc).ThenByDescending(r => r.CreatedUtc).ThenBy(r => r.Id, StringComparer.Ordinal).ToArray();
+                    if (matches.Length > 0)
+                    {
+                        bool cancelled;
+                        updateId = ChooseRecipeImportTarget(definition, matches, out cancelled);
+                        if (cancelled)
+                        {
+                            ReplyToWeb(seq, new JObject { ["type"] = "recipe.import.result", ["ok"] = true, ["cancelled"] = true });
+                            return;
+                        }
+                    }
+                    if (RecipeUiActions.IsRunning)
+                    {
+                        ReplyToWeb(seq, RecipeUiActions.Error("recipe.import.result", "配方正在执行，请完成后再导入。"));
+                        return;
+                    }
+                    Recipe imported;
+                    if (!RecipeStore.TryImportMarkdown(text, updateId, out imported, out error))
+                    {
+                        ReplyToWeb(seq, RecipeUiActions.Error("recipe.import.result", error));
+                        return;
+                    }
+                    ReplyToWeb(seq, new JObject { ["type"] = "recipe.import.result", ["ok"] = true,
+                        ["recipeId"] = imported.Id, ["text"] = (updateId == null ? "已增加配方：" : "已更新配方：") + imported.Name });
+                }
+            }
+            catch (Exception ex) { ReplyToWeb(seq, RecipeUiActions.Error("recipe.import.result", "导入失败：" + ex.Message)); }
         }
 
         /// <summary>
@@ -1120,7 +1210,7 @@ namespace TxTools.Agent.UI
             _petStartupError = "桌宠未能显示: " + message;
             if (_webViewReady) PostStatus(_petStartupError);
         }
-        private void PostBusy(bool busy) { PostJs(new { type = "busy", value = busy }); }
+        private void PostBusy(bool busy) { PostJs(new { type = "busy", value = busy, turnId = _activeTurnId }); }
         /// <summary>
         /// 下发 token 用量。除累计输入/输出外,还附带一份【上下文占用估算】:
         ///   ctxUsed / ctxMax  当前上下文占了模型窗口的多少
@@ -1365,6 +1455,19 @@ namespace TxTools.Agent.UI
         //  用户发送(含附件摘要注入)
         // ─────────────────────────────────────────────────────
 
+        private void HandleUserSteer(JObject message)
+        {
+            string id = (string)message["id"], turnId = (string)message["turnId"], error = null;
+            bool ok = false;
+            var steering = _sendingLoop as ISteerableAgentLoop;
+            if (!_isSending || _sessionClosed || turnId != _activeTurnId || _cts == null || _cts.IsCancellationRequested)
+                error = "当前执行轮次已结束或已停止，请重新发送。";
+            else if (steering == null) error = "当前执行器不支持中途引导。";
+            else ok = steering.TryQueueGuidance(id, (string)message["text"], out error);
+            PostJs(new { type = "steeringResult", id, turnId, ok, error });
+            if (ok) PostStatus("补充引导已排队，将在当前步骤结束后应用。");
+        }
+
         private async Task HandleUserSendAsync(string text, JArray attachments)
         {
             if (_sessionClosed) return;
@@ -1376,6 +1479,7 @@ namespace TxTools.Agent.UI
 
             if (_loop == null)
             {
+                PostBusy(false);
                 PostStatus("\u8bf7\u5148\u8bbe\u7f6e API Key\u3002");
                 PostJs(new { type = "askApiKey", reason = "\u5c1a\u672a\u8bbe\u7f6e API Key\u3002" });
                 return;
@@ -1386,11 +1490,18 @@ namespace TxTools.Agent.UI
             var finalText = string.IsNullOrEmpty(prefix) ? body : (prefix + "\n\n" + body);
             if (string.IsNullOrWhiteSpace(finalText)) return;
 
-            PostBusy(true);
             _isSending = true;
+            _activeTurnId = Guid.NewGuid().ToString("N");
+            _sendingLoop = _loop;
+            var turnId = _activeTurnId;
+            var steering = _sendingLoop as ISteerableAgentLoop;
+            Action<string> applied = id => PostJs(new { type = "steeringApplied", id, turnId });
+            Action<string, string> notApplied = (id, reason) => PostJs(new { type = "steeringNotApplied", id, turnId, reason });
+            if (steering != null) { steering.GuidanceApplied += applied; steering.GuidanceNotApplied += notApplied; }
+            PostBusy(true);
             TxTools.Agent.TxAgentCommand.SetPetThinking(true);
             _cts = new CancellationTokenSource();
-            var sendingLoop = _loop;
+            var sendingLoop = _sendingLoop;
             try
             {
                 var token = _cts.Token;
@@ -1418,12 +1529,15 @@ namespace TxTools.Agent.UI
             }
             finally
             {
+                if (steering != null) { steering.GuidanceApplied -= applied; steering.GuidanceNotApplied -= notApplied; }
                 if (!_sessionClosed) TxTools.Agent.TxAgentCommand.SetPetThinking(false);
                 PostJs(new { type = "closeAssistant" });
                 PostBusy(false);
                 try { if (_cts != null) _cts.Dispose(); } catch { }
                 _cts = null;
                 _isSending = false;
+                _activeTurnId = null;
+                _sendingLoop = null;
             }
         }
 

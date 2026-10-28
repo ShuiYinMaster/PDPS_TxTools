@@ -12,7 +12,7 @@ using TxTools.WeldSpotAllocator;
 
 namespace TxTools.WeldPointMatrix
 {
-    public sealed class WeldPointMatrixForm : TxForm
+    public sealed partial class WeldPointMatrixForm : TxForm
     {
         private static WeldPointMatrixForm _instance;
         private readonly Size _designSize = new Size(1120, 700);
@@ -23,12 +23,19 @@ namespace TxTools.WeldPointMatrix
         private DataGridView _table;
         private Label _status;
         private bool _initialized;
+        private bool _closing;
         private bool _scaled;
         private bool _rendering;
+        private bool _drivingPoint;
         private Point _dragStart;
         private int _dragRow = -1;
         private int _dragColumn = -1;
         private DateTime _lastDropUtc;
+        private TableLayoutPanel _body;
+        private Control _selectionCard;
+        private Button _toggleSelection;
+        private bool _selectionCollapsed;
+        private float _selectionWidth;
 
         private sealed class PointDragData
         {
@@ -59,13 +66,15 @@ namespace TxTools.WeldPointMatrix
                 new Size(760, 480), sizable: true);
             try { SemiModal = false; } catch { }
             BuildUi();
-            Activated += (s, e) => { if (_initialized && !_rendering) RefreshMatrix(false); };
+            InitializePlayback();
+            Activated += (s, e) => { if (_initialized && !_rendering && !_sceneActionBusy && !PlaybackOwnsRobot) RefreshMatrix(false); };
             Load += (s, e) =>
             {
                 EnsurePicker();
                 FormUiKit.ApplyDpiScaling(this, ref _scaled, _designSize);
             };
-            FormClosed += (s, e) => _instance = null;
+            FormClosing += PlaybackFormClosing;
+            FormClosed += (s, e) => { DisposePlayback(); _instance = null; };
         }
 
         public override void OnInitTxForm()
@@ -74,9 +83,41 @@ namespace TxTools.WeldPointMatrix
             EnsurePicker();
         }
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            base.OnFormClosing(e);
+            // Playback may defer closing. Keep the picker usable if closing was canceled.
+            if (e.Cancel) return;
+            ReleasePickerFocus();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) ReleasePickerFocus();
+            base.Dispose(disposing);
+        }
+
+        private void ReleasePickerFocus()
+        {
+            _closing = true;
+            if (_pickerHost == null || _pickerHost.IsDisposed) return;
+            // Release PS logical pick focus while the native control is still alive.
+            // Disposing a focused WinForms control alone does not release this provider.
+            foreach (TxObjGridCtrl grid in _pickerHost.Controls.OfType<TxObjGridCtrl>())
+            {
+                if (grid.IsDisposed) continue;
+                PickFocus.SetSuspended(grid, true);
+                try { grid.LoseFocus(); }
+                catch (Exception ex) { System.Diagnostics.Trace.WriteLine("[WeldPointMatrix] LoseFocus: " + ex.Message); }
+                try { grid.ListenToPick = false; }
+                catch (Exception ex) { System.Diagnostics.Trace.WriteLine("[WeldPointMatrix] ListenToPick: " + ex.Message); }
+            }
+            _pickerHost.Enabled = false;
+        }
+
         private void EnsurePicker()
         {
-            if (_initialized || _pickerHost == null) return;
+            if (_closing || _initialized || _pickerHost == null) return;
             _initialized = true;
             _picker.Init(_pickerHost, PointService.IsSupportedOperation,
                 o => SetStatus("已忽略不支持的操作：" + o.Name),
@@ -93,8 +134,10 @@ namespace TxTools.WeldPointMatrix
             body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 275));
             body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            _body = body;
 
             var left = Card("选取焊接/连续点操作", 0);
+            _selectionCard = left;
             var leftLayout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3,
@@ -116,7 +159,8 @@ namespace TxTools.WeldPointMatrix
             };
             leftLayout.Controls.Add(_pickerHost, 0, 1);
             var clear = FormUiKit.MkFuncButton("清空操作", FormUiKit.Theme.BtnMuted);
-            clear.Click += (s, e) => { _picker.Clear(); RefreshMatrix(true); };
+            clear.Click += (s, e) => { if (!CanEditScene()) return; _picker.Clear(); RefreshMatrix(true); };
+            _editControls.Add(clear);
             leftLayout.Controls.Add(clear, 0, 2);
             left.Controls.Add(leftLayout);
 
@@ -134,13 +178,20 @@ namespace TxTools.WeldPointMatrix
                 Dock = DockStyle.Top, AutoSize = true, WrapContents = true,
                 BackColor = FormUiKit.CardBack
             };
-            AddButton(actions, "刷新列表", FormUiKit.Theme.BtnMuted, () => RefreshMatrix(false));
-            AddButton(actions, "插入空行", FormUiKit.Theme.BtnSecondary, InsertRow);
-            AddButton(actions, "新增焊点", FormUiKit.Theme.BtnPrimary, () => AddPoint(true));
-            AddButton(actions, "新增过渡点", FormUiKit.Theme.BtnPrimary, () => AddPoint(false));
+            _toggleSelection = FormUiKit.MkFuncButton("收起选取区", FormUiKit.Theme.BtnMuted);
+            _toggleSelection.Click += (s, e) => ToggleSelection();
+            actions.Controls.Add(_toggleSelection);
+            _playAllButton = AddButton(actions, "序列播放", FormUiKit.Theme.BtnPrimary, PlayAll);
+            _pausePlaybackButton = AddButton(actions, "暂停播放", FormUiKit.Theme.BtnSecondary, PauseAll);
+            _stopPlaybackButton = AddButton(actions, "停止播放", FormUiKit.Theme.BtnSecondary, StopPlayback);
+            _editControls.Add(AddButton(actions, "刷新列表", FormUiKit.Theme.BtnMuted, () => RefreshMatrix(false)));
+            _editControls.Add(AddButton(actions, "插入空行", FormUiKit.Theme.BtnSecondary, InsertRow));
+            _editControls.Add(AddButton(actions, "新增焊点", FormUiKit.Theme.BtnPrimary, () => AddPoint(true)));
+            _editControls.Add(AddButton(actions, "前插过渡点", FormUiKit.Theme.BtnPrimary, () => AddNativeLocation(false)));
+            _editControls.Add(AddButton(actions, "后插过渡点", FormUiKit.Theme.BtnPrimary, () => AddNativeLocation(true)));
             rightLayout.Controls.Add(actions, 0, 0);
 
-            _table = new DataGridView
+            _table = new PointMatrixGrid
             {
                 Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false,
                 AllowUserToDeleteRows = false, MultiSelect = false,
@@ -149,9 +200,15 @@ namespace TxTools.WeldPointMatrix
                 SelectionMode = DataGridViewSelectionMode.CellSelect,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
                 BackgroundColor = SystemColors.Window,
-                ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize
+                ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
+                ColumnHeadersHeight = 62
             };
             _table.CellClick += TableCellClick;
+            ((PointMatrixGrid)_table).KeyboardCellSelected += (s, e) =>
+            {
+                var cell = _table.CurrentCell;
+                if (cell != null) ActivatePointCell(cell.RowIndex, cell.ColumnIndex);
+            };
             _table.MouseDown += TableMouseDown;
             _table.MouseMove += TableMouseMove;
             _table.DragEnter += TableDragOver;
@@ -193,11 +250,12 @@ namespace TxTools.WeldPointMatrix
             };
         }
 
-        private static void AddButton(FlowLayoutPanel host, string text, Color color, Action click)
+        private static Button AddButton(FlowLayoutPanel host, string text, Color color, Action click)
         {
             var button = FormUiKit.MkFuncButton(text, color);
             button.Click += (s, e) => click();
             host.Controls.Add(button);
+            return button;
         }
 
         private void SetStatus(string message)
@@ -222,7 +280,7 @@ namespace TxTools.WeldPointMatrix
 
         private void RefreshMatrix(bool reset)
         {
-            if (_table == null || _rendering) return;
+            if (_closing || _table == null || _rendering || PlaybackOwnsRobot) return;
             var selected = _picker.GetObjects();
             if (OperationsChanged(selected)) reset = true;
             _operations.Clear();
@@ -256,6 +314,7 @@ namespace TxTools.WeldPointMatrix
                     ReconcileColumn(col, pointSets[col]);
             }
             RenderTable();
+            UpdatePlaybackInterlock();
         }
 
         private void ReconcileColumn(int column, List<SpotData> fresh)
@@ -333,24 +392,37 @@ namespace TxTools.WeldPointMatrix
 
         private void TableCellClick(object sender, DataGridViewCellEventArgs e)
         {
-            if (_rendering || e.RowIndex < 0 || e.ColumnIndex < 0) return;
             if ((DateTime.UtcNow - _lastDropUtc).TotalMilliseconds < 300) return;
-            var point = _rows[e.RowIndex][e.ColumnIndex];
+            ActivatePointCell(e.RowIndex, e.ColumnIndex);
+        }
+
+        private void ActivatePointCell(int row, int column)
+        {
+            if (_rendering || _drivingPoint || row < 0 || column < 0
+                || row >= _rows.Count || column >= _operations.Count) return;
+            var point = _rows[row][column];
             if (point == null) return;
+            if (!TryBeginSceneAction()) return;
+            _drivingPoint = true;
             try
             {
                 Cursor = Cursors.WaitCursor;
-                PointService.DriveRobot(_operations[e.ColumnIndex], point);
+                PointService.DriveRobot(_operations[column], point);
                 SetStatus("已移动机器人到" + PointKindLabel(point) + "：" + point.Name);
             }
             catch (Exception ex) { SetStatus("定位失败：" + ex.Message); }
-            finally { Cursor = Cursors.Default; RefreshMatrix(false); }
+            finally
+            {
+                try { Cursor = Cursors.Default; RefreshMatrix(false); }
+                finally { _drivingPoint = false; EndSceneAction(); }
+            }
         }
 
         private void TableMouseDown(object sender, MouseEventArgs e)
         {
             _dragRow = -1;
             _dragColumn = -1;
+            if (!CanEditScene(false)) return;
             if (e.Button != MouseButtons.Left) return;
             var hit = _table.HitTest(e.X, e.Y);
             if (hit.RowIndex < 0 || hit.ColumnIndex < 0) return;
@@ -362,6 +434,7 @@ namespace TxTools.WeldPointMatrix
 
         private void TableMouseMove(object sender, MouseEventArgs e)
         {
+            if (!CanEditScene(false)) return;
             if (_dragRow < 0 || _dragColumn < 0 || e.Button != MouseButtons.Left) return;
             var dragSize = SystemInformation.DragSize;
             if (Math.Abs(e.X - _dragStart.X) < dragSize.Width / 2
@@ -381,6 +454,7 @@ namespace TxTools.WeldPointMatrix
 
         private void TableDragOver(object sender, DragEventArgs e)
         {
+            if (!CanEditScene(false)) { e.Effect = DragDropEffects.None; return; }
             var data = e.Data.GetData(typeof(PointDragData)) as PointDragData;
             Point local = _table.PointToClient(new Point(e.X, e.Y));
             var hit = _table.HitTest(local.X, local.Y);
@@ -398,6 +472,13 @@ namespace TxTools.WeldPointMatrix
         }
 
         private void TableDragDrop(object sender, DragEventArgs e)
+        {
+            if (!TryBeginSceneAction()) return;
+            try { TableDragDropCore(sender, e); }
+            finally { EndSceneAction(); }
+        }
+
+        private void TableDragDropCore(object sender, DragEventArgs e)
         {
             var data = e.Data.GetData(typeof(PointDragData)) as PointDragData;
             if (data == null) return;
@@ -464,16 +545,24 @@ namespace TxTools.WeldPointMatrix
 
         private void InsertRow()
         {
+            if (!CanEditScene()) return;
             if (_operations.Count == 0) { SetStatus("请先选取操作。"); return; }
             int row = _table.CurrentCell?.RowIndex ?? _rows.Count;
             int col = _table.CurrentCell?.ColumnIndex ?? 0;
             _rows.Insert(row, new SpotData[_operations.Count]);
             RenderTable();
             _table.CurrentCell = _table.Rows[row].Cells[col];
-            SetStatus("已插入空行；选中操作列后点击“新增焊点”或“新增过渡点”。");
+            SetStatus("已插入空行；可新增焊点，或选中已有点使用“前插过渡点”或“后插过渡点”。");
         }
 
         private void AddPoint(bool weld)
+        {
+            if (!TryBeginSceneAction()) return;
+            try { AddPointCore(weld); }
+            finally { EndSceneAction(); }
+        }
+
+        private void AddPointCore(bool weld)
         {
             if (_operations.Count == 0 || _table.CurrentCell == null)
             { SetStatus("请先选取操作，并选中右侧表格的单元格。"); return; }

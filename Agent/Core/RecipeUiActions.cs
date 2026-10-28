@@ -211,6 +211,21 @@ namespace TxTools.Agent.Core
             return new JObject { ["type"] = type, ["ok"] = false, ["error"] = error, ["recipeId"] = id };
         }
 
+        public static JObject Delete(string id)
+        {
+            if (IsRunning) return Error("recipe.delete.result", "配方正在执行，请完成后再删除。", id);
+            if (!RecipeStore.Delete(id)) return Error("recipe.delete.result", "删除失败，配方可能已不存在或文件无法写入。", id);
+            try
+            {
+                var prefs = UserPrefsStore.Load();
+                prefs.PinnedRecipeIds?.RemoveAll(value => value == id);
+                prefs.RecipeArguments?.Remove(id);
+                UserPrefsStore.Save(prefs);
+            }
+            catch (Exception ex) { try { AuditLog.Write("[warn] [Recipe] 清理配方偏好失败：" + ex.Message); } catch { } }
+            return new JObject { ["type"] = "recipe.delete.result", ["ok"] = true, ["recipeId"] = id, ["text"] = "已删除配方。" };
+        }
+
         public static void Run(int seq, JObject msg, Action<int, JObject> reply, Func<string> validateTarget = null)
         {
             string id = (string)msg["recipeId"];

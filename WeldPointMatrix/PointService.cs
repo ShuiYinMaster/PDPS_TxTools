@@ -10,6 +10,35 @@ namespace TxTools.WeldPointMatrix
 {
     internal static class PointService
     {
+        internal static void AddNativeLocation(ITxObject operation, SpotData anchor, bool after)
+        {
+            if (anchor?.LocOp == null) throw new InvalidOperationException("请先选中一个已有点位。");
+            var roots = new List<string> { TxApplication.InstallationDirectory,
+                TxApplication.CurrentUserDirectory, TxApplication.AllUsersDirectory,
+                System.IO.Path.GetDirectoryName(typeof(TxApplication).Assembly.Location) };
+            string command = NativeLocationCommands.Resolve(after, roots);
+            var manager = TxApplication.CommandsManager;
+            string label = after ? "后插过渡点" : "前插过渡点";
+
+            // Native Add Location records the current robot posture, including configuration.
+            DriveRobot(operation, anchor);
+            var selection = new TxObjectList();
+            selection.Add(anchor.LocOp);
+            try
+            {
+                // Same selection/command execution path as ReachabilityChecker.
+                TxApplication.ActiveSelection.Clear();
+                TxApplication.ActiveSelection.AddItems(selection);
+                if (!manager.ExecuteCommand(command))
+                    throw new InvalidOperationException(label + "命令未执行成功：" + command);
+            }
+            finally
+            {
+                try { TxApplication.ActiveSelection.Clear(); } catch { }
+                TxApplication.RefreshDisplay();
+            }
+        }
+
         internal static bool IsWeldOperation(ITxObject obj)
         {
             if (obj == null) return false;
@@ -256,57 +285,7 @@ namespace TxTools.WeldPointMatrix
                     throw new InvalidOperationException("连续点操作不支持直接创建焊点，请选择焊接操作。");
                 TxTransformation transform = PsReader.ArrToTxPublic(matrix);
                 if (!weld)
-                {
-                    var data = new TxRoboticViaLocationOperationCreationData(name);
-                    TxRoboticViaLocationOperation via = null;
-                    var continuous = operation as TxContinuousRoboticOperation;
-                    try
-                    {
-                        if (continuous != null)
-                            via = continuous.CreateRoboticViaLocationOperationAfter(data, predecessor as ITxOperation);
-                        else
-                            via = ((dynamic)operation).CreateRoboticViaLocationOperationAfter(data, predecessor);
-                    }
-                    catch
-                    {
-                        // 旧版容器没有 After 接口时，在下方用追加+重排。
-                    }
-                    if (via == null)
-                    {
-                        via = continuous != null
-                            ? continuous.CreateRoboticViaLocationOperation(data)
-                            : ((dynamic)operation).CreateRoboticViaLocationOperation(data);
-                        if (via != null)
-                        {
-                            try
-                            {
-                                var ordered = operation as ITxOrderedObjectCollection;
-                                if (ordered == null)
-                                    throw new InvalidOperationException("操作不支持点位排序。");
-                                ordered.AddObjectAfter(via, predecessor as ITxOperation);
-                            }
-                            catch
-                            {
-                                try { ((dynamic)via).Delete(); } catch { }
-                                TxApplication.RefreshDisplay();
-                                throw;
-                            }
-                        }
-                    }
-                    if (via == null) throw new InvalidOperationException("创建过渡点返回空对象。");
-                    try
-                    {
-                        ((ITxLocatableObject)via).AbsoluteLocation = transform;
-                        TxApplication.RefreshDisplay();
-                        return via;
-                    }
-                    catch
-                    {
-                        try { ((dynamic)via).Delete(); } catch { }
-                        TxApplication.RefreshDisplay();
-                        throw;
-                    }
-                }
+                    throw new InvalidOperationException("请使用“前插过渡点”或“后插过渡点”。");
 
                 var position = transform.Translation;
                 var wpData = TxMfgCreationDataFactory.CreateWeldPointCreationData(name,

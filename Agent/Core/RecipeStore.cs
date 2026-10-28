@@ -190,12 +190,19 @@ namespace TxTools.Agent.Core
                 && n.EndsWith(".md", StringComparison.Ordinal)))
             {
                 Recipe legacy;
+                string descriptionHash, codeHash;
                 using (var stream = assembly.GetManifestResourceStream(resource))
                 using (var reader = new StreamReader(stream, Encoding.UTF8))
-                    legacy = FromDoc(MarkdownDoc.Parse(reader.ReadToEnd()));
+                {
+                    var legacyDoc = MarkdownDoc.Parse(reader.ReadToEnd());
+                    descriptionHash = legacyDoc.Get("migration_description_sha256", "");
+                    codeHash = legacyDoc.Get("migration_code_sha256", "");
+                    legacy = FromDoc(legacyDoc);
+                }
                 if (legacy != null && current.Name == legacy.Name && current.Lang == legacy.Lang
                     && current.SourceSnippet == legacy.SourceSnippet
-                    && current.Description == legacy.Description && current.Code == legacy.Code
+                    && MatchesMigrationText(current.Description, legacy.Description, descriptionHash)
+                    && MatchesMigrationText(current.Code, legacy.Code, codeHash)
                     && JsonConvert.SerializeObject(current.Params) == JsonConvert.SerializeObject(legacy.Params)
                     && JsonConvert.SerializeObject(current.Actions) == JsonConvert.SerializeObject(legacy.Actions))
                 { original = true; break; }
@@ -215,6 +222,18 @@ namespace TxTools.Agent.Core
                 AuditLog.Write("[info] [Recipe] 已升级默认配方“" + replacement.Name + "”，原文件备份：" + backup);
             }
             finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
+
+        // Fingerprints preserve exact matching without embedding legacy prose or code.
+        private static bool MatchesMigrationText(string current, string legacy, string expectedHash)
+        {
+            if (string.IsNullOrEmpty(expectedHash)) return current == legacy;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                string actual = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes((current ?? "").Replace("\r\n", "\n").Replace("\r", "\n"))))
+                    .Replace("-", "");
+                return string.Equals(actual, expectedHash, StringComparison.OrdinalIgnoreCase);
+            }
         }
 
         /// <summary>
@@ -280,10 +299,50 @@ namespace TxTools.Agent.Core
             return doc.ToString();
         }
 
-        /// <summary>校验后导入为新副本。外部 key 不参与文件路径，同名配方不会被覆盖。</summary>
+        /// <summary>默认导入为新副本；更新必须指定本地同名配方 ID。</summary>
         public static bool TryImportMarkdown(string text, out Recipe imported, out string error)
+            => TryImportMarkdown(text, null, out imported, out error);
+
+        public static bool TryImportMarkdown(string text, string updateRecipeId, out Recipe imported, out string error)
         {
             imported = null;
+            Recipe definition;
+            if (!TryParseImportMarkdown(text, out definition, out error)) return false;
+            var existing = All();
+            if (!string.IsNullOrEmpty(updateRecipeId))
+            {
+                var target = existing.FirstOrDefault(r => r.Id == updateRecipeId);
+                if (target == null) { error = "要更新的配方不存在，请重新导入。"; return false; }
+                if (!string.Equals(target.Name.Trim(), definition.Name, StringComparison.OrdinalIgnoreCase))
+                { error = "只能更新同名配方，请重新选择。"; return false; }
+                definition.Id = target.Id;
+                definition.Name = target.Name;
+                definition.CreatedUtc = target.CreatedUtc;
+                definition.LastRunUtc = target.LastRunUtc;
+                definition.RunCount = target.RunCount;
+                definition.FailCount = target.FailCount;
+                definition.SourceSnippet = target.SourceSnippet;
+            }
+            else
+            {
+                string name = definition.Name;
+                int copy = 2;
+                while (existing.Any(r => string.Equals(r.Name.Trim(), definition.Name, StringComparison.OrdinalIgnoreCase)))
+                    definition.Name = name + "（导入 " + copy++ + "）";
+                definition.Id = "import_" + Guid.NewGuid().ToString("N");
+                definition.CreatedUtc = DateTime.UtcNow;
+            }
+            var saved = Upsert(definition);
+            if (!saved.StartsWith("已保存配方: ", StringComparison.Ordinal))
+            { error = saved; return false; }
+            imported = definition;
+            return true;
+        }
+
+        /// <summary>仅解析和校验，不读取本地配方或写入文件。</summary>
+        public static bool TryParseImportMarkdown(string text, out Recipe definition, out string error)
+        {
+            definition = null;
             error = null;
             var doc = MarkdownDoc.Parse((text ?? "").TrimStart('\uFEFF'));
             var version = doc.Get("recipe_format", "1");
@@ -312,21 +371,12 @@ namespace TxTools.Agent.Core
             error = ValidateDefinition(new Recipe { Params = ps, Actions = actions });
             if (error != null) return false;
 
-            var existing = All();
-            var displayName = name;
-            int copy = 2;
-            while (existing.Any(r => string.Equals(r.Name, displayName, StringComparison.OrdinalIgnoreCase)))
-                displayName = name + "（导入 " + copy++ + "）";
-            var rnew = new Recipe
+            definition = new Recipe
             {
-                Id = "import_" + Guid.NewGuid().ToString("N"), Name = displayName,
+                Name = name,
                 Description = SectionBefore(doc.Body, ParamHeader).Trim(),
-                Lang = lang, Code = code, Params = ps, Actions = actions, CreatedUtc = DateTime.UtcNow
+                Lang = lang, Code = code, Params = ps, Actions = actions
             };
-            var saved = Upsert(rnew);
-            if (!saved.StartsWith("已保存配方: ", StringComparison.Ordinal))
-            { error = saved; return false; }
-            imported = rnew;
             return true;
         }
 
@@ -352,7 +402,7 @@ namespace TxTools.Agent.Core
         {
             var r = Get(id);
             if (r == null) return false;
-            MdStore.Delete(Folder, r.Id);
+            if (!MdStore.Delete(Folder, r.Id)) return false;
             RaiseChanged();
             return true;
         }

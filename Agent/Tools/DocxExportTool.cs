@@ -68,11 +68,12 @@ namespace TxTools.Agent.Core
 
             var sections = new List<DocxSection>();
             var sTok = input["sections"] as JArray;
+            if (sTok == null || sTok.Count == 0) return "Error: sections 必须是非空数组。";
             if (sTok != null)
             {
                 foreach (var s in sTok)
                 {
-                    if (!(s is JObject so)) continue;
+                    if (!(s is JObject so)) return "Error: sections 每一项必须是对象。";
                     var sec = new DocxSection
                     {
                         Heading = ToolInputHelpers.String(so["heading"]),
@@ -86,7 +87,7 @@ namespace TxTools.Agent.Core
                         foreach (var row in tTok)
                         {
                             var ra = row as JArray;
-                            if (ra == null) continue;
+                            if (ra == null) return "Error: table 每一行必须是数组。";
                             sec.Table.Add(ra.Select(c => ToolInputHelpers.String(c) ?? "").ToList());
                         }
                     }
@@ -103,7 +104,7 @@ namespace TxTools.Agent.Core
             var outDir = GetExportDir();
             var fullPath = Path.Combine(outDir, fileName);
 
-            OpenXmlWriter.WriteDocx(fullPath, title, sections);
+            fullPath = WriteExport(fullPath, staging => OpenXmlWriter.WriteDocx(staging, title, sections));
 
             var size = new FileInfo(fullPath).Length;
             return "\u5df2\u751f\u6210 Word \u6587\u6863: " + fullPath +
@@ -119,6 +120,26 @@ namespace TxTools.Agent.Core
             var invalid = Path.GetInvalidFileNameChars();
             foreach (var c in invalid) name = name.Replace(c, '_');
             return name;
+        }
+
+        // 在同目录完成生成后再发布，失败时不覆盖已有文件；同名输出递增编号。
+        internal static string WriteExport(string desiredPath, Action<string> write)
+        {
+            var folder = Path.GetDirectoryName(Path.GetFullPath(desiredPath));
+            Directory.CreateDirectory(folder);
+            var staging = Path.Combine(folder, ".txexport_" + Guid.NewGuid().ToString("N") + Path.GetExtension(desiredPath));
+            try {
+                write(staging);
+                if (!File.Exists(staging) || new FileInfo(staging).Length == 0) throw new IOException("导出没有产生有效文件。");
+                var candidate = desiredPath;
+                for (int i = 1; ; i++) {
+                    try { File.Move(staging, candidate); return candidate; }
+                    catch (IOException) {
+                        if (!File.Exists(candidate)) throw;
+                        candidate = Path.Combine(folder, Path.GetFileNameWithoutExtension(desiredPath) + "_" + i + Path.GetExtension(desiredPath));
+                    }
+                }
+            } finally { if (File.Exists(staging)) File.Delete(staging); }
         }
 
         /// <summary>默认输出到桌面 TxTools_Exports 目录,不存在则创建。</summary>

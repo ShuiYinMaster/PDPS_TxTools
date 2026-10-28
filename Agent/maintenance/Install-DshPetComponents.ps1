@@ -1,7 +1,8 @@
 #Requires -Version 7.0
 param(
-    [string]$Destination = (Join-Path $PSScriptRoot '..\UI\pet\dsh-pet'),
-    [string]$Cache = (Join-Path $PSScriptRoot '..\artifacts\pet-components'),
+    [string]$Destination = (Join-Path $PSScriptRoot '..\..\..\TxTools.Local\dependencies\desktop-pet'),
+    [string]$Cache = (Join-Path $PSScriptRoot '..\..\..\TxTools.Local\dependencies\downloads\pet-components'),
+    [string]$BackupDirectory = (Join-Path $PSScriptRoot '..\..\..\TxTools.Local\backups\pet-components'),
     [switch]$SkipDownload
 )
 $ErrorActionPreference = 'Stop'
@@ -85,8 +86,9 @@ foreach ($file in $manifest.files) {
     if (!$source.StartsWith($stageRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw '缓存文件路径越界。' }
     if (!(Test-Path -LiteralPath $source) -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $file.sha256) { throw "缓存校验失败：$($file.path)" }
 }
+$adapterRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\UI\pet\dsh-pet'))
 foreach ($required in @('entry.js', 'config.json', 'host-routes.js', 'startup-monitor.js', 'quick-launch.js', 'upstream/main.js', 'upstream/index.html', 'upstream/preload.js', 'upstream/shared-core.js')) {
-    if (!(Test-Path -LiteralPath (Join-Path $targetRoot $required))) { throw "目标不是完整的 TxAgent 桌宠目录，缺少 $required" }
+    if (!(Test-Path -LiteralPath (Join-Path $adapterRoot $required))) { throw "源码目录缺少桌宠适配文件：$required" }
 }
 $active = @(Get-Process -Name 'Tune*', 'ProcessSimulate*' -ErrorAction SilentlyContinue)
 $replacements = @($manifest.files | Where-Object {
@@ -97,7 +99,7 @@ if ($active.Count -and $replacements.Count) { throw '需替换已有组件，请
 $runningPets = @(Get-Process -Name electron -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($targetRoot + '\', [StringComparison]::OrdinalIgnoreCase) })
 if ($runningPets.Count) { throw '目标桌宠正在运行，请关闭后部署。' }
 
-$backupRoot = Join-Path $cacheRoot ('backups/' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+$backupRoot = Join-Path $BackupDirectory (Get-Date -Format 'yyyyMMdd-HHmmss-fff')
 $copied = 0; $unchanged = 0
 $installedFolders = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 # Publish absent component directories only after their complete contents are copied.

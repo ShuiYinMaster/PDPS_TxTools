@@ -22,7 +22,7 @@ namespace TxTools.ExportByColor
         private ExportByColorService _svc;
 
         private TxObjGridCtrl _objGrid;
-        private TxObjEditBoxCtrl _objOrigin;
+        private TxFrameEditBoxCtrl _frameOrigin;
         private CheckBox _chkAllVisible;
         private TabControl _exportTabs;
         private ComboBox _cgrMode;
@@ -204,19 +204,19 @@ namespace TxTools.ExportByColor
             content.AutoScroll = false;
 
             var rowOrigin = FormUiKit.MkRowFlow();
-            rowOrigin.Controls.Add(FormUiKit.MkFieldLabel("原点设备:"));
-            _objOrigin = new TxObjEditBoxCtrl
+            rowOrigin.Controls.Add(FormUiKit.MkFieldLabel("参考坐标:"));
+            _frameOrigin = new TxFrameEditBoxCtrl
             {
                 Width = 220,
                 Height = 22,
                 Font = FormUiKit.BaseFont,
-                PickOnly = true,
+                EnableRelativeToWorkingFrameCoordinates = false,
                 ListenToPick = true,
                 Margin = new Padding(2, 1, 0, 0)
             };
-            PickFocus.Wire(_objOrigin);
-            _objOrigin.Picked += OnOriginPicked;
-            rowOrigin.Controls.Add(_objOrigin);
+            PickFocus.Wire(_frameOrigin);
+            _frameOrigin.Picked += OnOriginPicked;
+            rowOrigin.Controls.Add(_frameOrigin);
             content.Controls.Add(rowOrigin);
 
             _exportTabs = new TabControl { Width = 340, Height = 190, Font = FormUiKit.BaseFont };
@@ -342,16 +342,12 @@ namespace TxTools.ExportByColor
             return list;
         }
 
-        private string GetOriginName()
+        private TxTransformation GetOriginLocation()
         {
-            if (_objOrigin == null) return "";
-            try
-            {
-                var o = _objOrigin.Object as ITxObject;
-                if (o != null) return o.Name;
-            }
-            catch { }
-            return "";
+            if (_frameOrigin == null || string.IsNullOrWhiteSpace(_frameOrigin.Text)) return null;
+            var location = _frameOrigin.GetLocation();
+            if (location == null) throw new InvalidOperationException("请选择或输入有效的参考坐标。");
+            return new TxTransformation(location);
         }
 
         private void EnumerateVisible()
@@ -409,7 +405,14 @@ namespace TxTools.ExportByColor
                     return;
                 }
             }
-            string origin = GetOriginName();
+            TxTransformation originLocation;
+            try { originLocation = GetOriginLocation(); }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "参考坐标", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            string origin = originLocation == null ? "" : _frameOrigin.Text.Trim();
             var route = (ExportMode)_cgrMode.SelectedItem;
             string format = _exportTabs.SelectedIndex == 0
                 ? route.Format
@@ -468,11 +471,11 @@ namespace TxTools.ExportByColor
             if (format == "JT_CGR")
             {
                 Log("JT 模式：从资源解析 JT 文件生成 CGR；外观读取关联零件三角面并变换到外观位置，再插入 CATIA。");
-                _svc.RunJtToCgrAsync(picked, Log, SetProgress, complete, route.Backend, route.ReconstructCylinders);
+                _svc.RunJtToCgrAsync(picked, Log, SetProgress, complete, route.Backend, route.ReconstructCylinders, originLocation);
             }
             else
             {
-                _svc.RunAsync(picked, origin, format, output, format != "CGR" && format != "3DXML" && _mergeMeshes.Checked, Log, SetProgress, complete, cgrBackend, format == "CGR" && route.ReconstructCylinders);
+                _svc.RunAsync(picked, origin, format, output, format != "CGR" && format != "3DXML" && _mergeMeshes.Checked, Log, SetProgress, complete, cgrBackend, format == "CGR" && route.ReconstructCylinders, originLocation);
             }
         }
 

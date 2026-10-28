@@ -27,7 +27,7 @@ namespace TxTools.Agent.Tools
             get
             {
                 return "播放/重置/回退一个操作的仿真。operation 为操作名；" +
-                       "action 可选 play(播放仿真)、reset(重置)、rewind(回退到起点)。" +
+                       "action 可选 play、pause、stop、reset(停止并回退)、rewind(回退到起点)。" +
                        "会触发 PS 仿真运行，执行前需用户确认。";
             }
         }
@@ -42,14 +42,15 @@ namespace TxTools.Agent.Tools
                 return JObject.Parse(@"{
                     ""type"": ""object"",
                     ""properties"": {
+                        ""object_id"": { ""type"": ""string"", ""description"": ""操作唯一 ID，优先于名称"" },
                         ""operation"": { ""type"": ""string"", ""description"": ""操作名(模糊匹配)"" },
                         ""action"": {
                             ""type"": ""string"",
-                            ""enum"": [""play"", ""reset"", ""rewind""],
+                            ""enum"": [""play"", ""pause"", ""stop"", ""reset"", ""rewind""],
                             ""description"": ""动作：play 播放仿真、reset 重置、rewind 回退到起点""
                         }
                     },
-                    ""required"": [""operation"", ""action""]
+                    ""required"": [""action""], ""anyOf"": [{""required"":[""operation""]},{""required"":[""object_id""]}]
                 }");
             }
         }
@@ -58,7 +59,7 @@ namespace TxTools.Agent.Tools
         {
             var operation = GetString(input, "operation", null);
             var action = GetString(input, "action", "play");
-            return PsBridge.SimulateOperation(operation, action);
+            return PsBridge.SimulateOperation(operation, action, GetString(input, "object_id", null));
         }
     }
 
@@ -66,52 +67,17 @@ namespace TxTools.Agent.Tools
     // 2) scan_devices_z — 扫描场景设备的 Z 向对齐情况（只读）
     // ─────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// 扫描场景中所有设备的 Z 向对齐情况：各设备当前 Z 坐标、最低点 Z、偏移量、是否需要对齐。
-    /// 只读，不修改场景。是 align_devices_z 的只读前置检查。
-    /// </summary>
+    /// <summary>三角网格最低点与底部支撑平面检测。</summary>
     public sealed class ScanDevicesZTool : TxAgentToolBase
     {
         public override string Name { get { return "scan_devices_z"; } }
-
-        public override string Description
-        {
-            get
-            {
-                return "扫描场景中所有设备的 Z 向对齐情况(只读版)：报告各设备的当前 Z 坐标、" +
-                       "最低点 Z(MinZ)、偏移量(OffsetZ)、是否需要对齐(落地)。" +
-                       "keywords 可指定要忽略的名称关键字(如“输送线”、“夹具”)。" +
-                       "只读，不修改场景。用它先检查哪些设备需要落地，再决定是否用 align_devices_z 对齐。";
-            }
-        }
-
+        public override string Description { get { return "读取资源完整的世界坐标三角网格，返回真实最低点、底部支撑面倾角、世界 X/Y 方向高差、共面误差和支撑几何 ID。默认扫描场景资源，可用 scope=selected 或 object_ids 限定。扫描不修改资源位姿，临时显示和实体加载后恢复；没有几何时报告错误，不使用原点代替最低点。支撑不明或不共面会明确标记，校正前应检查这些结果。"; } }
         public override bool IsReadOnly { get { return true; } }
-
-        public override JObject InputSchema
-        {
-            get
-            {
-                return JObject.Parse(@"{
-                    ""type"": ""object"",
-                    ""properties"": {
-                        ""keywords"": {
-                            ""type"": ""array"",
-                            ""items"": { ""type"": ""string"" },
-                            ""description"": ""要忽略的设备名称关键字列表(如排除输送线、夹具等)""
-                        }
-                    }
-                }");
-            }
-        }
-
+        public override JObject InputSchema { get { return DeviceZToolArguments.Schema(false); } }
         public override string Execute(JObject input)
         {
-            var ignoreKeywords = new List<string>();
-            var arr = input != null ? input["keywords"] as JArray : null;
-            if (arr != null)
-                foreach (var t in arr)
-                    if (t != null && t.Type == JTokenType.String) ignoreKeywords.Add((string)t);
-            return PsBridge.ScanDevicesZ(ignoreKeywords.ToArray());
+            try{return PsBridge.ScanDevicesZ(DeviceZToolArguments.Parse(input,false));}
+            catch(System.ArgumentException ex){return "Error: "+ex.Message;}
         }
     }
 }

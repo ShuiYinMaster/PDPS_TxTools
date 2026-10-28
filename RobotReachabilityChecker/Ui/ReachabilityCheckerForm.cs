@@ -59,7 +59,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
         internal const int COL_IDX = 0, COL_BRAND = 1, COL_ROBOT = 2, COL_OP = 3,
                            COL_PT = 4, COL_TYPE = 5, COL_J1 = 6, COL_J2 = 7,
                            COL_J3 = 8, COL_J4 = 9, COL_J5 = 10, COL_J6 = 11,
-                           COL_RESULT = 12, COL_NOTE = 13;
+                           COL_RESULT = 12;
 
         // ====== 日志面板 ======
         private Panel _logPanel;

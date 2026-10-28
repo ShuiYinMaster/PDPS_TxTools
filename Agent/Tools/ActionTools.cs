@@ -43,7 +43,7 @@ namespace TxTools.Agent.Tools
                             ""description"": ""对象场景唯一 ID 数组。与 names 二选一；同名对象只能用它精确选中。""
                         }
                     },
-                    ""required"": [""names""]
+                    ""anyOf"": [{""required"": [""names""]}, {""required"": [""object_ids""]}]
                 }");
             }
         }
@@ -147,4 +147,37 @@ namespace TxTools.Agent.Tools
             return PsBridge.ExportObjectList(GetString(input, "type_keyword", null), GetString(input, "folder", null));
         }
     }
+    /// <summary>焊点截图与可编辑标注导出至活动 Excel。</summary>
+    public sealed class ExportWeldScreenshotsTool : TxAgentToolBase
+    {
+        public override string Name { get { return "export_weld_screenshots"; } }
+        public override string Description { get { return "将操作焊点和当前 PS 视口截图导出到已打开的活动 Excel 工作簿，复用焊点标注截图插件，生成可编辑圆点/分类形状、文字和引线，并可附世界坐标数据表。必须先打开 Excel 工作簿并设置好当前视角；视口外点只进数据表，截图不会自动转动相机。operation/object_id 省略则使用当前选择。写入工作簿但不自动保存，需要审批。"; } }
+        public override bool IsReadOnly { get { return false; } }
+        public override JObject InputSchema { get { return JObject.Parse(@"{
+            'type':'object','properties':{
+                'operation':{'type':'string','description':'操作名称，精确优先；模糊匹配必须唯一'},
+                'object_id':{'type':'string','description':'操作唯一 ID，优先于 operation'},
+                'new_sheet':{'type':'boolean','default':true},
+                'write_list':{'type':'boolean','default':true},
+                'auto_thickness':{'type':'boolean','default':true,'description':'根据绑定零件数区分二层板和三层以上焊点'},
+                'label_mode':{'type':'string','enum':['Sequence','PointName','Prefix','Suffix','SeqAndName'],'default':'Sequence'},
+                'prefix':{'type':'string'},'suffix':{'type':'string'}
+            }}"); } }
+        public override string Execute(JObject input)
+        {
+            input = input ?? new JObject();
+            TxTools.WeldAnnotator.LabelNamingMode mode;
+            if (!System.Enum.TryParse(GetString(input, "label_mode", "Sequence"), true, out mode)
+                || !System.Enum.IsDefined(typeof(TxTools.WeldAnnotator.LabelNamingMode), mode))
+                return "Error: label_mode 必须是 Sequence/PointName/Prefix/Suffix/SeqAndName。";
+            return PsBridge.ExportWeldScreenshots(GetString(input, "operation", null), GetString(input, "object_id", null),
+                new TxTools.WeldAnnotator.AnnotationExportOptions
+                {
+                    NewSheet = ToolInputHelpers.Bool(input["new_sheet"], true),
+                    WriteList = ToolInputHelpers.Bool(input["write_list"], true),
+                    LabelMode = mode, Prefix = GetString(input, "prefix", ""), Suffix = GetString(input, "suffix", "")
+                }, ToolInputHelpers.Bool(input["auto_thickness"], true));
+        }
+    }
+
 }

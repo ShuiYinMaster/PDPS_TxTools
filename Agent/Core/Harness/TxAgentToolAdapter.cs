@@ -123,6 +123,7 @@ namespace TxTools.Agent.Harness
                 }
 
                 output = output ?? string.Empty;
+                string errorKind = ClassifyInlineFailure(output, _tool.Name);
 
                 // ── 超长输出截断 ──
                 // 实测一次 query_scene 返回全场景资源的 ID+名称 JSON 可达 6 万字符(≈3 万 token),
@@ -143,9 +144,13 @@ namespace TxTools.Agent.Harness
                 }
 
                 // ── 内联失败识别 ──
-                string errorKind = ClassifyInlineFailure(output);
-                if (errorKind != null)
-                    return ToolResult.Fail(errorKind, output);
+                // 失败判定使用完整输出，避免中段截断隐藏失败状态。
+                if (errorKind != null) {
+                    var failure = ToolResult.Fail(errorKind, output);
+                    // 批量操作可能已完成部分写入，失败不能抹掉场景变更标记。
+                    failure.MutatedScene = !_tool.IsReadOnly && (errorKind == "partial" || errorKind == "script");
+                    return failure;
+                }
 
                 if (_tool.IsReadOnly)
                     return ToolResult.Ok(output);
@@ -306,22 +311,34 @@ namespace TxTools.Agent.Harness
         /// 判断工具虽然正常返回、但内容其实是一次失败。返回 null 表示成功。
         /// 判据必须严格:只认工具自己打出的失败横幅,不认输出正文里偶然出现的异常名。
         /// </summary>
-        private static string ClassifyInlineFailure(string output)
+        public static string ClassifyInlineFailure(string output, string toolName = null)
         {
-            if (string.IsNullOrEmpty(output)) return null;
-
-            if (output.IndexOf("编译失败", StringComparison.Ordinal) >= 0)
-                return "compile";
-
-            if (output.IndexOf("== 执行失败 ==", StringComparison.Ordinal) >= 0)
-                return "script";
-
-            if (output.StartsWith("执行失败", StringComparison.Ordinal))
-                return "script";
-
-            if (output.StartsWith("Error:", StringComparison.Ordinal))
-                return "arg";
-
+            if (string.IsNullOrWhiteSpace(output)) return null;
+            var text = output.TrimStart();
+            bool code = IsCodeTool(toolName) || toolName == "code_build" || toolName == null;
+            if (text.StartsWith("Error:", StringComparison.OrdinalIgnoreCase)) {
+                var detail = text.Substring(6).TrimStart();
+                if (code && detail.StartsWith("编译失败", StringComparison.Ordinal)) return "compile";
+                if (IsCodeTool(toolName) && (detail.StartsWith("== 执行失败 ==", StringComparison.Ordinal) ||
+                    detail.StartsWith("日志:", StringComparison.Ordinal) || detail.StartsWith("结果: 执行异常", StringComparison.Ordinal))) return "script";
+                return "tool";
+            }
+            if (code && (text.StartsWith("编译失败", StringComparison.Ordinal) || text.StartsWith("❌ 编译失败", StringComparison.Ordinal))) return "compile";
+            if (code && (text.StartsWith("== 执行失败 ==", StringComparison.Ordinal) || text.StartsWith("执行失败", StringComparison.Ordinal))) return "script";
+            if (text.StartsWith("{")) {
+                try {
+                    var value = JObject.Parse(text);
+                    if ((value["ok"] != null && value["ok"].Type == JTokenType.Boolean && !(bool)value["ok"]) ||
+                        (value["success"] != null && value["success"].Type == JTokenType.Boolean && !(bool)value["success"])) return "tool";
+                    if ((toolName == "check_reachability" || toolName == "export_weld_screenshots") && (bool?)value["complete"] == false) return "partial";
+                    if (toolName == "correct_robot_base" && value["failures"] is JArray && ((JArray)value["failures"]).Count > 0) return "partial";
+                    if (toolName == "scan_devices_z" || toolName == "align_devices_z") {
+                        var summary = value["summary"] as JObject;
+                        if (summary != null && ((int?)summary["errors"] > 0 || (int?)summary["verification_failed"] > 0 ||
+                            toolName == "align_devices_z" && (int?)summary["blocked"] > 0)) return "partial";
+                    }
+                } catch (JsonException) { }
+            }
             return null;
         }
 

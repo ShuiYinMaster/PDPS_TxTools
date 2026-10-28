@@ -13,6 +13,7 @@
 //   analyze_viewport  —— 截当前 3D 视口再看,不用用户手动截图上传
 
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -178,6 +179,11 @@ namespace TxTools.Agent.Core
 
             try
             {
+                var convId = AgentContext.CurrentConvId();
+                if (string.IsNullOrWhiteSpace(path) && string.IsNullOrWhiteSpace(fileId)) {
+                    var recent = UploadStore.ByConv(convId).Where(f => MimeOf(f.OriginalName ?? f.LocalPath) != null).OrderByDescending(f => f.UploadedUtc).FirstOrDefault();
+                    if (recent != null) fileId = recent.Id;
+                }
                 if (string.IsNullOrWhiteSpace(path) && !string.IsNullOrWhiteSpace(fileId))
                 {
                     var uf = UploadStore.Get(fileId);
@@ -186,6 +192,7 @@ namespace TxTools.Agent.Core
                              + "注意上传文件存在临时目录，关闭窗口后会被清理 —— "
                              + "若这是从历史对话里翻出来的 file_id，需要用户重新上传。";
 
+                    if (!string.Equals(uf.ConvId, string.IsNullOrEmpty(convId) ? "_default" : convId, StringComparison.Ordinal)) return "图片不属于当前对话。";
                     // 先按扩展名挡掉非图片，省一次读盘 + 一次无谓的网络调用
                     if (MimeOf(uf.OriginalName ?? uf.LocalPath) == null)
                         return "file_id=" + fileId + " 是 " + uf.OriginalName
@@ -345,17 +352,9 @@ namespace TxTools.Agent.Core
         /// <summary>截当前 3D 视口到临时文件。必须在 PS 主线程调用。</summary>
         public static string CaptureViewport(int width, int height)
         {
-            var viewer = Tecnomatix.Engineering.TxApplication.ViewersManager.GraphicViewer;
-            if (viewer == null) return null;
-
-            var img = viewer.GetImage(new System.Drawing.Size(width, height), false);
-            if (img == null) return null;
-
-            var path = TxToolsTemp.FileFor("Agent", "Viewport",
-                "txagent_vp_" + DateTime.Now.ToString("yyyyMMddHHmmssfff") + ".png");
-
-            using (img)
-                img.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            var size = PsViewerHelper.ImageSize(width, height);
+            var path = TxToolsTemp.FileFor("Agent", "Viewport", "txagent_vp_" + Guid.NewGuid().ToString("N") + ".png");
+            PsViewerHelper.CaptureToPng(path, size, false);
 
             return path;
         }

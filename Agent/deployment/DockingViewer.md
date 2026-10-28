@@ -54,9 +54,5 @@ return "registered=" + registered + ", singleInstance=" + singleInstance;
 
 - `UI/TxAgentForm.cs`：共享内容、独立/停靠宿主和侧栏布局。
 - `TxAgentCommand.cs`：已注册 Viewer 优先、未注册兼容入口和会话独占。
-- `maintenance/DockingRegression.js`：生成实际生命周期/布局代码的无宿主测试。
-- `maintenance/DockingEntryRegression.js`：生成实际命令入口/工厂的无宿主测试。
 
-生成脚本分别输出到 `artifacts/docking-tests/`，使用 MSBuild 自带 Roslyn `csc.exe`
-编译相应 `.cs` 文件后运行测试；布局测试需要引用 `System.Drawing.dll` 和
-`System.Windows.Forms.dll`，入口测试只需引用 `System.Windows.Forms.dll`。
+停靠回归位于独立测试目录，测试生成的代码及产物写入外部 build 目录。

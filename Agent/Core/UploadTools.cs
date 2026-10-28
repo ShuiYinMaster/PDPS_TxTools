@@ -108,11 +108,13 @@ namespace TxTools.Agent.Core
         public override string Execute(JObject input)
         {
             var fileId = GetString(input, "file_id");
-            if (string.IsNullOrWhiteSpace(fileId)) return "参数 file_id 不能为空。";
+            if (string.IsNullOrWhiteSpace(fileId)) return "Error: 参数 file_id 不能为空。";
 
             var f = UploadStore.Get(fileId);
-            if (f == null) return "未找到 file_id: " + fileId + "。用 list_uploaded_files 查看现有文件。";
-            if (!File.Exists(f.LocalPath)) return "文件已被清理: " + f.OriginalName;
+            if (f == null) return "Error: 未找到 file_id: " + fileId + "。用 list_uploaded_files 查看现有文件。";
+            var convId = AgentContext.CurrentConvId();
+            if (!string.Equals(f.ConvId, string.IsNullOrEmpty(convId) ? "_default" : convId, StringComparison.Ordinal)) return "Error: 文件不属于当前对话。";
+            if (!File.Exists(f.LocalPath)) return "Error: 文件已被清理: " + f.OriginalName;
 
             var ext = (f.Extension ?? "").ToLowerInvariant();
             try
@@ -196,7 +198,7 @@ namespace TxTools.Agent.Core
             }
             catch (Exception ex)
             {
-                return "读取异常: " + ex.Message;
+                return "Error: 读取异常: " + ex.Message;
             }
         }
 

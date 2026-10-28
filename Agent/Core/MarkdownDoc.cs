@@ -2,14 +2,13 @@
 // 极简的 frontmatter + 正文 文档模型。
 //
 // 为什么自己写而不是引 YamlDotNet:
-//   多一个第三方程序集就多一处和 PS 自带 DLL 撞版本的风险 —— Newtonsoft 那次
-//   MissingMethodException 已经证明过代价。这里只需要 key: value、数字和简单数组,
+//   避免新增程序集与宿主依赖发生版本冲突；支持 key: value、数字和简单数组,
 //   五十行足够,零依赖。
 //
 // 格式:
 //   ---
-//   id: conv_20260727095802719
-//   title: 测试askuser
+//   id: conv_example
+//   title: 示例会话
 //   tools: [ask_user, save_recipe, api_lookup]
 //   turns: 6
 //   ---
@@ -179,7 +178,7 @@ namespace TxTools.Agent.Core
             {
                 var dir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                File.WriteAllText(path, ToString(), Encoding.UTF8);
+                MdStore.WriteTextAtomic(path, ToString());
                 return true;
             }
             catch { return false; }

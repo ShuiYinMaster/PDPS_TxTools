@@ -30,6 +30,7 @@ namespace TxTools.RobotReachabilityChecker.Services
     /// <summary>检查参数（避免长参数列表）。</summary>
     public class CheckOptions
     {
+        public bool   ShowRecoveryDialog      { get; set; } = true;
         public bool   JointMarginCheckEnabled { get; set; } = true;
         public double JointMarginThreshDeg    { get; set; } = 10.0;
         public bool   TcpCheckEnabled         { get; set; } = false;
@@ -402,7 +403,7 @@ namespace TxTools.RobotReachabilityChecker.Services
                        + (options.InterferenceEnabled ? $" 干涉={collisionCount}" : ""), "OK");
 
                 // 污染检测：所有点失败 → 弹窗指引手动恢复
-                if (locs.Count > 0 && fail == locs.Count)
+                if (options.ShowRecoveryDialog && locs.Count > 0 && fail == locs.Count)
                 {
                     try
                     {

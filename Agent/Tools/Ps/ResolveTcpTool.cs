@@ -45,7 +45,8 @@ namespace TxTools.Agent.Core
                 return JObject.Parse(@"{
                     'type': 'object',
                     'properties': {
-                        'operation_name': { 'type': 'string',  'description': '操作名(留空=PS 当前选中;找不到会全局搜索)' },
+                        'object_id': { 'type': 'string', 'description': '操作唯一 ID，优先于 operation_name' },
+                         'operation_name': { 'type': 'string',  'description': '操作名(留空=PS 当前选中;找不到会全局搜索)' },
                         'tcp_name':       { 'type': 'string',  'description': 'TCP 名称;留空只列出候选' },
                         'show_matrix':    { 'type': 'boolean', 'description': '输出原始 4x4 矩阵(默认 false)' },
                         'verbose':        { 'type': 'boolean', 'description': '是否输出 PS 侧诊断日志(默认 false)' }
@@ -65,12 +66,13 @@ namespace TxTools.Agent.Core
             Action<string> log = GunToolHelpers.Collector(logSb);
 
             string err;
-            OpResolution res = GunToolHelpers.ResolveOperations(opName, log, out err);
+            OpResolution res = GunToolHelpers.ResolveOperations(opName, log, out err, ToolInputHelpers.String(input["object_id"]));
             if (res == null) return "Error: " + err;
 
             var sb = new StringBuilder();
             sb.Append("来源: ").Append(res.SourceDesc).Append('\n');
 
+            int failures = 0;
             foreach (var op in res.Operations)
             {
                 sb.Append("\n操作: ").Append(op.Name)
@@ -95,7 +97,7 @@ namespace TxTools.Agent.Core
 
                 List<PsReader.TcpOption> opts;
                 try { opts = PsReader.EnumerateTcpOptions(op, log); }
-                catch (Exception ex) { sb.Append("  Error: TCP 枚举失败 - ").Append(ex.Message).Append('\n'); continue; }
+                catch (Exception ex) { failures++; sb.Append("  Error: TCP 枚举失败 - ").Append(ex.Message).Append('\n'); continue; }
 
                 if (opts == null || opts.Count == 0)
                 {
@@ -118,10 +120,11 @@ namespace TxTools.Agent.Core
                 // ── 指定 TCP：解析世界矩阵 + 相对工具偏移 ──
                 double[] tcpWorld = null;
                 try { tcpWorld = PsReader.ResolveTcpWorldByName(op, tcpName, log); }
-                catch (Exception ex) { sb.Append("  Error: 解析 TCP 失败 - ").Append(ex.Message).Append('\n'); continue; }
+                catch (Exception ex) { failures++; sb.Append("  Error: 解析 TCP 失败 - ").Append(ex.Message).Append('\n'); continue; }
 
                 if (tcpWorld == null)
                 {
+                    failures++;
                     sb.Append("  ⚠ 名为 \"").Append(tcpName).Append("\" 的 TCP 不在候选中,请从上面列表里选\n");
                     continue;
                 }
@@ -162,7 +165,7 @@ namespace TxTools.Agent.Core
             if (verbose && logSb.Length > 0)
                 sb.Append("\n[PS 日志]\n").Append(logSb.ToString());
 
-            return sb.ToString().TrimEnd();
+            return (failures > 0 ? "Error: 部分操作读取或换算失败（" + failures + " 项）。\n" : "") + sb.ToString().TrimEnd();
         }
     }
 }

@@ -3,7 +3,6 @@
 //
 // 关键 API 摸清路径:
 //   parent 需要实现 ITxCompoundResourceCreation / ITxCompoundPartCreation
-//   TxCompoundResourceCreationData 只有 TypeName + Collection 两个可设属性 (对话 [157]),
 //     没有 Name —— 创建出来的对象 name 是自动生成的,如需自定义名字要额外 rename。
 //   Rename 通过 ITxObject.Name setter (虽然接口 doc 说是 get-only,但实现类通常有 setter,
 //     用反射尝试; 失败就返回警告)。
@@ -32,26 +31,20 @@ namespace TxTools.Agent.Core
         ///   2) 否则从 PhysicalRoot 递归找第一个实现 wantInterface 的对象 (通常是 PrLine 之类)
         /// wantInterface 传 ITxCompoundResourceCreation 或 ITxCompoundPartCreation。
         /// </summary>
-        public static ITxObject ResolveParent(string parentName, Type wantInterface)
+        public static ITxObject ResolveParent(string parentName, Type wantInterface, string parentId = null)
         {
             var doc = TxApplication.ActiveDocument;
             if (doc == null) throw new InvalidOperationException("\u65e0\u6d3b\u52a8\u6587\u6863\u3002");
 
-            // 指定 parent_name → 走查找
-            if (!string.IsNullOrWhiteSpace(parentName)
-                && !string.Equals(parentName, "PhysicalRoot", StringComparison.OrdinalIgnoreCase))
-            {
-                var all = doc.PhysicalRoot.GetAllDescendants(new TxTypeFilter(typeof(ITxObject)));
-                foreach (ITxObject o in all)
-                {
-                    try
-                    {
-                        if (string.Equals(o.Name, parentName, StringComparison.OrdinalIgnoreCase))
-                            return o;
-                    }
-                    catch { }
+            if (!string.IsNullOrWhiteSpace(parentId) || !string.IsNullOrWhiteSpace(parentName)) {
+                ITxObject chosen;
+                if (string.IsNullOrWhiteSpace(parentId) && string.Equals(parentName, "PhysicalRoot", StringComparison.OrdinalIgnoreCase)) chosen = doc.PhysicalRoot;
+                else {
+                    string error;
+                    if (!TxTools.Agent.Ps.PsBridge.TryResolve(parentName, parentId, out chosen, out error)) throw new ArgumentException(error);
                 }
-                throw new InvalidOperationException("\u672a\u627e\u5230\u540d\u4e3a \"" + parentName + "\" \u7684\u5bf9\u8c61\u3002");
+                if (wantInterface != null && !wantInterface.IsInstanceOfType(chosen)) throw new ArgumentException("指定父级不支持 " + wantInterface.Name);
+                return chosen;
             }
 
             // 智能默认:先 PhysicalRoot, 不 support 再往下找
@@ -158,36 +151,11 @@ namespace TxTools.Agent.Core
         {
             if (obj == null || string.IsNullOrEmpty(newName)) return false;
 
-            // 1) 找 SetName(string) 方法
-            try
-            {
-                var m = obj.GetType().GetMethod("SetName",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-                    null, new[] { typeof(string) }, null);
-                if (m != null) { m.Invoke(obj, new object[] { newName }); return true; }
-            }
-            catch { }
-
-            // 2) 试 Name property setter (实现类可能补了 setter)
-            try
-            {
-                var p = obj.GetType().GetProperty("Name",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (p != null && p.CanWrite) { p.SetValue(obj, newName, null); return true; }
-            }
-            catch { }
-
-            // 3) 试 Rename(string) —— 有些 SDK 类型用这个
-            try
-            {
-                var m = obj.GetType().GetMethod("Rename",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-                    null, new[] { typeof(string) }, null);
-                if (m != null) { m.Invoke(obj, new object[] { newName }); return true; }
-            }
-            catch { }
-
-            return false;
+            try {
+                if (!obj.CanBeRenamed) return false;
+                obj.Name = newName;
+                return obj.Name == newName;
+            } catch { return false; }
         }
     }
 }

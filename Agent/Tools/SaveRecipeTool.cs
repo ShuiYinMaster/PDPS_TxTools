@@ -109,6 +109,7 @@ namespace TxTools.Agent.Tools
                 return "Error: 配方标题须使用中文，请用简短中文用途命名。";
             var safeName = Recipe.ToApiSafeName(name);
 
+            if (input["params"] != null && (!(input["params"] is JArray) || ((JArray)input["params"]).Any(p => !(p is JObject) || string.IsNullOrWhiteSpace((string)p["name"])))) return "Error: params 必须是包含有效 name 的对象数组。";
             var recipe = new Recipe
             {
                 Name = name,

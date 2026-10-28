@@ -4,7 +4,7 @@
 //                 的整套流程,一次调用直接给出可照抄的签名 + 历史踩坑注解。
 //   api_note   —— 把踩到的运行期坑登记进知识库,下次查同一类型时自动带出来。
 //
-// 注意:api_note 写的是本地知识库文件,不改场景,故 IsReadOnly = true —— 
+// 注意:api_note 写的是本地知识库文件,不改场景,故 IsReadOnly = true ——
 // 否则每记一条都会弹一次审批框。
 
 using System;
@@ -23,7 +23,7 @@ namespace TxTools.Agent.Core
         {
             get
             {
-                return "查询 PDPS (Tecnomatix.Engineering) 类型的真实成员与完整签名，直接反射当前进程已加载的程序集，结果100%准确。"
+                return "查询 PDPS (Tecnomatix.Engineering) 类型的真实成员与完整签名，直接反射当前进程已加载的程序集，反映已加载 SDK 的声明；具体可用性取决于资源和运行环境。"
                      + "【写任何 run_csharp / run_python 代码之前，只要用到不确定的类型或方法，先用本工具确认签名，不要用 probe_python 去猜。】"
                      + "参数 type 支持简名(TxWeldOperation)或全名；member 可填成员名或片段做过滤；"
                      + "不确定类型叫什么时用 search 做模糊搜索；不确定哪个类型有某方法时用 member_search；"
@@ -98,7 +98,7 @@ namespace TxTools.Agent.Core
                 return sb0.ToString();
             }
 
-            if (found.Count > 1 && string.IsNullOrWhiteSpace(member))
+            if (found.Count > 1)
             {
                 var sb1 = new StringBuilder();
                 sb1.AppendLine("简名 " + typeName + " 命中 " + found.Count + " 个类型，请用全名重查:");

@@ -54,6 +54,28 @@ namespace TxTools.Common
             Bindings.Add(picker, binding);
         }
 
+        /// <summary>互锁暂停拾取；恢复可用性时不自动抢回 PS 拾取会话。</summary>
+        public static void SetSuspended(Control picker, bool suspended)
+        {
+            if (picker == null || picker.IsDisposed) return;
+            PickBinding binding;
+            if (!Bindings.TryGetValue(picker, out binding))
+            {
+                Wire(picker);
+                Bindings.TryGetValue(picker, out binding);
+            }
+            binding.SetSuspended(suspended);
+        }
+
+        /// <summary>统一处理网格显式激活，避免 Enter 和 Click 重复注册提供者。</summary>
+        public static void Activate(TxObjGridCtrl grid)
+        {
+            if (grid == null || grid.IsDisposed) return;
+            Wire(grid);
+            PickBinding binding;
+            if (Bindings.TryGetValue(grid, out binding)) binding.Activate(() => grid.Focus());
+        }
+
         /// <summary>由 TxForm 的宿主键盘入口调用；ActiveControl 可保留图形视口拾取时的逻辑焦点。</summary>
         internal static bool TryCancel(Form host, Keys keyData)
         {
@@ -99,6 +121,7 @@ namespace TxTools.Common
             private readonly Action _loseFocus;
             private readonly NativeEscapeHook _nativeEscape;
             private bool _suppressEscape;
+            private bool _suspended, _activating;
 
             public PickBinding(Control picker, Control focusTarget, Action<bool> setListening, Action loseFocus)
             {
@@ -116,10 +139,38 @@ namespace TxTools.Common
 
             private void OnEnter(object sender, EventArgs e)
             {
+                if (_suspended || _activating || _picker.IsDisposed) return;
                 _suppressEscape = false;
                 _nativeEscape.Activate(this);
-                // 重新注册 PS 拾取提供者，Esc 退出后再次进入即可继续选取。
                 try { _setListening(false); _setListening(true); } catch { }
+            }
+
+            public void Activate(Action focus)
+            {
+                if (_suspended || _activating || _picker.IsDisposed || !_picker.Enabled || !_picker.Visible) return;
+                _activating = true;
+                try
+                {
+                    // Unregister the previous native session before enabling a new one.
+                    _loseFocus();
+                    _setListening(false);
+                    focus?.Invoke();
+                    if (_suspended || _picker.IsDisposed) return;
+                    _setListening(true);
+                    _suppressEscape = false;
+                    _nativeEscape.Activate(this);
+                }
+                catch (Exception ex) { Trace.WriteLine("[PickFocus] Activate: " + ex.Message); }
+                finally { _activating = false; }
+            }
+
+            public void SetSuspended(bool suspended)
+            {
+                if (_suspended == suspended) return;
+                _suspended = suspended;
+                if (!suspended) return;
+                Cancel();
+                _suppressEscape = false;
             }
 
             private void OnLeave(object sender, EventArgs e)
@@ -196,7 +247,7 @@ namespace TxTools.Common
             public bool CanHandleNativeEscape(IntPtr window)
             {
                 var host = _picker.FindForm();
-                if (_picker.IsDisposed || !_picker.Visible || !_picker.Enabled ||
+                if (_suspended || _picker.IsDisposed || !_picker.Visible || !_picker.Enabled ||
                     host == null || host.IsDisposed || !host.Visible || !host.Enabled ||
                     !host.IsHandleCreated || window == IntPtr.Zero)
                     return false;

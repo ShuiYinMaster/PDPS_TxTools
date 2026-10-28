@@ -108,7 +108,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    height: 34px;
+    height: 42px;
     padding: 0 4px 0 8px;
     border-bottom: 1px solid var(--rcp-line);
     background: var(--rcp-bg-2);
@@ -121,218 +121,9 @@
     white-space: nowrap;
 }
 
-.rcp-iconbtn {
-    flex: 0 0 auto;
-    width: 22px; height: 22px;
-    line-height: 22px;
-    text-align: center;
-    border: none;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--rcp-dim);
-    cursor: pointer;
-    font-size: 14px;
-}
-.rcp-iconbtn:hover { background: rgba(0,0,0,0.05); color: var(--rcp-fg); }
-
-/* 两类内容独立展示，标签和操作文字与颜色一起表达状态。 */
-.rcp-tabs { display: flex; flex: 0 0 auto; gap: 4px; padding: 6px 6px 0; border-bottom: 1px solid var(--rcp-line); }
-.rcp-tab {
-    flex: 1; min-width: 0; padding: 8px 3px;
-    border: none; border-bottom: 2px solid transparent; border-radius: 4px 4px 0 0;
-    background: transparent; color: var(--rcp-dim); cursor: pointer; font-size: 12px;
-    white-space: nowrap;
-}
-.rcp-tab:hover { background: var(--rcp-bg-2); color: var(--rcp-fg); }
-.rcp-tab-active { font-weight: 600; }
-.rcp-tab-recipes.rcp-tab-active { color: var(--rcp-ready); border-bottom-color: var(--rcp-ready); background: rgba(15,118,110,.07); }
-.rcp-tab-candidates.rcp-tab-active { color: var(--rcp-pending); border-bottom-color: var(--rcp-pending); background: rgba(180,83,9,.07); }
-.rcp-tab:focus-visible { outline: 2px solid var(--rcp-accent); outline-offset: -2px; }
-.rcp-candidate-note { margin: 2px 0 10px; padding: 8px; line-height: 1.6; font-size: 12px; color: var(--rcp-pending); background: rgba(180,83,9,.07); border-radius: 5px; }
-.rcp-empty-action { margin-top: 12px; }
-
-/* ── 主体 ── */
-
-.rcp-body {
-    flex: 1 1 auto;
-    overflow-y: auto;
-    overflow-x: hidden;
-    padding: 6px;
-}
-
-.rcp-empty {
-    padding: 18px 10px;
-    color: var(--rcp-dim);
-    line-height: 1.6;
-    text-align: center;
-}
-
-/* ── 配方卡片 ── */
-
-.rcp-card {
-    border: 1px solid var(--rcp-line);
-    border-left: 3px solid var(--rcp-ready);
-    border-radius: 6px;
-    margin-bottom: 6px;
-    background: var(--rcp-bg);
-    overflow: hidden;
-}
-
-.rcp-card-head {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 7px 8px;
-    cursor: pointer;
-    user-select: none;
-}
-.rcp-card-head:hover { background: rgba(0,0,0,0.03); }
-.rcp-card-meta { display: flex; align-items: center; gap: 6px; padding: 0 8px 8px; }
-.rcp-status { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; line-height: 1.5; }
-.rcp-status-ready { color: var(--rcp-ready); background: rgba(15,118,110,.1); }
-.rcp-status-pending { color: var(--rcp-pending); background: rgba(180,83,9,.1); margin-top: 7px; }
-
-.rcp-name {
-    flex: 1 1 auto;
-    font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.rcp-lang {
-    flex: 0 0 auto;
-    font-size: 10px;
-    padding: 1px 5px;
-    border-radius: 3px;
-    background: rgba(0,0,0,0.05);
-    color: var(--rcp-dim);
-}
-
-.rcp-caret { flex: 0 0 auto; color: var(--rcp-dim); font-size: 10px; }
-
-.rcp-card-body { display: none; padding: 0 8px 8px; }
-.rcp-card.rcp-open .rcp-card-body { display: block; }
-
-.rcp-desc {
-    color: var(--rcp-dim);
-    line-height: 1.5;
-    margin: 0 0 8px;
-}
-
-/* 共享聊天 Markdown 样式，使用说明采用适合侧边栏宽度的间距。 */
-.rcp-root .rcp-markdown {
-    padding: 0;
-    border-radius: 0;
-    line-height: 1.6;
-    white-space: normal;
-    overflow-wrap: anywhere;
-    min-width: 0;
-}
-.rcp-root .rcp-markdown-fallback { white-space: pre-wrap; }
-.rcp-markdown > :first-child { margin-top: 0; }
-.rcp-markdown h1 { font-size: 1.2em; }
-.rcp-markdown h2 { font-size: 1.15em; }
-.rcp-markdown h3, .rcp-markdown h4,
-.rcp-markdown h5, .rcp-markdown h6 { font-size: 1.05em; }
-.rcp-root .rcp-markdown ul, .rcp-root .rcp-markdown ol {
-    margin: 6px 0 8px;
-    padding-left: 20px;
-}
-.rcp-root .rcp-markdown pre { padding: 8px; max-width: 100%; }
-.rcp-root .rcp-markdown .code-block-head { padding: 4px 6px; }
-
-/* ── 参数行 ── */
-
-.rcp-param { margin-bottom: 7px; }
-
-.rcp-param-label {
-    display: block;
-    margin-bottom: 3px;
-    color: var(--rcp-dim);
-    font-size: 12px;
-}
-.rcp-param-label .rcp-req { color: var(--rcp-bad); margin-left: 2px; }
-.rcp-param-label .rcp-hint { opacity: .7; margin-left: 4px; }
-
-.rcp-pick {
-    display: flex;
-    align-items: stretch;
-    gap: 4px;
-}
-
-.rcp-slot {
-    flex: 1 1 auto;
-    min-width: 0;
-    padding: 5px 7px;
-    border: 1px solid var(--rcp-line);
-    border-radius: 4px;
-    background: var(--rcp-bg);
-    color: var(--rcp-fg);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 12px;
-}
-.rcp-slot.rcp-unset { color: var(--rcp-dim); font-style: italic; }
-/* 绑定失效（换了 study / 对象被删）要一眼看出来，不能悄悄留着旧值 */
-.rcp-slot.rcp-stale { border-color: var(--rcp-bad); color: var(--rcp-bad); }
-/* 取选择中 / 取选择失败 —— 直接在参数框里给反馈，而不是塞进折叠的卡片底部 */
-.rcp-slot.rcp-picking { color: var(--rcp-dim); font-style: italic; }
-.rcp-slot.rcp-pick-err { border-color: var(--rcp-bad); color: var(--rcp-bad); font-style: normal; }
-
-.rcp-btn {
-    flex: 0 0 auto;
-    padding: 5px 9px;
-    border: 1px solid var(--rcp-line);
-    border-radius: 4px;
-    background: var(--rcp-bg);
-    color: var(--rcp-fg);
-    cursor: pointer;
-    font-size: 12px;
-    white-space: nowrap;
-}
-.rcp-btn:hover { border-color: var(--rcp-accent); color: var(--rcp-accent); }
-.rcp-btn:disabled { opacity: .45; cursor: default; border-color: var(--rcp-line); color: var(--rcp-dim); }
-
-.rcp-input {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 5px 7px;
-    border: 1px solid var(--rcp-line);
-    border-radius: 4px;
-    background: var(--rcp-bg);
-    color: var(--rcp-fg);
-    font-size: 12px;
-}
-.rcp-input[type="checkbox"] { width: auto; accent-color: var(--rcp-accent); }
-.rcp-reset { margin-top: 6px; }
-.rcp-input:focus-visible { outline: 2px solid var(--rcp-accent); outline-offset: 1px; }
-
-/* ── 卡片底部 ── */
-
-.rcp-actions {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-    margin-top: 10px;
-    padding-top: 8px;
-    border-top: 1px solid var(--rcp-line);
-}
-
-.rcp-run {
-    flex: 1 1 80px;
-    padding: 6px;
-    border: none;
-    border-radius: 4px;
-    background: var(--rcp-accent);
-    color: #fff;
-    font-weight: 600;
-    cursor: pointer;
-}
-.rcp-run:hover { filter: brightness(1.1); }
-.rcp-run:disabled { background: var(--rcp-line); color: var(--rcp-dim); cursor: default; filter: none; }
+/* Recipe actions share dimensions and interaction states. */
+.rcp-btn, .rcp-iconbtn, .rcp-run { flex: 1 1 80px; border-color: var(--rcp-accent); background: var(--rcp-accent); color: #fff; font-weight: 600; }
+.rcp-run:hover:not(:disabled) { filter: brightness(.94); }
 
 /* 执行中:按钮里转个圈 —— 由 CSS transform 动画驱动,
    即便 PS 主线程执行期间 WebView 无法重绘 JS 侧内容,这个转圈也尽量保持可见 */
@@ -400,7 +191,7 @@
 .rcp-cand-actions { margin-top: 8px; flex-wrap: wrap; }
 .rcp-cand-actions .rcp-stat { flex: 1 1 100%; }
 .rcp-promote { flex: 1; background: var(--rcp-pending); color: #fff; border-color: var(--rcp-pending); font-weight: 600; }
-.rcp-promote:hover { background: var(--rcp-pending); color: #fff; border-color: var(--rcp-pending); filter: brightness(1.08); }
+.rcp-promote:hover:not(:disabled) { background: var(--rcp-pending); color: #fff; border-color: var(--rcp-pending); filter: brightness(.94); }
 .rcp-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
 .rcp-tag { padding: 2px 5px; border-radius: 3px; background: var(--rcp-line); font-size: 11px; color: var(--rcp-dim); }
 .rcp-preview { margin-top: 7px; font-size: 12px; color: var(--rcp-dim); }
@@ -413,3 +204,14 @@
 .rcp-filter-label{font-size:11px;color:var(--rcp-dim)}.rcp-search,.rcp-filter-help{grid-column:1/-1}.rcp-search{margin-top:3px}.rcp-filter-help{font-size:10px;line-height:1.5;color:var(--rcp-dim)}
 .rcp-input.rcp-color{width:64px;height:35px;padding:2px;display:inline-block;vertical-align:middle;cursor:pointer}.rcp-color-value{margin-left:8px;font:11px Consolas,monospace}
 .rcp-palette{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}.rcp-swatch{width:22px;height:22px;border:1px solid #b7c1cc;border-radius:5px;cursor:pointer}.rcp-swatch:focus-visible{outline:2px solid var(--rcp-accent);outline-offset:2px}.rcp-swatch:disabled{opacity:.5;cursor:default}
+
+.rcp-delete { margin-left: auto; color: var(--rcp-bad); }
+.rcp-delete svg { width: 18px; height: 18px; pointer-events: none; }
+.rcp-delete:hover:not(:disabled) { color: var(--rcp-bad); border-color: var(--rcp-bad); background: rgba(220,38,38,.07); }
+.rcp-delete:focus-visible, .rcp-danger:focus-visible { outline-color: var(--rcp-bad); }
+.rcp-delete-confirm { margin: 0 8px 8px; padding: 10px; border: 1px solid rgba(220,38,38,.22); border-radius: 6px; background: rgba(220,38,38,.04); }
+.rcp-delete-confirm[hidden] { display: none; }
+.rcp-delete-question { margin: 0 0 10px; color: var(--rcp-fg); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.rcp-confirm-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.rcp-danger { color: #fff; border-color: var(--rcp-bad); background: var(--rcp-bad); }
+.rcp-danger:hover:not(:disabled) { color: #fff; border-color: var(--rcp-bad); background: var(--rcp-bad); filter: brightness(.94); }

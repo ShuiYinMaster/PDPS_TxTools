@@ -34,6 +34,11 @@ namespace TxTools.Agent.Core
         public override string Execute(JObject input)
         {
             var enabled = ToolGate.EnabledGroups();
+            foreach (var key in new[] { "enable", "disable" }) {
+                var values = input == null ? null : input[key];
+                if (values == null) continue;
+                if (!(values is JArray) || ((JArray)values).Any(t => t.Type != JTokenType.String || !ToolGate.AllGroups().Contains((string)t, StringComparer.OrdinalIgnoreCase))) return "Error: 工具组无效。可用: " + string.Join(", ", ToolGate.AllGroups());
+            }
             var sb = new StringBuilder();
             sb.AppendLine("工具组(未列出的工具为核心工具,始终可用):");
             foreach (var g in ToolGate.AllGroups())
@@ -43,7 +48,7 @@ namespace TxTools.Agent.Core
                 sb.AppendLine("  (启用后加 " + Count(g) + " 个工具)");
             }
             sb.AppendLine();
-            sb.Append("当前启用: " + (enabled.Count == 0 ? "(无)" : string.Join(", ", enabled)));
+            sb.Append("当前启用: " + (ToolGate.EnabledGroups().Count == 0 ? "(无)" : string.Join(", ", enabled)));
             sb.AppendLine();
             sb.Append("用 set_tool_groups 调整,【新建对话后生效】。");
             return sb.ToString();

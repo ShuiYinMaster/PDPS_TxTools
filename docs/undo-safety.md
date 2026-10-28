@@ -45,17 +45,14 @@ SDK 的 `TxUndoTransactionManager` 提供无参 `StartTransaction()`、`EndTrans
 
 ## 已完成验证
 
-- 新增 [UndoSafety 回归](../Tests/UndoSafety/Program.cs)：17 项通过，覆盖嵌套配对、开始/结束失败、切换工程后返回失败文档、线程及关闭顺序、围栏多层容器和用户内容保护、失败重试、快照结果、半复制、内容变化、引用保护和目标不覆盖。
-- 既有 [WeldAnnotatorDisplay 回归](../Tests/WeldAnnotatorDisplay/Program.cs)：17 项通过，核对显示状态和事务恢复边界。
+- 新增 UndoSafety 回归：17 项通过，覆盖嵌套配对、开始/结束失败、切换工程后返回失败文档、线程及关闭顺序、围栏多层容器和用户内容保护、失败重试、快照结果、半复制、内容变化、引用保护和目标不覆盖。
+- 既有 WeldAnnotatorDisplay 回归：17 项通过，核对显示状态和事务恢复边界。
 - Release 构建通过，主插件、MCP 桥和 JT 解码器产物生成；14 份嵌入配方资源校验通过。现有编译警告保留。
 - 这些测试编译实际公共实现并使用 SDK 替身，不能替代真实 Process Simulate 的撤销栈验收。
 
 在仓库根目录运行：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File Tests\UndoSafety\Run-Regression.ps1
-powershell -ExecutionPolicy Bypass -File Tests\WeldAnnotatorDisplay\Run-Regression.ps1
-```
+独立测试的入口和输出位置见构建文档。
 
 ## 真实宿主验收清单
 

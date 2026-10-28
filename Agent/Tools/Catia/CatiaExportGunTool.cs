@@ -39,7 +39,8 @@ namespace TxTools.Agent.Core
                 return JObject.Parse(@"{
                     'type': 'object',
                     'properties': {
-                        'operation_name':    { 'type': 'string',  'description': '操作名(留空=PS 当前选中)' },
+                        'object_id': { 'type': 'string', 'description': '操作唯一 ID，优先于 operation_name' },
+                         'operation_name':    { 'type': 'string',  'description': '操作名(留空=PS 当前选中)' },
                         'model_path':        { 'type': 'string',  'description': '焊枪 CGR/CATPart 路径(留空=用 PS 工具自带路径)' },
                         'product_name':      { 'type': 'string',  'description': 'CATIA 容器名(留空=用操作名)' },
                         'gun_origin_at_tcp': { 'type': 'boolean', 'description': '焊枪以 TCP 为原点(默认 true)' },
@@ -77,7 +78,7 @@ namespace TxTools.Agent.Core
 
             // ── 1. PS 侧：操作 + 点 + 枪 ──
             string err;
-            OpResolution res = GunToolHelpers.ResolveOperations(opName, log, out err);
+            OpResolution res = GunToolHelpers.ResolveOperations(opName, log, out err, ToolInputHelpers.String(input["object_id"]));
             if (res == null) return "Error: " + err;
             List<OperationInfo> ops = res.Operations;
 
@@ -114,15 +115,17 @@ namespace TxTools.Agent.Core
             // ── 2. 参考坐标 ──
             double[] refMatrix = null;
             string refLabel = "世界坐标系";
+            if (autoRef && ready.Count > 1) return "Error: 自动参考系导出请逐个操作执行，或使用 ref_mode=world。";
             if (autoRef)
             {
                 try
                 {
                     var r = PsReader.ResolveOperationRefFrame(ready[0], true, log);
+                    if (r != null && r.NeedsUserChoice) return "Error: 参考系冲突，请使用 export_gun_full 指定 ref_name，或 ref_mode=world。";
                     if (r != null && r.Matrix != null && !PsReader.IsIdentity(r.Matrix))
                     { refMatrix = r.Matrix; refLabel = r.Name; }
                 }
-                catch (Exception ex) { log("参考坐标解析失败,退回世界系: " + ex.Message); }
+                catch (Exception ex) { return "Error: 参考坐标解析失败，未导出: " + ex.Message; }
             }
 
             // ── 3. CATIA 侧执行 ──

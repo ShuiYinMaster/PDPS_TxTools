@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Tecnomatix.Engineering;
@@ -205,12 +205,7 @@ namespace TxTools.WeldGunDefiner.Core
         //       TxPoseData.JointValues（类型待确认，反射探测）
         // ─────────────────────────────────────────────
 
-        // 正确流程（文档确认）：
-        //   TxDevicePoseData(device, device.CurrentPose) 包装当前位姿
-        //   → SetJointValue(joint, value) 逐关节设值
-        //   → devicePoseData.PoseData 取回 TxPoseData
-        //   → TxPoseCreationData{Name, PoseData} → device.CreatePose
-        // 之前用反射猜 JointValues 属性，TxPoseData 根本没有该属性，故静默失败。
+        // 姿态仅包含编译后的主动关节；每次都在机构/公式验证完成后读取当前模板。
         public static bool CreatePose(ITxDevice device, string poseName,
             Dictionary<TxJoint, double> jointValues, out string err)
         {
@@ -222,35 +217,35 @@ namespace TxTools.WeldGunDefiner.Core
                 TxPoseData template = device.CurrentPose;
                 if (template == null) { err = "device.CurrentPose为null"; return false; }
 
-                TxDevicePoseData dpd = null;
-                try { dpd = new TxDevicePoseData(device, template); }
-                catch (Exception ex) { err = "构造TxDevicePoseData失败:" + ex.Message; }
-
-                if (dpd != null)
+                if (jointValues == null || jointValues.Count == 0)
+                    throw new InvalidOperationException("姿态缺少主动关节值");
+                using (var dpd = new TxDevicePoseData(device, template))
                 {
                     foreach (var kv in jointValues)
                     {
-                        if (kv.Key == null) continue;
-                        try
-                        {
-                            bool has = true;
-                            try { has = dpd.DoesHaveJoint(kv.Key); } catch { has = true; }
-                            if (has) dpd.SetJointValue(kv.Key, kv.Value);
-                        }
-                        catch (Exception ex) { err = $"SetJointValue({kv.Key?.Name})失败:" + ex.Message; }
+                        if (kv.Key == null || !dpd.DoesHaveJoint(kv.Key))
+                            throw new InvalidOperationException("编译后的设备姿态不包含目标主动关节: " + kv.Key?.Name);
+                        if (double.IsNaN(kv.Value) || double.IsInfinity(kv.Value))
+                            throw new InvalidOperationException("姿态关节值无效: " + kv.Key.Name);
+                        dpd.SetJointValue(kv.Key, kv.Value);
                     }
-
-                    TxPoseData finalData = dpd.PoseData;
-                    var cd = new TxPoseCreationData { Name = poseName, PoseData = finalData };
-                    device.CreatePose(cd);
-                    return true;
+                    // SDK CreatePose 不允许同名；更新现有标准姿态，避免重复生成时失败。
+                    var pose = device.GetPoseByName(poseName);
+                    if (pose == null)
+                        pose = device.CreatePose(new TxPoseCreationData { Name = poseName, PoseData = dpd.PoseData });
+                    else
+                        pose.PoseData = dpd.PoseData;
+                    if (pose == null) throw new InvalidOperationException("CreatePose 返回空对象");
+                    using (var saved = new TxDevicePoseData(device, pose.PoseData))
+                    {
+                        foreach (var kv in jointValues)
+                            if (!saved.DoesHaveJoint(kv.Key) || System.Math.Abs(saved.GetJointValue(kv.Key) - kv.Value) > 1e-6)
+                                throw new InvalidOperationException("姿态保存后回读值不匹配: " + kv.Key.Name);
+                    }
                 }
-
-                var cd2 = new TxPoseCreationData { Name = poseName, PoseData = template };
-                device.CreatePose(cd2);
                 return true;
             }
-            catch (Exception ex) { err = ex.Message; return false; }
+            catch (Exception ex) { err = poseName + ": " + ex.GetType().Name + " - " + ex.Message; return false; }
         }
 
         public static bool CreatePose(ITxDevice device, string poseName,
@@ -301,6 +296,8 @@ namespace TxTools.WeldGunDefiner.Core
             {
                 if (device == null) { err = "device为null"; return false; }
 
+                if (tcpFrame == null || baseLoc == null) { err = "Servo Gun 定义需要有效 TCP Frame 和基坐标"; return false; }
+
                 // 不检测干涉列表（构造参数，可空列表）
                 var ncList = new TxObjectList();
                 if (nonCollidingEntities != null)
@@ -315,7 +312,7 @@ namespace TxTools.WeldGunDefiner.Core
                 // 检查可定义性（带参）
                 bool can = true;
                 try { can = device.CanDefineAsTool(def); } catch { can = true; }
-                if (!can) err = (err ?? "") + " | CanDefineAsTool=false（运动学可能不完整或已是工具）";
+                if (!can) { err = "CanDefineAsTool=false（请检查运动学和工具定义状态）"; return false; }
 
                 device.DefineAsTool(def);
                 return true;
@@ -395,12 +392,17 @@ namespace TxTools.WeldGunDefiner.Core
         // 用预定义颜色常量（静态属性，避免构造函数参数类型不确定）
 
         /// <summary>不同 Link 的高亮配色（与图例对应）</summary>
-        public static TxColor ColorFixed => TxColor.TxColorYellow;   // fixed_link
-        public static TxColor ColorInput => TxColor.TxColorOrange;   // input_link
-        public static TxColor ColorCoupler => TxColor.TxColorCyan;     // coupler_link
-        public static TxColor ColorOutput => TxColor.TxColorMagenta;  // output_link
-        public static TxColor ColorLnk2 => TxColor.TxColorPink;     // lnk2
-        public static TxColor ColorTip => TxColor.TxColorGreen;    // 电极帽
+        public static TxColor ColorFixed => TxColor.TxColorOrange; // 固定枪体
+        public static TxColor ColorInput => TxColor.TxColorGreen;  // 活塞缸体
+        public static TxColor ColorCoupler => TxColor.TxColorYellow; // 活塞杆
+        public static TxColor ColorOutput => TxColor.TxColorBlue;  // 动臂
+        public static TxColor ColorLnk2 => TxColor.TxColorMagenta;  // 静臂（磨量补偿）
+
+        public static void RefreshView()
+        {
+            try { TxApplication.RefreshDisplay(); }
+            catch { } // 工程关闭或视图不可用时不打断向导。
+        }
 
         /// <summary>高亮一个对象为指定颜色（ITxDisplayableObject.Color 属性）</summary>
         public static void Highlight(ITxObject obj, TxColor color)

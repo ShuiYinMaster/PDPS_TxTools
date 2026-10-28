@@ -484,11 +484,13 @@ namespace TxTools.Agent.Core
                 try
                 {
                     var json = JsonConvert.SerializeObject(_cache ?? new List<ApiNote>(), Formatting.Indented);
-                    File.WriteAllText(FilePath, json, Encoding.UTF8);
+                    MdStore.WriteTextAtomic(FilePath, json);
                 }
                 catch (Exception ex)
                 {
+                    _cache = null;
                     try { AuditLog.Write("[warn] [ApiNotes] 保存失败: " + ex.Message); } catch { }
+                    throw new IOException("API 注解保存失败。", ex);
                 }
             }
         }
@@ -545,7 +547,7 @@ namespace TxTools.Agent.Core
             var notes = ForType(typeName);
             if (notes.Count == 0) return;
             lock (Sync) { foreach (var n in notes) n.HitCount++; }
-            Save();
+            try { Save(); } catch (IOException) { /* 命中计数失败不阻止只读 API 查询。 */ }
         }
 
         public static int Count { get { return Load().Count; } }

@@ -1,13 +1,13 @@
 ﻿// TxTools.Agent / Tools / RunPythonTool.cs
 // Python(IronPython 2.7) 执行通道。拆成两个工具，因为 ITxAgentTool.IsReadOnly 是类型级属性，
-// 无法按调用参数切换审批策略 —— 而 probe 免审批正是这条路径的价值所在。
+// 探测与执行分离；静态检查只减少误操作，两者均按代码执行进行审批。
 //
-//   probe_python : IsReadOnly=true  -> 免审批。由静态检查限制为只读；SDK 不提供自动回滚。
+//   probe_python : IsReadOnly=false；额外拒绝可识别的变更，SDK 不提供自动回滚。
 //   run_python   : IsReadOnly=false -> 强制审批 + 审计。成功/失败均关闭撤销分组；失败后需手动 Ctrl+Z。
 //
 // 安全边界：PS 2402 的 TxUndoTransactionManager 只有 StartTransaction/EndTransaction/ClearAllTransactions，
-//   **没有程序化回滚方法** —— undo 只能把改动分组供用户手动 Ctrl+Z。因此 probe 的只读性由
-//   本文件的 ProbeGuard 静态检查承担（拒绝成员赋值与 Set*/Create*/Delete*/Add* 等变更方法），
+//   **没有程序化回滚方法** —— undo 只能把改动分组供用户手动 Ctrl+Z。ProbeGuard 仅识别部分写操作，
+//   无法隔离任意 Python/.NET 代码；probe 同样需要代码执行审批，
 //   事务包裹退化为兜底：万一有漏网的副作用，用户仍可 Ctrl+Z 撤销整段。
 
 using System;
@@ -50,7 +50,7 @@ namespace TxTools.Agent.Tools
         {
             string code = GetString(input, "code", "");
             if (string.IsNullOrWhiteSpace(code))
-                return "错误：code 参数为空。";
+                return "Error: code 参数为空。";
 
             // probe 模式的额外闸门：拦截 undo 覆盖不到的副作用
             if (Mode == PythonRunMode.Probe)
@@ -58,7 +58,7 @@ namespace TxTools.Agent.Tools
                 string blocked = ProbeGuard.Check(code);
                 if (blocked != null)
                 {
-                    return "probe_python 已拒绝执行（场景未被触碰）。\n" + blocked +
+                    return "Error: probe_python 已拒绝执行（场景未被触碰）。\n" + blocked +
                            "\n\nprobe 是只读探测通道。需要修改场景请改用 run_python（会走用户审批）。";
                 }
             }
@@ -71,12 +71,12 @@ namespace TxTools.Agent.Tools
             }
             catch (PythonHostException ex)
             {
-                return "Python 宿主初始化失败：" + ex.Message +
+                return "Error: Python 宿主初始化失败：" + ex.Message +
                        "\n（本次未执行任何代码。）请改用 run_csharp 或现成工具。";
             }
             catch (Exception ex)
             {
-                return "Python 执行通道异常：" + ex.GetType().Name + ": " + ex.Message;
+                return "Error: Python 执行通道异常：" + ex.GetType().Name + ": " + ex.Message;
             }
 
             // ── 片段挂钩（与 run_csharp 同一套闭环, lang="python"）──
@@ -121,16 +121,16 @@ namespace TxTools.Agent.Tools
 
         public override string Name { get { return "probe_python"; } }
 
-        public override bool IsReadOnly { get { return true; } }
+        public override bool IsReadOnly { get { return false; } }
 
         public override string Description
         {
             get
             {
-                return "【首选探测工具】在 PS 进程内执行 Python 代码，用于**只读探测**。" +
-                       "执行前会做静态检查，任何写操作都会被拒绝并原样告知你：" +
+                return "在 PS 进程内执行用于 SDK 探测的 Python 代码。" +
+                       "执行前会做静态检查，拒绝已识别的写操作：" +
                        "对象成员赋值 obj.Prop=x、Set*/Create*/Delete*/Add*/Remove* 等变更类 SDK 方法、" +
-                       "文件写入、启动进程。因此本工具免审批，可以放心大胆试错。" +
+                       "文件写入、启动进程。静态检查仅减少误操作，不能隔离任意 Python/.NET 代码；执行仍需代码审批。" +
                        "不确定 SDK 怎么用时，先用它探清楚，再动手 —— 不要靠猜。" +
 
                        "【三个内置探测函数，这是本工具的核心价值】" +
@@ -174,7 +174,7 @@ namespace TxTools.Agent.Tools
                        "注意 PS 不支持程序化回滚，脚本中途失败时前面已生效的改动不会自动撤销，" +
                        "需要用户 Ctrl+Z —— 所以务必先探测确认再提交。" +
 
-                       "【标准姿势】先用 probe_python 把 API 探清楚（免审批、受只读静态检查约束），" +
+                       "【标准姿势】先用 probe_python 把 API 探清楚（带静态误操作检查，执行需审批），" +
                        "确认无误后再用本工具提交。不要跳过探测直接写变更代码。" +
 
                        "已 from Tecnomatix.Engineering import *。写顶层语句，用 print() 输出。" +
@@ -195,7 +195,7 @@ namespace TxTools.Agent.Tools
     #region ---------- probe 模式黑名单 ----------
 
     /// <summary>
-    /// probe 的只读保证。
+    /// probe 的静态误操作检查，不构成执行隔离。
     ///
     /// 原设计是"执行后强制回滚"，但 PS 2402 的 TxUndoTransactionManager 只有
     /// StartTransaction/EndTransaction，没有任何程序化回滚方法 —— undo 只能把改动分组

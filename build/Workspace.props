@@ -1,0 +1,20 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Condition="'$(TxToolsWorkspacePropsImported)' != 'true'">
+    <TxToolsWorkspacePropsImported>true</TxToolsWorkspacePropsImported>
+    <Configuration Condition="'$(Configuration)' == ''">Debug</Configuration>
+    <TxToolsSourceRoot Condition="'$(TxToolsSourceRoot)' == ''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\'))</TxToolsSourceRoot>
+    <TxToolsLocalRoot Condition="'$(TxToolsLocalRoot)' == ''">$([System.IO.Path]::GetFullPath('$(TxToolsSourceRoot)..\TxTools.Local\'))</TxToolsLocalRoot>
+    <TxToolsBuildRoot Condition="'$(TxToolsBuildRoot)' == ''">$(TxToolsLocalRoot)build\</TxToolsBuildRoot>
+    <TxToolsDependenciesRoot Condition="'$(TxToolsDependenciesRoot)' == ''">$(TxToolsLocalRoot)dependencies\</TxToolsDependenciesRoot>
+    <TxToolsNuGetDir Condition="'$(TxToolsNuGetDir)' == ''">$(TxToolsDependenciesRoot)nuget\</TxToolsNuGetDir>
+    <TxToolsJtDependenciesDir Condition="'$(TxToolsJtDependenciesDir)' == ''">$(TxToolsDependenciesRoot)jt\</TxToolsJtDependenciesDir>
+    <TxToolsPetComponentsDir Condition="'$(TxToolsPetComponentsDir)' == ''">$(TxToolsDependenciesRoot)desktop-pet\</TxToolsPetComponentsDir>
+    <TxToolsSigningKey Condition="'$(TxToolsSigningKey)' == ''">$(TxToolsDependenciesRoot)keys\ExportByColor\JtDirectCs\Vendor\JTReader.snk</TxToolsSigningKey>
+    <TxToolsOutputDir>$(TxToolsBuildRoot)bin\$(MSBuildProjectName)\$(Configuration)\</TxToolsOutputDir>
+    <BaseOutputPath>$(TxToolsBuildRoot)bin\$(MSBuildProjectName)\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(TxToolsBuildRoot)obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>$(BaseIntermediateOutputPath)</MSBuildProjectExtensionsPath>
+    <IntermediateOutputPath>$(BaseIntermediateOutputPath)$(Configuration)\</IntermediateOutputPath>
+    <OutputPath Condition="'$(OutputPath)' == ''">$(TxToolsOutputDir)</OutputPath>
+  </PropertyGroup>
+</Project>

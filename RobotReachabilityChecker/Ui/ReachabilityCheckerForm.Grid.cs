@@ -4,7 +4,7 @@
 // TxFlexGrid 相关：构建、自适应列宽、数据刷新、过滤。
 //
 // 列结构：
-//   # | 品牌 | 机器人名 | 操作名 | 点名 | 点类型 | J1 | J2 | J3 | J4 | J5 | J6 | 检查结果 | 备注
+//   # | 品牌 | 机器人名 | 操作名 | 点名 | 点类型 | J1 | J2 | J3 | J4 | J5 | J6 | 检查结果
 //
 // 染色策略：
 //   1) 行级背景色：按整体 Status 着色
@@ -26,7 +26,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
 {
     public partial class ReachabilityCheckerForm
     {
-        // 内容列宽上限（px）：按内容自动调整但不超过此值，防止备注列被挤到底线
+        // 标识列宽上限（px）；检查结果列独占剩余空间。
         private const int MAX_COL_W = 320;
 
         // =====================================================================
@@ -46,13 +46,14 @@ namespace TxTools.RobotReachabilityChecker.Ui
             };
 
             _grid.Rows.Fixed = 1;
-            _grid.Cols.Count = 14;
+            _grid.Cols.Count = 13;
+            _grid.ShowCellLabels = true;
 
             string[] captions = { "#", "品牌", "机器人名", "操作名", "点名", "点类型",
                                   "J1(°)", "J2(°)", "J3(°)", "J4(°)", "J5(°)", "J6(°)",
-                                  "检查结果", "备注" };
+                                  "检查结果" };
 
-            for (int i = 0; i < 14; i++)
+            for (int i = 0; i < captions.Length; i++)
             {
                 _grid.Cols[i].Caption = captions[i];
                 _grid.Cols[i].AllowSorting = true;
@@ -62,12 +63,12 @@ namespace TxTools.RobotReachabilityChecker.Ui
             using (var g = CreateGraphics())
             {
                 var hdrFont = FormUiKit.BoldFont;
-                for (int i = 0; i < 14; i++)
+                for (int i = 0; i < captions.Length; i++)
                 {
                     int textW = (int)g.MeasureString(captions[i], hdrFont).Width + 16;
                     if (i == COL_OP) _grid.Cols[i].Width = 110;
                     else if (i == COL_PT) _grid.Cols[i].Width = 110;
-                    else if (i == COL_NOTE) _grid.Cols[i].Width = 120;  // 在 Resize 中填充剩余
+                    else if (i == COL_RESULT) _grid.Cols[i].Width = 260;
                     else _grid.Cols[i].Width = Math.Max(textW, 42);
                 }
             }
@@ -90,10 +91,28 @@ namespace TxTools.RobotReachabilityChecker.Ui
             // 双击行 → 选中点位 + 打开 Robot Jog
             _grid.MouseDoubleClick += Grid_DblClick_Jog;
 
-            this.Resize += (s, e) => ResizeGridCols();
+            _grid.ClientSizeChanged += (s, e) => ResizeGridCols();
             Controls.Add(_grid);
 
             BuildRowStylePool();
+            // A column inherits its style by default; Style can therefore be null.
+            // StyleNew creates the column override before setting wrapping.
+            _grid.Cols[COL_RESULT].StyleNew.WordWrap = true;
+            var details = new ToolTip { AutoPopDelay = 30000 };
+            string tooltipText = "";
+            _grid.MouseMove += (s, e) =>
+            {
+                var hit = _grid.HitTest(e.X, e.Y);
+                int row = hit.Column == COL_RESULT ? hit.Row : -1;
+                PathPointResult result;
+                string text = _rowToResult.TryGetValue(row, out result)
+                    ? StatusToText(result.Status) + "\n" + result.ErrorMessage : "";
+                if (text == tooltipText) return;
+                tooltipText = text;
+                details.SetToolTip(_grid, text);
+            };
+            _grid.MouseLeave += (s, e) => { tooltipText = ""; details.SetToolTip(_grid, ""); };
+            _grid.Disposed += (s, e) => details.Dispose();
         }
 
         // =====================================================================
@@ -137,14 +156,13 @@ namespace TxTools.RobotReachabilityChecker.Ui
         // =====================================================================
         internal void ResizeGridCols()
         {
-            if (_grid == null || _grid.Cols.Count < 14) return;
+            if (_grid == null || _grid.Cols.Count < 13) return;
             try
             {
-                // 除备注列外，所有列都按内容量自动调整（含操作名/点名，取内容最宽者）
+                // 标识和轴值列按内容量自动调整，结果列保留可读宽度。
                 int[] autoSizeCols = { COL_IDX, COL_BRAND, COL_ROBOT, COL_OP, COL_PT,
                                        COL_TYPE,
-                                       COL_J1, COL_J2, COL_J3, COL_J4, COL_J5, COL_J6,
-                                       COL_RESULT };
+                                       COL_J1, COL_J2, COL_J3, COL_J4, COL_J5, COL_J6 };
                 foreach (int ci in autoSizeCols)
                 {
                     try
@@ -156,18 +174,19 @@ namespace TxTools.RobotReachabilityChecker.Ui
                             int hdrW = (int)g.MeasureString(_grid.Cols[ci].Caption, hdrFont).Width + 16;
                             if (_grid.Cols[ci].Width < hdrW) _grid.Cols[ci].Width = hdrW;
                         }
-                        // 内容列上限：避免单个超长内容把备注列挤到 80 底线
+                        // 避免单个超长标识占满结果区域。
                         if (_grid.Cols[ci].Width > MAX_COL_W) _grid.Cols[ci].Width = MAX_COL_W;
                     }
                     catch { }
                 }
 
                 int fixedTotal = 0;
-                for (int i = 0; i < 13; i++) fixedTotal += _grid.Cols[i].Width;
+                for (int i = 0; i < COL_RESULT; i++) fixedTotal += _grid.Cols[i].Width;
                 int remaining = _grid.ClientSize.Width - fixedTotal
                               - (SystemInformation.VerticalScrollBarWidth + 2);
-                // 备注列吸走全部剩余宽度，保证表格填满无右方空隙
-                _grid.Cols[COL_NOTE].Width = Math.Max(remaining, 80);
+                // 结果列填充剩余宽度；窄窗口可在表格内横向滚动。
+                _grid.Cols[COL_RESULT].Width = Math.Max(remaining, (int)(240 * DeviceDpi / 96f));
+                _grid.AutoSizeRows();
             }
             catch { }
         }
@@ -195,7 +214,6 @@ namespace TxTools.RobotReachabilityChecker.Ui
                     _rowToResult[row] = r;
 
                     string jStr(double v) => r.Status == ReachabilityStatus.NotChecked ? "" : v.ToString("F1");
-                    string statusText = StatusToText(r.Status);
 
                     _grid[row, COL_IDX] = r.Index.ToString();
                     _grid[row, COL_BRAND] = BrandResolver.GuessBrandShort(r.RobotName);
@@ -209,8 +227,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
                     _grid[row, COL_J4] = jStr(r.J4);
                     _grid[row, COL_J5] = jStr(r.J5);
                     _grid[row, COL_J6] = jStr(r.J6);
-                    _grid[row, COL_RESULT] = statusText;
-                    _grid[row, COL_NOTE] = r.ErrorMessage;
+                    _grid[row, COL_RESULT] = CompactResultText(r);
 
                     // 行背景色：从预制 Style 池中取，避免每行创建新 Style
                     _grid.Rows[row].Style = PickRowStyle(r.Status, i);
@@ -246,6 +263,22 @@ namespace TxTools.RobotReachabilityChecker.Ui
 
                 _grid.SetCellStyle(row, jCols[ax], cs);
             }
+        }
+
+        private string CompactResultText(PathPointResult result)
+        {
+            string status = StatusToText(result.Status);
+            var notes = (result.ErrorMessage ?? "").Split(new[] { ';', '；', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(n => n.Trim()).Where(n => n.Length > 0 && n != status).Distinct().ToList();
+            for (int i = 0; i < notes.Count; i++)
+                notes[i] = System.Text.RegularExpressions.Regex.Replace(notes[i],
+                    @"TCP余量 ([-\d.]+)mm \((.+?)方向\) < 阈值 ([-\d.]+)mm", "TCP $2：$1mm < $3mm");
+            if (notes.Count == 0) return status;
+            string summary = string.Join("；", notes);
+            // Axis-specific labels already express the overall state; retain every other warning.
+            bool includesStatus = summary.Contains(status)
+                || (result.Status == ReachabilityStatus.NearLimit && summary.Contains("近极限"));
+            return includesStatus ? summary : status + "｜" + summary;
         }
 
         private string StatusToText(ReachabilityStatus s)

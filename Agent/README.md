@@ -1,4 +1,4 @@
-﻿# TxAgent — Process Simulate AI Agent / 进程内 AI 助手
+# TxAgent — Process Simulate AI Agent / 进程内 AI 助手
 
 An in-process AI assistant for Tecnomatix Process Simulate, with scene tools, reusable C# / Python recipes and multi-instance collaboration.
 
@@ -12,7 +12,7 @@ An in-process AI assistant for Tecnomatix Process Simulate, with scene tools, re
 
 ## 架构一览
 
-源码版本：2026-10-07。TxAgent 在 Process Simulate 2402 中提供聊天、工具调用、代码片段、配方和多实例协作。入口是 `TxAgentCommand.cs`，详细项目环境见 [总 README](../README.md)。
+TxAgent 在 Process Simulate 2402 中提供聊天、工具调用、代码片段、配方和多实例协作。入口是 `TxAgentCommand.cs`，详细项目环境见 [总 README](../README.md)，版本变化见 [更新日志](../CHANGELOG.md)。
 
 ## 环境与启动
 
@@ -26,6 +26,23 @@ An in-process AI assistant for Tecnomatix Process Simulate, with scene tools, re
 - Key 按提供商分别存入 `{providerId}.key`，由 Windows DPAPI 绑定当前用户加密。优先使用插件目录，不可写时回退到 `%LOCALAPPDATA%\TxTools.Agent`；更换用户或机器后需重新配置。
 
 ## 使用流程
+
+### 执行过程与补充引导
+
+流式回复默认跟随最新内容。向上滚动会暂停跟随，点击“回到最新”或滚回底部后恢复；
+展开的思考区域也保留独立的滚动位置。执行过程收纳思考、阶段说明和工具记录，
+结束后默认折叠，结论保持可见；失败、未完成和未执行的数量保留在过程摘要中。
+
+回复底部提供“复制结论”和“复制本轮”，保留 Markdown 原文与代码格式。
+“更多”菜单中的“复制完整对话”复制整段会话及工具记录，不包含思考内容。
+
+执行期间输入框可提交文字补充引导。引导按顺序进入当前任务的后续上下文，
+在模型返回后或工具之间的安全边界应用，不强行中断已经开始的工具。
+新要求到达时，尚未开始的旧计划调用标记为未执行，随后重新规划。
+界面区分排队、已应用和未应用状态；未应用的内容可恢复到输入框。
+执行中的引导暂不接收附件，切换模型、会话或撤销历史需先停止当前执行。
+
+### 常用步骤
 
 1. 先通过场景查询、搜索和操作列表读取真实工程数据。
 2. 工程变更前检查工具参数或代码审批；支持撤销的操作完成后可在 PS 中回退。
@@ -109,10 +126,47 @@ node Agent/UI/pet/dsh-pet-tools/validate.cjs
 
 ## 构建与验证
 
-[配方及启动回归说明](maintenance/recipe-controls-tests/README.md) 包含 C# 回归、JavaScript 界面验证、预览和编译后资源检查命令。历史记忆维护记录见 [maintenance/README.md](maintenance/README.md)，其中的部署日期与路径属于历史记录。
+配方、启动与界面回归位于独立测试目录；构建配置和入口见 [构建与目录布局](../docs/build.md)。存储维护见 [维护说明](maintenance/README.md)。
 
 ## 撤销与恢复（2026-10-07）
 
 C#、Python 及相关工程写工具使用场景撤销分组；开启失败阻止写入，关闭失败报告错误。执行失败不代表自动回滚。独立模式恢复点为已导出并校验的工程快照，外部文件和应用写入需另行恢复。
 
 详见 [统一撤销与恢复说明](../docs/undo-safety.md)。
+
+### 插件工具接口
+
+| 工具 | 参数与行为 |
+| --- | --- |
+| `check_reachability` | 复用可达性插件的多 TCP、IK、限位、奇异与临界分析；`tcp_check` 和 `interference` 可启用额外检查。`operation` 名称匹配必须唯一，也可传 `object_id`。检查期间临时切换姿态和 TCPF，结束后恢复；返回完整汇总、有限点位明细与干涉三态结果。 |
+| `check_robot_base` | 复用 BASE0 分析，分别统计一致、偏差、无 BASE0 和无法对比。默认位置容差 0.5mm、旋转容差 0.01，旋转值沿用插件的 PS RPY 原生单位。可用 `name` 或 `object_id` 限定机器人。 |
+| `correct_robot_base` | 重新检查后同步偏差项并复查；需变更审批，使用场景撤销分组。缺少 BASE0 或无法对比的对象跳过。部分失败不自动回滚。 |
+| `export_weld_screenshots` | 视图工具组中提供。将当前视口截图、可编辑分类形状、文字、引线及可选世界坐标表写入活动 Excel 工作簿。支持操作 ID、标注命名模式和板厚分类；需先打开 Excel 并设置当前视角。写入需审批，不自动保存工作簿。 |
+
+可达性明细默认每个操作最多返回 100 项，异常点优先；汇总统计始终包含全部已检查点。`collision_not_checked` 和 `collision_unknown` 均不代表无干涉。
+### 设备网格调平与落地
+
+`scan_devices_z` 与 `align_devices_z` 共用世界坐标三角网格测量。读取复用实体级加载、外观实例映射和三角带解析，直接使用双精度顶点，不通过导出文件或单精度缓存，也不使用资源原点作为最低点兜底。读取结束后恢复显示及表示级别；建模状态或无法恢复的表示级别会阻止读取。
+
+扫描默认 `scope=scene`；使用 `scope=selected` 扫描当前选择，或用 `object_ids` 精确指定整台资源。校正默认只处理当前选择，支持相同的 `object_ids`，不允许直接校正全场景。父子重叠目标只处理上层资源，机器人、末端工具及外部设备附着关系受到保护。
+
+默认 `level=true`：根据底部三角面的下包络、面积加权法向、空间覆盖和共面误差判断支撑基准，保持资源 X 轴的水平投影朝向，围绕支撑中心整体调平，然后使完整网格最低点到达 `target_z_mm`。法向不一致、支脚不共面、覆盖不足或有几何低于支撑面时返回 `blocked`。可用扫描返回的 `support_geometry_ids` 指定支撑几何；仍会检查完整网格的最低点。明确设置 `level=false` 时只按网格最低点做世界 Z 平移。
+
+| 参数 | 默认值 | 单位/含义 |
+| --- | --- | --- |
+| `target_z_mm` | 0 | 世界坐标目标高度 |
+| `position_tolerance_mm` | 0.1 | 最低点高度容差 |
+| `angle_tolerance_deg` | 0.05 | 调平及支撑法向一致性容差 |
+| `plane_tolerance_mm` | 0.5 | 支撑共面误差容差 |
+| `max_tilt_deg` | 3 | 接近摆正状态下的最大候选倾角，上限 10° |
+| `max_triangles` | 1000000 | 完整读取上限；超限报错，不使用截断网格 |
+
+调用示例：
+
+`scan_devices_z({"scope":"selected"})`
+
+`align_devices_z({"object_ids":["资源场景ID"],"level":true,"target_z_mm":0})`
+
+输出包含实际网格最低点、支撑几何 ID、支撑面倾角、世界 X/Y 方向高差、共面误差以及校正计划。资源发生旋转时，X/Y 方向高差是世界轴方向，不代表资源的前后左右。`aligned` 只在写入后重新读取网格及位姿复查通过时返回；`verification_failed` 表示场景可能已变更，需检查结果或在当前 PS 工程 Ctrl+Z。实体重载在位姿撤销事务之外进行，位姿修改使用一个撤销分组，部分失败不自动回滚。
+
+最低点与支撑分析针对当前模型的三角化表示，精度受模型表示影响。底部候选识别采用保守规则，复杂底座可能需要明确支撑几何。它不修改各支脚的几何或装配尺寸。

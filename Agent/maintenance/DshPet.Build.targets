@@ -6,5 +6,13 @@
       <Link>Agent\UI\pet\dsh-pet\%(RecursiveDir)%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="$(TxToolsPetComponentsDir)electron\**\*">
+      <Link>Agent\UI\pet\dsh-pet\electron\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="$(TxToolsPetComponentsDir)assets\**\*">
+      <Link>Agent\UI\pet\dsh-pet\assets\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 </Project>

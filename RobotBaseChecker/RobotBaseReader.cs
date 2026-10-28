@@ -78,6 +78,58 @@ namespace TxTools.RobotBaseChecker
     // ============================================================
     internal static class RobotBaseReader
     {
+        /// <summary>将可比较且存在偏差的机器人同步到品牌基准。调用方负责撤销分组。</summary>
+        public static bool Synchronize(RobotBaseResult result)
+        {
+            if (result == null || !result.Comparable || result.Verdict == "一致") return false;
+            var robot = result.RobotRef;
+            if (robot == null) throw new InvalidOperationException("缺少机器人实例引用。");
+            var frames = robot.GetAllSystemFrames() as System.Collections.IEnumerable;
+            object frame = null;
+            if (frames != null)
+                foreach (object item in frames)
+                    if (item != null) { frame = item; break; }
+            if (frame == null) return false;
+            var log = new StringBuilder();
+            var target = RobotKinematics.ComputeExpectedTx(robot, result.Brand, log);
+            if (target == null) throw new InvalidOperationException("无法构造期望 BASE0 变换。" + log);
+            SetFrameWorldTx(frame, target);
+            return true;
+        }
+
+        private static void SetFrameWorldTx(object frameObj, TxTransformation target)
+        {
+            // 优先路径：强类型 TxFrame
+            var fr = frameObj as TxFrame;
+            if (fr != null)
+            {
+                try { fr.AbsoluteLocation = target; return; }
+                catch { /* 写入失败，走兜底 */ }
+            }
+
+            // 动态兜底：尝试多个可写属性
+            dynamic dObj = frameObj;
+            foreach (var prop in new[] { "AbsoluteLocation", "LocationRelativeToWorld", "Location", "Transformation" })
+            {
+                try
+                {
+                    var property = frameObj.GetType().GetProperty(prop);
+                    if (property == null || !property.CanWrite) continue;
+                    property.SetValue(frameObj, target, null);
+                    return;
+                }
+                catch { /* 属性不可写或不存在，继续 */ }
+            }
+
+            // 最终兜底：直接 dynamic 赋值
+            try { dObj.AbsoluteLocation = target; return; }
+            catch { }
+
+            throw new Exception(
+                "无法写入首帧的世界位姿。首帧类型: " + frameObj.GetType().Name +
+                "，所有写入属性均失败。");
+        }
+
         // 入口：在 PS 主线程执行，返回所有机器人的分析结果
         public static List<RobotBaseResult> Analyze(double posTolMm, double rotTol, BrandMode brandMode)
         {

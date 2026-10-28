@@ -116,6 +116,7 @@ namespace TxTools.Common
 
         private static void RemoveNonListScrollbars(Control root)
         {
+            if (PluginLog.IsLogRegion(root)) { PluginLog.RestoreScrolling(root); return; }
             if (IsListOrNativeControl(root)) return;
             var status = root as StatusStrip;
             if (status != null) status.SizingGrip = false;

@@ -94,6 +94,20 @@ namespace TxTools.Agent.Core
             return v.HasValue ? v.Value : fallback;
         }
 
+        /// <summary>读取有限数值并校验范围；非法输入明确报错。</summary>
+        public static double Number(JToken token, double fallback, string name, double minimum = 0)
+        {
+            if (token == null || token.Type == JTokenType.Null) return fallback;
+            double value;
+            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float) value = (double)token;
+            else if (token.Type != JTokenType.String || !double.TryParse((string)token, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out value))
+                throw new ArgumentException(name + " 必须是有限数值。");
+            if (double.IsNaN(value) || double.IsInfinity(value) || value < minimum)
+                throw new ArgumentException(name + " 必须是大于等于 " + minimum + " 的有限数值。");
+            return value;
+        }
+
         /// <summary>弹性拿 int:支持 "12" / 12 / 12.0(截断)。</summary>
         public static int Int(JToken tok, int fallback = 0)
         {

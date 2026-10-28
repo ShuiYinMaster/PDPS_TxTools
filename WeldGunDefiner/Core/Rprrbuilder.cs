@@ -46,6 +46,8 @@ namespace TxTools.WeldGunDefiner.Core
         public TxJoint OutputJl { get; private set; }
 
         public string Log { get; private set; } = "";
+        public Action LinksCreated { get; set; }
+        public Action OpenAdaptationStarting { get; set; }
 
         public RprrBuilder(ITxKinematicsModellable device, RprrParams p)
         {
@@ -81,6 +83,7 @@ namespace TxTools.WeldGunDefiner.Core
                     }
 
                     ValidateOwnership();
+                    CleanupDefaultScaffold();
                     CleanupPrevious();
 
                     // ── 创建 7 个 Link ──
@@ -94,6 +97,8 @@ namespace TxTools.WeldGunDefiner.Core
                     if (fixedLink == null || inputLink == null || couplerLink == null ||
                         outputLink == null || dummyLink == null || lnk1 == null || lnk2 == null)
                     { error = "创建 Link 失败"; return false; }
+
+                    LinksCreated?.Invoke();
 
                     // ── 计算公式 + 常数（在创建Joint前算好）──
                     var f = BuildFormulas();
@@ -219,7 +224,9 @@ namespace TxTools.WeldGunDefiner.Core
                             InputJl.LowerSoftLimit = -_p.PistonStroke;
                             InputJl.UpperSoftLimit = _p.PistonStroke;
                         }
-                        catch (Exception ex) { AddLog($"[A] input_j1临时限位失败:{ex.Message}"); }
+                        catch (Exception ex) { throw new InvalidOperationException("[A] input_j1临时限位失败:", ex); }
+
+                        OpenAdaptationStarting?.Invoke(); // 运动后旧选点不再适用于下次复用。
 
                         // 阶段B：正方向驱动 input_j1 = +行程 → 几何回到闭合(CLOSE)
                         try
@@ -227,17 +234,17 @@ namespace TxTools.WeldGunDefiner.Core
                             InputJl.CurrentValue = _p.PistonStroke;
                             AddLog($"[B] 已驱动 input_j1 = +{_p.PistonStroke:F2}(几何回闭合)");
                         }
-                        catch (Exception ex) { AddLog($"[B] 驱动input_j1失败:{ex.Message}"); }
+                        catch (Exception ex) { throw new InvalidOperationException("[B] 驱动input_j1失败:", ex); }
 
                         // 阶段C：DefineZeroPosition——当前闭合位姿定为零位
                         try
                         {
                             bool can = true;
-                            try { can = _device.CanDefineZeroPosition(); } catch { can = true; }
+                            can = _device.CanDefineZeroPosition();
                             if (can) { _device.DefineZeroPosition(); AddLog("[C] DefineZeroPosition 成功(闭合=0位)"); }
-                            else AddLog("[C] CanDefineZeroPosition=false，跳过");
+                            else throw new InvalidOperationException("CanDefineZeroPosition=false，停止 OPEN 适配");
                         }
-                        catch (Exception ex) { AddLog($"[C] DefineZeroPosition失败:{ex.Message}"); }
+                        catch (Exception ex) { throw new InvalidOperationException("[C] DefineZeroPosition失败:", ex); }
 
                         // 阶段D：重写 input_j1 限位为 [-行程, 0]（闭合=0，张开=-行程）
                         try
@@ -248,7 +255,7 @@ namespace TxTools.WeldGunDefiner.Core
                             InputJl.UpperSoftLimit = 0;
                             AddLog($"[D] input_j1限位重写为 [{-_p.PistonStroke:F2}, 0]");
                         }
-                        catch (Exception ex) { AddLog($"[D] 重写input_j1限位失败:{ex.Message}"); }
+                        catch (Exception ex) { throw new InvalidOperationException("[D] 重写input_j1限位失败:", ex); }
 
                         // 阶段E：置零后用【最终s0=|AC|+行程】重刷全部公式
                         // 此时几何已闭合、零点已重置，s0=闭合活塞长，运动学不偏移。
@@ -289,6 +296,51 @@ namespace TxTools.WeldGunDefiner.Core
                 }
 
             }
+        }
+
+        // KinematicsFunction 的 setter 同步编译机构；SDK 未公开单独的 Compile 方法。
+        // 创建姿态前必须以编译后的 DrivingJoints 为准，不能只看建模关节是否存在。
+        public bool VerifyKinematics(out string error)
+        {
+            error = null;
+            try
+            {
+                foreach (var joint in new[] { J1, J2, InputJl, FixedInputJl, CoupOutputJl, OutputJl })
+                    if (joint == null || joint.ParentLink == null || joint.ChildLink == null)
+                        throw new InvalidOperationException("关节或父子 Link 不完整，机构验证失败");
+                foreach (var joint in new[] { InputJl, FixedInputJl, CoupOutputJl, OutputJl, J2 })
+                    if (string.IsNullOrWhiteSpace(joint.KinematicsFunction))
+                        throw new InvalidOperationException(joint.Name + " 缺少从动公式，机构验证失败");
+                if (!string.IsNullOrWhiteSpace(J1.KinematicsFunction))
+                    throw new InvalidOperationException(J1.Name + " 必须是独立主动轴");
+                return true;
+            }
+            catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; return false; }
+        }
+
+        public bool VerifyReadyForPoses(out string error)
+        {
+            if (!VerifyKinematics(out error)) return false;
+            try
+            {
+                var device = _device as ITxDevice;
+                if (device == null) throw new InvalidOperationException("目标不支持 ITxDevice，无法创建姿态");
+                bool found = false;
+                var names = new List<string>();
+                foreach (ITxObject item in device.DrivingJoints)
+                {
+                    names.Add(item.Name);
+                    if (J1.Equals(item)) found = true;
+                    else throw new InvalidOperationException("存在未受公式控制的主动轴: " + item.Name);
+                }
+                if (!found) throw new InvalidOperationException(J1.Name + " 未进入编译后的驱动关节列表: " + string.Join(", ", names));
+                using (var pose = new TxDevicePoseData(device, device.CurrentPose))
+                    if (!pose.DoesHaveJoint(J1))
+                        throw new InvalidOperationException("当前姿态模板不包含主动轴 " + J1.Name);
+                AddLog("[OK] Link 连接、从动公式、编译驱动轴与姿态模板验证通过");
+                return true;
+            }
+            catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; return false; }
         }
 
         // ═════════════════════════════════════════════════════════════════
@@ -340,7 +392,7 @@ namespace TxTools.WeldGunDefiner.Core
             double a2 = a * a, b2 = b * b;
 
             // ── 公共子式 d = D(input_j1)+s0 （活塞当前总长）──
-            string d = $"(D({nInput})+({s0:F6}))";
+            string d = FormattableString.Invariant($"(D({nInput})+({s0:F6}))");
 
             // ── offsetA = acos((a²+s0²-b²)/(2·a·s0)) 初始装配角 ──
             double cosInitA = (a2 + s0 * s0 - b2) / (2 * a * s0);
@@ -351,11 +403,11 @@ namespace TxTools.WeldGunDefiner.Core
             // (acos(((( a² )+( {d}{d} )+(-1)( b² ))/(2( a )( d ))))+(-1)( offsetA ))
             // acos后4个左括号；d自带括号，{d}{d}隐式相邻乘；分母(2(a)(d))
             string fixedInputFormula =
-                $"(acos(((({a2:F6})+({d}{d})+(-1)({b2:F6}))/(2({a:F6})({d}))))+(-1)({offsetA:F6}))";
+                FormattableString.Invariant($"(acos(((({a2:F6})+({d}{d})+(-1)({b2:F6}))/(2({a:F6})({d}))))+(-1)({offsetA:F6}))");
 
             // ── input_j1 公式：D(j1)*行程/开口 ──
             string inputFormula =
-                $"((D({nJ1})){_p.PistonStroke:F6}/{_p.OpenGap:F6})";
+                FormattableString.Invariant($"((D({nJ1})){_p.PistonStroke:F6}/{_p.OpenGap:F6})");
 
             // ── coup_output_j1 公式（精确复刻系统格式）──
             // (atan2((( a )sin(T(fixed)+offsetA)),(((( d )( d ))+( innerConst ))/(2( d ))))+(-1)( offsetC ))
@@ -372,7 +424,7 @@ namespace TxTools.WeldGunDefiner.Core
             double offsetC = System.Math.Atan2(atan2_y_init, atan2_x_init);
 
             string coupFormula =
-                $"(atan2((({a:F6})sin((T({nFixedInput})+({offsetA:F6})))),((({d}{d})+({innerConst:F6}))/(2{d})))+(-1)({offsetC:F6}))";
+                FormattableString.Invariant($"(atan2((({a:F6})sin((T({nFixedInput})+({offsetA:F6})))),((({d}{d})+({innerConst:F6}))/(2{d})))+(-1)({offsetC:F6}))");
 
             // ── output_j1 公式：(-1)(T(coup_output_j1)+T(fixed_Input_j1)) ──
             string outputFormula =
@@ -411,10 +463,65 @@ namespace TxTools.WeldGunDefiner.Core
         // 底层 SDK 调用（已验证）
         // ═════════════════════════════════════════════════════════════════
         private const string OwnerAttribute = "TxTools.RprrOwner";
-        private static bool IsOwned(ITxObject obj)
+        private const string JointIdAttribute = "TxTools.RprrJointId";
+        private static readonly HashSet<ITxObject> OwnedObjects = new HashSet<ITxObject>();
+        public static bool IsOwned(ITxObject obj)
         {
-            var owner = obj.GetAttribute(OwnerAttribute) as TxStringAttribute;
-            return owner != null && owner.Value == "RPRR-v1";
+            if (obj == null) return false;
+            if (OwnedObjects.Contains(obj)) return true;
+            if (obj is TxKinematicLink link)
+                return (link.GetAttribute(OwnerAttribute) as TxStringAttribute)?.Value == "RPRR-v1";
+            if (obj is TxJoint joint)
+                return joint.ChildLink != null && IsOwned(joint.ChildLink) &&
+                    (joint.ChildLink.GetAttribute(JointIdAttribute) as TxStringAttribute)?.Value == joint.Id;
+            return false;
+        }
+
+        public static Dictionary<string, TxKinematicLink> GetOwnedLinks(ITxKinematicsModellable device)
+        {
+            var links = new Dictionary<string, TxKinematicLink>(StringComparer.OrdinalIgnoreCase);
+            foreach (ITxObject obj in device.Links)
+                if (obj is TxKinematicLink link && IsOwned(link)) links.Add(link.Name, link);
+            return links;
+        }
+
+        public static List<ITxObject> ReadLinkBodies(TxKinematicLink link)
+        {
+            var bodies = new List<ITxObject>();
+            foreach (ITxObject obj in link.GetDirectDescendants(new TxTypeFilter(typeof(ITxObject))))
+                bodies.Add(obj);
+            foreach (ITxObject obj in link.Elements)
+                if (!bodies.Exists(item => item.Equals(obj))) bodies.Add(obj);
+            return bodies;
+        }
+
+        private void CleanupDefaultScaffold()
+        {
+            var defaults = new List<TxKinematicLink>();
+            foreach (ITxObject obj in _device.Links)
+                if (obj is TxKinematicLink link &&
+                    (string.Equals(link.Name, "DLink1", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(link.Name, "DLink2", StringComparison.OrdinalIgnoreCase)))
+                {
+                    if (link.Count != 0 || link.Elements.Count != 0)
+                        throw new InvalidOperationException(link.Name + " 含有几何或元素，未清理默认机构");
+                    defaults.Add(link);
+                }
+            var joints = new List<TxJoint>();
+            foreach (TxJoint joint in _device.Joints)
+            {
+                bool parent = defaults.Exists(link => link.Equals(joint.ParentLink));
+                bool child = defaults.Exists(link => link.Equals(joint.ChildLink));
+                if (!parent && !child) continue;
+                bool defaultName = System.Text.RegularExpressions.Regex.IsMatch(joint.Name,
+                    @"^DJoint\d*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (!parent || !child || !defaultName || !string.IsNullOrWhiteSpace(joint.KinematicsFunction))
+                    throw new InvalidOperationException("默认 Link 被非空或用户关节引用: " + joint.Name + "，未清理");
+                joints.Add(joint);
+            }
+            // 先检查整个候选结构，再先删关节、后删空 Link。
+            foreach (var joint in joints) { string name = joint.Name; joint.Delete(); AddLog("清理默认空关节: " + name); }
+            foreach (var link in defaults) { string name = link.Name; link.Delete(); AddLog("清理默认空 Link: " + name); }
         }
 
         // 未标记的旧机构不自动接管；同名不是所有权证据。
@@ -481,11 +588,13 @@ namespace TxTools.WeldGunDefiner.Core
                     data.Name = name;
                     link = _device.CreateLink(data);
                     if (link == null) return null;
-                    link.SetAttribute(new TxStringAttribute(OwnerAttribute, "RPRR-v1"));
+                    OwnedObjects.Add(link);
                 }
+                link.SetAttribute(new TxStringAttribute(OwnerAttribute, "RPRR-v1"));
+                var existingBodies = ReadLinkBodies(link);
                 if (bodies != null)
                     foreach (var b in bodies)
-                        if (b != null) try { link.AddObject(b); } catch { }
+                        if (b != null && !existingBodies.Exists(item => item.Equals(b))) link.AddObject(b);
                 AddLog($"  Link '{name}' OK ({bodies?.Count ?? 0} 几何体)");
                 return link;
             }
@@ -517,7 +626,8 @@ namespace TxTools.WeldGunDefiner.Core
 
                 TxJoint joint = _device.CreateJoint(data);
                 if (joint == null) { AddLog($"  [X] {name}: CreateJoint 返回 null"); return null; }
-                joint.SetAttribute(new TxStringAttribute(OwnerAttribute, "RPRR-v1"));
+                OwnedObjects.Add(joint);
+                childLink.SetAttribute(new TxStringAttribute(JointIdAttribute, joint.Id));
 
                 if (high != 0 || low != 0)
                 {
@@ -527,9 +637,9 @@ namespace TxTools.WeldGunDefiner.Core
                         var hardLimits = new TxJointConstantHardLimits(low, high);
                         joint.HardLimits = hardLimits;
                     }
-                    catch (Exception exh) { AddLog($"  [!] {name} HardLimits失败: {exh.Message}"); }
+                    catch (Exception exh) { throw new InvalidOperationException(name + " HardLimits失败", exh); }
                     try { joint.LowerSoftLimit = low; joint.UpperSoftLimit = high; }
-                    catch (Exception exl) { AddLog($"  [!] {name} SoftLimits失败: {exl.Message}"); }
+                    catch (Exception exl) { throw new InvalidOperationException(name + " SoftLimits失败", exl); }
                     AddLog($"  限位: [{low:F2}, {high:F2}]");
                 }
 
@@ -557,9 +667,9 @@ namespace TxTools.WeldGunDefiner.Core
 
         private bool WriteFormula(TxJoint joint, string formula, string label)
         {
-            if (joint == null || string.IsNullOrEmpty(formula)) return false;
+            if (joint == null || string.IsNullOrEmpty(formula)) throw new InvalidOperationException(label + ": 关节或公式为空");
             try { joint.KinematicsFunction = formula; AddLog($"  {label} 公式 OK"); return true; }
-            catch (Exception ex) { AddLog($"  {label} 公式失败({ex.Message}): {formula}"); return false; }
+            catch (Exception ex) { throw new InvalidOperationException($"{label} 公式注入失败: {formula}", ex); }
         }
 
         private void AddLog(string msg) => Log += msg + "\n";

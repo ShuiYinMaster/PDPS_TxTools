@@ -245,39 +245,9 @@ namespace TxTools.RobotBaseChecker
 
                         try
                         {
-                            // 1. 直接用 Analyze 时保存的机器人实例（避免同名 GetObjectsByName 串扰）
-                            TxRobot robot = r.RobotRef;
-                            if (robot == null)
-                                throw new Exception($"缺少机器人实例引用 [{r.RobotName}]。");
-
-                            // 2. 找到第一个系统坐标系（不再筛 TxFrame 类型，
-                            //    default 控制器返回的可能不是 TxFrame）
-                            var frames = robot.GetAllSystemFrames() as System.Collections.IEnumerable;
-                            object base0Obj = null;   // 首帧对象（不挑类型）
-                            if (frames != null)
-                            {
-                                foreach (object f in frames)
-                                {
-                                    if (f != null) { base0Obj = f; break; }
-                                }
-                            }
-
-                            if (base0Obj == null)
-                            {
-                                // 没有 BASE0 帧（多为未挂控制器）→ 跳过而非失败
-                                skippedCount++;
-                                continue;
-                            }
-
-                            // 3. 计算品牌感知的期望 BASE0（FANUC 用 J1∩J2），写入
-                            var sb = new StringBuilder();
-                            var target = RobotKinematics.ComputeExpectedTx(robot, r.Brand, sb);
-                            if (target == null)
-                                throw new Exception("无法构造期望 BASE0 变换。" + sb);
-
-                            // 4. 写入首帧的世界位姿（动态多属性兜底，非仅 TxFrame.AbsoluteLocation）
-                            SetFrameWorldTx(base0Obj, target);
-                            successCount++;
+                            undoScope.EnsureDocument();
+                            if (RobotBaseReader.Synchronize(r)) successCount++;
+                            else skippedCount++;
                         }
                         catch (Exception ex)
                         {
@@ -514,40 +484,5 @@ namespace TxTools.RobotBaseChecker
         //  首帧世界位姿写入（动态多属性兜底，与 GetFrameWorldTx 对称）
         // ════════════════════════════════════════════════════════════
 
-        /// <summary>
-        /// 将期望 BASE0 变换写入首帧的世界位姿属性。
-        /// 不挑类型——default 控制器返回的首帧未必是 TxFrame，
-        /// 所以优先尝试强类型 TxFrame.AbsoluteLocation，失败后走 dynamic 兜底。
-        /// </summary>
-        private static void SetFrameWorldTx(object frameObj, TxTransformation target)
-        {
-            // 优先路径：强类型 TxFrame
-            var fr = frameObj as TxFrame;
-            if (fr != null)
-            {
-                try { fr.AbsoluteLocation = target; return; }
-                catch { /* 写入失败，走兜底 */ }
-            }
-
-            // 动态兜底：尝试多个可写属性
-            dynamic dObj = frameObj;
-            foreach (var prop in new[] { "AbsoluteLocation", "LocationRelativeToWorld", "Location", "Transformation" })
-            {
-                try
-                {
-                    dObj.GetType().GetProperty(prop)?.SetValue(dObj, target, null);
-                    return;
-                }
-                catch { /* 属性不可写或不存在，继续 */ }
-            }
-
-            // 最终兜底：直接 dynamic 赋值
-            try { dObj.AbsoluteLocation = target; return; }
-            catch { }
-
-            throw new Exception(
-                "无法写入首帧的世界位姿。首帧类型: " + frameObj.GetType().Name +
-                "，所有写入属性均失败。");
-        }
     }
 }

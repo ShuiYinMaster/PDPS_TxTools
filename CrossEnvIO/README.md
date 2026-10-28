@@ -1,4 +1,4 @@
-﻿# CrossEnvIO — Process Simulate Data Transfer / 跨环境数据传输
+# CrossEnvIO — Process Simulate Data Transfer / 跨环境数据传输
 
 Transfer resource trees, part trees and weld-point data between Process Simulate instances and rebuild structures in the target environment.
 
@@ -46,7 +46,7 @@ Transfer resource trees, part trees and weld-point data between Process Simulate
 
 本模块随 `TxTools.csproj` 构建。环境与注册方式见 [项目 README](../README.md)。
 
-公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。
+公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；焦点回归位于独立测试目录。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。
 
 ## 撤销与恢复（2026-10-07）
 
@@ -67,4 +67,4 @@ Transfer resource trees, part trees and weld-point data between Process Simulate
 - 复制 IO 在后台执行；窗口显示忙碌状态与日志进度，操作中禁用重复提交。空选择明确表示整个场景树；拾取无效对象会报错。新增导出路径选择，重置原点同时更新原生坐标控件。
 - 投影、位姿设置、保存和重载失败均反馈错误；“绑定”按成功焊点计数，“新建”不再包含更新已有对象。
 
-回归工程：[Tests/CrossEnvIO](../Tests/CrossEnvIO/README.md)。场景逻辑使用 SDK 替身测试，真实 PS 2402 SDK 另用于编译校验；拾取、粘贴、中文路径插入和保存后重开仍需在 PS 宿主内验收。
+跨环境回归位于独立测试目录。场景逻辑使用 SDK 替身测试，真实 PS 2402 SDK 另用于编译校验；拾取、粘贴、中文路径插入和保存后重开仍需在 PS 宿主内验收。

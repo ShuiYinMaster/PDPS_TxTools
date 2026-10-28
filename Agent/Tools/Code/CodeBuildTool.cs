@@ -1,18 +1,5 @@
 // TxTools.Agent / Tools / Code / CodeBuildTool.cs
-//
-// 编译验证。
-//
-// ── 这是整套代码工具里最重要的一个 ──
-//   没有编译反馈,AI 改完只能"看着像对的",你也只能自己去 VS 里点一下才知道。
-//   接上之后就形成闭环:改 → 编译 → 错误回灌 → 自修,和 harness 的错误回灌是同一个机制,
-//   只是把"运行时异常"换成了"编译器诊断"。
-//
-//   实测经验:编译反馈接上之前,模型改 C# 的一次成功率大概五成;接上之后,
-//   两三轮内收敛到编译通过是常态 —— 因为 CS 错误码 + 行号 + 消息是极强的信号。
-//
-// ── 只回错误,不回整个构建日志 ──
-//   msbuild 一次输出几千行,整段回灌会瞬间吃掉上下文。这里只提取
-//   error/warning 行并去重,通常十几行就够模型定位。
+// 编译当前工作区，提取并去重编译器诊断。
 
 using System;
 using System.Collections.Generic;
@@ -47,8 +34,8 @@ namespace TxTools.Agent.Core
             }
         }
 
-        /// <summary>只读取源码产出程序集，不改源码本身。</summary>
-        public override bool IsReadOnly { get { return true; } }
+        /// <summary>MSBuild 可执行项目中的构建目标，因此按代码执行处理。</summary>
+        public override bool IsReadOnly { get { return false; } }
 
         public override JObject InputSchema
         {
@@ -70,6 +57,7 @@ namespace TxTools.Agent.Core
 
             var projectArg = GetString(input, "project");
             var config = GetString(input, "configuration", "Debug");
+            if (config != "Debug" && config != "Release") return "Error: configuration 只支持 Debug 或 Release。";
             bool withWarnings = input["warnings"] != null && input["warnings"].Type == JTokenType.Boolean
                                 && (bool)input["warnings"];
 
@@ -105,9 +93,9 @@ namespace TxTools.Agent.Core
             string stdout;
             int exitCode;
             try { exitCode = Run(msbuild, project, config, out stdout); }
-            catch (Exception ex) { return sb + "Error: 启动 MSBuild 失败 - " + ex.Message; }
+            catch (Exception ex) { return "Error: " + sb + "启动 MSBuild 失败 - " + ex.Message; }
 
-            if (exitCode == -1) return sb + "Error: 编译超时(" + (TimeoutMs / 1000) + " 秒)，已终止。";
+            if (exitCode == -1) return "Error: " + sb + "编译超时(" + (TimeoutMs / 1000) + " 秒)，已终止。";
 
             var diags = Parse(stdout, withWarnings);
             var errors = diags.Where(d => d.IsError).ToList();
@@ -125,6 +113,7 @@ namespace TxTools.Agent.Core
                 return sb.ToString();
             }
 
+            sb.Insert(0, "Error: ");
             sb.AppendLine("❌ 编译失败，错误 " + errors.Count + " 条"
                 + (warns.Count > 0 ? "，警告 " + warns.Count + " 条" : "") + ":");
             sb.AppendLine();
@@ -247,7 +236,8 @@ namespace TxTools.Agent.Core
                     return -1;
                 }
 
-                stdout = sb.ToString();
+                proc.WaitForExit();
+                lock (sb) stdout = sb.ToString();
                 return proc.ExitCode;
             }
         }
@@ -261,14 +251,11 @@ namespace TxTools.Agent.Core
 
             try
             {
-                var sln = Directory.EnumerateFiles(root, "*.sln", SearchOption.TopDirectoryOnly).FirstOrDefault();
-                if (sln != null) return sln;
-
-                var proj = Directory.EnumerateFiles(root, "*.csproj", SearchOption.AllDirectories)
-                                    .Where(f => !CodeWorkspace.IsSkipped(f))
-                                    .OrderBy(f => f.Length)   // 层级浅的更可能是主项目
-                                    .FirstOrDefault();
-                return proj;
+                var sln = Directory.EnumerateFiles(root, "*.sln", SearchOption.TopDirectoryOnly).ToList();
+                if (sln.Count == 1) { string error; return CodeWorkspace.Resolve(sln[0], out error); }
+                if (sln.Count > 1) return null;
+                var projects = CodeWorkspace.EnumerateFiles("*.csproj");
+                return projects.Count == 1 ? projects[0] : null;
             }
             catch { return null; }
         }

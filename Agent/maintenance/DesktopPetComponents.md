@@ -1,21 +1,12 @@
-# 补齐桌面宠物组件
+# 桌宠组件准备
 
-`Install-DshPetComponents.ps1` 使用 PowerShell 7 下载并安装便携版 Electron 43.3.0 和 dsh-pet v0.3.0 的动画、图片。Electron 使用官方 SHA-256 清单校验；素材使用固定上游提交的 Git blob 哈希校验，部署后再比对全部文件的 SHA-256。
-
-先在工作区准备和验证：
+桌宠适配脚本保留在源码目录；Electron 和动画组件保存在仓库外的 `TxTools.Local/dependencies/desktop-pet/`。
 
 ```powershell
-pwsh -File Agent/maintenance/Install-DshPetComponents.ps1
-node Agent/UI/pet/dsh-pet-tools/validate.cjs
+rtk proxy pwsh -NoProfile -File Agent/maintenance/Install-DshPetComponents.ps1
+rtk proxy powershell -NoProfile -ExecutionPolicy Bypass -File tools/Build.ps1 -Configuration Release
 ```
 
-将已校验组件复制到实际插件的桌宠目录；若需替换已有组件，先关闭 Process Simulate：
+安装工具需要 PowerShell 7，按固定上游版本校验下载和逐文件哈希。缓存及清单位于外部 `dependencies/downloads/pet-components/`，被替换文件备份到外部 `backups/pet-components/`。`-SkipDownload` 仅使用已校验缓存；`-Destination`、`-Cache` 和 `-BackupDirectory` 可覆盖位置。
 
-```powershell
-pwsh -File Agent/maintenance/Install-DshPetComponents.ps1 -SkipDownload -Destination 'G:\Program Files\Tecnomatix_2402\eMPower\DotNetCommands\TxTools\Agent\UI\pet\dsh-pet'
-node Agent/UI/pet/dsh-pet-tools/validate.cjs 'G:\Program Files\Tecnomatix_2402\eMPower\DotNetCommands\TxTools\Agent\UI\pet\dsh-pet'
-```
-
-安装仅写入目标的 `electron` 和 `assets` 目录，不更换 TxTools DLL、适配脚本、桌宠配置或工程数据。相同文件直接跳过；替换不同文件前备份到工作区缓存。目标须已包含 TxAgent 的桌宠适配文件，且目标桌宠未运行。新增完全缺失的目录会先复制完整内容再重命名发布，可在 PS 运行时补齐；如果需要替换已有组件，则须先关闭 PS。
-
-下载缓存、逐文件校验清单和部署报告位于 `Agent/artifacts/pet-components`。组件也安装到工作区 `Agent/UI/pet/dsh-pet`，后续插件构建会沿用既有 `DshPet.Build.targets` 将资源复制到输出目录。
+`DshPet.Build.targets` 将源码适配文件及外部组件合并复制到主插件输出的 `Agent/UI/pet/dsh-pet/`。部署时复制完整插件输出，不要只复制 DLL。替换已有组件或部署 DLL 前应关闭对应宿主；组件安装和构建不会自动部署插件。

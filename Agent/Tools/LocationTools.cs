@@ -82,7 +82,7 @@ namespace TxTools.Agent.Tools
             get
             {
                 return "设置对象的世界坐标系位置。name 为对象名；x/y/z 为平移(mm)；" +
-                       "rx/ry/rz 为可选的旋转角(度)，不提供则保留原旋转。" +
+                       "rx/ry/rz 为可选的 RPY_ZYX 旋转角(度)，不提供则保留原旋转。" +
                        "会改动场景，执行前需用户确认，操作后可用 Ctrl+Z 撤销。";
             }
         }
@@ -109,46 +109,34 @@ namespace TxTools.Agent.Tools
                             ""description"": ""对象的场景唯一 ID(形如 3,57,2,1)。场景内可能存在同名对象，工具报'命中多个'时用它精确指定；给了 object_id 就会忽略 name。""
                         }
                     },
-                    ""required"": [""name"", ""x"", ""y"", ""z""]
+                    ""required"": [""x"", ""y"", ""z""],
+                    ""anyOf"": [{""required"": [""name""]}, {""required"": [""object_id""]}]
                 }");
             }
         }
 
         public override string Execute(JObject input)
         {
+            input = input ?? new JObject();
             var name = GetString(input, "name", null);
-            if (string.IsNullOrWhiteSpace(name))
-                return "必须提供 name 参数（对象名）。";
-
-            double x = 0, y = 0, z = 0;
-
-            // 解析 XYZ — 允许 int 或 float
-            var txTok = input != null ? input["x"] : null;
-            if (txTok != null) x = ToDouble(txTok);
-            var tyTok = input != null ? input["y"] : null;
-            if (tyTok != null) y = ToDouble(tyTok);
-            var tzTok = input != null ? input["z"] : null;
-            if (tzTok != null) z = ToDouble(tzTok);
-
-            // 解析可选旋转（null 表示保留原值）
-            double? rx = null, ry = null, rz = null;
-            var rxTok = input != null ? input["rx"] : null;
-            if (rxTok != null && rxTok.Type != JTokenType.Null) rx = ToDouble(rxTok);
-            var ryTok = input != null ? input["ry"] : null;
-            if (ryTok != null && ryTok.Type != JTokenType.Null) ry = ToDouble(ryTok);
-            var rzTok = input != null ? input["rz"] : null;
-            if (rzTok != null && rzTok.Type != JTokenType.Null) rz = ToDouble(rzTok);
-
             var objectId = GetString(input, "object_id", null);
-
-            return PsBridge.SetObjectLocation(name, x, y, z, rx, ry, rz, objectId);
-        }
-
-        private static double ToDouble(JToken tok)
-        {
-            if (tok.Type == JTokenType.Float) return (double)tok;
-            if (tok.Type == JTokenType.Integer) return (double)(int)tok;
-            return Convert.ToDouble(tok);
+            if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(objectId))
+                return "Error: 必须提供 name 或 object_id。";
+            foreach (var axis in new[] { "x", "y", "z" })
+                if (input[axis] == null || input[axis].Type == JTokenType.Null)
+                    return "Error: 必须提供完整 x/y/z 坐标，缺少 " + axis + "。";
+            try
+            {
+                double x = ToolInputHelpers.Number(input["x"], 0, "x", double.MinValue);
+                double y = ToolInputHelpers.Number(input["y"], 0, "y", double.MinValue);
+                double z = ToolInputHelpers.Number(input["z"], 0, "z", double.MinValue);
+                double? rx = null, ry = null, rz = null;
+                if (input["rx"] != null && input["rx"].Type != JTokenType.Null) rx = ToolInputHelpers.Number(input["rx"], 0, "rx", double.MinValue);
+                if (input["ry"] != null && input["ry"].Type != JTokenType.Null) ry = ToolInputHelpers.Number(input["ry"], 0, "ry", double.MinValue);
+                if (input["rz"] != null && input["rz"].Type != JTokenType.Null) rz = ToolInputHelpers.Number(input["rz"], 0, "rz", double.MinValue);
+                return PsBridge.SetObjectLocation(name, x, y, z, rx, ry, rz, objectId);
+            }
+            catch (ArgumentException ex) { return "Error: " + ex.Message; }
         }
     }
 }

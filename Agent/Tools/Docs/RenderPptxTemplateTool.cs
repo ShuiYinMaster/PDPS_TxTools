@@ -54,7 +54,7 @@ namespace TxTools.Agent.Core
                             'items': {
                                 'type': 'object',
                                 'properties': {
-                                    'template_slide_index': { 'type': 'integer', 'default': 0 },
+                                    'template_slide_index': { 'type': 'integer', 'minimum': 0, 'default': 0, 'description': '0-based，与 inspect_pptx_template 输出的 template_slide_index 对应' },
                                     'replacements':         { 'type': 'object', 'additionalProperties': { 'type': 'string' } },
                                     'images':               { 'type': 'object', 'additionalProperties': { 'type': 'string' } }
                                 }
@@ -84,7 +84,7 @@ namespace TxTools.Agent.Core
             var slides = new List<SlideRenderData>();
             foreach (var s in slidesTok)
             {
-                if (!(s is JObject so)) continue;
+                if (!(s is JObject so)) return "Error: slides 每一项必须是对象。";
                 var sd = new SlideRenderData
                 {
                     TemplateSlideIndex = ToolInputHelpers.Int(so["template_slide_index"], 0)
@@ -112,7 +112,7 @@ namespace TxTools.Agent.Core
 
             try
             {
-                PptxTemplateEngine.Render(templateBytes, slides, fullPath);
+                fullPath = DocxExportTool.WriteExport(fullPath, staging => PptxTemplateEngine.Render(templateBytes, slides, staging));
             }
             catch (Exception ex)
             {

@@ -12,9 +12,9 @@
     <NoWarn>$(NoWarn);CS0162;CS0169;CS0414;CS0219</NoWarn>
 
     <!-- A signing key is a local build input and is never distributed with source. -->
-    <SignAssembly Condition="Exists('JTReader.snk')">true</SignAssembly>
-    <SignAssembly Condition="!Exists('JTReader.snk')">false</SignAssembly>
-    <AssemblyOriginatorKeyFile Condition="Exists('JTReader.snk')">JTReader.snk</AssemblyOriginatorKeyFile>
+    <SignAssembly Condition="Exists('$(TxToolsSigningKey)')">true</SignAssembly>
+    <SignAssembly Condition="!Exists('$(TxToolsSigningKey)')">false</SignAssembly>
+    <AssemblyOriginatorKeyFile Condition="Exists('$(TxToolsSigningKey)')">$(TxToolsSigningKey)</AssemblyOriginatorKeyFile>
   </PropertyGroup>
 
   <ItemGroup>

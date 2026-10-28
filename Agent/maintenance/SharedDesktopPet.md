@@ -17,6 +17,8 @@
 
 ## 验证
 
+下列回归程序位于独立测试目录，输出写入外部 build 目录。
+
 - `SharedPetRegression.cs`：实际 C# 协调器、控制器和命名管道在三个独立进程中运行；工程工具和桌宠助手以替身代替。13 项检查覆盖竞争启动、前台路由、快速激活、目标变化拒绝、全局开关、宿主异常退出接管和最后退出。
 - `SharedPetElectronRegression.js`：实际 Electron 和动画素材，验证可见置顶动画、重复助手退出及关闭状态退出。
 - `QuickRecipeControlsRegression.js`：生产快捷面板脚本验证前台变化清除绑定、禁用执行，且不发起新的场景查询。

@@ -31,16 +31,27 @@ namespace TxTools.Agent.Core
             public string Error;
         }
 
-        public static Result Invoke(PsInstanceInfo target, string tool, JObject input)
+        public static Result Invoke(PsInstanceInfo target, string tool, JObject input, bool requireReadOnly = false)
         {
             if (target == null) return Fail("目标环境不存在。");
+            if (tool == "run_in_environment" || tool == "compare_environments") return Fail("不支持嵌套跨环境调用。");
+            if (!target.IsSelf && requireReadOnly) {
+                var metadata = Send(target, new JObject { ["op"] = "list_tools" });
+                if (!metadata.Ok) return metadata;
+                var value = JObject.Parse(metadata.Output);
+                if ((bool?)value["enforces_read_only"] != true) return Fail("目标插件版本未声明只读调用约束，请先更新目标环境插件。");
+                var definitions = value["tools"] as JArray;
+                var definition = definitions == null ? null : definitions.OfType<JObject>().FirstOrDefault(d => (string)d["name"] == tool);
+                if (definition == null || (bool?)definition["read_only"] != true) return Fail("目标工具不存在、未启用或不是只读工具。");
+            }
 
             // 本进程直接走本地注册表，不绕管道 —— 少一次序列化，也避免自连死锁
-            if (target.IsSelf) return InvokeLocal(tool, input);
+            if (target.IsSelf) return InvokeLocal(tool, input, requireReadOnly);
 
             var req = new JObject
             {
                 ["op"] = "invoke",
+                ["require_read_only"] = requireReadOnly,
                 ["tool"] = tool,
                 ["input"] = input ?? new JObject()
             };
@@ -108,7 +119,7 @@ namespace TxTools.Agent.Core
             }
         }
 
-        private static Result InvokeLocal(string tool, JObject input)
+        private static Result InvokeLocal(string tool, JObject input, bool requireReadOnly)
         {
             try
             {
@@ -117,10 +128,13 @@ namespace TxTools.Agent.Core
                 if (reg == null || !reg.TryGet(tool, out t) || t == null)
                     return Fail("本环境没有名为 \"" + tool + "\" 的工具。");
 
-                var output = PsContext.Current.Run<string>(
-                    delegate { return t.Execute(input ?? new JObject()); });
-
-                return new Result { Ok = true, Output = output ?? "" };
+                if (!ToolGate.ShouldExpose(tool)) return Fail("目标工具组未启用。");
+                if (requireReadOnly && !t.IsReadOnly) return Fail("比较只允许调用只读工具。");
+                if (tool == "run_in_environment" || tool == "compare_environments") return Fail("不支持嵌套跨环境调用。");
+                var output = t is ITxOffUiThreadTool ? t.Execute(input ?? new JObject()) :
+                    PsContext.Current.Run<string>(() => t.Execute(input ?? new JObject()));
+                return TxTools.Agent.Harness.TxAgentToolAdapter.ClassifyInlineFailure(output, tool) == null
+                    ? new Result { Ok = true, Output = output ?? "" } : Fail(output);
             }
             catch (Exception ex)
             {
@@ -195,7 +209,8 @@ namespace TxTools.Agent.Core
             while (read < count)
             {
                 int n;
-                var done = new System.Threading.ManualResetEvent(false);
+                using (var done = new System.Threading.ManualResetEvent(false))
+                {
                 IAsyncResult ar = null;
                 try { ar = pipe.BeginRead(buf, read, count - read, delegate { try { done.Set(); } catch { } }, null); }
                 catch { return false; }
@@ -212,6 +227,7 @@ namespace TxTools.Agent.Core
                 catch { return false; }
                 if (n <= 0) return false;
                 read += n;
+                }
             }
             return true;
         }
@@ -290,7 +306,7 @@ namespace TxTools.Agent.Core
             }
         }
 
-        public override bool IsReadOnly { get { return true; } }
+        public override bool IsReadOnly { get { return false; } }
 
         public override JObject InputSchema
         {
@@ -379,8 +395,8 @@ namespace TxTools.Agent.Core
             if (b == null) return "Error: 找不到环境 \"" + bName + "\"。";
             if (a.Pid == b.Pid) return "Error: 两个环境是同一个，无从比较。";
 
-            var ra = PsRpcClient.Invoke(a, tool, args);
-            var rb = PsRpcClient.Invoke(b, tool, args);
+            var ra = PsRpcClient.Invoke(a, tool, args, true);
+            var rb = PsRpcClient.Invoke(b, tool, args, true);
 
             var sb = new StringBuilder();
             sb.Append("比较 ").Append(a.Name).Append("  vs  ").Append(b.Name)
@@ -388,7 +404,7 @@ namespace TxTools.Agent.Core
 
             if (!ra.Ok) { sb.AppendLine(); sb.Append("[").Append(a.Name).Append("] 失败: ").AppendLine(ra.Error); }
             if (!rb.Ok) { sb.AppendLine(); sb.Append("[").Append(b.Name).Append("] 失败: ").AppendLine(rb.Error); }
-            if (!ra.Ok || !rb.Ok) return sb.ToString();
+            if (!ra.Ok || !rb.Ok) return "Error: " + sb.ToString();
 
             if (string.Equals(Norm(ra.Output), Norm(rb.Output), StringComparison.Ordinal))
             {

@@ -1,9 +1,11 @@
 """Pin and adapt dsh-pet's desktop implementation without installing the DSH host."""
 from pathlib import Path
-import json, shutil, subprocess, re, runpy
+import json, shutil, subprocess, re, runpy, os
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / 'references/dsh-pet-source/dsh-pet'
+LOCAL = Path(os.environ.get('TXTOOLS_LOCAL_ROOT', ROOT.parents[3] / 'TxTools.Local'))
+SOURCE = LOCAL / 'dependencies/upstream/dsh-pet-source/dsh-pet'
+COMPONENTS = LOCAL / 'dependencies/desktop-pet'
 DEST = ROOT / 'dsh-pet'
 
 def strip_comments(text):
@@ -20,7 +22,7 @@ def patch_file(name, old, new):
 for file in (SOURCE / 'runtime/electron-helper').iterdir():
     if file.is_file(): shutil.copy2(file, DEST / 'upstream' / file.name)
 for folder in ('webm', 'pic'):
-    shutil.copytree(SOURCE / 'assets' / folder, DEST / 'assets' / folder, dirs_exist_ok=True)
+    shutil.copytree(SOURCE / 'assets' / folder, COMPONENTS / 'assets' / folder, dirs_exist_ok=True)
 shutil.copy2(SOURCE / 'LICENSE', DEST / 'LICENSE-dsh-pet.txt')
 conf = json.loads(strip_comments((SOURCE / 'assets/config.jsonc').read_text(encoding='utf8')))
 pet = conf['pets'][0]

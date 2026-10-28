@@ -13,6 +13,10 @@ using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
+using Newtonsoft.Json.Linq;
+using TxTools.RobotReachabilityChecker.Services;
+using TxTools.RobotReachabilityChecker.Models;
+using TxTools.WeldAnnotator;
 using Tecnomatix.Engineering;
 using TxTools.Agent.Core;
 using TxTools.ExportGun;
@@ -28,7 +32,10 @@ namespace TxTools.Agent.Ps
         private static readonly Action<string> Nolog = delegate (string s) { };
 
         // 仿真播放器引用（供 simulate_operation 的 stop/pause/rewind 后续控制）
-        private static dynamic _lastSimPlayer;
+        private static TxSimulationPlayer _lastSimPlayer;
+        private static TxDocument _lastSimDocument;
+        private static string _lastSimOperationId;
+        private static long _lastSimGeneration;
 
         // ───────── 基础查询 ─────────
 
@@ -50,7 +57,7 @@ namespace TxTools.Agent.Ps
                     for (int i = 0; i < names.Count; i++) sb.AppendLine((i + 1) + ". " + names[i]);
                     return sb.ToString();
                 }
-                catch (Exception ex) { return "读取选中对象失败: " + ex.Message; }
+                catch (Exception ex) { return "Error: 读取选中对象失败: " + ex.Message; }
             });
         }
 
@@ -97,7 +104,7 @@ namespace TxTools.Agent.Ps
                     try { name = (string)doc.Name; } catch { }
                     return "当前文档: " + name;
                 }
-                catch (Exception ex) { return "读取文档信息失败: " + ex.Message; }
+                catch (Exception ex) { return "Error: 读取文档信息失败: " + ex.Message; }
             });
         }
 
@@ -148,7 +155,7 @@ namespace TxTools.Agent.Ps
                     if (matches.Count > cap) sb2.AppendLine("…(其余 " + (matches.Count - cap) + " 个省略)");
                     return sb2.ToString();
                 }
-                catch (Exception ex) { return "统计场景对象失败: " + ex.Message; }
+                catch (Exception ex) { return "Error: 统计场景对象失败: " + ex.Message; }
             });
         }
 
@@ -198,7 +205,7 @@ namespace TxTools.Agent.Ps
                     if (kids.Count > sample.Count) sb.AppendLine("  …(其余省略)");
                     return sb.ToString();
                 }
-                catch (Exception ex) { return "列出子对象失败: " + ex.Message; }
+                catch (Exception ex) { return "Error: 列出子对象失败: " + ex.Message; }
             });
         }
 
@@ -228,7 +235,7 @@ namespace TxTools.Agent.Ps
                     }
                     return sb.ToString();
                 }
-                catch (Exception ex) { return "读取操作失败: " + ex.Message; }
+                catch (Exception ex) { return "Error: 读取操作失败: " + ex.Message; }
             });
         }
 
@@ -255,7 +262,7 @@ namespace TxTools.Agent.Ps
                     sb.Append("合计: ").Append(total).Append(" 点");
                     return sb.ToString();
                 }
-                catch (Exception ex) { return "统计点失败: " + ex.Message; }
+                catch (Exception ex) { return "Error: 统计点失败: " + ex.Message; }
             });
         }
 
@@ -276,7 +283,7 @@ namespace TxTools.Agent.Ps
                     foreach (var t in tcps) sb.AppendLine("• " + t.Name + (t.IsDefault ? "  (默认)" : ""));
                     return sb.ToString();
                 }
-                catch (Exception ex) { return "读取 TCP 选项失败: " + ex.Message; }
+                catch (Exception ex) { return "Error: 读取 TCP 选项失败: " + ex.Message; }
             });
         }
 
@@ -291,83 +298,145 @@ namespace TxTools.Agent.Ps
                     bool isWorld = PsReader.IsIdentity(rf.Item2);
                     return "参考坐标系: " + (rf.Item1 ?? "未知") + (isWorld ? " (等同世界系)" : "");
                 }
-                catch (Exception ex) { return "读取参考坐标系失败: " + ex.Message; }
+                catch (Exception ex) { return "Error: 读取参考坐标系失败: " + ex.Message; }
             });
         }
 
         // ───────── 动作：选中 / 真实焊点导出 ─────────
 
-        /// <summary>
-        /// 快速可达性摘要：对选中操作的各点位用 robot.GetPoseAtLocation 判定可达(只读，不驱动机器人)。
-        /// 不含 RobotReachabilityChecker 的关节余量/奇异/碰撞等完整分析。
-        /// </summary>
-        /// <summary>
-        /// 快速可达性摘要。operationName 非空时在操作树(OperationRoot)里按名查找该操作并检查其下机器人点位；
-        /// 为空时回退到当前选中的操作。逐点用 GetPoseAtLocation 判定(只读、不驱动机器人)。
-        /// </summary>
-        public static string CheckReachability(string operationName)
+        /// <summary>在主线程执行插件完整分析，不弹出恢复提示窗口。</summary>
+        public static string CheckReachability(string operationName, string objectId = null,
+            CheckOptions options = null, int maxResults = 100)
         {
             return PsContext.Current.Run<string>(delegate
             {
                 try
                 {
-                    var roots = new List<ITxObject>();
-                    if (!string.IsNullOrWhiteSpace(operationName))
-                    {
-                        var key = operationName.Trim();
-                        foreach (var o in CollectOperations())
-                        {
-                            var n = SafeName(o);
-                            if (n != null && n.IndexOf(key, StringComparison.OrdinalIgnoreCase) >= 0) roots.Add(o);
-                        }
-                        if (roots.Count == 0) return "在操作树里未找到名称含 \"" + key + "\" 的操作。";
-                    }
-                    else
-                    {
-                        var sel = PsReader.GetOperationsFromSelection(Nolog);
-                        if (sel == null || sel.Count == 0)
-                            return "未提供操作名，且当前没有选中操作。请给出 operation 名(如 OP120)，或先在操作树里选中操作。";
-                        foreach (var op in sel) if (op.PsObject != null) roots.Add(op.PsObject);
-                    }
-
-                    // 去重并尽量只保留"最外层"匹配(避免父子重复统计)：简单去重即可。
-                    var seen = new HashSet<int>();
-                    var sb = new StringBuilder();
-                    int gReach = 0, gTotal = 0, checkedOps = 0;
+                    if (TxApplication.ActiveDocument == null) return "Error: 没有打开的研究文档。";
+                    List<ITxObject> roots; string error;
+                    if (!ResolveToolOperations(operationName, objectId, out roots, out error)) return "Error: " + error;
+                    options = options ?? new CheckOptions();
+                    options.ShowRecoveryDialog = false;
+                    var output = new JArray();
+                    var all = new List<PathPointResult>();
+                    int expectedTotal = 0;
                     foreach (var root in roots)
                     {
-                        if (!seen.Add(RuntimeHelpers.GetHashCode(root))) continue;
-                        var locs = EnumerateLocationOps(root);
-                        if (locs.Count == 0) continue;
-
-                        var robot = FindRobotForOps(root, locs);
-                        var rootName = SafeName(root);
-                        checkedOps++;
-                        if (robot == null) { sb.AppendLine("• " + rootName + ": " + locs.Count + " 点，未找到绑定机器人"); continue; }
-
-                        int reach = 0;
-                        var bad = new List<string>();
-                        foreach (var loc in locs)
+                        var locations = LocationEnumerator.EnumerateLocations(root);
+                        expectedTotal += locations.Count;
+                        // 复合节点可能包含多台机器人，不能把全部点交给第一台机器人求解。
+                        var robots = locations.Select(l => RobotFinder.FindAssociatedRobotSilent(l))
+                            .Where(r => r != null).Select(r => r.Id).Distinct().ToList();
+                        if (robots.Count > 1)
                         {
-                            bool ok = false;
-                            try { ok = robot.GetPoseAtLocation(loc) != null; } catch { ok = false; }
-                            if (ok) reach++;
-                            else if (bad.Count < 10) bad.Add(SafeName(loc));
+                            output.Add(new JObject { ["operation"] = Ref(root), ["error"] = "操作包含多台机器人，请用 object_id 指定单台机器人的操作。", ["expected_points"] = locations.Count });
+                            continue;
                         }
-                        gReach += reach; gTotal += locs.Count;
-                        sb.Append("• ").Append(rootName).Append(" [机器人 ").Append(SafeName(robot)).Append("]: 可达 ")
-                          .Append(reach).Append("/").Append(locs.Count);
-                        if (bad.Count > 0) sb.Append("  不可达: ").Append(string.Join(", ", bad));
-                        sb.AppendLine();
+                        var log = new ReachabilityToolLog();
+                        var results = ReachabilityChecker.Check(root, options, null, log);
+                        all.AddRange(results);
+                        var task = new RobotPathCheckTask { Results = results };
+                        var details = new JArray();
+                        foreach (var r in results.OrderBy(r => r.Status == ReachabilityStatus.Reachable ? 1 : 0).Take(maxResults))
+                            details.Add(new JObject
+                            {
+                                ["point"] = r.PointName, ["object_id"] = (r.LocationRef as ITxObject)?.Id,
+                                ["robot"] = r.RobotName, ["status"] = r.Status.ToString(),
+                                ["joints_deg"] = r.Status == ReachabilityStatus.Unreachable || r.Status == ReachabilityStatus.NotChecked
+                                    ? null : new JArray(r.J1, r.J2, r.J3, r.J4, r.J5, r.J6),
+                                ["joint_margin_deg"] = r.JointMargin == 999 || double.IsNaN(r.JointMargin) || double.IsInfinity(r.JointMargin)
+                                    ? (JToken)JValue.CreateNull() : new JValue(r.JointMargin),
+                                ["collision_state"] = r.CollisionState.ToString(), ["message"] = r.ErrorMessage
+                            });
+                        output.Add(new JObject
+                        {
+                            ["operation"] = Ref(root), ["expected_points"] = locations.Count,
+                            ["complete"] = results.Count > 0 && results.Count == locations.Count,
+                            ["summary"] = ReachabilitySummary(task), ["points"] = details,
+                            ["omitted_points"] = results.Count - details.Count,
+                            ["diagnostics"] = new JArray(log.Messages)
+                        });
                     }
-
-                    if (checkedOps == 0) return "匹配到的操作下没有机器人点位可检查(可能不是机器人操作)。";
-                    sb.AppendLine("合计: 可达 " + gReach + "/" + gTotal + " 点");
-                    sb.Append("(快速摘要：GetPoseAtLocation 判定，不含关节余量/奇异/碰撞分析)");
-                    return sb.ToString();
+                    return new JObject
+                    {
+                        ["complete"] = output.Count > 0 && output.All(o => (bool?)o["complete"] == true),
+                        ["expected_points"] = expectedTotal,
+                        ["summary"] = ReachabilitySummary(new RobotPathCheckTask { Results = all }),
+                        ["joint_margin_check"] = options.JointMarginCheckEnabled,
+                        ["tcp_check"] = options.TcpCheckEnabled, ["interference"] = options.InterferenceEnabled,
+                        ["operations"] = output
+                    }.ToString();
                 }
-                catch (Exception ex) { return "可达性检查失败: " + ex.Message; }
+                catch (Exception ex) { return "Error: 可达性检查失败: " + ex.Message; }
             });
+        }
+
+        private sealed class ReachabilityToolLog : TxTools.RobotReachabilityChecker.Diagnostics.ILogger
+        {
+            public readonly List<string> Messages = new List<string>();
+            public void Log(string message, string level = "INFO")
+            {
+                if ((level == "WARN" || level == "ERR") && Messages.Count < 30)
+                    Messages.Add(level + ": " + message);
+            }
+        }
+
+        private static JObject ReachabilitySummary(RobotPathCheckTask task)
+        {
+            return new JObject
+            {
+                ["total"] = task.TotalPoints, ["reachable"] = task.ReachableCount,
+                ["critical"] = task.CriticalCount, ["near_limit"] = task.NearLimitCount,
+                ["singular"] = task.SingularCount, ["unreachable"] = task.UnreachableCount,
+                ["not_checked"] = task.Results.Count(r => r.Status == ReachabilityStatus.NotChecked),
+                ["reachability_rate_percent"] = task.ReachabilityRate,
+                ["collision"] = task.Results.Count(r => r.CollisionState == CollisionCheckState.Collision),
+                ["collision_clean"] = task.Results.Count(r => r.CollisionState == CollisionCheckState.Clean),
+                ["collision_unknown"] = task.Results.Count(r => r.CollisionState == CollisionCheckState.Error),
+                ["collision_not_checked"] = task.Results.Count(r => r.CollisionState == CollisionCheckState.NotChecked)
+            };
+        }
+
+        private static bool ResolveToolOperations(string name, string objectId, out List<ITxObject> roots, out string error)
+        {
+            roots = new List<ITxObject>(); error = null;
+            if (!string.IsNullOrWhiteSpace(objectId))
+            {
+                ITxObject target;
+                if (!TryResolve(null, objectId, out target, out error)) return false;
+                if (!(target is ITxOperation)) { error = "object_id 必须指向操作树中的操作。"; return false; }
+                roots.Add(target);
+            }
+            else if (!string.IsNullOrWhiteSpace(name))
+            {
+                var key = name.Trim();
+                var operations = CollectOperations();
+                var matches = operations.Where(o => string.Equals(SafeName(o), key, StringComparison.OrdinalIgnoreCase)).ToList();
+                if (matches.Count == 0) matches = operations.Where(o => SafeName(o).IndexOf(key, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+                if (matches.Count != 1)
+                {
+                    error = matches.Count == 0 ? "操作树中未找到 " + key : "匹配多个操作，请使用 object_id：\n" + Candidates(matches);
+                    return false;
+                }
+                roots.Add(matches[0]);
+            }
+            else
+            {
+                var selected = PsReader.GetOperationsFromSelection(Nolog);
+                if (selected != null) roots.AddRange(selected.Where(o => o.PsObject != null).Select(o => o.PsObject));
+                if (roots.Count == 0) { error = "请指定 operation/object_id，或在操作树中选择操作。"; return false; }
+            }
+            // 父子同时选中时保留外层，避免重复检查和导出相同点位。
+            var unique = roots.GroupBy(o => o.Id).Select(g => g.First()).ToList();
+            var descendants = new HashSet<string>();
+            foreach (var root in unique)
+                if (root is ITxObjectCollection collection)
+                {
+                    var children = collection.GetAllDescendants(new TxTypeFilter(typeof(ITxOperation)));
+                    foreach (ITxObject child in children) descendants.Add(child.Id);
+                }
+            roots = unique.Where(o => !descendants.Contains(o.Id)).ToList();
+            return roots.Count > 0;
         }
 
         /// <summary>在操作树(OperationRoot)里按名查找操作。回答"OP120 这个操作在哪/是什么"。</summary>
@@ -394,11 +463,73 @@ namespace TxTools.Agent.Ps
                     sb.AppendLine("匹配操作 " + matches.Count + " 个：");
                     int cap = Math.Min(matches.Count, 40);
                     for (int i = 0; i < cap; i++)
-                        sb.AppendLine((i + 1) + ". " + SafeName(matches[i]) + " [" + matches[i].GetType().Name + "]");
+                        sb.AppendLine((i + 1) + ". " + Ref(matches[i]) + " [" + matches[i].GetType().Name + "]");
                     if (matches.Count > cap) sb.AppendLine("…(其余 " + (matches.Count - cap) + " 个省略)");
                     return sb.ToString();
                 }
-                catch (Exception ex) { return "查找操作失败: " + ex.Message; }
+                catch (Exception ex) { return "Error: 查找操作失败: " + ex.Message; }
+            });
+        }
+
+        /// <summary>复用焊点标注插件的点位读取、投影及可编辑 Excel 导出。</summary>
+        public static string ExportWeldScreenshots(string operation, string objectId, AnnotationExportOptions options, bool autoThickness)
+        {
+            return PsContext.Current.Run<string>(delegate
+            {
+                try
+                {
+                    if (TxApplication.ActiveDocument == null) return "Error: 没有打开的研究文档。";
+                    List<ITxObject> roots; string error;
+                    if (!ResolveToolOperations(operation, objectId, out roots, out error)) return "Error: " + error;
+                    var points = new List<WeldAnnotationPoint>();
+                    var categories = new Dictionary<int, string>();
+                    var diagnostics = new List<string>();
+                    Action<string> log = message => { if (diagnostics.Count < 30) diagnostics.Add(message); };
+                    foreach (var root in roots)
+                    {
+                        var op = new OperationInfo { Name = SafeName(root), TypeLabel = root.GetType().Name, PsObject = root };
+                        PsReader.FillPoints(op, PointType.WeldPoint, false, log);
+                        foreach (var pi in op.Points)
+                        {
+                            if (pi == null || pi.Type != PointType.WeldPoint || pi.Position == null || pi.Position.Length < 3) continue;
+                            int parts = pi.AllAppearances == null ? 0 : pi.AllAppearances.Where(a => a != null)
+                                .Select(a => !string.IsNullOrEmpty(a.ParentPartName) ? a.ParentPartName : a.Name)
+                                .Where(n => !string.IsNullOrEmpty(n)).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+                            var point = new WeldAnnotationPoint
+                            {
+                                Index = points.Count + 1, Name = pi.Name, OpName = op.Name,
+                                X = pi.Position[0], Y = pi.Position[1], Z = pi.Position[2], BoundPartsCount = parts
+                            };
+                            points.Add(point);
+                            categories[point.Index] = autoThickness && parts >= 3 ? "三层板及以上点焊" : AnnotationExportService.DefaultCategory;
+                        }
+                    }
+                    if (points.Count == 0) return "Error: 指定操作中未读取到焊点，未写入 Excel。";
+                    AnnotationExportResult exportResult;
+                    using (var bitmap = PsReader.CaptureActiveViewer(System.Drawing.Size.Empty, false, log))
+                    {
+                        if (bitmap == null) return "Error: PS 视口截图失败。";
+                        PsReader.ProjectPointsToScreen(points, bitmap.Width, bitmap.Height, log);
+                        var style = new AnnotationStyle();
+                        try
+                        {
+                            exportResult = AnnotationExportService.ExportToActiveExcel(bitmap, points, categories, style, options,
+                                (level, message) => log(level + ": " + message));
+                        }
+                        finally { style.TextFont?.Dispose(); }
+                    }
+                    return new JObject
+                    {
+                        ["exported"] = true, ["destination"] = "活动 Excel 工作簿（未自动保存）",
+                        ["points"] = points.Count, ["annotated_points"] = exportResult.AnnotatedPoints,
+                        ["shape_count"] = exportResult.ShapeCount, ["warnings"] = exportResult.Warnings,
+                        ["partial"] = exportResult.Warnings > 0 || exportResult.AnnotatedPoints < points.Count(p => p.InViewport),
+                        ["outside_viewport"] = points.Count(p => !p.InViewport),
+                        ["write_list"] = options.WriteList, ["new_sheet"] = options.NewSheet,
+                        ["diagnostics"] = new JArray(diagnostics)
+                    }.ToString();
+                }
+                catch (Exception ex) { return "Error: 焊点截图导出失败，Excel 可能已部分写入: " + ex.Message; }
             });
         }
 
@@ -521,7 +652,7 @@ namespace TxTools.Agent.Ps
                     catch
                     {
                         try { TxApplication.ActiveSelection.SetItems(list); }
-                        catch (Exception ex) { return "设置选中失败: " + ex.Message; }
+                        catch (Exception ex) { return "Error: 设置选中失败: " + ex.Message; }
                     }
 
                     var msg = "已选中 " + found.Count + " 个对象: " + string.Join(", ", found.Take(20));
@@ -529,7 +660,7 @@ namespace TxTools.Agent.Ps
                     if (missingIds.Count > 0) msg += "；未找到的 ID: " + string.Join(", ", missingIds);
                     return msg;
                 }
-                catch (Exception ex) { return "选中对象失败: " + ex.Message; }
+                catch (Exception ex) { return "Error: 选中对象失败: " + ex.Message; }
             });
         }
 
@@ -573,7 +704,7 @@ namespace TxTools.Agent.Ps
                     var path = XlsxWriter.Write(Path.Combine(fld, fname), tag, headers, rows);
                     return "已导出 " + matched.Count + " 个对象到: " + path;
                 }
-                catch (Exception ex) { return "导出对象清单失败: " + ex.Message; }
+                catch (Exception ex) { return "Error: 导出对象清单失败: " + ex.Message; }
             });
         }
 
@@ -599,14 +730,14 @@ namespace TxTools.Agent.Ps
 
                     double[] refMatrix = null;
                     try { var rf = PsReader.GetReferenceFrame(); if (rf != null) refMatrix = rf.Item2; }
-                    catch { }
+                    catch (Exception ex) { return "Error: 读取当前参考系失败，未导出: " + ex.Message; }
 
                     var path = ExcelExporter.Export(ops, refMatrix, folder, Nolog);
                     return path != null
                         ? "已导出 " + total + " 个点到: " + path
-                        : "导出失败(无数据或写入错误)。";
+                        : "Error: 导出失败(无数据或写入错误)。";
                 }
-                catch (Exception ex) { return "导出焊点 Excel 失败: " + ex.Message; }
+                catch (Exception ex) { return "Error: 导出焊点 Excel 失败: " + ex.Message; }
             });
         }
 
@@ -618,7 +749,7 @@ namespace TxTools.Agent.Ps
             return PsContext.Current.Run<string>(delegate
             {
                 try { return DeviceZAlignService.AlignSelection(); }
-                catch (Exception ex) { return "对齐失败: " + ex.Message; }
+                catch (Exception ex) { return "Error: 对齐失败: " + ex.Message; }
             });
         }
 
@@ -637,7 +768,7 @@ namespace TxTools.Agent.Ps
                         return string.IsNullOrWhiteSpace(name) ? "请先选中一个对象，或提供 name。" : ("未找到 " + name);
                     return ApiInspector.InspectObjectLive(target);
                 }
-                catch (Exception ex) { return "探查对象失败: " + ex.Message; }
+                catch (Exception ex) { return "Error: 探查对象失败: " + ex.Message; }
             });
         }
 
@@ -716,45 +847,74 @@ namespace TxTools.Agent.Ps
 
         // ───────── 新增：机器人基座校验 ─────────
 
-        /// <summary>校验场景内所有机器人 BASE0 是否与期望一致。只读。</summary>
-        public static string CheckRobotBase(double posTolMm, double rotTol, string brandMode)
+        /// <summary>检查 BASE0，或在一个撤销分组中同步偏差项并复查。</summary>
+        public static string CheckRobotBase(double posTolMm, double rotTol, string brandMode,
+            string name = null, string objectId = null, bool correct = false)
         {
             return PsContext.Current.Run<string>(delegate
             {
-                var doc = TxApplication.ActiveDocument;
-                if (doc == null) return "没有打开的研究文档。";
-
-                // 字符串 → BrandMode 枚举（同 assembly，internal 可直访）
-                BrandMode mode;
-                if (string.Equals(brandMode, "Fanuc", StringComparison.OrdinalIgnoreCase)) mode = BrandMode.Fanuc;
-                else if (string.Equals(brandMode, "Generic", StringComparison.OrdinalIgnoreCase)) mode = BrandMode.Generic;
-                else mode = BrandMode.Auto;
-
                 try
                 {
-                    var results = RobotBaseReader.Analyze(posTolMm, rotTol, mode);
-                    if (results == null || results.Count == 0) return "场景中没有找到机器人。";
-
-                    var sb = new StringBuilder();
-                    sb.AppendLine("机器人 BASE0 校验结果（容差: 位置 " + posTolMm + "mm / 旋转 " + rotTol + "）：");
-                    sb.AppendLine();
-
-                    int pass = 0, fail = 0;
-                    foreach (var r in results)
+                    var doc = TxApplication.ActiveDocument;
+                    if (doc == null) return "Error: 没有打开的研究文档。";
+                    BrandMode mode;
+                    if (!Enum.TryParse(brandMode, true, out mode) || !Enum.IsDefined(typeof(BrandMode), mode))
+                        return "Error: brand_mode 必须是 Auto/Fanuc/Generic。";
+                    TxRobot target = null;
+                    if (!string.IsNullOrWhiteSpace(name) || !string.IsNullOrWhiteSpace(objectId))
                     {
-                        var verdict = r.Verdict ?? "";
-                        if (verdict.Contains("一致")) pass++; else fail++;
-                        sb.AppendLine("• " + r.RobotName + "  品牌=" + (r.Brand ?? "?")
-                            + "  ΔPos=" + (r.DeltaPos >= 0 ? r.DeltaPos.ToString("F3") : "—") + "mm"
-                            + "  ΔRot=" + (r.DeltaRot >= 0 ? r.DeltaRot.ToString("F4") : "—")
-                            + "  → " + verdict);
+                        ITxObject obj; string error;
+                        if (!TryResolve(name, objectId, out obj, out error)) return "Error: " + error;
+                        target = obj as TxRobot;
+                        if (target == null) return "Error: 指定对象不是机器人。";
                     }
-                    sb.AppendLine();
-                    sb.Append("汇总: " + pass + " 一致, " + fail + " 存在偏差 / 共 " + results.Count + " 台机器人");
-                    return sb.ToString();
+                    var results = RobotBaseReader.Analyze(posTolMm, rotTol, mode);
+                    if (target != null) results = results.Where(r => r.RobotRef != null && r.RobotRef.Id == target.Id).ToList();
+                    if (results.Count == 0) return "Error: 未找到可检查的机器人。";
+                    int success = 0, skipped = 0;
+                    var failures = new JArray();
+                    if (correct)
+                    {
+                        using (var undo = TxTools.Common.SceneUndoScope.Begin(doc, "Agent 校正 BASE0"))
+                        foreach (var r in results)
+                        {
+                            undo.EnsureDocument();
+                            try
+                            {
+                                if (RobotBaseReader.Synchronize(r)) success++; else skipped++;
+                            }
+                            catch (Exception ex) { failures.Add(new JObject { ["robot"] = Ref(r.RobotRef), ["error"] = ex.Message }); }
+                        }
+                        var ids = new HashSet<string>(results.Where(r => r.RobotRef != null).Select(r => r.RobotRef.Id));
+                        results = RobotBaseReader.Analyze(posTolMm, rotTol, mode).Where(r => r.RobotRef != null && ids.Contains(r.RobotRef.Id)).ToList();
+                    }
+                    var rows = new JArray();
+                    foreach (var r in results)
+                        rows.Add(new JObject
+                        {
+                            ["robot"] = r.RobotName, ["object_id"] = r.RobotRef?.Id, ["brand"] = r.Brand,
+                            ["comparable"] = r.Comparable, ["verdict"] = r.Verdict,
+                            ["delta_position_mm"] = FiniteValue(r.DeltaPos), ["delta_rotation_native"] = FiniteValue(r.DeltaRot)
+                        });
+                    return new JObject
+                    {
+                        ["mode"] = correct ? "correct" : "check", ["total"] = results.Count, ["tolerance_mm"] = posTolMm,
+                        ["tolerance_rot_native"] = rotTol,
+                        ["consistent"] = results.Count(r => r.Comparable && r.Verdict == "一致"),
+                        ["deviation"] = results.Count(r => r.Comparable && r.Verdict != "一致"),
+                        ["no_base0"] = results.Count(r => r.Verdict == "无当前BASE0"),
+                        ["not_comparable"] = results.Count(r => !r.Comparable && r.Verdict != "无当前BASE0"),
+                        ["updated"] = success, ["skipped"] = skipped, ["failures"] = failures, ["robots"] = rows,
+                        ["undo"] = correct ? "已完成的场景修改可在当前 PS 工程 Ctrl+Z 撤销；部分失败不会自动回滚。" : ""
+                    }.ToString();
                 }
-                catch (Exception ex) { return "校验异常: " + ex.Message; }
+                catch (Exception ex) { return "Error: BASE0 操作异常: " + ex.Message; }
             });
+        }
+
+        private static JToken FiniteValue(double value)
+        {
+            return double.IsNaN(value) || double.IsInfinity(value) ? (JToken)JValue.CreateNull() : new JValue(value);
         }
 
         // ───────── 新增：对象位置查询 ─────────
@@ -762,65 +922,26 @@ namespace TxTools.Agent.Ps
         /// <summary>查询对象的世界坐标系位置和姿态。只读。</summary>
         public static string GetObjectLocation(string name, string format, string objectId = null)
         {
-            return PsContext.Current.Run<string>(delegate
-            {
-                ITxObject obj; string err;
-                if (!TryResolve(name, objectId, out obj, out err)) return "Error: " + err;
-
-                var sb = new StringBuilder();
-                sb.AppendLine("对象: " + Ref(obj));
-                sb.AppendLine("类型: " + obj.GetType().Name);
-
-                try
-                {
-                    TxTransformation tx = null;
-                    try { if (obj is ITxLocatableObject loc) tx = loc.AbsoluteLocation; } catch { }
-                    if (tx == null) try { dynamic d = obj; tx = d.AbsoluteLocation; } catch { }
-                    if (tx == null) { sb.AppendLine("无 AbsoluteLocation 信息。"); return sb.ToString(); }
-
-                    // XYZ 平移
-                    double x = 0, y = 0, z = 0;
-                    try { dynamic t = tx.Translation; x = (double)t.X; y = (double)t.Y; z = (double)t.Z; }
-                    catch { try { x = (double)((dynamic)tx)[0, 3]; y = (double)((dynamic)tx)[1, 3]; z = (double)((dynamic)tx)[2, 3]; } catch { } }
-                    sb.AppendLine("位置(mm): X=" + x.ToString("F3") + "  Y=" + y.ToString("F3") + "  Z=" + z.ToString("F3"));
-
-                    // 姿态
-                    if (string.Equals(format, "matrix", StringComparison.OrdinalIgnoreCase))
-                    {
-                        try
-                        {
-                            // SDK 不同版本旋转矩阵属性名不同，多策略反射
-                            dynamic rm = InvokeOrGet(tx, "RotationMatrix") ?? InvokeOrGet(tx, "GetRotationMatrix");
-                            sb.AppendLine("旋转矩阵:");
-                            for (int i = 0; i < 3; i++)
-                            {
-                                sb.Append("  [");
-                                for (int j = 0; j < 3; j++)
-                                    sb.Append(((double)rm[i, j]).ToString("F6") + (j < 2 ? ", " : ""));
-                                sb.AppendLine("]");
-                            }
-                        }
-                        catch { sb.AppendLine("(旋转矩阵不可读)"); }
+            return PlcRead(() => {
+                ITxObject obj; string error;
+                if (!TryResolve(name, objectId, out obj, out error)) return "Error: " + error;
+                var loc = obj as ITxLocatableObject;
+                if (loc == null) return "Error: 对象没有 AbsoluteLocation。";
+                var tx = loc.AbsoluteLocation;
+                var result = new StringBuilder("对象: " + Ref(obj) + "\n位置 (mm): " + tx.Translation + "\n");
+                format = (format ?? "rpy").ToLowerInvariant();
+                if (format == "matrix") {
+                    result.AppendLine("4×4 变换矩阵（SDK 索引顺序）:");
+                    for (int i = 0; i < 4; i++) {
+                        for (int j = 0; j < 4; j++) result.Append(tx[i, j].ToString("F6", System.Globalization.CultureInfo.InvariantCulture)).Append(j < 3 ? ", " : "\n");
                     }
-                    else
-                    {
-                        // rpy / euler — SDK 不同版本属性名不同，多策略反射
-                        string label = string.Equals(format, "euler", StringComparison.OrdinalIgnoreCase) ? "Euler" : "RPY";
-                        try
-                        {
-                            // 依次尝试 RotationRPY_ZYX / RotationRPY / GetRotationRPY（与 RobotBaseReader 同策略）
-                            dynamic rp = InvokeOrGet(tx, "RotationRPY_ZYX")
-                                         ?? InvokeOrGet(tx, "RotationRPY")
-                                         ?? InvokeOrGet(tx, "GetRotationRPY");
-                            sb.AppendLine("姿态(" + label + ",度): RX=" + ((double)rp.X).ToString("F4")
-                                + "  RY=" + ((double)rp.Y).ToString("F4")
-                                + "  RZ=" + ((double)rp.Z).ToString("F4"));
-                        }
-                        catch { sb.AppendLine("(" + label + " 角不可读)"); }
-                    }
-                    return sb.ToString();
+                } else {
+                    if (format != "rpy" && format != "euler") return "Error: format 只支持 rpy、euler、matrix。";
+                    var r = format == "euler" ? tx.RotationEulerZYZ : tx.RotationRPY_ZYX;
+                    result.Append(format == "euler" ? "Euler ZYZ (度): " : "RPY ZYX (度): ");
+                    result.Append((r.X * 180 / Math.PI).ToString("F4")).Append(", ").Append((r.Y * 180 / Math.PI).ToString("F4")).Append(", ").Append((r.Z * 180 / Math.PI).ToString("F4"));
                 }
-                catch (Exception ex) { return "读取位置异常: " + ex.Message; }
+                return result.ToString().TrimEnd();
             });
         }
 
@@ -898,7 +1019,7 @@ namespace TxTools.Agent.Ps
 
                     return sb.ToString();
                 }
-                catch (Exception ex) { return "查询运动学异常: " + ex.Message; }
+                catch (Exception ex) { return "Error: 查询运动学异常: " + ex.Message; }
             });
         }
 
@@ -960,315 +1081,95 @@ namespace TxTools.Agent.Ps
 
         // ───────── 新增：扫描设备 Z 向状态（只读）─────────
 
-        /// <summary>扫描场景中所有设备的 Z 向落地状态。只读，不做任何修改。</summary>
         public static string ScanDevicesZ(string[] extraIgnoreKeywords)
         {
-            return PsContext.Current.Run<string>(delegate
-            {
-                var doc = TxApplication.ActiveDocument;
-                if (doc == null) return "没有打开的研究文档。";
+            return ScanDevicesZ(new DeviceZOptions { IgnoreKeywords=extraIgnoreKeywords??new string[0] });
+        }
 
-                var skipNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                { "gun", "robot", "tool", "gripper", "conveyor", "weldgun", "flange", "human" };
-                var skipTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                { "TxWeldGun", "TxGun", "TxGripper", "TxTool", "TxRobot", "TxHumanModel", "TxConveyor", "TxSimulationPlayer" };
-                if (extraIgnoreKeywords != null)
-                    foreach (var k in extraIgnoreKeywords)
-                    { skipNames.Add(k.Trim()); skipTypes.Add(k.Trim()); }
+        public static string ScanDevicesZ(DeviceZOptions options)
+        {
+            return PsContext.Current.Run<string>(() => DeviceZAlignService.Execute(options,false));
+        }
 
-                var sb = new StringBuilder();
-                sb.AppendLine("设备 Z 向状态扫描（只读）：");
-                sb.AppendLine();
-
-                int checkedCount = 0, needAlign = 0, alreadyOk = 0, skipped = 0;
-
-                foreach (var obj in CollectScene(true))
-                {
-                    string typeName = obj.GetType().Name;
-                    string objName = SafeName(obj);
-
-                    // 跳过已知非落地类型
-                    bool shouldSkip = false;
-                    foreach (var st in skipTypes)
-                        if (typeName.IndexOf(st, StringComparison.OrdinalIgnoreCase) >= 0) { shouldSkip = true; break; }
-                    if (!shouldSkip)
-                        foreach (var sn in skipNames)
-                            if (objName.IndexOf(sn, StringComparison.OrdinalIgnoreCase) >= 0) { shouldSkip = true; break; }
-
-                    // 也检查接口和父级（复刻 DeviceZAlignService.CheckShouldSkip 的策略）
-                    if (!shouldSkip)
-                    {
-                        try
-                        {
-                            foreach (var iface in obj.GetType().GetInterfaces())
-                                if (iface.Name.Contains("Gun") || iface.Name.Contains("Gripper")
-                                    || iface.Name.Contains("Robot") || iface.Name.Contains("Tool"))
-                                { shouldSkip = true; break; }
-                        }
-                        catch { }
-                    }
-                    if (!shouldSkip)
-                    {
-                        try
-                        {
-                            dynamic dobj = obj;
-                            dynamic parent = dobj.Parent;
-                            if (parent != null)
-                            {
-                                string pt = parent.GetType().Name;
-                                if (pt.Contains("Robot") || pt.Contains("Flange")) shouldSkip = true;
-                            }
-                        }
-                        catch { }
-                    }
-
-                    if (shouldSkip) { skipped++; continue; }
-
-                    // 获取位置
-                    TxTransformation absTx = null;
-                    try { if (obj is ITxLocatableObject loc) absTx = loc.AbsoluteLocation; } catch { }
-                    if (absTx == null) try { dynamic d = obj; absTx = d.AbsoluteLocation; } catch { }
-                    if (absTx == null) continue;
-
-                    // 读取 Z
-                    double currentZ = 0;
-                    try { dynamic t = absTx.Translation; currentZ = (double)t.Z; }
-                    catch { try { currentZ = (double)((dynamic)absTx)[2, 3]; } catch { } }
-
-                    // 尝试读 BoundingBox 获取最低 Z
-                    double lowestZ = currentZ; // 回退：原点 Z
-                    string zSource = "原点";
-                    try
-                    {
-                        dynamic d = obj;
-                        dynamic bbox = d.BoundingBox;
-                        if (bbox != null)
-                        {
-                            try { lowestZ = (double)bbox.MinZ; zSource = "BoundingBox"; } catch { }
-                        }
-                    }
-                    catch { }
-                    // 尝试轴交点（同 DeviceZAlignService.GetDeviceMinZ）
-                    try
-                    {
-                        if (obj is TxComponent comp)
-                        {
-                            dynamic dComp = comp;
-                            object pts = null;
-                            try { pts = dComp.GetLocationAxisIntersectionPoints(2); } catch { }
-                            if (pts == null) try { pts = dComp.GetLocationAxisIntersectionPoints(); } catch { }
-                            if (pts != null)
-                            {
-                                double minZPts = double.MaxValue;
-                                var en = pts as IEnumerable;
-                                if (en != null) foreach (object pt in en)
-                                {
-                                    try { dynamic dp = pt; double pz = Convert.ToDouble(dp.Z); if (pz < minZPts) minZPts = pz; } catch { }
-                                    try { dynamic dp = pt; double pz = Convert.ToDouble(dp[2, 3]); if (pz < minZPts) minZPts = pz; } catch { }
-                                }
-                                if (minZPts < double.MaxValue) { lowestZ = minZPts; zSource = "轴交点"; }
-                            }
-                        }
-                    }
-                    catch { }
-
-                    checkedCount++;
-                    if (Math.Abs(lowestZ) < 1.0) // 1mm 容差认为已落地
-                    {
-                        alreadyOk++;
-                        sb.AppendLine("  ✓ " + objName + " (" + typeName + ")  Z=" + currentZ.ToString("F3")
-                            + "  最低Z=" + lowestZ.ToString("F3") + "[" + zSource + "]  已落地");
-                    }
-                    else
-                    {
-                        needAlign++;
-                        sb.AppendLine("  ✗ " + objName + " (" + typeName + ")  Z=" + currentZ.ToString("F3")
-                            + "  最低Z=" + lowestZ.ToString("F3") + "[" + zSource + "]"
-                            + "  需偏移 " + (-lowestZ).ToString("F3") + "mm");
-                    }
-                }
-
-                sb.AppendLine();
-                sb.Append("汇总: 检查 " + checkedCount + " 台, " + alreadyOk + " 已落地, "
-                    + needAlign + " 需对齐, " + skipped + " 被跳过");
-                return sb.ToString();
-            });
+        public static string AlignDevicesZ(DeviceZOptions options)
+        {
+            return PsContext.Current.Run<string>(() => DeviceZAlignService.Execute(options,true));
         }
 
         // ───────── 新增：设置对象位置（变更）─────────
 
-        /// <summary>设置对象的世界坐标系位置（含可选姿态）。变更操作，包在 Undo 块里可撤销。</summary>
+        /// <summary>世界位置使用 mm，姿态使用 RPY_ZYX 度；未指定的姿态分量保留。</summary>
         public static string SetObjectLocation(string name, double x, double y, double z, double? rx, double? ry, double? rz, string objectId = null)
         {
-            return PsContext.Current.Run<string>(delegate
-            {
-                ITxObject obj; string err;
-                if (!TryResolve(name, objectId, out obj, out err)) return "Error: " + err;
-
-                var doc = TxApplication.ActiveDocument;
-                if (doc == null) return "没有打开的研究文档。";
-
-                var undo = BeginUndo(doc, "set_object_location(" + name + ")");
-                try
-                {
-                    // 获取当前变换
-                    TxTransformation curTx = null;
-                    try { if (obj is ITxLocatableObject loc) curTx = loc.AbsoluteLocation; } catch { }
-                    if (curTx == null) try { dynamic d = obj; curTx = d.AbsoluteLocation; } catch { }
-                    if (curTx == null) return "无法获取 " + SafeName(obj) + " 的 AbsoluteLocation。";
-
-                    // 读取旧位置（供报告）
-                    double oldX = 0, oldY = 0, oldZ = 0;
-                    try { dynamic t = curTx.Translation; oldX = (double)t.X; oldY = (double)t.Y; oldZ = (double)t.Z; }
-                    catch { try { oldX = (double)((dynamic)curTx)[0, 3]; oldY = (double)((dynamic)curTx)[1, 3]; oldZ = (double)((dynamic)curTx)[2, 3]; } catch { } }
-
-                    // 修改平移
-                    bool written = false;
-                    try { dynamic d = curTx; d.Translation = new TxVector(x, y, z); written = true; } catch { }
-                    if (!written) try { dynamic d = curTx; d[0, 3] = x; d[1, 3] = y; d[2, 3] = z; written = true; } catch { }
-
-                    // 修改姿态（仅当指定了 rx/ry/rz）
-                    if (rx.HasValue || ry.HasValue || rz.HasValue)
-                    {
-                        // 读取旧 RPY — 多策略反射（与 RobotBaseReader 同策略）
-                        double oldRx = 0, oldRy = 0, oldRz = 0;
-                        try
-                        {
-                            dynamic rp = InvokeOrGet(curTx, "RotationRPY_ZYX")
-                                         ?? InvokeOrGet(curTx, "RotationRPY")
-                                         ?? InvokeOrGet(curTx, "GetRotationRPY");
-                            oldRx = (double)rp.X; oldRy = (double)rp.Y; oldRz = (double)rp.Z;
-                        }
-                        catch { }
-
-                        double finalRx = rx ?? oldRx;
-                        double finalRy = ry ?? oldRy;
-                        double finalRz = rz ?? oldRz;
-
-                        // 尝试设置旋转
-                        try { dynamic d = curTx; d.SetRotationRPY(finalRx, finalRy, finalRz); written = true; }
-                        catch { try { dynamic d = curTx; d.RotationRPY = new TxVector(finalRx, finalRy, finalRz); } catch { } }
-                    }
-
-                    // 写回对象
-                    bool applied = false;
-                    try { if (obj is ITxLocatableObject loc) { loc.AbsoluteLocation = curTx; applied = true; } } catch { }
-                    if (!applied) try { dynamic d = obj; d.AbsoluteLocation = curTx; applied = true; } catch { }
-                    if (!applied) try { dynamic d = obj; d.Location = curTx; applied = true; } catch { }
-                    if (!applied) try { dynamic d = obj; d.SetAbsoluteLocation(curTx); applied = true; } catch { }
-
-                    if (!applied) return "设置位置失败：无法写入 AbsoluteLocation 到 " + SafeName(obj) + "。";
-
-                    try { TxApplication.RefreshDisplay(); } catch { }
-
-                    var sb = new StringBuilder();
-                    sb.AppendLine(SafeName(obj) + " 位置已更新:");
-                    sb.AppendLine("  旧: X=" + oldX.ToString("F3") + "  Y=" + oldY.ToString("F3") + "  Z=" + oldZ.ToString("F3"));
-                    sb.Append("  新: X=" + x.ToString("F3") + "  Y=" + y.ToString("F3") + "  Z=" + z.ToString("F3"));
-                    if (rx.HasValue) sb.Append("  RX=" + rx.Value.ToString("F4"));
-                    if (ry.HasValue) sb.Append("  RY=" + ry.Value.ToString("F4"));
-                    if (rz.HasValue) sb.Append("  RZ=" + rz.Value.ToString("F4"));
-                    if (undo != null) sb.Append("\n可 Ctrl+Z 撤销");
-                    return sb.ToString();
+            return PlcRead(() => {
+                if (new[] { x, y, z, rx ?? 0, ry ?? 0, rz ?? 0 }.Any(v => double.IsNaN(v) || double.IsInfinity(v)))
+                    return "Error: 位置和角度必须为有限数值。";
+                ITxObject obj; string error;
+                if (!TryResolve(name, objectId, out obj, out error)) return "Error: " + error;
+                var loc = obj as ITxLocatableObject;
+                if (loc == null || !obj.CanBeModified || !loc.CanLocate()) return "Error: 对象不可定位或不可修改。";
+                var original = new TxTransformation(loc.AbsoluteLocation);
+                var target = new TxTransformation(original);
+                if (rx.HasValue || ry.HasValue || rz.HasValue) {
+                    if (!original.IsRigidBodyTransformation || original.IsMirrored)
+                        return "Error: 对象包含缩放或镜像，不能用 RPY 覆盖姿态。";
+                    var old = original.RotationRPY_ZYX;
+                    const double radians = Math.PI / 180;
+                    target.RotationRPY_ZYX = new TxVector(rx.HasValue ? rx.Value * radians : old.X,
+                        ry.HasValue ? ry.Value * radians : old.Y, rz.HasValue ? rz.Value * radians : old.Z);
                 }
-                finally { if (undo != null) EndUndo(undo); }
+                target.Translation = new TxVector(x, y, z);
+                using (var undo = TxTools.Common.SceneUndoScope.Begin(TxApplication.ActiveDocument, "设置对象位置")) {
+                    loc.AbsoluteLocation = target;
+                    var actual = loc.AbsoluteLocation;
+                    bool verified = true;
+                    for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++)
+                        if (Math.Abs(actual[i, j] - target[i, j]) > 1e-6) verified = false;
+                    if (!verified) {
+                        try { loc.AbsoluteLocation = original; }
+                        catch (Exception ex) { return "Error: 位置写入核验失败，恢复原位也失败: " + ex.Message + "。请检查场景并撤销。"; }
+                        return "Error: 位置写入核验失败，已恢复原位。";
+                    }
+                    TxApplication.RefreshDisplay();
+                    var p = actual.Translation; var r = actual.RotationRPY_ZYX;
+                    return Ref(obj) + " 位置已核验 (mm): " + p + "；RPY_ZYX (度): " +
+                        (r.X * 180 / Math.PI).ToString("F4") + ", " + (r.Y * 180 / Math.PI).ToString("F4") + ", " + (r.Z * 180 / Math.PI).ToString("F4");
+                }
             });
         }
 
-        // ───────── 新增：播放/重置仿真（变更）─────────
-
-        /// <summary>播放/暂停/停止/倒带操作仿真。变更操作，需审批。</summary>
-        public static string SimulateOperation(string operationName, string action)
+        /// <summary>操作绑定成功后才控制播放器。reset 停止并回退到起点。</summary>
+        public static string SimulateOperation(string operationName, string action, string objectId = null)
         {
-            return PsContext.Current.Run<string>(delegate
-            {
-                // 查找操作
-                ITxObject opObj = null;
-                if (!string.IsNullOrWhiteSpace(operationName))
-                {
-                    var ops = CollectOperations();
-                    // 精确匹配
-                    foreach (var o in ops)
-                        if (string.Equals(SafeName(o), operationName, StringComparison.Ordinal))
-                        { opObj = o; break; }
-                    // 模糊匹配
-                    if (opObj == null)
-                        foreach (var o in ops)
-                            if (SafeName(o).IndexOf(operationName, StringComparison.OrdinalIgnoreCase) >= 0)
-                            { opObj = o; break; }
+            return PlcRead(() => {
+                action = (action ?? "").ToLowerInvariant();
+                if (!new[] { "play", "pause", "stop", "reset", "rewind" }.Contains(action)) return "Error: 不支持的仿真动作。";
+                ITxObject obj; string error;
+                if (!TryResolve(operationName, objectId, out obj, out error)) return "Error: " + error;
+                var operation = obj as ITxOperation;
+                if (operation == null) return "Error: 目标不是操作。";
+                var doc = TxApplication.ActiveDocument;
+                var generation = TxTools.Common.SceneUndoScope.DocumentGeneration;
+                bool reuse = _lastSimPlayer != null && _lastSimGeneration == generation && ReferenceEquals(_lastSimDocument, doc) && _lastSimOperationId == obj.Id;
+                if (!reuse && (action == "pause" || action == "stop")) return "Error: 该操作没有由本工具启动的播放器。";
+                if (!reuse) {
+                    if (_lastSimPlayer != null && _lastSimGeneration == generation && ReferenceEquals(_lastSimDocument, doc) && _lastSimPlayer.IsSimulationRunning())
+                        return "Error: 另一个操作的仿真仍在运行，请先停止它。";
+                    var player = new TxSimulationPlayer();
+                    player.SetOperation(operation);
+                    _lastSimPlayer = player;
+                    _lastSimDocument = doc;
+                    _lastSimGeneration = generation;
+                    _lastSimOperationId = obj.Id;
                 }
-                else
-                {
-                    opObj = FirstSelected();
-                    if (opObj != null)
-                    {
-                        // 确认选中的是操作类型
-                        bool isOp = false;
-                        try { dynamic d = opObj; isOp = d.GetType().Name.Contains("Operation"); } catch { }
-                        if (!isOp) opObj = null;
-                    }
+                switch (action) {
+                    case "play": _lastSimPlayer.Rewind(); _lastSimPlayer.Play(); break;
+                    case "pause": _lastSimPlayer.Pause(); break;
+                    case "stop": _lastSimPlayer.Stop(); break;
+                    case "reset": _lastSimPlayer.Stop(); _lastSimPlayer.Rewind(); break;
+                    case "rewind": _lastSimPlayer.Rewind(); break;
                 }
-
-                if (opObj == null) return "找不到操作" + (string.IsNullOrWhiteSpace(operationName) ? "（当前没有选中操作）" : " '" + operationName + "'。");
-
-                try
-                {
-                    dynamic player = _lastSimPlayer;
-                    bool reusePlayer = false;
-
-                    // 判断能否复用已有 player（操作相同）
-                    if (player != null)
-                    {
-                        try
-                        {
-                            dynamic curOp = player.Operation;
-                            if (curOp != null && string.Equals(SafeName(curOp), SafeName(opObj), StringComparison.Ordinal))
-                                reusePlayer = true;
-                        }
-                        catch { }
-                    }
-
-                    if (!reusePlayer)
-                    {
-                        player = new TxSimulationPlayer();
-                        try { player.SetOperation((dynamic)opObj); } catch { }
-                        _lastSimPlayer = player;
-                    }
-
-                    string resultMsg;
-                    switch (action)
-                    {
-                        case "play":
-                            player.Rewind();
-                            player.Play();
-                            resultMsg = "仿真已开始播放";
-                            break;
-                        case "pause":
-                            try { player.Pause(); resultMsg = "仿真已暂停"; }
-                            catch { resultMsg = "暂停不可用（仿真可能未在播放中）"; }
-                            break;
-                        case "stop":
-                            try { player.Stop(); resultMsg = "仿真已停止"; }
-                            catch
-                            {
-                                try { player.Pause(); resultMsg = "仿真已暂停(stop回退为pause)"; }
-                                catch { resultMsg = "停止/暂停均不可用"; }
-                            }
-                            break;
-                        case "rewind":
-                            player.Rewind();
-                            resultMsg = "仿真已倒带到起点";
-                            break;
-                        default:
-                            player.Rewind();
-                            player.Play();
-                            resultMsg = "仿真已开始播放(默认)";
-                            break;
-                    }
-
-                    return resultMsg + ": " + SafeName(opObj) + "  类型: " + opObj.GetType().Name;
-                }
-                catch (Exception ex) { return "仿真操作异常: " + ex.Message; }
+                return "仿真动作已执行: " + action + "，操作: " + Ref(obj);
             });
         }
 
@@ -1362,7 +1263,7 @@ namespace TxTools.Agent.Ps
         // ═════════════════════════════════════════════════════════════════
         //  对象定位:名称 + 可选 ID
         //
-        //  场景里允许同名 —— 实测同一 study 有 4 台都叫 kr210r2700extra 的机器人。
+        //  场景允许多个机器人使用相同名称，定位时必须检查歧义。
         //  旧版 FindByName 精确命中就返回第一个、没精确命中就返回第一个模糊包含的,
         //  于是"操作错对象"不报错不提示,只在用户发现结果不对时才暴露。
         //
@@ -1539,7 +1440,7 @@ namespace TxTools.Agent.Ps
 
         private static string ParentName(object o)
         {
-            try { dynamic d = o; dynamic p = d.Parent; if (p != null) return (string)p.Name ?? ""; } catch { }
+            try { dynamic d = o; dynamic p = d.Collection; if (p != null) return (string)p.Name ?? ""; } catch { }
             return "";
         }
 
@@ -1656,651 +1557,281 @@ namespace TxTools.Agent.Ps
         //   资源 → ITxPlcLogicBehaviorCreation.CreateLogicBehavior() → Smart Component
         //   资源 → ITxPlcSclCreation.CreateSclContainer() → SCL 文本编辑
 
-        /// <summary>获取当前 PLC 程序实例的 dynamic 引用（统一入口）。</summary>
-        private static dynamic GetCurrentPlcProgram()
+        // CEE / PLC 使用当前 SDK 的强类型接口；不以反射失败代替“不存在”。
+        private static TxPlcProgram GetCurrentPlcProgram()
         {
-            try
-            {
-                dynamic doc = TxApplication.ActiveDocument;
-                if (doc == null) return null;
-                dynamic plcRoot = doc.PlcProgramRoot;
-                if (plcRoot == null) return null;
-                try { return plcRoot.CurrentPlcProgram; } catch { }
-                try { return plcRoot.CurrentPlcProgramOrNull; } catch { }
-                return null;
-            }
-            catch { return null; }
+            var doc = TxApplication.ActiveDocument;
+            return doc == null || doc.PlcProgramRoot == null ? null : doc.PlcProgramRoot.CurrentPlcProgram;
         }
 
-        // ───────── 资源逻辑状态查询（只读）─────────
+        private static IEnumerable<ITxPlcSignal> PlcSignals(TxPlcProgram program)
+        {
+            return program.GetSignals(new TxTypeFilter(typeof(ITxPlcSignal))).Cast<ITxPlcSignal>();
+        }
 
-        /// <summary>
-        /// 查询资源的完整 CEE 逻辑状态：HasPlcAspect、LogicBehavior、SclContainer、关联信号。
-        /// 只读，不修改场景。
-        /// </summary>
+        private static string PlcRead(Func<string> read)
+        {
+            return PsContext.Current.Run<string>(() => {
+                try { return read(); }
+                catch (Exception ex) { return "Error: " + ex.GetType().Name + ": " + ex.Message; }
+            });
+        }
+
         public static string GetResourceLogicStatus(string name, string objectId = null)
         {
-            return PsContext.Current.Run<string>(delegate
-            {
-                try
-                {
-                    ITxObject obj = null;
-                    if (!string.IsNullOrWhiteSpace(name))
-                    {
-                        string rerr;
-                        if (!TryResolve(name, objectId, out obj, out rerr)) return "Error: " + rerr;
-                    }
-                    else
-                        obj = FirstSelected();
-                    if (obj == null) return "未找到指定资源"
-                        + (string.IsNullOrWhiteSpace(name) ? "（当前无选中）。" : " '" + name + "'。");
-
-                    var sb = new StringBuilder();
-                    sb.AppendLine("=== 资源 CEE 逻辑状态 ===");
-                    sb.AppendLine("名称: " + SafeName(obj));
-                    sb.AppendLine("类型: " + obj.GetType().Name);
-
-                    // HasPlcAspect
-                    bool hasAspect = false;
-                    try { dynamic d = obj; hasAspect = (bool)d.HasPlcAspect; } catch { }
-                    sb.AppendLine("PLC 层面: " + (hasAspect ? "已加载" : "✗ 未加载"));
-
-                    // LogicBehavior (ITxPlcLogicResource)
-                    try
-                    {
-                        dynamic d = obj;
-                        dynamic lb = d.LogicBehavior;
-                        if (lb != null)
-                        {
-                            sb.AppendLine("逻辑行为(LB): ✓ 已创建");
-                            try { int entries = 0, exits = 0, actions = 0, parameters = 0, constants = 0;
-                                foreach (dynamic e in lb)
-                                {
-                                    string tn = e.GetType().Name;
-                                    if (tn.Contains("Entry")) entries++;
-                                    else if (tn.Contains("Exit")) exits++;
-                                    else if (tn.Contains("Action")) actions++;
-                                    else if (tn.Contains("Parameter")) parameters++;
-                                    else if (tn.Contains("Constant")) constants++;
-                                }
-                                sb.Append("  Entry(输入):" + entries);
-                                if (exits > 0) sb.Append("  Exit(输出):" + exits);
-                                if (actions > 0) sb.Append("  Action(动作):" + actions);
-                                if (parameters > 0) sb.Append("  Parameter:" + parameters);
-                                if (constants > 0) sb.Append("  Constant:" + constants);
-                                sb.AppendLine();
-                            } catch { }
-                        }
-                        else sb.AppendLine("逻辑行为(LB): ✗ 未创建");
-                    }
-                    catch { sb.AppendLine("逻辑行为(LB): 不支持"); }
-
-                    // SclContainer (ITxPlcSclResource)
-                    try
-                    {
-                        dynamic d = obj;
-                        dynamic sc = d.SclContainer;
-                        if (sc != null)
-                        {
-                            sb.AppendLine("SCL 容器: ✓ 已创建");
-                            try
-                            {
-                                string prog = sc.MainProgramText as string;
-                                int lines = !string.IsNullOrEmpty(prog)
-                                    ? prog.Split(new[] { '\n' }, StringSplitOptions.None).Length : 0;
-                                sb.AppendLine("  SCL 代码行数: " + lines);
-                            }
-                            catch { }
-                        }
-                        else sb.AppendLine("SCL 容器: ✗ 未创建");
-                    }
-                    catch { sb.AppendLine("SCL 容器: 不支持"); }
-
-                    // 关联信号
-                    try
-                    {
-                        dynamic plcProg = GetCurrentPlcProgram();
-                        if (plcProg != null)
-                        {
-                            dynamic signals = plcProg.GetSignals();
-                            int cnt = 0;
-                            if (signals != null)
-                                foreach (dynamic s in signals)
-                                {
-                                    try
-                                    {
-                                        dynamic res = s.PlcResource;
-                                        if (res != null && string.Equals(SafeName(res), SafeName(obj),
-                                            StringComparison.OrdinalIgnoreCase))
-                                        {
-                                            cnt++;
-                                            if (cnt == 1) sb.AppendLine("关联信号:");
-                                            sb.AppendLine("  " + SafeName(s) + " [" + s.GetType().Name + "]");
-                                        }
-                                    }
-                                    catch { }
-                                }
-                            if (cnt == 0) sb.AppendLine("关联信号: 无");
-                        }
-                    }
-                    catch { sb.AppendLine("关联信号: 查询失败"); }
-
-                    return sb.ToString().TrimEnd();
+            return PlcRead(() => {
+                ITxObject obj; string error;
+                if (!TryResolve(name, objectId, out obj, out error)) return "Error: " + error;
+                var result = new StringBuilder("=== 资源 CEE 逻辑状态 ===\n");
+                result.AppendLine(Ref(obj) + " [" + obj.GetType().Name + "]");
+                var aspect = obj as ITxPlcAspectObject;
+                result.AppendLine("PLC 层面: " + (aspect == null ? "不支持" : aspect.HasPlcAspect ? "已加载" : "未加载"));
+                var resource = obj as Tecnomatix.Engineering.Plc.ITxPlcLogicResource;
+                var lb = resource == null ? null : resource.LogicBehavior;
+                result.AppendLine("逻辑行为: " + (resource == null ? "不支持" : lb == null ? "未创建" : Ref(lb)));
+                if (lb != null) result.AppendLine("Entry:" + lb.Entries.Length + " Exit:" + lb.Exits.Length +
+                    " Action:" + lb.Actions.Length + " Parameter:" + lb.Parameters.Length + " Constant:" + lb.Constants.Length);
+                var scl = obj as Tecnomatix.Engineering.Plc.ITxPlcSclResource;
+                var container = scl == null ? null : scl.SclContainer;
+                result.AppendLine("SCL 容器: " + (scl == null ? "不支持" : container == null ? "未创建" : Ref(container)));
+                var program = GetCurrentPlcProgram();
+                if (program == null) result.AppendLine("关联信号: 当前无 PLC 程序");
+                else {
+                    var signals = PlcSignals(program).Where(s => s.PlcResource != null && s.PlcResource.Id == obj.Id).ToList();
+                    result.AppendLine("关联信号: " + signals.Count);
+                    foreach (var signal in signals) result.AppendLine("  " + Ref(signal));
                 }
-                catch (Exception ex) { return "查询资源逻辑状态失败: " + ex.Message; }
+                return result.ToString().TrimEnd();
             });
         }
 
-        /// <summary>
-        /// 列出 PLC 程序中所有信号（CEE 内外部共用）。支持 nameFilter 过滤。
-        /// </summary>
         public static string ListPlcSignals(string nameFilter)
         {
-            return PsContext.Current.Run<string>(delegate
-            {
-                try
-                {
-                    dynamic plcProg = GetCurrentPlcProgram();
-                    if (plcProg == null) return "当前文档没有定义 PLC 程序。";
-
-                    dynamic signals = plcProg.GetSignals();
-                    var sb = new StringBuilder();
-                    var list = new List<dynamic>();
-                    if (signals != null)
-                    {
-                        foreach (dynamic s in signals)
-                        {
-                            if (!string.IsNullOrWhiteSpace(nameFilter))
-                            {
-                                if (SafeName(s).IndexOf(nameFilter, StringComparison.OrdinalIgnoreCase) < 0) continue;
-                            }
-                            list.Add(s);
-                        }
-                    }
-                    if (list.Count == 0)
-                        return string.IsNullOrWhiteSpace(nameFilter) ? "PLC 程序中暂无信号。" : "未找到 '" + nameFilter + "'。";
-
-                    sb.AppendLine("=== 信号列表（共 " + list.Count + " 个）===");
-                    for (int i = 0; i < list.Count; i++)
-                    {
-                        dynamic s = list[i];
-                        string tn = s.GetType().Name;
-                        string addr = ""; try { addr = (string)s.Address ?? ""; } catch { }
-                        string dt = ""; try { dt = (string)s.DataType ?? ""; } catch { }
-                        string cmt = ""; try { cmt = (string)s.Comment ?? ""; } catch { }
-
-                        sb.Append((i + 1) + ". [" + tn + "] " + SafeName(s));
-                        if (!string.IsNullOrEmpty(addr)) sb.Append("  地址:" + addr + "  ");
-                        if (!string.IsNullOrEmpty(dt)) sb.Append(" 类型:" + dt);
-                        sb.AppendLine();
-                        if (!string.IsNullOrEmpty(cmt)) sb.AppendLine("    注释: " + cmt);
-                        bool hasAddr = !string.IsNullOrEmpty(addr);
-                        sb.AppendLine("    用途: " + (hasAddr ? "外部PLC" : "CEE内部"));
-                    }
-                    return sb.ToString().TrimEnd();
-                }
-                catch (Exception ex) { return "列出信号失败: " + ex.Message; }
+            return PlcRead(() => {
+                var program = GetCurrentPlcProgram();
+                if (program == null) return "Error: 当前文档没有定义 PLC 程序。";
+                var signals = PlcSignals(program).Where(s => string.IsNullOrWhiteSpace(nameFilter) ||
+                    s.Name.IndexOf(nameFilter, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+                var result = new StringBuilder("=== 信号列表（共 " + signals.Count + " 个）===\n");
+                foreach (var signal in signals) result.AppendLine(Ref(signal) + " [" + signal.GetType().Name +
+                    "] 类型:" + signal.DataType + " 地址:" + signal.IECFormatAddress + " 注释:" + signal.Comment);
+                return result.ToString().TrimEnd();
             });
         }
 
-        /// <summary>
-        /// 列出所有 CEE 模块及其条目（Modules Viewer Hierarchy）。
-        /// </summary>
         public static string ListCeeModules()
         {
-            return PsContext.Current.Run<string>(delegate
-            {
-                try
-                {
-                    dynamic plcProg = GetCurrentPlcProgram();
-                    if (plcProg == null) return "当前文档没有定义 PLC 程序。";
-
-                    dynamic modules = plcProg.PlcModules;
-                    var sb = new StringBuilder();
-                    int count = 0;
-                    if (modules != null)
-                    {
-                        foreach (dynamic mod in modules)
-                        {
-                            count++;
-                            sb.AppendLine("模块: " + SafeName(mod));
-                            try
-                            {
-                                dynamic entries = mod.PlcEntries;
-                                if (entries != null)
-                                {
-                                    int ei = 0;
-                                    foreach (dynamic e in entries)
-                                    {
-                                        ei++;
-                                        sb.Append("  [" + ei + "] ");
-                                        try { sb.Append(e.GetType().Name + " "); } catch { }
-                                        sb.Append("ID:" + e.UniqueId);
-                                        sb.AppendLine();
-                                    }
-                                }
-                            }
-                            catch { }
-                        }
-                    }
-                    return count == 0 ? "暂无 CEE 模块。" : "=== CEE 模块列表（共 " + count + " 个）===\n" + sb.ToString().TrimEnd();
+            return PlcRead(() => {
+                var program = GetCurrentPlcProgram();
+                if (program == null) return "Error: 当前文档没有定义 PLC 程序。";
+                var result = new StringBuilder();
+                foreach (var module in program.PlcModules) {
+                    result.AppendLine("模块: " + Ref(module));
+                    foreach (var entry in module.PlcEntries) result.AppendLine("  [" + entry.GetType().Name + "] ID:" + entry.UniqueId);
                 }
-                catch (Exception ex) { return "列出 CEE 模块失败: " + ex.Message; }
+                return result.Length == 0 ? "暂无 CEE 模块。" : result.ToString().TrimEnd();
             });
         }
 
-        // ───────── 信号创建（通用，CEE 内外部均可用）─────────
-
-        /// <summary>创建 PLC 信号（input/output）。CEE 内部使用时 address 留空即可。</summary>
-        public static string CreatePlcSignal(string signalType, string name, string address,
-            string dataType, string comment)
+        // SDK 地址采用字节/位对象。允许 IEC 输入，明确校验方向、宽度及位地址。
+        private static TxPlcSignalAddress ParsePlcAddress(string text, string direction, TxPlcSignalDataType type)
         {
-            return PsContext.Current.Run<string>(delegate
-                                                         {
-                                                             try
-                                                             {
-                                                                 dynamic plcProg = GetCurrentPlcProgram();
-                                                                 if (plcProg == null) return "当前文档没有定义 PLC 程序，无法创建信号。";
-                                                                 if (string.IsNullOrWhiteSpace(name)) return "信号名称不能为空。";
-                                                                 if (string.IsNullOrWhiteSpace(dataType)) dataType = "BOOL";
-
-                                                                 dynamic doc = TxApplication.ActiveDocument;
-                                                                 var undo = BeginUndo(doc, "create_signal: " + name);
-                                                                 try
-                                                                 {
-                                                                     dynamic sig;
-                                                                     switch (signalType.ToLowerInvariant())
-                                                                     {
-                                                                         case "input":
-                                                                             {
-                                                                                 var d = new TxPlcInputSignalCreationData(); d.Name = name;
-                                                                                 SetPropertyFromString(d, "DataType", dataType);
-                                                                                 if (!string.IsNullOrWhiteSpace(address)) SetPropertyFromString(d, "Address", address);
-                                                                                 if (!string.IsNullOrWhiteSpace(comment)) d.Comment = comment;
-                                                                                 sig = plcProg.CreatePlcInputSignal(d);
-                                                                             }
-                                                                             break;
-                                                                         case "output":
-                                                                             {
-                                                                                 var d = new TxPlcOutputSignalCreationData(); d.Name = name;
-                                                                                 SetPropertyFromString(d, "DataType", dataType);
-                                                                                 if (!string.IsNullOrWhiteSpace(address)) SetPropertyFromString(d, "Address", address);
-                                                                                 if (!string.IsNullOrWhiteSpace(comment)) d.Comment = comment;
-                                                                                 sig = plcProg.CreatePlcOutputSignal(d);
-                                                                             }
-                                                                             break;
-                                                                         case "display":
-                                                                             {
-                                                                                 var d = new TxPlcDisplaySignalCreationData(); d.Name = name;
-                                                                                 SetPropertyFromString(d, "DataType", dataType);
-                                                                                 if (!string.IsNullOrWhiteSpace(comment)) d.Comment = comment;
-                                                                                 sig = plcProg.CreatePlcDisplaySignal(d);
-                                                                             }
-                                                                             break;
-                                                                         default:
-                                                                             return "不支持的信号类型 '" + signalType + "'。支持: input, output, display。";
-                                                                     }
-                                                                     string result = "已创建" + signalType + "信号: " + SafeName(sig) + "  类型:" + dataType
-                                                                         + (string.IsNullOrWhiteSpace(address) ? "" : "  地址:" + address);
-                                                                     if (undo != null) result += "\n可 Ctrl+Z 撤销。";
-                                                                     return result;
-                                                                 }
-                                                                 finally { if (undo != null) EndUndo(undo); }
-                                                             }
-                                                             catch (Exception ex) { return "创建信号失败: " + ex.Message; }
-                                                         });
+            if (string.IsNullOrWhiteSpace(text)) return new TxPlcSignalAddress();
+            var m = System.Text.RegularExpressions.Regex.Match(text.Trim(), @"^%?([IQ])([BWD]?)(\d+)(?:\.(\d+))?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (!m.Success) throw new ArgumentException("address 应为 IEC 地址，如 I0.0、Q0.0、IW2 或 QD4。");
+            if (!string.Equals(m.Groups[1].Value, direction == "input" ? "I" : "Q", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("address 方向与 signal_type 不一致。");
+            int b, bit;
+            if (!int.TryParse(m.Groups[3].Value, out b)) throw new ArgumentException("地址字节超出范围。");
+            var width = m.Groups[2].Value.ToUpperInvariant();
+            if (type == TxPlcSignalDataType.Bool) {
+                if (width != "" || !m.Groups[4].Success || !int.TryParse(m.Groups[4].Value, out bit) || bit > 7)
+                    throw new ArgumentException("BOOL 必须使用 0..7 的位地址，如 Q0.0。");
+                return new TxPlcSignalAddress(b, bit);
+            }
+            var expected = type == TxPlcSignalDataType.Byte || type == TxPlcSignalDataType.SInt ? "B" :
+                type == TxPlcSignalDataType.Word || type == TxPlcSignalDataType.Int ? "W" :
+                type == TxPlcSignalDataType.LReal ? null : "D";
+            if (m.Groups[4].Success || expected == null || width != expected)
+                throw new ArgumentException("该数据类型的地址宽度不匹配或不支持；可留空创建内部信号。");
+            return new TxPlcSignalAddress(b);
         }
 
-        // ───────── CEE 逻辑块操作（变更）─────────
+        public static string CreatePlcSignal(string signalType, string name, string address, string dataType, string comment)
+        {
+            return PlcRead(() => {
+                var program = GetCurrentPlcProgram();
+                if (program == null) return "Error: 当前文档没有定义 PLC 程序。";
+                if (string.IsNullOrWhiteSpace(name)) return "Error: 信号名称不能为空。";
+                signalType = (signalType ?? "").ToLowerInvariant();
+                TxPlcSignalDataType type;
+                if (!Enum.TryParse(dataType ?? "BOOL", true, out type) || !Enum.IsDefined(typeof(TxPlcSignalDataType), type))
+                    return "Error: 不支持的数据类型: " + dataType;
+                if (PlcSignals(program).Any(s => string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase)))
+                    return "Error: 已存在同名信号。";
+                TxPlcSignalCreationData data;
+                switch (signalType) {
+                    case "input": data = new TxPlcInputSignalCreationData(name); break;
+                    case "output": data = new TxPlcOutputSignalCreationData(name); break;
+                    case "display": data = new TxPlcDisplaySignalCreationData(name); break;
+                    default: return "Error: signal_type 只支持 input、output、display。";
+                }
+                if (signalType == "display" && !string.IsNullOrWhiteSpace(address)) return "Error: display 信号不接受外部地址。";
+                data.DataType = type;
+                if (!string.IsNullOrWhiteSpace(address)) data.Address = ParsePlcAddress(address, signalType, type);
+                data.Comment = comment ?? "";
+                using (var undo = TxTools.Common.SceneUndoScope.Begin(TxApplication.ActiveDocument, "创建 PLC 信号")) {
+                    ITxPlcSignal signal;
+                    if (signalType == "input") signal = program.CreatePlcInputSignal((TxPlcInputSignalCreationData)data);
+                    else if (signalType == "output") signal = program.CreatePlcOutputSignal((TxPlcOutputSignalCreationData)data);
+                    else signal = program.CreatePlcDisplaySignal((TxPlcDisplaySignalCreationData)data);
+                    if (signal == null) return "Error: SDK 创建信号返回 null。";
+                    return "已创建信号: " + Ref(signal) + " 类型:" + signal.DataType + " 地址:" + signal.IECFormatAddress;
+                }
+            });
+        }
 
-        /// <summary>
-        /// 为资源添加 CEE 逻辑行为（创建 Smart Component）。
-        /// 资源必须实现 ITxPlcLogicBehaviorCreation 接口。
-        /// </summary>
         public static string AddLogicToResource(string name, string objectId = null)
         {
-            return PsContext.Current.Run<string>(delegate
-            {
-                try
-                {
-                    ITxObject obj; string rerr;
-                    if (!TryResolve(name, objectId, out obj, out rerr)) return "Error: " + rerr;
-                    if (obj == null) return "未找到资源'" + (name ?? "(选中)") + "'。";
-
-                    dynamic doc = TxApplication.ActiveDocument;
-                    var undo = BeginUndo(doc, "add_logic: " + SafeName(obj));
-                    try
-                    {
-                        dynamic d = obj;
-                        try { bool can = (bool)d.CanCreateLogicBehavior; if (!can) return "该资源不允许创建逻辑行为。"; }
-                        catch { return "该资源不支持逻辑行为（未实现 ITxPlcLogicBehaviorCreation）。"; }
-
-                        d.CreateLogicBehavior();
-                        string result = "已为资源 '" + Ref(obj) + "' 创建逻辑行为（智能组件）。";
-                        if (undo != null) result += "\n可在 Resource Logic Behavior Editor 中编辑 Entries/Exits/Actions。可 Ctrl+Z 撤销。";
-                        return result;
-                    }
-                    finally { if (undo != null) EndUndo(undo); }
+            return PlcRead(() => {
+                ITxObject obj; string error;
+                if (!TryResolve(name, objectId, out obj, out error)) return "Error: " + error;
+                var creator = obj as Tecnomatix.Engineering.Plc.ITxPlcLogicBehaviorCreation;
+                if (creator == null) return "Error: 资源不支持逻辑行为创建。";
+                var resource = obj as Tecnomatix.Engineering.Plc.ITxPlcLogicResource;
+                if (resource != null && resource.LogicBehavior != null) return "Error: 资源已经有 LogicBehavior。";
+                var data = new Tecnomatix.Engineering.Plc.TxPlcLogicBehaviorCreationData("LogicBehavior");
+                if (!creator.CanCreateLogicBehavior(data)) return "Error: 当前资源状态不允许创建逻辑行为。";
+                using (var undo = TxTools.Common.SceneUndoScope.Begin(TxApplication.ActiveDocument, "添加逻辑行为")) {
+                    var lb = creator.CreateLogicBehavior(data);
+                    return lb == null ? "Error: SDK 创建逻辑行为返回 null。" : "已创建逻辑行为: " + Ref(lb) + "，资源: " + Ref(obj);
                 }
-                catch (Exception ex) { return "添加逻辑行为失败: " + ex.Message; }
             });
         }
 
-        /// <summary>
-        /// 为资源创建 SCL 容器，用于结构化文本编程。
-        /// 资源必须实现 ITxPlcSclCreation 接口。
-        /// </summary>
         public static string CreateSclContainer(string name, string objectId = null)
         {
-            return PsContext.Current.Run<string>(delegate
-            {
-                try
-                {
-                    ITxObject obj; string rerr;
-                    if (!TryResolve(name, objectId, out obj, out rerr)) return "Error: " + rerr;
-                    if (obj == null) return "未找到资源'" + (name ?? "(选中)") + "'。";
-
-                    dynamic doc = TxApplication.ActiveDocument;
-                    var undo = BeginUndo(doc, "create_scl: " + SafeName(obj));
-                    try
-                    {
-                        dynamic d = obj;
-                        try { bool can = (bool)d.CanCreateSclContainer; if (!can) return "该资源不允许创建 SCL 容器。"; }
-                        catch { return "该资源不支持 SCL（未实现 ITxPlcSclCreation）。"; }
-
-                        d.CreateSclContainer();
-                        string result = "已为资源 '" + Ref(obj) +"' 创建 SCL 容器。";
-                        if (undo != null) result += "\n可在 SCL Editor 中编写结构化文本逻辑。可 Ctrl+Z 撤销。";
-                        return result;
-                    }
-                    finally { if (undo != null) EndUndo(undo); }
+            return PlcRead(() => {
+                ITxObject obj; string error;
+                if (!TryResolve(name, objectId, out obj, out error)) return "Error: " + error;
+                var creator = obj as Tecnomatix.Engineering.Plc.ITxPlcSclCreation;
+                if (creator == null) return "Error: 资源不支持 SCL 创建。";
+                var resource = obj as Tecnomatix.Engineering.Plc.ITxPlcSclResource;
+                if (resource != null && resource.SclContainer != null) return "Error: 资源已经有 SCL 容器。";
+                var data = new TxPlcSclContainerCreationData("SCL");
+                if (!creator.CanCreateSclContainer(data)) return "Error: 当前资源状态不允许创建 SCL 容器。";
+                using (var undo = TxTools.Common.SceneUndoScope.Begin(TxApplication.ActiveDocument, "创建 SCL 容器")) {
+                    var scl = creator.CreateSclContainer(data);
+                    return scl == null ? "Error: SDK 创建 SCL 容器返回 null。" : "已创建 SCL 容器: " + Ref(scl) + "，资源: " + Ref(obj);
                 }
-                catch (Exception ex) { return "创建 SCL 容器失败: " + ex.Message; }
             });
         }
 
-        /// <summary>
-        /// 将一个资源的逻辑复制到另一个同类资源。
-        /// 源必须已有 LogicBehavior，目标必须为空且同类型。
-        /// </summary>
         public static string CopyLogic(string sourceName, string targetName, string sourceId = null, string targetId = null)
         {
-            return PsContext.Current.Run<string>(delegate
-            {
-                try
-                {
-                    ITxObject src, tgt; string rerr;
-                    if (!TryResolve(sourceName, sourceId, out src, out rerr)) return "Error: 源资源 -> " + rerr;
-                    if (!TryResolve(targetName, targetId, out tgt, out rerr)) return "Error: 目标资源 -> " + rerr;
-
-                    dynamic doc = TxApplication.ActiveDocument;
-                    var undo = BeginUndo(doc, "copy_logic: " + SafeName(src) + " → " + SafeName(tgt));
-                    try
-                    {
-                        dynamic dSrc = src;
-                        try { dSrc.CopySelfLogicToOtherLogicResource((dynamic)tgt); }
-                        catch (Exception ex) { return "复制逻辑失败: " + ex.Message + "。目标资源可能已有逻辑或类型不兼容。"; }
-
-                        string result = "已将 '" + Ref(src) + "' 的逻辑行为复制到 '" + Ref(tgt) + "'。";
-                        if (undo != null) result += "\n可 Ctrl+Z 撤销。";
-                        return result;
-                    }
-                    finally { if (undo != null) EndUndo(undo); }
+            return PlcRead(() => {
+                ITxObject src, target; string error;
+                if (string.IsNullOrWhiteSpace(sourceName) && string.IsNullOrWhiteSpace(sourceId) ||
+                    string.IsNullOrWhiteSpace(targetName) && string.IsNullOrWhiteSpace(targetId)) return "Error: 必须明确指定源与目标资源。";
+                if (!TryResolve(sourceName, sourceId, out src, out error)) return "Error: 源资源: " + error;
+                if (!TryResolve(targetName, targetId, out target, out error)) return "Error: 目标资源: " + error;
+                if (src.Id == target.Id) return "Error: 源与目标资源不能相同。";
+                var from = src as Tecnomatix.Engineering.Plc.ITxPlcLogicResource;
+                var to = target as Tecnomatix.Engineering.Plc.ITxPlcLogicResource;
+                if (from == null || to == null || from.LogicBehavior == null) return "Error: 源或目标不支持逻辑资源，或源没有逻辑行为。";
+                if (to.LogicBehavior != null) return "Error: 目标已有逻辑行为，不能覆盖。";
+                using (var undo = TxTools.Common.SceneUndoScope.Begin(TxApplication.ActiveDocument, "复制逻辑行为")) {
+                    from.CopySelfLogicToOtherLogicResource(to);
+                    return to.LogicBehavior == null ? "Error: 复制后未找到目标逻辑行为。" : "逻辑行为已复制到 " + Ref(target);
                 }
-                catch (Exception ex) { return "复制逻辑失败: " + ex.Message; }
             });
         }
 
-        // ───────── CEE 模块操作（变更）─────────
-
-        /// <summary>
-        /// 创建 CEE 模块（Modules Viewer Hierarchy 中的模块）。
-        /// 模块用于编写信号表达式：ResultSignal = expression of signals。
-        /// </summary>
         public static string CreateCeeModule(string name)
         {
-            return PsContext.Current.Run<string>(delegate
-            {
-                try
-                {
-                    dynamic plcProg = GetCurrentPlcProgram();
-                    if (plcProg == null) return "当前文档没有定义 PLC 程序，无法创建模块。";
-                    if (string.IsNullOrWhiteSpace(name)) return "模块名称不能为空。";
-
-                    dynamic doc = TxApplication.ActiveDocument;
-                    var undo = BeginUndo(doc, "create_module: " + name);
-                    try
-                    {
-                        var data = new TxPlcModuleCreationData(name);
-                        dynamic mod = plcProg.CreateModule(data);
-                        string result = "已创建 CEE 模块: " + name;
-                        if (undo != null) result += "\n可在 Modules Viewer 中编辑信号表达式和 IF/ELSE 条件。可 Ctrl+Z 撤销。";
-                        return result;
-                    }
-                    finally { if (undo != null) EndUndo(undo); }
+            return PlcRead(() => {
+                var program = GetCurrentPlcProgram();
+                if (program == null) return "Error: 当前文档没有定义 PLC 程序。";
+                if (string.IsNullOrWhiteSpace(name)) return "Error: 模块名称不能为空。";
+                if (program.PlcModules.Any(m => string.Equals(m.Name, name, StringComparison.OrdinalIgnoreCase))) return "Error: 已存在同名模块。";
+                using (var undo = TxTools.Common.SceneUndoScope.Begin(TxApplication.ActiveDocument, "创建 CEE 模块")) {
+                    var module = program.CreateModule(new TxPlcModuleCreationData(name));
+                    return module == null ? "Error: SDK 创建模块返回 null。" : "已创建 CEE 模块: " + Ref(module);
                 }
-                catch (Exception ex) { return "创建 CEE 模块失败: " + ex.Message; }
             });
         }
 
-        // ───────── 传感器创建（变更）─────────
-
-        /// <summary>
-        /// 在资源上创建光传感器。资源必须实现 ITxPlcSensorCreation。
-        /// 光传感器可检测物体遮挡，发出信号到 LB Entry。
-        /// </summary>
         public static string CreatePlcSensor(string resourceName, string sensorType, string sensorName, string objectId = null)
         {
-            return PsContext.Current.Run<string>(delegate
-            {
-                try
-                {
-                    ITxObject obj; string rerr;
-                    if (!TryResolve(resourceName, objectId, out obj, out rerr)) return "Error: " + rerr;
-                    if (obj == null) return "未找到资源'" + (resourceName ?? "(选中)") + "'。";
-                    if (string.IsNullOrWhiteSpace(sensorName))
-                        sensorName = "Sensor_" + SafeName(obj);
-
-                    dynamic doc = TxApplication.ActiveDocument;
-                    var undo = BeginUndo(doc, "create_sensor: " + sensorName);
-                    try
-                    {
-                        dynamic d = obj;
-                        try { bool can = (bool)d.CanCreatePlcLightSensor;
-                              if (!can) return "该资源不允许创建光传感器。"; }
-                        catch { return "该资源不支持传感器创建（未实现 ITxPlcSensorCreation）。"; }
-
-                        // TxPlcLightSensorCreationData 为 abstract，尝试多种具体子类
-                        dynamic sensorData = null;
-                        try { sensorData = Activator.CreateInstance(
-                            Type.GetType("Tecnomatix.Engineering.TxTcPlcLightSensorCreationData, Tecnomatix.Engineering")); }
-                        catch { }
-                        if (sensorData == null)
-                            try { sensorData = Activator.CreateInstance(
-                                Type.GetType("Tecnomatix.Engineering.TxEmsPlcLightSensorCreationData, Tecnomatix.Engineering")); }
-                            catch { }
-
-                        if (sensorData == null)
-                        {
-                            // 最后尝试用动态直接 new — 某些版本自动解析
-                            try
-                            {
-                                dynamic typeToCreate = Type.GetType("Tecnomatix.Engineering.TxTcPlcLightSensorCreationData");
-                                if (typeToCreate != null) sensorData = Activator.CreateInstance(typeToCreate);
-                            }
-                            catch { }
-                        }
-
-                        if (sensorData == null)
-                            return "无法创建光传感器创建数据：找不到 TxTcPlcLightSensorCreationData 或 TxEmsPlcLightSensorCreationData 类型。";
-
-                        sensorData.Name = sensorName;
-                        try { sensorData.CurrentRange = 300.0; } catch { }
-                        try { sensorData.MaxRange = 500.0; } catch { }
-
-                        dynamic sensor = d.CreatePlcLightSensor(sensorData);
-                        string sensorRef;
-                        try { sensorRef = Ref((ITxObject)sensor); } catch { sensorRef = SafeName(sensor); }
-                        string result = "已创建光传感器: " + sensorRef + " (资源: " + Ref(obj) + ")";
-                        if (undo != null) result += "\n可 Ctrl+Z 撤销。";
-                        return result;
-                    }
-                    finally { if (undo != null) EndUndo(undo); }
+            return PlcRead(() => {
+                if (!string.Equals(sensorType ?? "light", "light", StringComparison.OrdinalIgnoreCase)) return "Error: 目前只支持 light 光传感器。";
+                ITxObject obj; string error;
+                if (!TryResolve(resourceName, objectId, out obj, out error)) return "Error: " + error;
+                var creator = obj as ITxPlcSensorCreation;
+                if (creator == null) return "Error: 资源不支持传感器创建。";
+                if (string.IsNullOrWhiteSpace(sensorName)) sensorName = "Sensor_" + obj.Name;
+                TxPlcLightSensorCreationData data = new TxTcPlcLightSensorCreationData(sensorName);
+                data.MaxRange = 500; data.CurrentRange = 300;
+                if (!creator.CanCreatePlcLightSensor(data)) {
+                    data = new TxEmsPlcLightSensorCreationData(sensorName);
+                    data.MaxRange = 500; data.CurrentRange = 300;
+                    if (!creator.CanCreatePlcLightSensor(data)) return "Error: 当前资源或规划环境不允许创建光传感器。";
                 }
-                catch (Exception ex) { return "创建传感器失败: " + ex.Message; }
+                using (var undo = TxTools.Common.SceneUndoScope.Begin(TxApplication.ActiveDocument, "创建光传感器")) {
+                    var sensor = creator.CreatePlcLightSensor(data);
+                    return sensor == null ? "Error: SDK 创建传感器返回 null。" : "已创建光传感器: " + Ref(sensor) + "，资源: " + Ref(obj);
+                }
             });
         }
 
-        /// <summary>
-        /// 列出资源的 LogicBehavior 元素：Entries（入口）、Exits（出口）、
-        /// Actions（动作）、Parameters（参数）、Constants（常量）。
-        /// 只读。用于检查 LB 待连接的状态。
-        /// </summary>
         public static string ListLogicBehaviorElements(string resourceName, string objectId = null)
         {
-            return PsContext.Current.Run<string>(delegate
-            {
-                try
-                {
-                    ITxObject obj; string rerr;
-                    if (!TryResolve(resourceName, objectId, out obj, out rerr)) return "Error: " + rerr;
-                    if (obj == null) return "未找到资源'" + (resourceName ?? "(选中)") + "'。";
-
-                    dynamic d = obj;
-                    dynamic lb = null;
-                    try { lb = d.LogicBehavior; } catch { }
-                    if (lb == null) return "该资源没有 LogicBehavior。请先调用 add_logic_to_resource 创建。";
-
-                    var refLabel = Ref(obj);
-                    var sb = new StringBuilder();
-                    sb.AppendLine("=== LogicBehavior 元素: " + refLabel + " ===");
-                    int total = 0;
-
-                    string[] categories = { "Entry", "Exit", "Action", "Parameter", "Constant" };
-                    // 尝试多种枚举策略
-                    foreach (var cat in categories)
-                    {
-                        var group = new List<string>();
-                        // 策略1: 按接口名筛选
-                        try
-                        {
-                            foreach (dynamic el in lb)
-                            {
-                                string tn = el.GetType().Name;
-                                if (tn.Contains(cat))
-                                {
-                                    string elName = SafeName(el);
-                                    string detail = "";
-                                    try { dynamic sig = el.Signal; if (sig != null) detail = " → " + SafeName(sig); } catch { }
-                                    try { dynamic sig = el.ConnectedSignal; if (sig != null) detail = " → " + SafeName(sig); } catch { }
-                                    group.Add("  " + elName + " [" + tn + "]" + detail);
-                                    total++;
-                                }
-                            }
-                        }
-                        catch { }
-
-                        if (group.Count > 0)
-                        {
-                            sb.AppendLine("[" + cat + "] (" + group.Count + "个):");
-                            foreach (var g in group) sb.AppendLine(g);
-                        }
-                    }
-
-                    if (total == 0)
-                        sb.AppendLine("LB 中没有元素。请在 Resource Logic Behavior Editor 中创建 Entries/Exits。");
-                    else
-                        sb.Insert(23 + refLabel.Length, "共 " + total + " 个元素\n");
-
-                    return sb.ToString().TrimEnd();
+            return PlcRead(() => {
+                ITxObject obj; string error;
+                if (!TryResolve(resourceName, objectId, out obj, out error)) return "Error: " + error;
+                var resource = obj as Tecnomatix.Engineering.Plc.ITxPlcLogicResource;
+                var lb = resource == null ? null : resource.LogicBehavior;
+                if (lb == null) return "Error: 资源没有 LogicBehavior。";
+                var groups = new[] { lb.Entries.Cast<ITxObject>(), lb.Exits.Cast<ITxObject>(), lb.Actions.Cast<ITxObject>(), lb.Parameters.Cast<ITxObject>(), lb.Constants.Cast<ITxObject>() };
+                var result = new StringBuilder("=== LogicBehavior 元素: " + Ref(obj) + " ===\n");
+                foreach (var group in groups) foreach (var element in group) {
+                    result.AppendLine(Ref(element) + " [" + element.GetType().Name + "]");
+                    var entry = element as Tecnomatix.Engineering.Plc.ITxPlcLogicBehaviorEntry;
+                    var exit = element as Tecnomatix.Engineering.Plc.ITxPlcLogicBehaviorExit;
+                    var signals = entry != null ? entry.ConnectedSignals : exit != null ? exit.ConnectedSignals : null;
+                    if (signals != null) foreach (var signal in signals) result.AppendLine("  → " + Ref(signal));
                 }
-                catch (Exception ex) { return "列出 LB 元素失败: " + ex.Message; }
+                return result.ToString().TrimEnd();
             });
         }
 
-        /// <summary>
-        /// 将 PLC 信号连接到资源的 LogicBehavior Entry 或 Exit。
-        /// 使用多策略 dynamic 调用兜底 SDK 版本差异。
-        /// </summary>
-        public static string ConnectSignalToLB(string resourceName, string signalName,
-            string pinType, string pinName, string objectId = null)
+        public static string ConnectSignalToLB(string resourceName, string signalName, string pinType, string pinName, string objectId = null)
         {
-            return PsContext.Current.Run<string>(delegate
-            {
-                try
-                {
-                    ITxObject obj; string rerr;
-                    if (!TryResolve(resourceName, objectId, out obj, out rerr)) return "Error: " + rerr;
-                    if (obj == null) return "未找到资源'" + (resourceName ?? "(选中)") + "'。";
-
-                    // 获取 LB
-                    dynamic d = obj;
-                    dynamic lb = null;
-                    try { lb = d.LogicBehavior; } catch { }
-                    if (lb == null) return "该资源没有 LogicBehavior。";
-
-                    // 查找信号
-                    dynamic plcProg = GetCurrentPlcProgram();
-                    if (plcProg == null) return "PLC 程序未定义。";
-                    dynamic sig = null;
-                    dynamic signals = plcProg.GetSignals();
-                    if (signals != null)
-                    {
-                        foreach (dynamic s in signals)
-                        {
-                            if (string.Equals(SafeName(s), signalName, StringComparison.OrdinalIgnoreCase))
-                            { sig = s; break; }
-                        }
-                    }
-                    if (sig == null) return "未找到信号 '" + signalName + "'。";
-
-                    // 查找 LB 元素（Entry 或 Exit）
-                    dynamic targetEl = null;
-                    try
-                    {
-                        foreach (dynamic el in lb)
-                        {
-                            string tn = el.GetType().Name;
-                            if ((pinType == "entry" && tn.Contains("Entry"))
-                                || (pinType == "exit" && tn.Contains("Exit")))
-                            {
-                                if (string.IsNullOrWhiteSpace(pinName) ||
-                                    SafeName(el).IndexOf(pinName, StringComparison.OrdinalIgnoreCase) >= 0)
-                                { targetEl = el; break; }
-                            }
-                        }
-                    }
-                    catch { }
-
-                    if (targetEl == null)
-                        return "未找到 " + pinType + " 引脚'" + (pinName ?? "(任意)") + "'。请先用 PS 编辑器在 LB 中创建 " + pinType + "。";
-
-                    // 连接策略（多种 API 版本）
-                    bool connected = false;
-                    string errors = "";
-
-                    // 策略1: 设 LB 元素上的 Signal/ConnectedSignal 属性
-                    try { targetEl.Signal = sig; connected = true; } catch (Exception ex) { errors += "Signal=" + ex.Message + "; "; }
-                    if (!connected) try { targetEl.ConnectedSignal = sig; connected = true; } catch (Exception ex) { errors += "ConnectedSignal=" + ex.Message + "; "; }
-
-                    // 策略2: 设信号上的属性指向 LB 元素
-                    if (!connected) try { sig.LBEntry = targetEl; connected = true; } catch { }
-                    if (!connected) try { sig.LBExit = targetEl; connected = true; } catch { }
-
-                    // 策略3: LB 上的 Connect/Set/Bind 方法
-                    if (!connected) try { lb.ConnectEntryToSignal(targetEl, sig); connected = true; } catch { }
-                    if (!connected) try { lb.ConnectExitToSignal(targetEl, sig); connected = true; } catch { }
-                    if (!connected) try { lb.SetConnectedSignal(targetEl, sig); connected = true; } catch { }
-                    if (!connected) try { targetEl.Connect(sig); connected = true; } catch { }
-
-                    if (!connected)
-                        return "无法连接信号到 LB 引脚。失败的尝试: " + errors
-                            + "请在 PS Resource Logic Behavior Editor 中手动连接。";
-
-                    return "已将信号 '" + SafeName(sig) + "' 连接到 " + pinType + " '"
-                        + SafeName(targetEl) + "' (资源: " + Ref(obj) + ")。";
+            return PlcRead(() => {
+                ITxObject obj; string error;
+                if (!TryResolve(resourceName, objectId, out obj, out error)) return "Error: " + error;
+                var resource = obj as Tecnomatix.Engineering.Plc.ITxPlcLogicResource;
+                var lb = resource == null ? null : resource.LogicBehavior;
+                if (lb == null) return "Error: 资源没有 LogicBehavior。";
+                var program = GetCurrentPlcProgram();
+                if (program == null) return "Error: 当前没有 PLC 程序。";
+                var matches = PlcSignals(program).Where(s => string.Equals(s.Name, signalName, StringComparison.OrdinalIgnoreCase)).ToList();
+                if (matches.Count != 1) return "Error: 信号必须精确且唯一匹配，当前命中 " + matches.Count + " 个。";
+                var signal = matches[0] as TxPlcSignalBase;
+                if (signal == null) return "Error: 该信号不支持 LB 连接。";
+                pinType = (pinType ?? "").ToLowerInvariant();
+                if (pinType != "entry" && pinType != "exit") return "Error: pin_type 只支持 entry 或 exit。";
+                var pins = (pinType == "entry" ? lb.Entries.Cast<ITxObject>() : lb.Exits.Cast<ITxObject>())
+                    .Where(p => string.IsNullOrWhiteSpace(pinName) || string.Equals(p.Name, pinName, StringComparison.OrdinalIgnoreCase)).ToList();
+                if (pins.Count != 1) return "Error: 引脚必须精确且唯一匹配，当前命中 " + pins.Count + " 个。";
+                var entry = pins[0] as Tecnomatix.Engineering.Plc.ITxPlcLogicBehaviorEntry;
+                var exit = pins[0] as Tecnomatix.Engineering.Plc.ITxPlcLogicBehaviorExit;
+                Func<TxPlcSignalBase[]> connected = () => entry != null ? entry.ConnectedSignals : exit.ConnectedSignals;
+                if (connected().Any(s => s.Id == signal.Id)) return "信号已经连接到该引脚。";
+                using (var undo = TxTools.Common.SceneUndoScope.Begin(TxApplication.ActiveDocument, "连接 LB 信号")) {
+                    if (entry != null) entry.ConnectSignal(signal); else exit.ConnectSignal(signal);
+                    return connected().Any(s => s.Id == signal.Id) ? "信号 " + Ref(signal) + " 已连接到 " + Ref(pins[0]) : "Error: SDK 连线后核验失败。";
                 }
-                catch (Exception ex) { return "连接信号到 LB 失败: " + ex.Message; }
             });
         }
     }

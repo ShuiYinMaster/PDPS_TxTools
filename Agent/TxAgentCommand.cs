@@ -338,7 +338,7 @@ namespace TxTools.Agent
             reg.Register(new ListOperationsTool());  // 只读：选中操作 名称/类型/工具
             reg.Register(new CountPointsTool());     // 只读：按类型统计点数
             reg.Register(new ListTcpOptionsTool());  // 只读：操作的 TCP 选项
-            reg.Register(new CheckReachabilityTool()); // 只读：快速可达性摘要
+            reg.Register(new CheckReachabilityTool()); // 插件完整可达性分析（检查后恢复姿态）
             reg.Register(new GetReferenceFrameTool()); // 只读：当前参考坐标系
             reg.Register(new ListTypesTool());       // 只读：搜 SDK 类型
             reg.Register(new InspectTypeTool());     // 只读：列类型成员
@@ -354,10 +354,10 @@ namespace TxTools.Agent
             reg.Register(new SelectObjectsTool());   // 动作：按名选中(查到→选中→操作)
             reg.Register(new AlignDevicesZTool());  // 变更：Z 对齐 (需审批, 可撤销)
             reg.Register(new RunCSharpTool());       // 变更：写 C# 在 PS 内执行 (兜底, 强制审批, 可撤销, 审计)
-            // reg.Register(new RunReachabilityTool());  // TODO: 包装 RobotReachabilityChecker
-            // reg.Register(new ExportGunTool());        // TODO: 包装 ExportService
 
             // ─── 机器人 / 位置 / 仿真 工具 ───
+            reg.Register(new CorrectRobotBaseTool());     // 变更：BASE0 同步与复查，可撤销
+            reg.Register(new ExportWeldScreenshotsTool()); // 导出：焊点截图及可编辑 Excel 标注
             reg.Register(new CheckRobotBaseTool());       // 只读：BASE0 校验
             reg.Register(new InspectRobotKinematicsTool());// 只读：运动学信息
             reg.Register(new FindRobotForOpTool());       // 只读：查找操作绑定机器人

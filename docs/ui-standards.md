@@ -55,16 +55,13 @@ rtk proxy node tools/generate-plugin-icons.cjs
 
 ## 验证
 
-```powershell
-rtk proxy MSBuild.exe Tests/UiStandards/UiStandards.csproj /t:Build
-rtk proxy Tests/UiStandards/bin/UiStandardsRegression.exe build-check/TxTools.dll Image/plugin-icons.json
-```
+独立测试的入口和输出位置见构建文档。
 
 回归检查按钮尺寸、长文字宽度、固定边框、列表滚动保留、日志总开关/自动展开/行高恢复，以及程序集内每个图标的存在、尺寸和像素格式。
 可达性布局直接链接生产 Layout/Helpers，在 100%/175%/200% 下检查单行排列和控件边界并生成预览。
 测试宿主以 WinForms 替代 PS 原生拾取器和结果网格，因此预览用于检查排布，不代表 Siemens 皮肤或实际场景数据效果；最终仍需 PS 实机复测。
 
-新增窗口裁切回归见 `Tests/LayoutRegression/README.md`：从生产代码提取导插枪、围栏、焊点分配和 CATIA 目录树的布局方法，检查按钮/参数相对于全部祖先容器的可见边界及选择、预览列表的可用高度。
+窗口裁切回归位于独立测试目录的 `Tests/LayoutRegression/`：从生产代码提取导插枪、围栏、焊点分配和 CATIA 目录树的布局方法，检查按钮/参数相对于全部祖先容器的可见边界及选择、预览列表的可用高度。
 导插枪保持等宽三列，中间整列用于点列表；导出点球只保留零件名称输入。焊点分配日志默认收起，可通过“日志”按钮展开，仍受统一日志开关控制。
 导插枪的 96 DPI 默认窗口为 960×600，左侧操作列表随列内剩余空间伸缩；不再保留 800 像素高的外框或将操作列表封顶为 130 像素。布局回归同时检查左列底部未使用的高度。
 左侧提示改为悬停说明，参考坐标状态与重置按钮同行，点类型与 MFG 选项同行；操作选择框在 100% 预览中高 188 像素，并检查 100%/175%/200% 下至少保留 150 个逻辑像素。

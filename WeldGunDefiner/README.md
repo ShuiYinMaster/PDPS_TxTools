@@ -1,4 +1,4 @@
-﻿# WeldGunDefiner — X-Type Weld Gun Kinematics / X 枪运动学定义
+# WeldGunDefiner — X-Type Weld Gun Kinematics / X 枪运动学定义
 
 Create X-type weld-gun links, joints, poses and drive relationships through a Process Simulate kinematics wizard.
 
@@ -46,7 +46,7 @@ Create X-type weld-gun links, joints, poses and drive relationships through a Pr
 
 本模块随 `TxTools.csproj` 构建。环境与注册方式见 [项目 README](../README.md)。
 
-公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；回归工程为 `Tests/PickFocus/PickFocus.csproj`。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。
+公共拾取实现位于 `SRC/PickFocus.cs` 和 `SRC/PickAwareTxForm.cs`；焦点回归位于独立测试目录。测试使用 SDK 控件替身和真实 WinForms 焦点/键盘消息，仍需在 PS 内确认实际拾取效果。
 
 ## 撤销与恢复（2026-10-07）
 

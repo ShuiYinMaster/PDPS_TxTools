@@ -44,7 +44,8 @@ namespace TxTools.Agent.Core
                 return JObject.Parse(@"{
                     'type': 'object',
                     'properties': {
-                        'operation_name':    { 'type': 'string',  'description': '操作名(留空=PS 当前选中的全部操作)' },
+                        'object_id': { 'type': 'string', 'description': '操作唯一 ID，优先于 operation_name' },
+                         'operation_name':    { 'type': 'string',  'description': '操作名(留空=PS 当前选中的全部操作)' },
                         'model_path':        { 'type': 'string',  'description': '焊枪 CGR/CATPart 路径(留空=用 PS 工具自带路径)' },
                         'product_name':      { 'type': 'string',  'description': 'CATIA 容器名(留空=用操作名)' },
                         'ref_mode':          { 'type': 'string',  'description': 'auto=自动解析零件/夹具参考系(默认); world=世界坐标' },
@@ -89,7 +90,7 @@ namespace TxTools.Agent.Core
 
             // ══ ① 操作与焊点 ══
             string err;
-            OpResolution res = GunToolHelpers.ResolveOperations(opName, log, out err);
+            OpResolution res = GunToolHelpers.ResolveOperations(opName, log, out err, ToolInputHelpers.String(input["object_id"]));
             if (res == null) return "Error: " + err;
             List<OperationInfo> ops = res.Operations;
 
@@ -126,6 +127,8 @@ namespace TxTools.Agent.Core
             foreach (var s in skipped) sb.Append("  ⚠ 跳过: ").Append(s).Append('\n');
 
             if (ready.Count == 0) return "Error: 没有可导出的操作\n" + sb.ToString();
+
+            if (!forceWorld && ready.Count > 1) return "Error: 自动参考系导出目前按单个操作处理；请逐个导出，或明确 ref_mode=world。";
 
             // ══ ② TCP 解析（以首个操作为准做体检） ══
             sb.Append("\n② 焊枪与 TCP\n");
@@ -203,9 +206,7 @@ namespace TxTools.Agent.Core
 
                 if (!string.IsNullOrEmpty(refName))
                 {
-                    AppearanceRef picked = Find(r.PartCandidates, refName)
-                                        ?? Find(r.FixtureCandidates, refName)
-                                        ?? Find(leading, refName);
+                    AppearanceRef picked = GunToolHelpers.FindReference(refName, r.PartCandidates, r.FixtureCandidates, leading);
                     if (picked == null)
                     {
                         var e = new StringBuilder();
@@ -240,6 +241,7 @@ namespace TxTools.Agent.Core
                 }
                 else if (leading != null && leading.Count > 0)
                 {
+                    if (leading.Count != 1) return "Error: 多个 LeadingPart 候选，请指定 ref_name 或 ref_mode=world。";
                     refMatrix = leading[0].Matrix;
                     refLabel = leading[0].Name + "(LeadingPart 兜底)";
                     sb.Append("  来源: LeadingPart(标准外观绑定为空)\n");

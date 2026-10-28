@@ -91,7 +91,9 @@ namespace TxTools.Agent.Core
             foreach (var s in slidesTok)
             {
                 var so = s as JObject;
-                if (so == null) continue;
+                if (so == null) return "Error: slides 每一项必须是对象。";
+                var imagePath = ToolInputHelpers.String(so["image_path"]);
+                if (!string.IsNullOrWhiteSpace(imagePath) && !File.Exists(imagePath)) return "Error: image_path 不存在: " + imagePath;
                 slides.Add(new PptxSlideInput
                 {
                     Title = ToolInputHelpers.String(so["title"]) ?? "",
@@ -106,16 +108,17 @@ namespace TxTools.Agent.Core
 
             try
             {
+                fullPath = DocxExportTool.WriteExport(fullPath, staging => {
                 // 1) 从内嵌 blank 拷到目标路径
-                File.WriteAllBytes(fullPath, BlankPptxData.GetBytes());
+                File.WriteAllBytes(staging, BlankPptxData.GetBytes());
 
                 // 2) 打开,删示例 slide, 追加新 slide
-                using (var pres = PresentationDocument.Open(fullPath, true))
+                using (var pres = PresentationDocument.Open(staging, true))
                 {
                     var presPart = pres.PresentationPart;
                     var layoutPart = presPart.SlideMasterParts.FirstOrDefault()?.SlideLayoutParts.FirstOrDefault();
                     if (layoutPart == null)
-                        return "Error: \u5185\u7f6e\u6a21\u677f\u6ca1\u6709 SlideLayout(\u4e0d\u5e94\u53d1\u751f)";
+                        throw new InvalidOperationException("内置模板没有 SlideLayout。");
 
                     RemoveAllSlides(presPart);
 
@@ -137,6 +140,7 @@ namespace TxTools.Agent.Core
 
                     presPart.Presentation.Save();
                 }
+                });
             }
             catch (Exception ex)
             {

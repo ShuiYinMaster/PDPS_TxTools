@@ -140,10 +140,10 @@ namespace TxTools.Agent.Core
                 }
                 catch (Exception ex)
                 {
-                    return log + "\n" + Explain(ex, tempDir, proto);
+                    throw new InvalidOperationException(Explain(ex, tempDir, proto), ex);
                 }
 
-                if (comp == null) return log + "\n② 插入返回 null，未知失败。";
+                if (comp == null) throw new InvalidOperationException("插入返回 null。");
                 inserted = true;
                 log.AppendLine("② 插入成功: " + SafeName(comp));
 
@@ -177,7 +177,7 @@ namespace TxTools.Agent.Core
             catch (Exception ex)
             {
                 if (!inserted && tempDir != null && !Bool(input, "keep_temp")) TryDelete(tempDir);
-                return log + "\nError: " + ex.GetType().Name + ": " + ex.Message;
+                return "Error: " + ex.GetType().Name + ": " + ex.Message + "\n" + log;
             }
         }
 
@@ -199,8 +199,7 @@ namespace TxTools.Agent.Core
             ITxObject src; string err;
             if (!PsBridge.TryResolve(sourceName, null, out src, out err))
             {
-                log.AppendLine("② 找不到原型来源对象: " + err);
-                return null;
+                throw new ArgumentException("找不到原型来源对象: " + err);
             }
 
             try
@@ -299,11 +298,19 @@ namespace TxTools.Agent.Core
                 return;
             }
 
-            foreach (var dir in Directory.GetDirectories(src, "*", SearchOption.AllDirectories))
-                Directory.CreateDirectory(dir.Replace(src, dst));
-
-            foreach (var f in Directory.GetFiles(src, "*", SearchOption.AllDirectories))
-                File.Copy(f, f.Replace(src, dst), true);
+            var sourceRoot = Path.GetFullPath(src).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            var pending = new Stack<string>(); pending.Push(sourceRoot);
+            while (pending.Count > 0) {
+                var current = pending.Pop();
+                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) throw new IOException("组件目录包含符号链接或目录联接，停止复制: " + current);
+                var relative = current.Substring(sourceRoot.Length).TrimEnd(Path.DirectorySeparatorChar);
+                Directory.CreateDirectory(Path.Combine(dst, relative));
+                foreach (var file in Directory.EnumerateFiles(current)) {
+                    if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0) throw new IOException("组件目录包含文件链接: " + file);
+                    File.Copy(file, Path.Combine(dst, file.Substring(sourceRoot.Length)), false);
+                }
+                foreach (var child in Directory.EnumerateDirectories(current)) pending.Push(child);
+            }
         }
 
         private static void TryDelete(string dir)
@@ -334,7 +341,7 @@ namespace TxTools.Agent.Core
 
             var r = sb.ToString().Trim('_');
             if (r.Length == 0 || !r.Any(char.IsLetterOrDigit))
-                r = "Comp_" + Math.Abs(s.GetHashCode()).ToString("D8");
+                r = "Comp_" + unchecked((uint)s.GetHashCode()).ToString("D8");
 
             return r.Length > 60 ? r.Substring(0, 60) : r;
         }
