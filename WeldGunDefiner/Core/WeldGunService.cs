@@ -35,6 +35,21 @@ namespace TxTools.WeldGunDefiner.Core
         public List<ITxObject> OutputLinkBodies = new List<ITxObject>();
         public List<ITxObject> Lnk2Bodies = new List<ITxObject>();
 
+        private ITxObject _autoStaticTip, _autoMovingTip;
+        public void SynchronizeElectrodeBindings()
+        {
+            if (ObjStaticTip != null && ObjMovingTip != null && ObjStaticTip.Equals(ObjMovingTip))
+                throw new InvalidOperationException("静、动电极帽不能选择同一个对象");
+            var groups = new[] { FixedLinkBodies, InputLinkBodies, CouplerLinkBodies, OutputLinkBodies, Lnk2Bodies };
+            foreach (var group in groups)
+                group.RemoveAll(item => item != null &&
+                    (item.Equals(_autoStaticTip) || item.Equals(_autoMovingTip) ||
+                     item.Equals(ObjStaticTip) || item.Equals(ObjMovingTip)));
+            if (ObjStaticTip != null) Lnk2Bodies.Add(ObjStaticTip);
+            if (ObjMovingTip != null) OutputLinkBodies.Add(ObjMovingTip);
+            _autoStaticTip = ObjStaticTip; _autoMovingTip = ObjMovingTip;
+        }
+
         // TCP（电极帽）：用于j1轴方向 + 臂长计算 + 焊钳TCP定义
         public ITxObject ObjStaticTip { get; set; }   // 静电极帽
         public ITxObject ObjMovingTip { get; set; }   // 动电极帽
@@ -46,6 +61,7 @@ namespace TxTools.WeldGunDefiner.Core
 
         // 需求4：OPEN状态适配勾选项
         public bool OpenStateAdapt { get; set; } = false;
+        public bool OpenPositive { get; set; }
 
         // 计算结果
         public double ArmLength { get; set; }   // 臂长 R = 动TCP投影→O投影
@@ -79,6 +95,7 @@ namespace TxTools.WeldGunDefiner.Core
     public class WeldGunService
     {
         private readonly WeldGunModel _model;
+        public Func<string, bool> ConfirmJointCleanup { get; set; }
 
         public WeldGunService(WeldGunModel model) { _model = model; }
 
@@ -121,7 +138,7 @@ namespace TxTools.WeldGunDefiner.Core
                 new XAttribute("movingTip", _model.ObjMovingTip?.Id ?? ""),
                 new XAttribute("tcp", _model.TcpFrame?.Id ?? ""),
                 new XAttribute("stroke", _model.PistonStroke), new XAttribute("gap", _model.OpenGap),
-                new XAttribute("wear", _model.WearAllowance), new XAttribute("openAdapt", _model.OpenStateAdapt),
+                new XAttribute("openPositive", _model.OpenPositive), new XAttribute("wear", _model.WearAllowance), new XAttribute("openAdapt", _model.OpenStateAdapt),
                 PointElement("O", _model.WorldO), PointElement("A", _model.WorldA),
                 PointElement("C", _model.WorldC), PointElement("N", _model.PlaneNormal),
                 TransformElement("base", _model.BaseLocation),
@@ -170,6 +187,7 @@ namespace TxTools.WeldGunDefiner.Core
                 double stroke = (double)root.Attribute("stroke"), gap = (double)root.Attribute("gap"), wear = (double)root.Attribute("wear");
                 var baseLocation = ReadTransform(root.Element("base"));
                 bool openAdapt = (bool)root.Attribute("openAdapt");
+                bool openPositive = (bool?)root.Attribute("openPositive") ?? false;
                 _model.HingeO = hingeO; _model.HingeA = hingeA; _model.HingeC = hingeC;
                 _model.WorldO = o; _model.WorldA = a; _model.WorldC = c; _model.PlaneNormal = n;
                 _model.HasO = _model.HasA = _model.HasC = true;
@@ -177,7 +195,7 @@ namespace TxTools.WeldGunDefiner.Core
                 var loc = tcp.AbsoluteLocation;
                 _model.WorldGunTcp = new Vec3(loc[0,3], loc[1,3], loc[2,3]);
                 _model.BaseLocation = baseLocation;
-                _model.PistonStroke = stroke; _model.OpenGap = gap; _model.WearAllowance = wear; _model.OpenStateAdapt = openAdapt;
+                _model.PistonStroke = stroke; _model.OpenGap = gap; _model.WearAllowance = wear; _model.OpenStateAdapt = openAdapt; _model.OpenPositive = openPositive;
                 var targets = new[] { _model.FixedLinkBodies, _model.InputLinkBodies, _model.CouplerLinkBodies, _model.OutputLinkBodies, _model.Lnk2Bodies };
                 for (int index = 0; index < 5; index++) { targets[index].Clear(); targets[index].AddRange(bodyLists[index]); }
                 if (!UpdateHingePoints(out status) || !ComputeMechanismFromPoints(out status)) return false;
@@ -286,6 +304,33 @@ namespace TxTools.WeldGunDefiner.Core
             return true;
         }
 
+        private bool TryRefreshDefinedDevice(string targetId, GenerationResult result, out string error)
+        {
+            error = null;
+            _model.TargetDevice = null;
+            try
+            {
+                result.AddInfo("[POSE] DefineAsTool 完成，按 ID 重新获取资源: " + targetId);
+                var refreshed = TxApplication.ActiveDocument.GetObjectById(targetId);
+                if (refreshed == null || !refreshed.IsValid())
+                    throw new InvalidOperationException("类型定义后未找到有效资源，ID=" + targetId);
+                result.AddInfo("[POSE] 重新获取后 CLR 类型=" + ((object)refreshed).GetType().FullName +
+                    "，ITxDevice=" + (refreshed is ITxDevice));
+                _model.TargetKinematics = refreshed as ITxKinematicsModellable ?? _model.TargetKinematics;
+                _model.TargetComponent = refreshed as ITxComponent ?? _model.TargetComponent;
+                _model.TargetDevice = refreshed as ITxDevice;
+                if (_model.TargetDevice == null)
+                    throw new InvalidOperationException("类型定义后重新获取的资源仍不支持 ITxDevice");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = "重新获取焊钳设备失败: " + ex;
+                result.AddInfo("[POSE] " + error);
+                return false;
+            }
+        }
+
         private Vec2 ComputePistonDir(ReferencePlane plane, Vec2 A2d)
         {
             // 活塞方向从铰点几何推算：A→C 在平面内的方向
@@ -305,6 +350,14 @@ namespace TxTools.WeldGunDefiner.Core
 
                 if (_model.TargetKinematics == null)
                 { result.AddError("未指定目标设备"); return result; }
+                // 每次重定义均重新读取资源，不能沿用类型转换前缓存的 Component 包装对象。
+                var current = TxApplication.ActiveDocument.GetObjectById(_model.TargetKinematics.Id);
+                if (!(current is ITxKinematicsModellable kinematics))
+                { result.AddError("重新获取的资源不支持运动学建模"); return result; }
+                _model.TargetKinematics = kinematics;
+                _model.TargetComponent = current as ITxComponent ?? _model.TargetComponent;
+                _model.TargetDevice = current as ITxDevice;
+                result.AddInfo("[重定义] 当前资源 CLR=" + ((object)current).GetType().FullName);
                 if (_model.Plane == null)
                 { result.AddError("参考平面未初始化，请先完成铰点选取"); return result; }
 
@@ -343,6 +396,9 @@ namespace TxTools.WeldGunDefiner.Core
                 // ── 活塞方向：从铰点几何推算（不依赖活塞杆几何体）──
                 Vec3 pistonDir = ComputePistonDirFromHinges();
 
+                try { _model.SynchronizeElectrodeBindings(); }
+                catch (Exception ex) { result.AddError(ex.Message); return result; }
+                result.AddInfo("[几何绑定] 静电极帽自动归入 lnk2，动电极帽自动归入 output_link");
                 // 构建RprrParams
                 var p = new RprrParams
                 {
@@ -365,6 +421,8 @@ namespace TxTools.WeldGunDefiner.Core
                     OpenGap = _model.MaxOpenGap,
                     WearAllowance = _model.WearAllowance,
                     OpenStateAdapt = _model.OpenStateAdapt,
+                    OpenPositive = _model.OpenPositive,
+                    ConfirmJointCleanup = ConfirmJointCleanup,
                 };
 
                 // 执行构建
@@ -392,7 +450,6 @@ namespace TxTools.WeldGunDefiner.Core
                     result.AddInfo(builder.Log);
                     return result;
                 }
-                _model.TargetDevice = _model.TargetKinematics as ITxDevice;
                 result.AddSuccess("RPRR运动学结构创建完成（7 Link + 6 Joint）");
                 result.AddInfo(builder.Log);
 
@@ -402,38 +459,10 @@ namespace TxTools.WeldGunDefiner.Core
                 result.AddInfo("=== 几何常数 ===");
                 result.AddInfo($"a=|OA|={formulas.Const_a:F2}  b=连杆={formulas.Const_b:F2}  r=|OC|={formulas.Const_r:F2}  s0={formulas.Const_s0:F2}");
 
-                // 自动姿态是可选步骤，失败仅提示手动补建，不阻止后续焊钳定义。
-                bool poseReady = builder.VerifyReadyForPoses(out string poseReadyError);
-                if (poseReady && _model.TargetDevice != null)
-                {
-                    var closeVals = new System.Collections.Generic.Dictionary<TxJoint, double>();
-                    var openVals = new System.Collections.Generic.Dictionary<TxJoint, double>();
-                    if (builder.J1 != null)
-                    {
-                        // CLOSE = 零位，OPEN = 负开口；正磨量不属于闭合姿态。
-                        closeVals[builder.J1] = 0;
-                        openVals[builder.J1] = formulas.J1_Low;
-                    }
-                    string pcErr, poErr;
-                    bool pc = PsSdkHelper.CreatePose(_model.TargetDevice, "CLOSE", closeVals, out pcErr);
-                    result.AddInfo(pc ? "[OK] Pose: CLOSE" : "[!] CLOSE 自动创建失败，可手动创建（j1=0）: " + pcErr);
-                    bool po = PsSdkHelper.CreatePose(_model.TargetDevice, "OPEN", openVals, out poErr);
-                    result.AddInfo(po ? "[OK] Pose: OPEN" : $"[!] OPEN 自动创建失败，可手动创建（j1={formulas.J1_Low:F2}）: " + poErr);
-
-                    if (pc && po)
-                    {
-                        bool lb = PsSdkHelper.CreateSimpleLogicBlock(_model.TargetDevice, "GUN_OPEN", "OPEN", "CLOSE");
-                        result.AddInfo(lb ? "[OK] Logic Block" : "[!] Logic Block 需手动配置");
-                    }
-                    else result.AddInfo("[!] 姿态未全部就绪，请手动补建后配置 Logic Block");
-                }
-                else
-                {
-                    result.AddInfo("[!] 自动姿态前置检查未通过，已跳过 CLOSE/OPEN: " + poseReadyError);
-                    result.AddInfo($"[!] 可手动创建 CLOSE（j1=0）、OPEN（j1={formulas.J1_Low:F2}），再配置 Logic Block");
-                }
-
-                // ── 焊钳定义（Servo Gun）：写完Pose后添加 ──
+                string targetId = _model.TargetKinematics.Id;
+                result.AddInfo("[POSE] 类型定义前 CLR 类型=" + ((object)_model.TargetKinematics).GetType().FullName +
+                    "，ITxDevice=" + (_model.TargetKinematics is ITxDevice) + "，ID=" + targetId);
+                // 先定义焊钳类型，再获取设备接口并创建姿态。TxComponent 不一定实现 ITxDevice。
                 // Tool=Servo Gun, TCP=选取的TcpFrame, Base=焊钳自身坐标,
                 // 不检测干涉=静/动电极帽（可留空）
                 if (_model.TargetKinematics != null)
@@ -453,11 +482,55 @@ namespace TxTools.WeldGunDefiner.Core
 
                     string gunErr;
                     bool gun = PsSdkHelper.DefineAsServoGun(
-                        _model.TargetKinematics, _model.TcpFrame, baseLoc, nonColliding, out gunErr);
+                        _model.TargetKinematics, _model.TcpFrame, baseLoc, nonColliding, out gunErr, result.AddInfo);
                     if (!gun) result.AddError(gunErr);
                     result.AddInfo(gun
                         ? $"[OK] 焊钳定义: Servo Gun (TCP={(_model.TcpFrame != null ? _model.TcpFrame.Name : "未设")}, 不检测干涉×{nonColliding.Count})"
                         : "[!] 焊钳定义部分失败 - " + gunErr);
+                }
+                if (result.Errors.Count != 0)
+                {
+                    result.AddInfo("[POSE] 焊钳类型定义失败，未尝试创建姿态");
+                    return result;
+                }
+
+                bool deviceReady = TryRefreshDefinedDevice(targetId, result, out string refreshError);
+                bool poseReady = false;
+                string poseReadyError = refreshError;
+                if (deviceReady)
+                {
+                    result.AddInfo("[POSE] 使用重新获取的 ITxDevice 检查驱动轴与当前姿态模板");
+                    poseReady = builder.VerifyReadyForPoses(out poseReadyError, _model.TargetDevice);
+                    if (poseReady) result.AddInfo("[POSE] 前置检查通过，开始创建 CLOSE/OPEN");
+                }
+                // 自动姿态是可选步骤，失败仅提示手动补建，不影响已完成的焊钳定义。
+                if (poseReady && _model.TargetDevice != null)
+                {
+                    var closeVals = new System.Collections.Generic.Dictionary<TxJoint, double>();
+                    var openVals = new System.Collections.Generic.Dictionary<TxJoint, double>();
+                    if (builder.J1 != null)
+                    {
+                        // CLOSE = 零位；OPEN 与磨量的符号由 OpenPositive 统一决定。
+                        closeVals[builder.J1] = 0;
+                        openVals[builder.J1] = formulas.J1_Open;
+                    }
+                    string pcErr, poErr;
+                    bool pc = PsSdkHelper.CreatePose(_model.TargetDevice, "CLOSE", closeVals, out pcErr, result.AddInfo);
+                    result.AddInfo(pc ? "[OK] Pose: CLOSE" : "[!] CLOSE 自动创建失败，可手动创建（j1=0）: " + pcErr);
+                    bool po = PsSdkHelper.CreatePose(_model.TargetDevice, "OPEN", openVals, out poErr, result.AddInfo);
+                    result.AddInfo(po ? "[OK] Pose: OPEN" : $"[!] OPEN 自动创建失败，可手动创建（j1={formulas.J1_Open:F2}）: " + poErr);
+
+                    if (pc && po)
+                    {
+                        bool lb = PsSdkHelper.CreateSimpleLogicBlock(_model.TargetDevice, "GUN_OPEN", "OPEN", "CLOSE");
+                        result.AddInfo(lb ? "[OK] Logic Block" : "[!] Logic Block 需手动配置");
+                    }
+                    else result.AddInfo("[!] 姿态未全部就绪，请手动补建后配置 Logic Block");
+                }
+                else
+                {
+                    result.AddInfo("[!] 自动姿态前置检查未通过，已跳过 CLOSE/OPEN: " + poseReadyError);
+                    result.AddInfo($"[!] 可手动创建 CLOSE（j1=0）、OPEN（j1={formulas.J1_Open:F2}），再配置 Logic Block");
                 }
 
                 result.Success = result.Errors.Count == 0;

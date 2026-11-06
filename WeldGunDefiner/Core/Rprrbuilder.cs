@@ -78,13 +78,14 @@ namespace TxTools.WeldGunDefiner.Core
                     // _device.Joints 可能返回不完整，残留Joint清不掉
                     if (!_device.IsOpenForKinematicsModeling)
                     {
-                        try { (_device as ITxComponent)?.SetModelingScope(); } catch { }
+                        (_device as ITxComponent)?.SetModelingScope();
                         AddLog($"SetModelingScope后 IsOpen = {_device.IsOpenForKinematicsModeling}");
                     }
 
-                    ValidateOwnership();
-                    CleanupDefaultScaffold();
-                    CleanupPrevious();
+                    if (!_device.IsOpenForKinematicsModeling)
+                        throw new InvalidOperationException("设备未进入运动学建模状态");
+                    ValidateBuildInputs();
+                    RebuildExistingMechanism();
 
                     // ── 创建 7 个 Link ──
                     var fixedLink = CreateLink("fixed_link", _p.FixedLinkBodies);
@@ -290,6 +291,7 @@ namespace TxTools.WeldGunDefiner.Core
                 }
                 catch (Exception ex)
                 {
+                    AddLog("[重建失败] " + ex);
                     error = ex.Message;
                     if (ex.InnerException != null) error += " | " + ex.InnerException.Message;
                     return false;
@@ -318,12 +320,12 @@ namespace TxTools.WeldGunDefiner.Core
             catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; return false; }
         }
 
-        public bool VerifyReadyForPoses(out string error)
+        public bool VerifyReadyForPoses(out string error, ITxDevice definedDevice = null)
         {
             if (!VerifyKinematics(out error)) return false;
             try
             {
-                var device = _device as ITxDevice;
+                var device = definedDevice ?? _device as ITxDevice;
                 if (device == null) throw new InvalidOperationException("目标不支持 ITxDevice，无法创建姿态");
                 bool found = false;
                 var names = new List<string>();
@@ -407,7 +409,7 @@ namespace TxTools.WeldGunDefiner.Core
 
             // ── input_j1 公式：D(j1)*行程/开口 ──
             string inputFormula =
-                FormattableString.Invariant($"((D({nJ1})){_p.PistonStroke:F6}/{_p.OpenGap:F6})");
+                FormattableString.Invariant($"(({(_p.OpenPositive ? -1 : 1)})(D({nJ1})){_p.PistonStroke:F6}/{_p.OpenGap:F6})");
 
             // ── coup_output_j1 公式（精确复刻系统格式）──
             // (atan2((( a )sin(T(fixed)+offsetA)),(((( d )( d ))+( innerConst ))/(2( d ))))+(-1)( offsetC ))
@@ -431,11 +433,12 @@ namespace TxTools.WeldGunDefiner.Core
                 $"((-1)(T({nCoupOut})+T({nFixedInput})))";
 
             // ── j2 磨量补偿：用 D(nJ1) ──
-            string j2Formula = $"(((D({nJ1}))>=0)*((D({nJ1}))/2))";
+            string signedInput = _p.OpenPositive ? $"((-1)(D({nJ1})))" : $"(D({nJ1}))";
+            string j2Formula = $"(({signedInput}>=0)*({signedInput}/2))";
 
             // ── 限位 ──
-            double j1Low = -_p.OpenGap;
-            double j1High = _p.WearAllowance;
+            double j1Low = _p.OpenPositive ? -_p.WearAllowance : -_p.OpenGap;
+            double j1High = _p.OpenPositive ? _p.OpenGap : _p.WearAllowance;
             double inputLow = -_p.PistonStroke;
             double inputHigh = _p.PistonStroke;
 
@@ -446,6 +449,7 @@ namespace TxTools.WeldGunDefiner.Core
                 CoupOutputJl_Formula = coupFormula,
                 OutputJl_Formula = outputFormula,
                 J2_Formula = j2Formula,
+                J1_Open = _p.OpenPositive ? _p.OpenGap : -_p.OpenGap,
                 J1_Low = j1Low,
                 J1_High = j1High,
                 InputJl_Low = inputLow,
@@ -495,69 +499,142 @@ namespace TxTools.WeldGunDefiner.Core
             return bodies;
         }
 
-        private void CleanupDefaultScaffold()
+        private void ValidateBuildInputs()
         {
-            var defaults = new List<TxKinematicLink>();
-            foreach (ITxObject obj in _device.Links)
-                if (obj is TxKinematicLink link &&
-                    (string.Equals(link.Name, "DLink1", StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(link.Name, "DLink2", StringComparison.OrdinalIgnoreCase)))
-                {
-                    if (link.Count != 0 || link.Elements.Count != 0)
-                        throw new InvalidOperationException(link.Name + " 含有几何或元素，未清理默认机构");
-                    defaults.Add(link);
-                }
+            if (_p.Plane == null || _p.N.Length < 0.5 || _p.PistonDir.Length < 0.5)
+                throw new InvalidOperationException("平面、法向或活塞方向无效，未清理旧机构");
+            if (!( _p.PistonStroke > 0) || !(_p.OpenGap > 0) || !(_p.WearAllowance >= 0) ||
+                double.IsInfinity(_p.PistonStroke) || double.IsInfinity(_p.OpenGap) || double.IsInfinity(_p.WearAllowance))
+                throw new InvalidOperationException("行程/开口必须为有限正数，磨量必须为有限非负数");
+            var roles = new[] { _p.FixedLinkBodies, _p.InputLinkBodies, _p.CouplerLinkBodies, _p.OutputLinkBodies, _p.Lnk2Bodies };
+            var roleNames = new[] { "fixed_link", "input_link", "coupler_link", "output_link", "lnk2" };
+            var selected = new List<KeyValuePair<ITxObject, string>>();
+            for (int index = 0; index < roles.Length; index++)
+                if (roles[index] != null)
+                    foreach (var item in roles[index])
+                    {
+                        if (!PsSdkHelper.ValidateLinkBody(item, _device, out string reason))
+                            throw new InvalidOperationException("[预检 " + roleNames[index] + "] " + reason + "；未清理或创建机构");
+                        foreach (var prior in selected)
+                            if (item.Id == prior.Key.Id || PsSdkHelper.IsDescendantOf(item, prior.Key) || PsSdkHelper.IsDescendantOf(prior.Key, item))
+                                throw new InvalidOperationException("[预检] 重复或父子几何同时被选: " + prior.Value + "/" + prior.Key.Name +
+                                    " 与 " + roleNames[index] + "/" + item.Name + "；未修改机构");
+                        selected.Add(new KeyValuePair<ITxObject, string>(item, roleNames[index]));
+                    }
+            var projectedO = _p.Plane.Project(_p.WorldO);
+            var projectedA = _p.Plane.Project(_p.WorldA);
+            var projectedC = _p.Plane.Project(_p.WorldC);
+            double a = (projectedA - projectedO).Length, b = (projectedC - projectedO).Length, ac = (projectedC - projectedA).Length;
+            double closedLength = _p.OpenStateAdapt ? ac + _p.PistonStroke : ac;
+            double minLength = closedLength - _p.PistonStroke;
+            double maxLength = closedLength + _p.PistonStroke * _p.WearAllowance / _p.OpenGap;
+            if (!(a > 1e-6) || !(b > 1e-6) || !(minLength > 1e-6) ||
+                double.IsInfinity(a + b + ac + maxLength) || double.IsNaN(a + b + ac + maxLength) ||
+                minLength < System.Math.Abs(a - b) - 1e-5 || maxLength > a + b + 1e-5)
+                throw new InvalidOperationException("铰点重复/无效，或行程、磨量超出机构三角形可达范围；未修改机构");
+            AddLog("[预检] 几何类型、归属、重复、层级和行程范围检查通过");
+            var formulas = BuildFormulas();
+            if (double.IsNaN(formulas.OffsetA) || double.IsInfinity(formulas.OffsetA) ||
+                double.IsNaN(formulas.OffsetC) || double.IsInfinity(formulas.OffsetC))
+                throw new InvalidOperationException("机构几何无效，未清理旧机构");
+        }
+
+        private void RebuildExistingMechanism()
+        {
             var joints = new List<TxJoint>();
-            foreach (TxJoint joint in _device.Joints)
-            {
-                bool parent = defaults.Exists(link => link.Equals(joint.ParentLink));
-                bool child = defaults.Exists(link => link.Equals(joint.ChildLink));
-                if (!parent && !child) continue;
-                bool defaultName = System.Text.RegularExpressions.Regex.IsMatch(joint.Name,
-                    @"^DJoint\d*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                if (!parent || !child || !defaultName || !string.IsNullOrWhiteSpace(joint.KinematicsFunction))
-                    throw new InvalidOperationException("默认 Link 被非空或用户关节引用: " + joint.Name + "，未清理");
-                joints.Add(joint);
-            }
-            // 先检查整个候选结构，再先删关节、后删空 Link。
-            foreach (var joint in joints) { string name = joint.Name; joint.Delete(); AddLog("清理默认空关节: " + name); }
-            foreach (var link in defaults) { string name = link.Name; link.Delete(); AddLog("清理默认空 Link: " + name); }
-        }
-
-        // 未标记的旧机构不自动接管；同名不是所有权证据。
-        private void ValidateOwnership()
-        {
-            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { "fixed_Input_j1", "fixed_input_jl", "input_j1", "input_jl", "coup_output_j1",
-              "coup_output_jl", "output_j1", "output_jl", "j1", "j2",
-              "fixed_link", "input_link", "coupler_link", "output_link", "dummy_link", "lnk1", "lnk2" };
-            foreach (ITxObject obj in _device.Joints)
-            {
-                if (names.Contains(obj.Name) && !IsOwned(obj))
-                    throw new InvalidOperationException("存在未标记的已有关节 " + obj.Name + "，已停止。请在 PS 原生命令中确认并处理旧机构，再重新生成。");
-                var joint = obj as TxJoint;
-                if (joint != null && !IsOwned(joint) &&
-                    ((joint.ParentLink != null && IsOwned(joint.ParentLink)) ||
-                     (joint.ChildLink != null && IsOwned(joint.ChildLink))))
-                    throw new InvalidOperationException("已有用户关节引用本工具 Link: " + obj.Name + "，已停止重建，请先用 PS 原生命令确认机构。");
-            }
+            var links = new List<TxKinematicLink>();
+            foreach (TxJoint joint in _device.Joints) joints.Add(joint);
             foreach (ITxObject obj in _device.Links)
-                if (names.Contains(obj.Name) && !IsOwned(obj))
-                    throw new InvalidOperationException("存在未标记的已有 Link " + obj.Name + "，已停止，未自动删除或接管。");
-        }
-
-        private void CleanupPrevious()
-        {
-            var joints = _device.Joints;
-            if (joints == null) return;
-            var owned = new List<TxJoint>();
-            foreach (ITxObject obj in joints)
             {
-                var joint = obj as TxJoint;
-                if (joint != null && IsOwned(joint)) owned.Add(joint);
+                var link = obj as TxKinematicLink;
+                if (link == null) throw new InvalidOperationException("存在无法识别的 Link，未修改已有机构: " + obj.Name);
+                links.Add(link);
             }
-            foreach (var joint in owned)
-            { string name = joint.Name; joint.Delete(); AddLog("清理本工具关节: " + name); }
+            AddLog($"[重定义] CLR={((object)_device).GetType().FullName}, ITxDevice={_device is ITxDevice}, Joint={joints.Count}, Link={links.Count}");
+            if (joints.Count == 0 && links.Count == 0) { AddLog("[重定义] 全新资源，直接创建"); return; }
+            var detail = new System.Text.StringBuilder();
+            foreach (var link in links)
+            {
+                string description = $"Link {link.Name}, ID={link.Id}, 子对象={link.Count}, Elements={link.Elements.Count}";
+                detail.AppendLine(description); AddLog("[重定义] " + description);
+            }
+            foreach (var joint in joints)
+            {
+                detail.AppendLine("Joint " + joint.Name);
+                AddLog($"[重定义] Joint {joint.Name}, ID={joint.Id}, {joint.ParentLink?.Name} -> {joint.ChildLink?.Name}, 公式={joint.KinematicsFunction}");
+            }
+            if (_p.ConfirmJointCleanup == null || !_p.ConfirmJointCleanup(detail.ToString()))
+                throw new InvalidOperationException("已取消清理 Joint/Link，已有机构保持不变");
+
+            var owner = _device as ITxObjectCollection;
+            if (owner == null) throw new InvalidOperationException("设备不支持几何回收，未清理已有机构");
+
+            // 先快照所有几何与世界变换；不能直接删除仍包含实体的 Link。
+            var contents = new Dictionary<TxKinematicLink, List<ITxObject>>();
+            foreach (var link in links)
+            {
+                var children = new List<ITxObject>();
+                foreach (ITxObject child in link.GetDirectDescendants(new TxTypeFilter(typeof(ITxObject))))
+                    if (!(child is TxKinematicLink) && !(child is TxJoint)) children.Add(child);
+                contents.Add(link, children);
+            }
+            foreach (var link in links)
+            {
+                AddLog("[清理] 移出几何: " + link.Name + ", 数量=" + contents[link].Count);
+                foreach (var child in contents[link])
+                {
+                    var locatable = child as ITxLocatableObject;
+                    var world = locatable?.AbsoluteLocation;
+                    owner.AddObject(child);
+                    if (locatable != null && world != null) locatable.AbsoluteLocation = world;
+                    AddLog("[清理] 已保留几何 " + child.Name + ", ID=" + child.Id);
+                }
+                var elements = link.Elements;
+                if (elements.Count > 0)
+                {
+                    AddLog("[清理] 解除 Link Elements: " + link.Name + ", 数量=" + elements.Count);
+                    link.RemoveElements(elements);
+                }
+            }
+
+            // 先去掉所有从动公式，再从叶关节开始删除，避免悬空公式和父子链依赖。
+            foreach (var joint in joints)
+                if (!string.IsNullOrWhiteSpace(joint.KinematicsFunction))
+                {
+                    AddLog("[清理] 清除公式: " + joint.Name);
+                    joint.KinematicsFunction = string.Empty;
+                }
+            var pending = new List<TxJoint>(joints);
+            while (pending.Count > 0)
+            {
+                var leaf = pending.Find(j => !pending.Exists(other => !other.Equals(j) && other.ParentLink != null && other.ParentLink.Equals(j.ChildLink)));
+                if (leaf == null)
+                {
+                    leaf = pending.Find(joint => joint.CanBeDeleted);
+                    if (leaf == null) throw new InvalidOperationException("闭环旧机构没有允许删除的 Joint，请撤销后检查建模权限");
+                    AddLog("[清理] 旧机构存在闭环，先断开允许删除的关节: " + leaf.Name);
+                }
+                string name = leaf.Name, id = leaf.Id;
+                AddLog("[清理] 删除 Joint: " + name + ", ID=" + id + ", CanBeDeleted=" + leaf.CanBeDeleted);
+                if (!leaf.CanBeDeleted) throw new InvalidOperationException("Joint 不允许删除: " + name);
+                leaf.Delete();
+                pending.Remove(leaf);
+            }
+            if (_device.Joints.Count != 0) throw new InvalidOperationException("Joint 清理后仍有残留，未创建新机构");
+            pending.Clear();
+            var remainingLinks = new List<TxKinematicLink>(links);
+            while (remainingLinks.Count > 0)
+            {
+                var leaf = remainingLinks.Find(link => link.Count == 0);
+                if (leaf == null) throw new InvalidOperationException("Link 仍包含子对象，停止删除以保留几何");
+                string name = leaf.Name, id = leaf.Id;
+                AddLog("[清理] 删除空 Link: " + name + ", ID=" + id + ", CanBeDeleted=" + leaf.CanBeDeleted);
+                if (leaf.Elements.Count != 0 || !leaf.CanBeDeleted) throw new InvalidOperationException("Link 尚未解绑或不允许删除: " + name);
+                leaf.Delete();
+                remainingLinks.Remove(leaf);
+            }
+            if (_device.Links.Count != 0) throw new InvalidOperationException("Link 清理后仍有残留，未创建新机构");
+            AddLog("[清理] Joint=0，Link=0，几何已保留；开始重新创建");
         }
 
         private TxKinematicLink FindExistingLink(string name)
@@ -581,24 +658,36 @@ namespace TxTools.WeldGunDefiner.Core
             try
             {
                 TxKinematicLink link = FindExistingLink(name);
-                if (link != null) AddLog($"  Link '{name}' 复用");
+                if (link != null) throw new InvalidOperationException("清理后存在同名 Link: " + name);
                 else
                 {
                     var data = new TxKinematicLinkCreationData();
                     data.Name = name;
+                    bool canCreate = _device.CanCreateLink(data);
+                    AddLog("[Link] CanCreateLink(" + name + ")=" + canCreate);
+                    if (!canCreate) throw new InvalidOperationException("CanCreateLink=false: " + name);
                     link = _device.CreateLink(data);
-                    if (link == null) return null;
+                    if (link == null) throw new InvalidOperationException("CreateLink返回空对象: " + name);
                     OwnedObjects.Add(link);
                 }
                 link.SetAttribute(new TxStringAttribute(OwnerAttribute, "RPRR-v1"));
                 var existingBodies = ReadLinkBodies(link);
                 if (bodies != null)
                     foreach (var b in bodies)
-                        if (b != null && !existingBodies.Exists(item => item.Equals(b))) link.AddObject(b);
-                AddLog($"  Link '{name}' OK ({bodies?.Count ?? 0} 几何体)");
+                        if (b != null && !existingBodies.Exists(item => item.Equals(b)))
+                        {
+                            AddLog("[Link " + name + "] 绑定 " + b.Name + ", ID=" + b.Id + ", CLR=" + ((object)b).GetType().FullName);
+                            link.AddObject(b);
+                        }
+                var actual = ReadLinkBodies(link);
+                if (bodies != null)
+                    foreach (var body in bodies)
+                        if (!actual.Exists(item => item.Id == body.Id))
+                            throw new InvalidOperationException(name + " 几何绑定回读缺失: " + body.Name);
+                AddLog($"  Link '{name}' OK, ID={link.Id}, 请求={bodies?.Count ?? 0}, 回读={actual.Count}");
                 return link;
             }
-            catch (Exception ex) { AddLog($"  [X] Link '{name}': {ex.Message}"); return null; }
+            catch (Exception ex) { AddLog($"  [X] Link '{name}': {ex}"); throw new InvalidOperationException("Link绑定失败，已停止后续创建: " + name, ex); }
         }
 
         private TxJoint CreateJointInternal(string name, string typeName,
@@ -624,6 +713,9 @@ namespace TxTools.WeldGunDefiner.Core
                 AddLog($"  创建{name}: from=({from.X:F1},{from.Y:F1},{from.Z:F1}) to=({to.X:F1},{to.Y:F1},{to.Z:F1})");
                 AddLog($"    parent={parentLink?.Name} child={childLink?.Name} 轴长={axisLen:F4}");
 
+                bool canCreate = _device.CanCreateJoint(data);
+                AddLog("[Joint] CanCreateJoint(" + name + ")=" + canCreate);
+                if (!canCreate) throw new InvalidOperationException("CanCreateJoint=false: " + name);
                 TxJoint joint = _device.CreateJoint(data);
                 if (joint == null) { AddLog($"  [X] {name}: CreateJoint 返回 null"); return null; }
                 OwnedObjects.Add(joint);
@@ -648,7 +740,7 @@ namespace TxTools.WeldGunDefiner.Core
             }
             catch (Exception ex)
             {
-                AddLog($"  [X] {name} 异常: {ex.Message}");
+                AddLog($"  [X] {name} 异常: {ex}");
                 if (ex.InnerException != null) AddLog($"      内部: {ex.InnerException.Message}");
                 AddLog($"      StackTrace: {ex.StackTrace?.Split('\n')[0]}");
                 return null;
@@ -665,11 +757,36 @@ namespace TxTools.WeldGunDefiner.Core
             try { return joint.Name; } catch { return "?"; }
         }
 
+        private int _formulaWriteIndex;
         private bool WriteFormula(TxJoint joint, string formula, string label)
         {
-            if (joint == null || string.IsNullOrEmpty(formula)) throw new InvalidOperationException(label + ": 关节或公式为空");
-            try { joint.KinematicsFunction = formula; AddLog($"  {label} 公式 OK"); return true; }
-            catch (Exception ex) { throw new InvalidOperationException($"{label} 公式注入失败: {formula}", ex); }
+            int index = ++_formulaWriteIndex;
+            if (joint == null || string.IsNullOrWhiteSpace(formula))
+                throw new InvalidOperationException(label + ": 关节或公式为空");
+            try
+            {
+                foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(formula, @"[DT]\(([^()]+)\)"))
+                {
+                    string dependency = match.Groups[1].Value;
+                    bool found = false;
+                    foreach (TxJoint candidate in _device.Joints) if (candidate.Name == dependency) found = true;
+                    if (!found || dependency == joint.Name)
+                        throw new InvalidOperationException("公式依赖不存在或引用自身: " + dependency);
+                }
+                AddLog($"[公式 {index}] 开始 {label}, ID={joint.Id}, {joint.ParentLink?.Name}->{joint.ChildLink?.Name}");
+                AddLog("[公式 " + index + "] 写入: " + formula);
+                joint.KinematicsFunction = formula;
+                string saved = joint.KinematicsFunction;
+                AddLog("[公式 " + index + "] 回读: " + saved);
+                if (string.IsNullOrWhiteSpace(saved)) throw new InvalidOperationException("公式写入后为空");
+                AddLog($"[公式 {index}] {label} 注入成功");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                AddLog($"[公式 {index}] {label} 失败: {ex}");
+                throw new InvalidOperationException($"{label} 公式注入失败: {formula}", ex);
+            }
         }
 
         private void AddLog(string msg) => Log += msg + "\n";
@@ -704,6 +821,8 @@ namespace TxTools.WeldGunDefiner.Core
         // 勾选后分阶段写入：先建主链独立驱动input_j1回闭合→DefineZeroPosition→
         // 重写input_j1限位为[-行程,0]→再建旁支j1/j2接驱动链。
         public bool OpenStateAdapt { get; set; } = false;
+        public bool OpenPositive { get; set; }
+        public Func<string, bool> ConfirmJointCleanup { get; set; }
     }
 
     public class RprrFormulas
@@ -714,7 +833,7 @@ namespace TxTools.WeldGunDefiner.Core
         public string OutputJl_Formula { get; set; }
         public string J2_Formula { get; set; }
 
-        public double J1_Low, J1_High;
+        public double J1_Low, J1_High, J1_Open;
         public double InputJl_Low, InputJl_High;
 
         public double Const_a, Const_b, Const_r, Const_s0;

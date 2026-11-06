@@ -1,699 +1,317 @@
-﻿// CatiaPartTreeForm.cs — 主窗体：读取 CATIA 目录树、在树内做调整（勾选/增删/改名/排序）、
-// 创建 PS 零件树、把已导入零件归类进对应容器。
-// 遵循套件统一 GUI 规范（FormUiKit），配色全部来自 Theme。
-
 using System;
+using System.Collections.Generic;
 using System.Drawing;
+using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
+using TxTools.Common;
+using TxTools.Common.TreeWorkflow;
 using TxTools.CatiaPartTree.Core;
 using TxTools.CatiaPartTree.Ps;
-using TxTools.Common;
-using Theme = TxTools.Common.FormUiKit.Theme;
-using FlatColorButton = TxTools.Common.FormUiKit.FlatColorButton;
 
 namespace TxTools.CatiaPartTree
 {
-    public partial class CatiaPartTreeForm : TxForm
+    public class CatiaPartTreeForm : PickAwareTxForm
     {
-        private enum LogLevel { Info, Ok, Warn, Error, Ps }
+        private StructureNode _source;
+        private readonly System.Windows.Forms.Timer _autoPreview = new System.Windows.Forms.Timer { Interval = 250 };
+        private readonly TxObjGridCtrl _sourcePick = new TxObjGridCtrl(), _targetPick = new TxObjGridCtrl(), _bindingPick = new TxObjGridCtrl();
+        private bool _syncPicker;
+        private ITxObject _target;
+        private object _document;
+        private StructurePlan _plan;
+        private readonly TreeView _left = new TreeView { Dock = DockStyle.Fill, CheckBoxes = true, HideSelection = false };
+        private readonly TreeView _right = new TreeView { Dock = DockStyle.Fill, HideSelection = false };
+        private readonly ListView _problems = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HideSelection = false, MultiSelect = false };
+        private readonly TextBox _issues = new TextBox { Dock = DockStyle.Bottom, Height = 42, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical };
+        private readonly TextBox _search = new TextBox { Width = 100 };
+        private readonly ComboBox _candidates = new ComboBox { Width = 420, DropDownStyle = ComboBoxStyle.DropDownList };
+        private readonly Label _targetLabel = WorkflowUi.Label("目标容器：未选择");
+        private readonly Label _sourceLabel = WorkflowUi.Label("来源：未读取");
+        private readonly Label _status = WorkflowUi.Label("① 选择输入 → ② 编辑结构 → ③ 检查问题 → ④ 执行结果");
+        private readonly Label _selection = WorkflowUi.Label("选中来源节点后可指定对应的 PS 零件实例");
+        private readonly CheckBox _includeRoot = new CheckBox { Text = "保留来源根容器", Checked = true, AutoSize = true };
+        private readonly CheckBox _createLayer = new CheckBox { Text = "创建此层容器", AutoSize = true, Enabled = false };
+        private bool _showingSelection;
+        private readonly ComboBox _mode = new ComboBox { Width = 230, DropDownStyle = ComboBoxStyle.DropDownList };
+        private Button _apply, _result;
+        private bool _refreshing, _busy, _scaled, _stale = true, _finished;
+        private readonly Size _design = new Size(650, 860);
+        private StructureNode SelectedSource { get { return _left.SelectedNode == null ? null : _left.SelectedNode.Tag as StructureNode; } }
 
-        // ── 数据 ─────────────────────────────────────────────────────────
-        private readonly CatiaPartTreeService _svc;
-        private TreeEditNode _model;                 // 当前可编辑树（根）
-        private static readonly Size _designSize = new Size(1080, 660);
-        private bool _dpiApplied;
-
-        // ── 左侧：树编辑 ─────────────────────────────────────────────────
-        private TreeView _tree;
-        private TextBox _txtFilter;
-        private Label _lblStats;
-
-        // ── 右侧：目标与命名 ─────────────────────────────────────────────
-        private ComboBox _cmbParent;
-        private NumericUpDown _numDepth;
-        private CheckBox _chkIncludeRoot;
-        private CheckBox _chkPreferPn;
-        private CheckBox _chkLeafContainers;
-
-        // ── 右侧：创建 / 归类 ────────────────────────────────────────────
-        private ComboBox _cmbScope;
-        private CheckBox _chkUnmatched;
-        private CheckBox _chkAutoCreate;
-        private CheckBox _chkReload;
-
-        // ── 日志 ─────────────────────────────────────────────────────────
-        private RichTextBox _rtbLog;
-
-        public CatiaPartTreeForm(SynchronizationContext psCtx)
+        public CatiaPartTreeForm(SynchronizationContext context)
         {
-            SemiModal = false;
-            _svc = new CatiaPartTreeService();
+            FormUiKit.InitStandardForm(this, "零件树整理 · 结构与实例归属", _design, new Size(650, 780), sizable: true);
+            FormBorderStyle = FormBorderStyle.Sizable; MaximizeBox = true; SemiModal = false;
+            _document = TxApplication.ActiveDocument;
+            var input = WorkflowUi.PickerRow(WorkflowUi.Picker("① 来源零件（单选）", _sourcePick), WorkflowUi.Picker("② 目标容器（单选）", _targetPick), WorkflowUi.Picker("③ 绑定实例（选左树叶子）", _bindingPick));
+            _sourcePick.EnableMultipleSelection = _targetPick.EnableMultipleSelection = _bindingPick.EnableMultipleSelection = false;
+            _sourcePick.ObjectInserted += (s, e) => Run(ReadPickedSource);
+            _sourcePick.RowDeleted += (s, e) => { if (!_syncPicker) { _source = null; RefreshSource(); InvalidatePlan(); } };
+            _targetPick.ObjectInserted += (s, e) => Run(ReadPickedTarget);
+            _targetPick.RowDeleted += (s, e) => { _target = null; InvalidatePlan(); };
+            _bindingPick.ObjectInserted += (s, e) => { if (!_syncPicker) Run(() => Bind(_bindingPick.GetObject(_bindingPick.Count - 1))); };
+            _bindingPick.RowDeleted += (s, e) => { if (!_syncPicker && SelectedSource != null) Edit(n => n.BoundPart = null); };
+            var catia = WorkflowUi.Bar(); WorkflowUi.Button(catia, "读取 CATIA 活动产品", ReadCatia); catia.Controls.Add(_sourceLabel);
+            _mode.Items.AddRange(new object[] { "仅创建容器结构", "创建结构并归类已有零件" }); _mode.SelectedIndex = 0;
+            var settings = WorkflowUi.Bar(); settings.Controls.Add(WorkflowUi.Label("执行内容")); settings.Controls.Add(_mode); settings.Controls.Add(_includeRoot);
+            settings.Controls.Add(WorkflowUi.Label("取消根容器后，从来源根的子级开始"));
+            var leftTools = WorkflowUi.Bar(); leftTools.Controls.Add(WorkflowUi.Label("零件树 · 编辑参与范围")); leftTools.Controls.Add(_search);
 
-            FormUiKit.InitStandardForm(this, "CATIA 目录树 → PS 零件树",
-                _designSize, new Size(900, 600), sizable: true);
-            this.Padding = new Padding(4);
+            var rightTools = WorkflowUi.Bar(); rightTools.Controls.Add(WorkflowUi.Label("零件容器创建预览"));
 
-            BuildBody();
-            BuildBottomBar();
+            rightTools.Controls.Add(_createLayer);
 
-            Log("插件已加载。在 CATIA 中打开 .CATProduct 后点 [读取 CATIA 树]，");
-            Log("可在左侧调整树（勾选/增删/改名/排序），然后 [创建零件树]，最后 [归类已导入零件]。");
+            var split = new SplitContainer { Size = _design, Dock = DockStyle.Fill, SplitterDistance = 470 };
+            split.Panel1.Controls.Add(_left); split.Panel1.Controls.Add(leftTools); split.Panel2.Controls.Add(_right); split.Panel2.Controls.Add(rightTools);
+            leftTools.AutoSize = rightTools.AutoSize = false; leftTools.Height = rightTools.Height = 70;
+            WorkflowUi.EqualTrees(split); WireDragDrop();
+            _right.LabelEdit = true;
+            _right.AfterLabelEdit += (s, e) => { e.CancelEdit = true; if (e.Label != null) Run(() => { SelectSource(((StructureChange)e.Node.Tag).Node); Edit(n => n.TargetName = StructureEngine.Clean(e.Label)); }); };
+            _right.BeforeLabelEdit += (s, e) => { var c = (StructureChange)e.Node.Tag; if (!c.Container) e.CancelEdit = true; else e.Node.Text = c.Name; };
+            _right.NodeMouseDoubleClick += (s, e) => { if (((StructureChange)e.Node.Tag).Container) e.Node.BeginEdit(); };
+            foreach (var col in new[] { "来源节点", "问题", "来源路径" }) _problems.Columns.Add(col, col == "问题" ? 430 : 270);
+            var problemBox = new GroupBox { Text = "问题列表 · 点击定位来源，指定实例或排除分支后重新检查", Dock = DockStyle.Bottom, Height = 95 }; problemBox.Controls.Add(_problems);
+            var footer = WorkflowUi.Bar(); footer.Dock = DockStyle.Bottom;
+            WorkflowUi.Button(footer, "重新扫描场景", Preview); _apply = WorkflowUi.Button(footer, "创建结构", Apply);
+            _result = WorkflowUi.Button(footer, "继续快速分序", () => Run(() => Handoff(!_stale && _plan != null && _plan.Execution.Completed)));
+            Controls.Add(split); Controls.Add(problemBox); Controls.Add(_issues); Controls.Add(footer);
+            Controls.Add(WorkflowUi.Stack(input, catia, settings, _status));
+            _includeRoot.CheckedChanged += (s, e) => InvalidatePlan(); _mode.SelectedIndexChanged += (s, e) => InvalidatePlan();
+            _search.TextChanged += (s, e) => RefreshSource();
+            _left.AfterCheck += (s, e) =>
+            {
+                if (_refreshing) return; var n = (StructureNode)e.Node.Tag;
+                foreach (var child in n.Walk()) child.Include = e.Node.Checked;
+                if (n.Include) for (var p = n.Parent; p != null; p = p.Parent) p.Include = true;
+                RefreshSource(); InvalidatePlan();
+            };
+            _left.AfterSelect += (s, e) => { if (!_refreshing) ShowSelection(); };
+            _right.AfterSelect += (s, e) => { var c = e.Node.Tag as StructureChange; if (c != null) SelectSource(c.Node); };
+            _right.KeyDown += (s, e) => { if (e.KeyCode == Keys.F2 && _right.SelectedNode != null) { e.Handled = true; _right.SelectedNode.BeginEdit(); } };
+            _problems.SelectedIndexChanged += (s, e) => { if (_problems.SelectedItems.Count > 0) SelectSource((StructureNode)_problems.SelectedItems[0].Tag); };
+            _candidates.SelectedIndexChanged += (s, e) => UpdateActions();
+            _createLayer.CheckedChanged += (s, e) => { if (!_showingSelection) { bool create = _createLayer.Checked; Edit(n => n.SkipLevel = !create); } };
+            _autoPreview.Tick += (s, e) => { _autoPreview.Stop(); if (!_busy && _source != null && _target != null) Preview(); };
+            FormClosed += (s, e) => _autoPreview.Dispose();
+            _issues.Text = "读取来源，选择目标，编辑结构后重新检查。仅创建结构时不会移动零件。"; UpdateActions();
         }
-
-        protected override void OnLoad(EventArgs e)
+        protected override void OnLoad(EventArgs e) { base.OnLoad(e); FormUiKit.ApplyDpiScaling(this, ref _scaled, _design); WorkflowUi.LimitWidth(this); }
+        private void ReadPickedSource()
         {
-            base.OnLoad(e);
-            FormUiKit.ApplyDpiScaling(this, ref _dpiApplied, _designSize);
+            InvalidatePlan();
+            if (_sourcePick.Count == 0) return;
+            _source = null; RefreshSource();
+            StructureNode source;
+            try { source = StructureEngine.Read(_sourcePick.GetObject(_sourcePick.Count - 1)); }
+            catch { _sourcePick.DeleteRow(_sourcePick.Count - 1); throw; }
+            SetSource(source, "PS 实际结构");
         }
-
-        // ════════════════════════════════════════════════════════════════
-        //  UI — 主体（左树 / 右卡片）+ 底栏
-        // ════════════════════════════════════════════════════════════════
-        private void BuildBody()
+        private void ReadPickedTarget()
         {
-            var body = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 2,
-                RowCount = 1,
-                Margin = new Padding(0, 2, 0, 2),
-                Padding = Padding.Empty
-            };
-            body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 330F));
-            body.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-
-            body.Controls.Add(BuildTreeCard(), 0, 0);
-            body.Controls.Add(BuildRightColumn(), 1, 0);
-            this.Controls.Add(body);
+            InvalidatePlan();
+            if (_targetPick.Count == 0) return;
+            var target = _targetPick.GetObject(_targetPick.Count - 1);
+            if (!(target is ITxCompoundPartCreation)) { _targetPick.DeleteRow(_targetPick.Count - 1); throw new InvalidOperationException("目标必须支持创建零件容器。"); }
+            _target = target; InvalidatePlan();
         }
-
-        private void BuildBottomBar()
+        private void WireDragDrop()
         {
-            var bar = new FlowLayoutPanel
+            foreach (var tree in new[] { _left, _right })
             {
-                Dock = DockStyle.Bottom,
-                Height = 42,
-                FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
-                Padding = new Padding(4),
-                BackColor = FormUiKit.CardBack
-            };
-            var btnHelp = FormUiKit.MkFuncButton("帮助", Theme.BtnMuted);
-            btnHelp.Click += (s, e) => ShowHelp();
-            var btnClose = FormUiKit.MkFuncButton("关闭", Theme.BtnDanger);
-            btnClose.Click += (s, e) => Close();
-            bar.Controls.Add(btnHelp);
-            bar.Controls.Add(btnClose);
-            this.Controls.Add(bar);
-        }
-
-        // ── 左卡片：目录树编辑 ───────────────────────────────────────────
-        private Control BuildTreeCard()
-        {
-            var card = new FormUiKit.ColoredGroupBox
-            {
-                Text = "CATIA 目录树（可编辑）",
-                Dock = DockStyle.Fill,
-                HeaderColor = Theme.CardTitle,
-                ForeColor = Theme.CardTitle,
-                Padding = new Padding(8, 20, 8, 8)
-            };
-
-            var root = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 1,
-                RowCount = 4,
-                Margin = Padding.Empty,
-                Padding = Padding.Empty
-            };
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-            // 筛选行
-            var filterRow = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
-                Padding = new Padding(0, 4, 0, 2),
-                BackColor = Color.Transparent
-            };
-            var lblFilter = FormUiKit.MkFieldLabel("筛选:");
-            _txtFilter = new TextBox { Width = 200, Font = FormUiKit.BaseFont };
-            _txtFilter.TextChanged += (s, e) => RefreshTree();
-            _lblStats = new Label
-            {
-                AutoSize = true,
-                Font = FormUiKit.BaseFont,
-                ForeColor = Theme.TextDim,
-                Margin = new Padding(10, 8, 0, 0)
-            };
-            filterRow.Controls.Add(lblFilter);
-            filterRow.Controls.Add(_txtFilter);
-            filterRow.Controls.Add(_lblStats);
-            root.Controls.Add(filterRow, 0, 0);
-
-            // 树
-            _tree = new TreeView
-            {
-                Dock = DockStyle.Fill,
-                CheckBoxes = true,
-                LabelEdit = true,
-                HideSelection = false,
-                FullRowSelect = true,
-                BorderStyle = BorderStyle.FixedSingle,
-                BackColor = Theme.InputBg,
-                Font = FormUiKit.BaseFont
-            };
-            _tree.AfterCheck += OnTreeAfterCheck;
-            _tree.AfterLabelEdit += OnTreeAfterLabelEdit;
-            root.Controls.Add(_tree, 0, 1);
-
-            // 功能按钮行（原工具条功能，放到树下方）
-            var funcRow = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
-                Padding = new Padding(0, 4, 0, 2),
-                BackColor = Color.Transparent
-            };
-            AddEditButton(funcRow, "读取 CATIA 树", Theme.BtnPrimary, OnReadTree);
-            AddEditButton(funcRow, "展开全部", Theme.BtnMuted, delegate { _tree.ExpandAll(); CaptureExpansion(); });
-            AddEditButton(funcRow, "折叠全部", Theme.BtnMuted, delegate { _tree.CollapseAll(); CaptureExpansion(); });
-            AddEditButton(funcRow, "全选", Theme.BtnSecondary, delegate { if (_model != null) SetAllChecked(true); });
-            AddEditButton(funcRow, "全不选", Theme.BtnSecondary, delegate { if (_model != null) SetAllChecked(false); });
-            root.Controls.Add(funcRow, 0, 2);
-
-            // 编辑按钮行
-            var btnRow = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
-                Padding = new Padding(0, 2, 0, 0),
-                BackColor = Color.Transparent
-            };
-            AddEditButton(btnRow, "添加子节点", Theme.BtnPrimary, OnAddChild);
-            AddEditButton(btnRow, "添加同级", Theme.BtnSecondary, OnAddSibling);
-            AddEditButton(btnRow, "重命名", Theme.BtnSecondary, OnRename);
-            AddEditButton(btnRow, "删除", Theme.BtnDanger, OnDelete);
-            AddEditButton(btnRow, "上移", Theme.BtnMuted, OnMoveUp);
-            AddEditButton(btnRow, "下移", Theme.BtnMuted, OnMoveDown);
-            AddEditButton(btnRow, "缩进", Theme.BtnMuted, OnIndent);
-            AddEditButton(btnRow, "提升", Theme.BtnMuted, OnOutdent);
-            root.Controls.Add(btnRow, 0, 3);
-
-            card.Controls.Add(root);
-            return card;
-        }
-
-        private void AddEditButton(FlowLayoutPanel row, string text, Color color, Action handler)
-        {
-            var b = FormUiKit.MkFuncButton(text, color);
-            b.Click += (s, e) => handler();
-            row.Controls.Add(b);
-        }
-
-        private void OnTreeAfterCheck(object sender, TreeViewEventArgs e)
-        {
-            var n = e.Node.Tag as TreeEditNode;
-            if (n == null || _model == null) return;
-            n.Include = e.Node.Checked;
-            UpdateStats();
-        }
-
-        private void OnTreeAfterLabelEdit(object sender, NodeLabelEditEventArgs e)
-        {
-            var n = e.Node.Tag as TreeEditNode;
-            if (n == null || string.IsNullOrEmpty(e.Label)) { e.CancelEdit = true; return; }
-            n.Name = e.Label;
-            e.CancelEdit = true;
-            RefreshTree();
-        }
-
-        // ── 右列：目标与命名 + 创建/归类 + 日志 ─────────────────────────
-        private Control BuildRightColumn()
-        {
-            var col = FormUiKit.BuildCardColumn(330);
-            col.Controls.Add(BuildTargetCard());
-            col.Controls.Add(BuildActionCard());
-            col.Controls.Add(BuildLogCard());
-            return col;
-        }
-
-        private Control BuildTargetCard()
-        {
-            var card = FormUiKit.MkCard("目标与命名", 330, 156, out var content);
-
-            var row1 = FormUiKit.MkRowFlow();
-            row1.Controls.Add(FormUiKit.MkFieldLabel("目标父级:"));
-            _cmbParent = new ComboBox
-            {
-                DropDownStyle = ComboBoxStyle.DropDown,
-                Width = 200,
-                Font = FormUiKit.BaseFont
-            };
-            _cmbParent.Items.Add("自动(智能)");
-            _cmbParent.Items.Add("PhysicalRoot");
-            _cmbParent.Text = "自动(智能)";
-            row1.Controls.Add(_cmbParent);
-            content.Controls.Add(row1);
-
-            var row2 = FormUiKit.MkRowFlow();
-            row2.Controls.Add(FormUiKit.MkFieldLabel("最大深度:"));
-            _numDepth = new NumericUpDown
-            {
-                Minimum = 1,
-                Maximum = 50,
-                Value = 20,
-                Width = 70,
-                Font = FormUiKit.BaseFont
-            };
-            FormUiKit.AutoFitNumericWidth(_numDepth);
-            row2.Controls.Add(_numDepth);
-            content.Controls.Add(row2);
-
-            _chkIncludeRoot = new CheckBox { Text = "包含根节点", AutoSize = true, Checked = true, Font = FormUiKit.BaseFont };
-            content.Controls.Add(_chkIncludeRoot);
-            _chkPreferPn = new CheckBox { Text = "名称优先用 PartNumber", AutoSize = true, Checked = false, Font = FormUiKit.BaseFont };
-            content.Controls.Add(_chkPreferPn);
-            _chkLeafContainers = new CheckBox { Text = "叶子零件也建空集(默认不建)", AutoSize = true, Checked = false, Font = FormUiKit.BaseFont };
-            content.Controls.Add(_chkLeafContainers);
-            foreach (Control item in content.Controls)
-                if (item is CheckBox) item.Margin = new Padding(0, 1, 0, 1);
-            return card;
-        }
-
-        private Control BuildActionCard()
-        {
-            var card = FormUiKit.MkCard("创建 / 归类", 330, 228, out var content);
-
-            var btnBuild = FormUiKit.MkFuncButton("创建零件树", Theme.BtnPrimary);
-            btnBuild.Click += (s, e) => OnBuildTree();
-            content.Controls.Add(btnBuild);
-
-            _chkReload = new CheckBox { Text = "建树后保存并重载", AutoSize = true, Checked = false, Font = FormUiKit.BaseFont };
-            var reloadTip = new ToolTip();
-            reloadTip.SetToolTip(_chkReload, "保存并重载会写入工程文件，影响撤销历史。");
-            Disposed += (s, e) => reloadTip.Dispose();
-            content.Controls.Add(_chkReload);
-
-            var rowScope = FormUiKit.MkRowFlow();
-            rowScope.Controls.Add(FormUiKit.MkFieldLabel("分类范围:"));
-            _cmbScope = new ComboBox
-            {
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                Width = 200,
-                Font = FormUiKit.BaseFont
-            };
-            _cmbScope.Items.Add("选中Compound(未选=全部)");
-            _cmbScope.Items.Add("零件树(PrLine)");
-            _cmbScope.Items.Add("PhysicalRoot");
-            _cmbScope.SelectedIndex = 0;
-            rowScope.Controls.Add(_cmbScope);
-            content.Controls.Add(rowScope);
-
-            _chkUnmatched = new CheckBox { Text = "未匹配零件移入『未分类』容器", AutoSize = true, Font = FormUiKit.BaseFont };
-            content.Controls.Add(_chkUnmatched);
-
-            _chkAutoCreate = new CheckBox { Text = "目标容器缺失时按 CATIA 层级自动创建", AutoSize = true, Checked = true, Font = FormUiKit.BaseFont };
-            _chkAutoCreate.Name = "_chkAutoCreate";
-            content.Controls.Add(_chkAutoCreate);
-
-            var btnClassify = FormUiKit.MkFuncButton("归类已导入零件", Theme.BtnSecondary);
-            btnClassify.Click += (s, e) => OnClassify();
-            content.Controls.Add(btnClassify);
-
-            var btnClear = FormUiKit.MkFuncButton("清空建树映射", Theme.BtnMuted);
-            btnClear.Click += (s, e) => { _svc.ClearMapping(); Log("已清空建树映射。", LogLevel.Info); };
-            content.Controls.Add(btnClear);
-            foreach (Control item in content.Controls)
-                if (item is CheckBox) item.Margin = new Padding(0, 1, 0, 1);
-            return card;
-        }
-
-        private Control BuildLogCard()
-        {
-            var card = FormUiKit.MkCard("日志", 330, 96, out var content);
-            PluginLog.Register(card);
-            _rtbLog = new RichTextBox
-            {
-                AutoSize = false,
-                Width = 330 - 18,
-                Height = 60,
-                BackColor = Theme.LogBg,
-                ForeColor = Theme.LogText,
-                BorderStyle = BorderStyle.None,
-                ReadOnly = true,
-                ScrollBars = RichTextBoxScrollBars.Vertical,
-                WordWrap = true,
-                Font = FormUiKit.BaseFont
-            };
-            content.Controls.Add(_rtbLog);
-            // 宽度跟随卡片内容区，卡片随列宽变化时日志框不会溢出/留白
-            FormUiKit.FillWidthInFlow(content, _rtbLog);
-            return card;
-        }
-
-        // ════════════════════════════════════════════════════════════════
-        //  动作
-        // ════════════════════════════════════════════════════════════════
-        private void OnReadTree()
-        {
-            var depth = (int)_numDepth.Value;
-            SetBusy(true);
-            Log("[PS] 正在读取 CATIA 目录树...");
-            var t = new Thread(delegate ()
-            {
-                try
+                tree.AllowDrop = true;
+                WorkflowUi.EnableDragScrolling(tree);
+                tree.ItemDrag += (s, e) => { var node = (TreeNode)e.Item; var change = node.Tag as StructureChange; tree.DoDragDrop(change == null ? node.Tag : change.Node, DragDropEffects.Move); };
+                tree.DragOver += (s, e) => { e.Effect = !_busy && e.Data.GetDataPresent(typeof(StructureNode)) ? DragDropEffects.Move : DragDropEffects.None; };
+                tree.DragDrop += (s, e) => Run(() =>
                 {
-                    var root = _svc.ReadCatiaTree(depth);
-                    UI(delegate ()
-                    {
-                        _model = root;
-                        RefreshTree();
-                        Log("已读取 CATIA 树: 根=" + root.Name + ", 节点总数=" + (root.DescendantCount() + 1), LogLevel.Ok);
-                        if (root.DescendantCount() == 0)
-                            Log("警告: 根下没有子节点，请确认 CATIA 活动文档是 .CATProduct。", LogLevel.Warn);
-                    });
-                }
-                catch (Exception ex)
-                {
-                    UI(delegate () { Log("[错误] 读取 CATIA 树失败: " + ex.Message, LogLevel.Error); });
-                }
-                finally { UI(delegate () { SetBusy(false); }); }
+                    var node = tree.GetNodeAt(tree.PointToClient(new Point(e.X, e.Y))); if (node == null) return;
+                    var change = node.Tag as StructureChange;
+                    var source = e.Data.GetData(typeof(StructureNode)) as StructureNode;
+                    var target = change == null ? (StructureNode)node.Tag : change.Node;
+                    bool before = tree.PointToClient(new Point(e.X, e.Y)).Y < node.Bounds.Top + node.Bounds.Height / 3;
+                    if (before && source != null && source.Parent != null && source.Parent == target.Parent)
+                    { var siblings = source.Parent.Children; if (source != target) { siblings.Remove(source); siblings.Insert(siblings.IndexOf(target), source); RefreshSource(); InvalidatePlan(); } }
+                    else DropStructure(source, target);
+                });
+            }
+        }
+        private void DropStructure(StructureNode source, StructureNode target)
+        {
+            if (source == null || target == null || source == target) return;
+            if (source.Parent == null || source.Walk().Contains(target) || !target.IsContainer)
+                throw new InvalidOperationException("根节点不能移动，也不能拖入自身后代或叶子零件。");
+            source.Parent.Children.Remove(source); target.Add(source);
+            RefreshSource(); InvalidatePlan();
+            _issues.Text = "草稿已调整：放到节点文字处移入容器；放到同级节点上沿排在其前。重新检查后执行。";
+        }
+        private void Run(Action action) { if (_busy) return; try { action(); } catch (Exception ex) { _issues.Text = ex.Message; } }
+        private void InvalidatePlan()
+        {
+            _autoPreview.Stop(); _autoPreview.Start(); _stale = true; _status.Text = _plan == null ? "① 选择来源、目标与执行内容，再检查" : "③ 预览已过期，仅供对照；名称、层级和实例绑定已保留，请重新检查"; UpdateActions();
+        }
+        private void UpdateActions()
+        {
+            if (_apply == null) return;
+            _apply.Enabled = !_busy && !_stale && !_finished && _plan != null && _plan.HasChanges && _plan.Issues.Count == 0;
+            _result.Enabled = !_busy && _source != null;
+            var n = SelectedSource; bool canBind = !_busy && n != null && !n.IsContainer && n.Source == null;
+            _bindingPick.Enabled = canBind;
+        }
+        private void SetSource(StructureNode source, string description)
+        {
+            if (!ReferenceEquals(_document, TxApplication.ActiveDocument))
+            { _target = null; while (_targetPick.Count > 0) _targetPick.DeleteRow(0); _targetLabel.Text = "目标容器：未选择"; }
+            _source = source; _document = TxApplication.ActiveDocument; _sourceLabel.Text = "来源：" + description + " / " + source.Label;
+            _search.Clear(); RefreshSource(); InvalidatePlan();
+        }
+        private static StructureNode Convert(TreeEditNode n)
+        { var result = new StructureNode { SourceName = n.Name, PartNumber = n.PartNumber, IsContainer = n.IsAssembly || n.Children.Count > 0 }; foreach (var child in n.Children) result.Add(Convert(child)); return result; }
+        private async void ReadCatia()
+        {
+            if (_busy) return; var document = TxApplication.ActiveDocument; _busy = true; Enabled = false; _issues.Text = "正在读取 CATIA 产品树…";
+            var completion = new System.Threading.Tasks.TaskCompletionSource<TreeEditNode>();
+            var thread = new Thread(() => { try { completion.SetResult(new CatiaPartTreeService().ReadCatiaTree(50)); } catch (Exception ex) { completion.SetException(ex); } });
+            thread.SetApartmentState(ApartmentState.STA); thread.IsBackground = true; thread.Start();
+            try { var model = await completion.Task; if (!IsDisposed) { if (!ReferenceEquals(document, TxApplication.ActiveDocument)) throw new InvalidOperationException("读取期间文档已切换，请重新读取。"); SetSource(Convert(model), "CATIA 产品结构"); _issues.Text = "已读取 CATIA，请选择 PS 目标容器。"; } }
+            catch (Exception ex) { if (!IsDisposed) _issues.Text = ex.Message; }
+            finally { _busy = false; if (!IsDisposed) { Enabled = true; UpdateActions(); } }
+        }
+        private void RefreshSource()
+        {
+            _refreshing = true;
+            try { WorkflowUi.Rebuild(_left, () => { if (_source != null) { var node = Build(_source); if (node != null) _left.Nodes.Add(node); } }, tag => ((StructureNode)tag).Key); }
+            finally { _refreshing = false; } ShowSelection();
+        }
+        private TreeNode Build(StructureNode n)
+        {
+            var children = n.Children.Select(Build).Where(c => c != null).ToArray();
+            if (_search.Text.Length > 0 && (n.SourceName + " " + n.PartNumber).IndexOf(_search.Text, StringComparison.OrdinalIgnoreCase) < 0 && children.Length == 0) return null;
+            bool partial = n.Include && n.Walk().Any(c => !c.Include);
+            var node = new TreeNode(n.SourceName + (partial ? " [部分纳入]" : "") + (n.SkipLevel ? " [不创建此层]" : "") + (n.BoundPart != null ? " [已指定实例]" : "")) { Tag = n, Checked = n.Include };
+            node.Nodes.AddRange(children); return node;
+        }
+        private void Edit(Action<StructureNode> edit)
+        { Run(() => { var n = SelectedSource; if (n == null) throw new InvalidOperationException("请先选择来源节点或对应的目标预览节点。"); edit(n); RefreshSource(); InvalidatePlan(); }); }
+        private void Rename()
+        {
+            var n = SelectedSource; if (n == null || !n.IsContainer) throw new InvalidOperationException("请选择需要设置目标名称的装配节点。");
+            var name = WorkflowUi.AskName(this, "修改规划名称（可能由复用改为新建）", n.Label); if (name != null) Edit(node => node.TargetName = StructureEngine.Clean(name));
+        }
+        private void Reorder(int delta)
+        {
+            Edit(n =>
+            {
+                if (n.Parent == null) return;
+                if (_stale || _plan == null) throw new InvalidOperationException("请先重新检查，再调整新建容器的创建顺序。");
+                var change = _plan.Changes.FirstOrDefault(c => c.Node == n && c.Container);
+                if (change == null || _plan.Changes.Any(c => c.Container && c.Parent == change.Parent && c.Existing != null)) throw new InvalidOperationException("该层包含复用容器或本层不创建，请在 PS 原生树中调整已有对象。");
+                var siblings = n.Parent.Children; int i = siblings.IndexOf(n), j = i + delta;
+                if (j >= 0 && j < siblings.Count) { siblings.RemoveAt(i); siblings.Insert(j, n); }
             });
-            t.IsBackground = true;
-            t.SetApartmentState(ApartmentState.STA);
-            t.Start();
         }
-
-        private void OnBuildTree()
+        private void SelectSource(StructureNode model)
         {
-            if (_model == null) { Log("请先读取 CATIA 树。", LogLevel.Warn); return; }
-            var parent = _cmbParent.Text.Trim();
-            if (parent == "自动(智能)" || parent.Length == 0) parent = "";
-            _svc.ClearMapping();
+            if (_search.Text.Length > 0) _search.Clear();
+            var node = WorkflowUi.Nodes(_left.Nodes).FirstOrDefault(n => n.Tag == model);
+            if (node != null) { _left.SelectedNode = node; node.EnsureVisible(); ShowSelection(); }
+        }
+        private sealed class Candidate
+        { public ITxObject Value; public override string ToString() { return StructureEngine.Path(Value) + " [" + Value.Id + "]"; } }
+        private void ShowSelection()
+        {
+            var n = SelectedSource; _candidates.Items.Clear();
+            bool validBinding = n != null && n.BoundPart != null && n.BoundPart.IsValid();
+            _syncPicker = true;
+            try { while (_bindingPick.Count > 0) _bindingPick.DeleteRow(0); if (validBinding) _bindingPick.AppendObject(n.BoundPart); } finally { _syncPicker = false; }
+            _showingSelection = true;
+            try { _createLayer.Enabled = n != null && n.IsContainer && !_busy; _createLayer.Checked = n != null && n.IsContainer && !n.SkipLevel; }
+            finally { _showingSelection = false; }
+            if (n == null) { _selection.Text = "选择来源节点查看编号、对应实例及候选"; UpdateActions(); return; }
+            _selection.Text = n.SourceName + " / 编号：" + (n.PartNumber ?? "—") + (n.BoundPart == null ? "" : validBinding ? " / 已绑定：" + StructureEngine.Path(n.BoundPart) : " / 绑定实例已失效，请重新选择") +
+                (n.SkipLevel ? " / 本层不创建，子节点提升到上级有效容器" : "");
+            if (_plan != null && !n.IsContainer && n.Source == null)
+            {
+                var items = new List<ITxObject>(); List<ITxObject> values;
+                foreach (var key in new[] { n.SourceName, n.PartNumber }.Where(k => !string.IsNullOrEmpty(k)).Distinct())
+                    if (_plan.Candidates.TryGetValue(key, out values)) items.AddRange(values);
+                foreach (var item in items.GroupBy(StructureEngine.Id).Select(g => g.First())) _candidates.Items.Add(new Candidate { Value = item });
+                if (_candidates.Items.Count > 0) _candidates.SelectedIndex = 0;
+            }
+            UpdateActions();
+        }
+        private void Bind(ITxObject part)
+        {
+            var n = SelectedSource;
+            if (n == null || n.IsContainer || n.Source != null) throw new InvalidOperationException("请选择 CATIA 来源中的叶子零件。PS 来源按实际对象归类，无需重新绑定。");
+            if (!StructureEngine.IsPart(part) || !part.IsValid()) throw new InvalidOperationException("请选择有效的 PS 零件实例，不能选择容器。");
+            if (!ReferenceEquals(_document, TxApplication.ActiveDocument)) throw new InvalidOperationException("文档已切换，请重新读取来源。");
+            n.BoundPart = part; RefreshSource(); InvalidatePlan();
+        }
+        private void Preview()
+        {
+            if (_busy) return; _autoPreview.Stop(); _stale = true; _busy = true; UpdateActions();
             try
             {
-                var r = _svc.BuildTree(_model, parent, _chkIncludeRoot.Checked,
-                    _chkPreferPn.Checked, _chkLeafContainers.Checked, _chkReload.Checked, Log);
-                Log("建树完成: 新建 " + r.Created + " / 跳过 " + r.Skipped
-                    + (r.SkippedLeaf > 0 ? "(其中叶子零件 " + r.SkippedLeaf + ")" : "")
-                    + " / 失败 " + r.Failed,
-                    r.Failed == 0 ? LogLevel.Ok : LogLevel.Warn);
-            }
-            catch (Exception ex) { Log("[错误] " + ex.Message, LogLevel.Error); }
-        }
-
-        private void OnClassify()
-        {
-            if (_model == null) { Log("请先读取 CATIA 树（用于匹配规则）。", LogLevel.Warn); return; }
-            try
-            {
-                var r = _svc.Classify(_model, _cmbScope.Text, _chkUnmatched.Checked,
-                    _chkAutoCreate.Checked, _chkPreferPn.Checked, Log);
-                var msg = "归类完成: 已归类 " + r.Matched + " / 未匹配 " + r.Unmatched
-                        + (r.InPlace > 0 ? " / 已在位 " + r.InPlace : "")
-                        + (r.CreatedContainers > 0 ? " / 新建容器 " + r.CreatedContainers : "")
-                        + (r.MovedUnmatched > 0 ? " / 移入未分类 " + r.MovedUnmatched : "")
-                        + " / 无容器跳过 " + r.NoContainer + " / 失败 " + r.Failed;
-                Log(msg, (r.Failed == 0 && r.Matched > 0) ? LogLevel.Ok : LogLevel.Info);
-                if (r.Unmatched > 0)
-                    Log("提示: " + r.Unmatched + " 个零件未匹配到树节点，请检查命名/PartNumber 或调整树。", LogLevel.Warn);
-            }
-            catch (Exception ex) { Log("[错误] " + ex.Message, LogLevel.Error); }
-        }
-
-        // ════════════════════════════════════════════════════════════════
-        //  树编辑操作（改模型 → 重建 TreeView）
-        // ════════════════════════════════════════════════════════════════
-        private void OnAddChild()
-        {
-            if (_model == null) { Log("请先读取 CATIA 树。", LogLevel.Warn); return; }
-            var sel = _tree.SelectedNode != null ? _tree.SelectedNode.Tag as TreeEditNode : null;
-            var parent = sel ?? _model;
-            var node = new TreeEditNode { Name = "新节点", Include = true };
-            parent.AddChild(node);
-            RefreshTree();
-            SelectNode(node);
-        }
-
-        private void OnAddSibling()
-        {
-            if (_model == null) { Log("请先读取 CATIA 树。", LogLevel.Warn); return; }
-            var sel = _tree.SelectedNode != null ? _tree.SelectedNode.Tag as TreeEditNode : null;
-            if (sel == null || sel.Parent == null) { OnAddChild(); return; }
-            var node = new TreeEditNode { Name = "新节点", Include = true };
-            sel.Parent.AddChild(node);
-            RefreshTree();
-            SelectNode(node);
-        }
-
-        private void OnRename()
-        {
-            if (_tree.SelectedNode == null) return;
-            _tree.LabelEdit = true;
-            _tree.SelectedNode.BeginEdit();
-        }
-
-        private void OnDelete()
-        {
-            var sel = _tree.SelectedNode;
-            var n = sel != null ? sel.Tag as TreeEditNode : null;
-            if (n == null) return;
-            if (n.Parent == null) { _model = null; RefreshTree(); Log("已清空整棵树。", LogLevel.Warn); return; }
-            n.Parent.RemoveChild(n);
-            RefreshTree();
-        }
-
-        private void OnMoveUp()
-        {
-            var n = _tree.SelectedNode != null ? _tree.SelectedNode.Tag as TreeEditNode : null;
-            if (n == null || n.Parent == null) return;
-            var sib = n.Parent.Children;
-            int i = sib.IndexOf(n);
-            if (i <= 0) return;
-            sib.RemoveAt(i);
-            sib.Insert(i - 1, n);
-            RefreshTree();
-            SelectNode(n);
-        }
-
-        private void OnMoveDown()
-        {
-            var n = _tree.SelectedNode != null ? _tree.SelectedNode.Tag as TreeEditNode : null;
-            if (n == null || n.Parent == null) return;
-            var sib = n.Parent.Children;
-            int i = sib.IndexOf(n);
-            if (i < 0 || i >= sib.Count - 1) return;
-            sib.RemoveAt(i);
-            sib.Insert(i + 1, n);
-            RefreshTree();
-            SelectNode(n);
-        }
-
-        private void OnIndent()
-        {
-            var n = _tree.SelectedNode != null ? _tree.SelectedNode.Tag as TreeEditNode : null;
-            if (n == null || n.Parent == null) return;
-            var sib = n.Parent.Children;
-            int i = sib.IndexOf(n);
-            if (i <= 0) return;
-            var prev = sib[i - 1];
-            n.Parent.RemoveChild(n);
-            prev.AddChild(n);
-            RefreshTree();
-            SelectNode(n);
-        }
-
-        private void OnOutdent()
-        {
-            var n = _tree.SelectedNode != null ? _tree.SelectedNode.Tag as TreeEditNode : null;
-            if (n == null || n.Parent == null || n.Parent.Parent == null) return;
-            var gp = n.Parent.Parent;
-            n.Parent.RemoveChild(n);
-            gp.AddChild(n);
-            RefreshTree();
-            SelectNode(n);
-        }
-
-        private void SetAllChecked(bool val)
-        {
-            SetChecked(_model, val);
-            RefreshTree();
-        }
-
-        private void SetChecked(TreeEditNode n, bool val)
-        {
-            n.Include = val;
-            foreach (var c in n.Children) SetChecked(c, val);
-        }
-
-        // ════════════════════════════════════════════════════════════════
-        //  树 ↔ 视图同步
-        // ════════════════════════════════════════════════════════════════
-        private void RefreshTree()
-        {
-            _tree.BeginUpdate();
-            try
-            {
-                if (_tree.Nodes.Count > 0) CaptureExpansion();
-                _tree.Nodes.Clear();
-                if (_model != null)
-                    foreach (var child in _model.Children)
-                        _tree.Nodes.Add(BuildTreeNode(child, _txtFilter.Text));
-                UpdateStats();
-            }
-            finally { _tree.EndUpdate(); }
-        }
-
-        private TreeNode BuildTreeNode(TreeEditNode n, string filter)
-        {
-            var tn = new TreeNode(NodeText(n)) { Tag = n, Checked = n.Include };
-            if (n.IsExpanded) tn.Expand();
-            foreach (var c in n.Children)
-            {
-                if (!string.IsNullOrEmpty(filter) && !SubtreeMatches(c, filter)) continue;
-                tn.Nodes.Add(BuildTreeNode(c, filter));
-            }
-            return tn;
-        }
-
-        private static string NodeText(TreeEditNode n)
-        {
-            var s = n.Name ?? "?";
-            if (!string.IsNullOrEmpty(n.PartNumber) && n.PartNumber != n.Name)
-                s += "  [" + n.PartNumber + "]";
-            if (n.IsAssembly) s += "  (装配)";
-            return s;
-        }
-
-        private static bool SubtreeMatches(TreeEditNode n, string keyword)
-        {
-            if (string.IsNullOrEmpty(keyword)) return true;
-            if ((n.Name ?? "").IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0) return true;
-            if ((n.PartNumber ?? "").IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0) return true;
-            foreach (var c in n.Children)
-                if (SubtreeMatches(c, keyword)) return true;
-            return false;
-        }
-
-        private void CaptureExpansion()
-        {
-            foreach (TreeNode tn in _tree.Nodes) CaptureNode(tn);
-        }
-
-        private void CaptureNode(TreeNode tn)
-        {
-            var n = tn.Tag as TreeEditNode;
-            if (n != null) n.IsExpanded = tn.IsExpanded;
-            foreach (TreeNode c in tn.Nodes) CaptureNode(c);
-        }
-
-        private void SelectNode(TreeEditNode n)
-        {
-            foreach (TreeNode tn in _tree.Nodes)
-            {
-                var f = FindNode(tn, n);
-                if (f != null)
+                if (!ReferenceEquals(_document, TxApplication.ActiveDocument)) throw new InvalidOperationException("文档已切换，请重新读取来源。");
+                var plan = StructureEngine.Plan(_source, _target, _includeRoot.Checked, _mode.SelectedIndex == 1);
+                _plan = plan; _stale = false; _finished = false;
+                WorkflowUi.Rebuild(_right, () =>
                 {
-                    _tree.SelectedNode = f;
-                    try { f.EnsureVisible(); } catch { }
-                    return;
+                    var nodes = new Dictionary<StructureChange, TreeNode>();
+                    foreach (var c in plan.Changes) { var node = new TreeNode(c.Name) { Tag = c, ForeColor = c.Error == null ? SystemColors.WindowText : Color.Firebrick }; nodes[c] = node; if (c.Parent == null) _right.Nodes.Add(node); else nodes[c.Parent].Nodes.Add(node); }
+                }, tag => ((StructureChange)tag).Node.Key);
+                _problems.Items.Clear();
+                foreach (var c in plan.Changes.Where(c => c.Error != null))
+                { var item = new ListViewItem(c.Node.SourceName) { Tag = c.Node }; item.SubItems.Add(c.Error); item.SubItems.Add(SourcePath(c.Node)); _problems.Items.Add(item); }
+                int created = plan.Changes.Count(c => c.Container && c.Existing == null), reused = plan.Changes.Count(c => c.Container && c.Existing != null);
+                int moved = plan.Changes.Count(c => !c.Container && !c.Unchanged && c.Error == null), same = plan.Changes.Count(c => !c.Container && c.Unchanged);
+                _status.Text = "③ 预计：新建 " + created + " / 复用 " + reused + " / 移动零件 " + moved + " / 已在位 " + same + " / 问题 " + plan.Issues.Count;
+                _issues.Text = plan.Issues.Count == 0 ? "检查通过。选中来源或预览节点可调整名称、层级和实例绑定。" : string.Join(Environment.NewLine, plan.Issues);
+                _apply.Text = !plan.HasChanges ? "无需变更" : _mode.SelectedIndex == 0 ? "创建容器结构" : "创建结构并移动 " + moved + " 个零件"; ShowSelection();
+            }
+            catch (Exception ex)
+            { _right.Nodes.Clear(); _problems.Items.Clear(); _issues.Text = "检查未通过，未修改场景：" + ex.Message; }
+            finally { _busy = false; ShowSelection(); UpdateActions(); }
+        }
+        private static string SourcePath(StructureNode n) { return n.Parent == null ? n.SourceName : SourcePath(n.Parent) + " / " + n.SourceName; }
+        private void Handoff(bool actual)
+        {
+            if (_source == null) throw new InvalidOperationException("请先读取来源。");
+            if (!ReferenceEquals(_document, TxApplication.ActiveDocument)) throw new InvalidOperationException("文档已切换，请重新读取来源。");
+            StructureNode source;
+            if (actual)
+            {
+                if (_stale || _plan == null || !_plan.Execution.Completed) throw new InvalidOperationException("请先完整执行整理，再使用整理结果。");
+                source = StructureEngine.Read(_target);
+            }
+            else
+            {
+                source = _source.Copy(); if (!_includeRoot.Checked) source.SkipLevel = true;
+                if (!_stale && _plan != null && !_finished)
+                    foreach (var change in _plan.Changes.Where(c => !c.Container && c.Error == null && c.Existing != null))
+                    { var node = source.Walk().First(n => n.Key == change.Node.Key); if (node.Source == null) node.BoundPart = change.Existing; }
+            }
+            new TxTools.WeldSpotGrouper.GrouperForm(source, actual ? "PS 整理目标分支（包含已有内容）" : "零件树结构草稿").Show();
+        }
+        private void Apply()
+        {
+            _autoPreview.Stop();
+            if (_busy || _stale || _finished || !_apply.Enabled || _plan == null) return; _busy = true; UpdateActions(); var notes = new List<string>();
+            try { _issues.Text = StructureEngine.Apply(_plan, notes.Add); _status.Text = "④ 执行完成，可使用整理后的 PS 目标分支继续分序。"; }
+            catch (Exception ex) { _issues.Text = _plan.Execution.Failure(ex) + Environment.NewLine + string.Join(Environment.NewLine, notes); _status.Text = "④ 执行已停止，请核对结果后重新检查。"; }
+            finally
+            {
+                _busy = false; _finished = true;
+                foreach (var node in WorkflowUi.Nodes(_right.Nodes))
+                {
+                    var change = (StructureChange)node.Tag;
+                    if (change.Result != null) node.Text = change.Name;
                 }
+                UpdateActions();
             }
-        }
-
-        private static TreeNode FindNode(TreeNode tn, TreeEditNode n)
-        {
-            if (ReferenceEquals(tn.Tag, n)) return tn;
-            foreach (TreeNode c in tn.Nodes)
-            {
-                var f = FindNode(c, n);
-                if (f != null) return f;
-            }
-            return null;
-        }
-
-        private void UpdateStats()
-        {
-            if (_model == null) { _lblStats.Text = "未读取"; return; }
-            _lblStats.Text = "节点 " + (_model.DescendantCount() + 1) + " | 勾选 " + _model.IncludedCount();
-        }
-
-        // ════════════════════════════════════════════════════════════════
-        //  日志 / 帮助 / 杂项
-        // ════════════════════════════════════════════════════════════════
-        private void Log(string msg) { Log(msg, GuessLevel(msg)); }
-
-        private void Log(string msg, LogLevel level)
-        {
-            if (_rtbLog == null || IsDisposed) return;
-            if (InvokeRequired)
-            {
-                BeginInvoke(new Action<string, LogLevel>(Log), msg, level);
-                return;
-            }
-            Color c;
-            switch (level)
-            {
-                case LogLevel.Ok: c = Theme.LogOk; break;
-                case LogLevel.Error: c = Theme.LogErr; break;
-                case LogLevel.Warn: c = Theme.LogWarn; break;
-                case LogLevel.Ps: c = Theme.LogPs; break;
-                default: c = Theme.LogText; break;
-            }
-            _rtbLog.SelectionStart = _rtbLog.TextLength;
-            _rtbLog.SelectionLength = 0;
-            _rtbLog.SelectionColor = c;
-            _rtbLog.AppendText("[" + DateTime.Now.ToString("HH:mm:ss") + "] " + msg + Environment.NewLine);
-            try { _rtbLog.ScrollToCaret(); } catch { }
-        }
-
-        private static LogLevel GuessLevel(string msg)
-        {
-            if (string.IsNullOrEmpty(msg)) return LogLevel.Info;
-            if (msg.IndexOf("完成", StringComparison.Ordinal) >= 0) return LogLevel.Ok;
-            if (msg.IndexOf("失败", StringComparison.Ordinal) >= 0) return LogLevel.Error;
-            if (msg.IndexOf("警告", StringComparison.Ordinal) >= 0) return LogLevel.Warn;
-            return LogLevel.Info;
-        }
-
-        private void UI(Action act)
-        {
-            if (IsDisposed) return;
-            if (InvokeRequired) BeginInvoke(act); else act();
-        }
-
-        private void SetBusy(bool busy)
-        {
-            try { Cursor = busy ? Cursors.WaitCursor : Cursors.Default; } catch { }
-        }
-
-        private void ShowHelp()
-        {
-            MessageBox.Show(
-                "1. 在 CATIA 中打开 .CATProduct，点击 [读取 CATIA 树]\n" +
-                "2. 在左侧树中勾选要导入的分支；可重命名 / 增删 / 排序 / 缩进调整\n" +
-                "3. 设置目标父级后点 [创建零件树]，生成 CompoundPart 层级\n" +
-                "   · 仅装配节点建空集，CATIA 叶子零件不会建空集(可勾选『叶子零件也建空集』)\n" +
-                "   · 勾选『建树后保存并重载刷新 PS 树』可在创建后自动保存并重载刷新树视图\n" +
-                "4. 零件已导入 PS 后，点 [归类已导入零件] 按名称/PartNumber 自动归入对应容器\n\n" +
-                "· 未勾选的分支不创建；未匹配零件可勾选移入『未分类』\n" +
-                "· 未保存/重载的场景变更按批次 Ctrl+Z；保存/重载不保证保留撤销历史，磁盘文件需从备份恢复",
-                "帮助", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
     }
 }

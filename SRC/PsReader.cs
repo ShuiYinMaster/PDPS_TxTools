@@ -24,6 +24,12 @@ namespace TxTools.ExportGun
 
     public class PointInfo
     {
+        public string SourceId;
+        public bool MatchesSelection(HashSet<string> keys)
+        {
+            return keys == null || (!string.IsNullOrEmpty(SourceId) && keys.Contains("id:" + SourceId))
+                || keys.Contains("name:" + Name);
+        }
         public string Name;
         public PointType Type;
         public double[] TCPMatrix;
@@ -60,6 +66,16 @@ namespace TxTools.ExportGun
 
     public class OperationInfo
     {
+        // Detached export reference; null matrix explicitly means world when enabled.
+        public bool UseOwnReference;
+        public double[] ReferenceMatrix;
+        public string ReferenceName;
+        public string ExportKey;
+        public string Key { get { return ExportKey ?? Name; } }
+        public double[] GetExportReference(double[] unifiedReference)
+        {
+            return UseOwnReference ? ReferenceMatrix : unifiedReference;
+        }
         public string Name;
         public string TypeLabel;
         public ITxObject PsObject;
@@ -202,6 +218,7 @@ namespace TxTools.ExportGun
                         try { parent = d.Operation as ITxObject; } catch { }
                         if (parent == null) try { parent = d.ParentOperation as ITxObject; } catch { }
                         if (parent == null) try { parent = d.Owner as ITxObject; } catch { }
+                        if (parent == null) try { parent = locOp.Collection as ITxObject; } catch { }
                         if (parent != null && (parent.GetType().Name.Contains("Weld") || parent is ITxRoboticOperation))
                             return parent;
                         if (locOp is ITxRoboticOperation) return locOp;
@@ -295,7 +312,7 @@ namespace TxTools.ExportGun
                         TxTransformation tx = GetTx(loc);
                         if (tx == null) continue;
                         string nm = SafeNameObj(loc);
-                        if (!Dup(op.Points, nm, k)) op.Points.Add(MakePt(tx, nm, k));
+                        if (!Dup(op.Points, nm, k)) op.Points.Add(MakePt(tx, nm, k, loc, log));
                     }
                     catch { }
                 }
@@ -362,7 +379,7 @@ namespace TxTools.ExportGun
                 {
                     TxTransformation tx = GetTx(node);
                     string nm = SafeName(node);
-                    if (tx != null && !Dup(pts, nm, k)) pts.Add(MakePt(tx, nm, k));
+                    if (tx != null && !Dup(pts, nm, k)) pts.Add(MakePt(tx, nm, k, node, log));
                 }
             }
             else
@@ -1441,6 +1458,50 @@ namespace TxTools.ExportGun
             return result;
         }
 
+        // ExportGun's operation grid accepts operations only. Point imports resolve their
+        // owning operation before entering the grid, retaining tool and reference metadata.
+        public static HashSet<string> GetPointSelectionKeys(ITxObject obj)
+        {
+            var keys = new HashSet<string>(StringComparer.Ordinal);
+            if (obj == null) return keys;
+            try { if (!string.IsNullOrEmpty(obj.Id)) keys.Add("id:" + obj.Id); } catch { }
+            try { keys.Add("name:" + obj.Name); } catch { }
+            var feature = GetWpFromPm(obj);
+            if (feature != null && feature != obj)
+            {
+                try { if (!string.IsNullOrEmpty(feature.Id)) keys.Add("id:" + feature.Id); } catch { }
+                try { keys.Add("name:" + feature.Name); } catch { }
+            }
+            return keys;
+        }
+
+        public static List<OperationInfo> ResolveExportSelection(ITxObject obj)
+        {
+            var result = new List<OperationInfo>();
+            if (obj is TxWeldPoint point)
+            {
+                var parent = FindParentWeldOperation(point);
+                if (parent != null) ParseItemForPick(parent, result);
+            }
+            else if (obj is ITxRoboticLocationOperation)
+            {
+                // A robotic location is a point, not the program that owns the gun/TCP.
+                var seen = new HashSet<ITxObject>();
+                ITxObject parent = obj;
+                for (int depth = 0; depth < 32 && parent != null && seen.Add(parent); depth++)
+                {
+                    parent = parent.Collection as ITxObject;
+                    if (parent is ITxRoboticOperation && !(parent is ITxRoboticLocationOperation))
+                    {
+                        ParseItemForPick(parent, result);
+                        break;
+                    }
+                }
+            }
+            else if (obj is ITxOperation) ParseItemForPick(obj, result);
+            return result;
+        }
+
         /// <summary>
         /// 将单个 PS 对象包装为 OperationInfo。
         /// 供 TxObjGridCtrl 的 ObjectInserted 事件使用。
@@ -1810,6 +1871,7 @@ namespace TxTools.ExportGun
         {
             PointInfo info = MakePt(tx, name, pt);
             if (source == null) return info;
+            try { var obj = source as ITxObject; if (obj != null) info.SourceId = obj.Id; } catch { }
             try
             {
                 List<AppearanceRef> apps = GetAppearancesFromObject(source);

@@ -146,7 +146,7 @@ namespace TxTools.ExportGun
                             op.Gun = PsReader.GetGunFromOperation(
                                 op, p.CustomModelPath, onLog);
                             if (p.ResolvedTcpMatrices != null && op.Gun != null)
-                                p.ResolvedTcpMatrices[op.Name] = PsReader.ResolveTcpWorldByName(op, p.TcpName, onLog);
+                                p.ResolvedTcpMatrices[op.Key] = PsReader.ResolveTcpWorldByName(op, p.TcpName, onLog);
                             if (op.Gun == null)
                                 SafeLog(onLog, "  ⚠ [" + op.Name + "] 无绑定 Robot");
                         }
@@ -248,11 +248,10 @@ namespace TxTools.ExportGun
                     SafeLog(onLog, "[PS] 参考坐标：" + (refName ?? "世界坐标系"));
                     OnPs(delegate()
                     {
-                        // 填充每个操作的点
+                        // UI supplies point-filtered clones; retain that explicit selection.
                         foreach (OperationInfo op in ops)
                         {
-                            op.Points.Clear();
-                            PsReader.FillPoints(op, ptFilter, useMfg, onLog);
+                            if (op.Points.Count == 0) PsReader.FillPoints(op, ptFilter, useMfg, onLog);
                             totalPts += op.Points.Count;
                             SafeLog(onLog, "  [" + op.Name + "] " + op.Points.Count + " 个点");
                         }

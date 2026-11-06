@@ -13,8 +13,8 @@ namespace TxTools.ThemeTuner
 
         public override string Name { get { return ".主题调整"; } }
         public override string Category { get { return "TxTools"; } }
-        public override string Tooltip { get { return "更换套件窗体的主题配色（暖色/冷色/浅色/琥珀/草木绿/自定义）"; } }
-        public override string Description { get { return "调整 FormUiKit 主题配色并持久化到 theme.cfg"; } }
+        public override string Tooltip { get { return "主题配色、插件信息、开源鸣谢与手动检查更新"; } }
+        public override string Description { get { return "调整并保存主题，查看项目、许可证及 GitHub 发行版"; } }
         public override void Execute(object cmdParams)
         {
             SynchronizationContext psCtx = SynchronizationContext.Current

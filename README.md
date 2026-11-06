@@ -102,7 +102,7 @@ flowchart LR
 | 机器人与路径 | [RobotBaseChecker](RobotBaseChecker/README.md) | BASE0 检查与批量同步 |
 | 机器人与路径 | [WeldGunDefiner](WeldGunDefiner/README.md) | X 枪运动学、TCPF、姿态与焊钳定义 |
 | 焊点与工艺 | [WeldSpotAllocator](WeldSpotAllocator/README.md) | 焊点更新、分配、参数复制与镜像 |
-| 焊点与工艺 | [WeldSpotGrouper](WeldSpotGrouper/README.md) | 按绑定零件归组，创建操作并迁移焊点 |
+| 焊点与工艺 | [WeldSpotGrouper](WeldSpotGrouper/README.md) | 快速分序：按零件层级或实例组合预览工序并分配焊点 |
 | 焊点与工艺 | [WeldPointMatrix](WeldPointMatrix/README.md) | 多操作点位矩阵、新增与移动点位 |
 | 焊点与工艺 | [WeldAnnotator](WeldAnnotator/README.md) | PS 视口截图、焊点标注与 Excel 评审资料 |
 | 几何与布局 | [LineToSolid](LineToSolid/README.md) | 曲线生成矩形或圆形截面实体 |
@@ -111,7 +111,7 @@ flowchart LR
 | 跨环境与交付 | [ExportGun](ExportGun/README.md) | 焊枪、焊点坐标与 CATIA / Excel 导出 |
 | 跨环境与交付 | [ExportByColor](ExportByColor/README.md) | 按颜色拆分几何，导出 CGR 与网格 |
 | 跨环境与交付 | [CrossEnvIO](CrossEnvIO/README.md) | 结构、组件、焊点与数学数据的导出和重建 |
-| 跨环境与交付 | [CatiaPartTree](CatiaPartTree/README.md) | 读取 CATIA 产品树，在 PS 建树并归类 |
+| 跨环境与交付 | [CatiaPartTree](CatiaPartTree/README.md) | 零件树整理：从 CATIA 或 PS 结构双树预览、建树并归类 |
 | AI 与配方 | [TxAgent](Agent/README.md) | 进程内 AI、场景工具、C# / Python 配方与多实例协作 |
 | AI 与配方 | [McpBridge](McpBridge/README.md) | 外部 MCP 客户端与目标 PDPS 实例之间的 stdio 桥 |
 | 运行与界面 | [AutoRecorder](AutoRecorder/README.md) | 仿真自动录屏 |

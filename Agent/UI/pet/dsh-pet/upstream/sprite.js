@@ -59,6 +59,8 @@ class PetSprite {
     this.front = 0; // 0 = A, 1 = B
     this.pending = null;
     this.gen = 0;
+    this._playback = null;
+    this._endTimer = null;
     this.anim = this.animations.idle[0] ?? '';
     this.once = true;
     this.facing = 'left';
@@ -151,6 +153,15 @@ class PetSprite {
     this.hit.style.width = ((S.HIT_BOX.x1 - S.HIT_BOX.x0) / 640) * 100 + '%';
     this.hit.style.height = ((S.HIT_BOX.y1 - S.HIT_BOX.y0) / 360) * 100 + '%';
     this.hit.title = this.pet.name;
+    this.recipeButton = document.createElement('button');
+    this.recipeButton.className = 'pet-recipes';
+    this.recipeButton.type = 'button';
+    this.recipeButton.textContent = '🔧';
+    this.recipeButton.title = '快捷配方';
+    this.recipeButton.setAttribute('aria-label', '打开快捷配方');
+    this.recipeButton.style.left = ((S.HIT_BOX.x0 + S.HIT_BOX.x1) / 1280) * 100 + '%';
+    this.recipeButton.style.top = Math.max(0, (S.HIT_BOX.y0 / 360) * this.height - 30) + 'px';
+    this._recipeHover = false;
     this.bubble = document.createElement('div');
     this.bubble.className = 'pet-bubble';
 
@@ -174,6 +185,7 @@ class PetSprite {
     this._warming = null;
     this._disposed = false;
     stage.appendChild(this.hit);
+    stage.appendChild(this.recipeButton);
     this.el.appendChild(this.bubble);
     this.el.appendChild(stage);
     rootEl.appendChild(this.el);
@@ -184,7 +196,12 @@ class PetSprite {
     this.ac = ac;
     this.hit.addEventListener('pointerdown', (e) => this.onPointerDown(e), { signal: ac.signal });
     this.hit.addEventListener('pointermove', (e) => this.onPointerMove(e), { signal: ac.signal });
-    this.hit.addEventListener('click', (e) => this.onRecipeClick(e), { signal: ac.signal });
+    this.hit.addEventListener('click', () => this.onClick(), { signal: ac.signal });
+    this.recipeButton.addEventListener('pointerdown', e => e.stopPropagation(), { signal: ac.signal });
+    this.recipeButton.addEventListener('click', e => {
+      e.stopPropagation();
+      if (!this.dragState.active && !this.justDragged) window.petBridge.openRecipes(this.recipeAnchor());
+    }, { signal: ac.signal });
     this.hit.addEventListener('contextmenu', (e) => this.onContextMenu(e), { signal: ac.signal });
     window.addEventListener('pointerup', (e) => this.onPointerUp(e), { signal: ac.signal });
     window.addEventListener('pointercancel', (e) => this.onPointerUp(e), { signal: ac.signal });
@@ -199,6 +216,7 @@ class PetSprite {
         // 光标离开窗口：菜单若开着立刻收起（菜单是窗口内 DOM，离开即不可达），再恢复穿透；
         // 对话弹窗开着则不恢复——弹窗是窗口内 DOM，鼠标还要回来点输入框（与 menuOpen 同守卫）
         this.closeMenu();
+        this.setRecipeHover(false);
         if (!this.chatOpen) this.setInteractive(false);
       },
       { signal: ac.signal },
@@ -239,6 +257,7 @@ class PetSprite {
 
   dispose() {
     this._disposed = true;
+    window.clearTimeout(this._endTimer);
     this.stopVideoFrames();
     window.clearTimeout(this._warmTimer);
     for (const entry of this._warmVideos.values()) entry.cancel?.();
@@ -247,7 +266,6 @@ class PetSprite {
     this.pending?.cancel?.();
     this.pending = null;
     for (const video of this._videoPool) video.pause();
-    clearTimeout(this._recipeClickTimer);
     this.ac.abort();
     if (this.bubbleTimer !== null) window.clearTimeout(this.bubbleTimer);
     if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
@@ -399,6 +417,30 @@ class PetSprite {
     next();
   }
 
+  finishPlayback(playback) {
+    if (this._disposed || !playback || this._playback !== playback || playback.advanced
+        || this.pending || this.dragState?.active) return;
+    playback.advanced = true;
+    window.clearTimeout(this._endTimer);
+    this._endTimer = null;
+    this.handleEnded();
+  }
+
+  watchPlaybackEnd(playback) {
+    window.clearTimeout(this._endTimer);
+    if (this._disposed || this._playback !== playback || !playback.once || playback.advanced) return;
+    const video = playback.video;
+    const remaining = Number.isFinite(video.duration) ? Math.max(0, video.duration - video.currentTime) : 1;
+    this._endTimer = window.setTimeout(() => {
+      this._endTimer = null;
+      if (this._disposed || this._playback !== playback || playback.advanced) return;
+      // The ended event can be lost while another action is preparing. Advance once
+      // that request has settled, without advancing two times for an ordinary event.
+      if (video.ended) this.finishPlayback(playback);
+      if (!playback.advanced) this.watchPlaybackEnd(playback);
+    }, Math.max(500, remaining * 1000 + 250));
+  }
+
   // Four paused decoded clips, loaded serially after the visible pet has started.
   // The pool is capped at six video elements including the two playback slots.
   warmAnimationCandidates() {
@@ -507,7 +549,6 @@ class PetSprite {
     }
     const el = targetIndex === 0 ? this.videoA : this.videoB;
     if (!el) return;
-    old.onended = null;
     el.pause();
     el.classList.remove('is-front');
     el.style.zIndex = '0';
@@ -532,6 +573,8 @@ class PetSprite {
       cleanup();
       el.pause();
       this.pending = null;
+      this.pendingMove = null;
+      if (this._playback?.video === old && old.ended) this.finishPlayback(this._playback);
       this.queueWarmAnimations();
       console.warn('[dsh-pet] 素材加载失败 pet=' + this.pet.id + ' anim=' + next + '：' + why + '（已释放本次切换）');
     };
@@ -545,12 +588,18 @@ class PetSprite {
       this.frameCanvas.style.transformOrigin = '';
       this.frameCanvas.style.transform = el.style.transform;
       old.classList.remove('is-front');
+      old.onended = null;
       old.pause();
       el.style.zIndex = '1';
       el.classList.add('is-front');
       this.front = targetIndex;
       this.pending = null;
-      el.onended = nextOnce ? () => { if (this._displayVideo === el && this.gen === gen && !this.pending) this.handleEnded(); } : null;
+      this.anim = next;
+      this.once = nextOnce;
+      const playback = { video: el, name: next, once: nextOnce, advanced: false };
+      this._playback = playback;
+      el.onended = nextOnce ? () => this.finishPlayback(playback) : null;
+      this.watchPlaybackEnd(playback);
       this._warmFailed.delete(next);
       this.queueWarmAnimations();
       // 点击 Q 弹：等新动画就位后才压（压的是新点击动画的首帧，与浏览器一致）
@@ -589,8 +638,6 @@ class PetSprite {
   }
 
   playOnce(name) {
-    this.anim = name;
-    this.once = true;
     this.switchTo(name, true);
   }
 
@@ -722,8 +769,6 @@ class PetSprite {
     });
     if (!plan) return false;
     this.pendingMove = { ...plan, dir, leadSec: mp.leadSec, tailSec: mp.tailSec };
-    this.anim = chosen.name;
-    this.once = true;
     this.switchTo(chosen.name, true);
     return chosen.name;
   }
@@ -950,21 +995,9 @@ class PetSprite {
     return {x:toScreen(this.pos.x+VIEW.x+r.x),y:toScreen(this.pos.y+VIEW.y+r.y),width:toScreen(r.w),height:toScreen(r.h)};
   }
 
-  onRecipeClick(e) {
-    clearTimeout(this._recipeClickTimer);
-    if (this.justDragged || this.dragState.active || this.menuOpen || this.chatOpen || e.detail > 1) return;
-    this.stopThrow();
-    this.stopMove();
-    this._recipeClickTimer = setTimeout(() => {
-      if (!this.el.isConnected || this.justDragged || this.dragState.active || this.menuOpen || this.chatOpen) return;
-      window.petBridge.openRecipes(this.recipeAnchor());
-    }, window.petBridge.clickDelay);
-  }
-
   onPointerDown(e) {
     // 只认左键：右键进入拖拽判定会与右键菜单打架（右键不拖拽，两端一致）
     if (e.button !== 0) return;
-    clearTimeout(this._recipeClickTimer);
     // 抓取速度日志：stopThrow 之前读，否则飞行速度就没了；静止时记录 0（与浏览器同构）
     const grabState = this.throwState;
     console.log(
@@ -1140,7 +1173,13 @@ class PetSprite {
    * 位移分不清"拖拽跟手"和"漫游/抛掷"）。所以由渲染端上报，主进程的兜底通道据此闭嘴。
    */
   inputBusy() {
-    return this.dragState.active || this.menuOpen || this.chatOpen;
+    return this.dragState.active || this.menuOpen || this.chatOpen || this._recipeHover;
+  }
+
+  setRecipeHover(hover) {
+    this._recipeHover = !!hover;
+    this.recipeButton.classList.toggle('is-visible', this._recipeHover);
+    this.syncInputBusy();
   }
 
   /**
@@ -1167,11 +1206,13 @@ class PetSprite {
   onMouseMove(e) {
     // 拖拽中窗口逐帧跟随光标、指针相对窗口坐标会有帧级抖动——强制保持可交互，绝不翻转（翻转会断拖拽）
     if (this.dragState.active) {
+      this.setRecipeHover(false);
       this.setInteractive(true);
       return;
     }
     // 右键菜单/对话弹窗开启：整窗保持可交互（悬停菜单项/点输入框都不触发穿透翻转）；关闭后恢复命中区判定
     if (this.menuOpen || this.chatOpen) {
+      this.setRecipeHover(false);
       this.setInteractive(true);
       return;
     }
@@ -1183,7 +1224,13 @@ class PetSprite {
     const wy = Number.isFinite(e.clientY) ? e.clientY : toLocal(e.screenY) - (this.pos.y + VIEW.y - this.margin.t);
     const px = wx - this.margin.l;
     const py = wy - this.margin.t;
-    this.setInteractive(px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h);
+    const body = px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+    const b = this.recipeButton.getBoundingClientRect();
+    // Keep the short corridor between the head and the button interactive.
+    const tools = this._recipeHover && wx >= b.left - 5 && wx <= b.right + 5
+      && wy >= b.top - 3 && wy <= this.margin.t + r.y + 8;
+    this.setRecipeHover(body || tools);
+    this.setInteractive(body || tools);
   }
 
   onClick() {
@@ -1233,7 +1280,6 @@ class PetSprite {
   }
 
   onContextMenu(e) {
-    clearTimeout(this._recipeClickTimer);
     const d = this.dragState;
     if (d.active || d.dragging || this.justDragged || this.menuOpen) return;
     e.preventDefault();

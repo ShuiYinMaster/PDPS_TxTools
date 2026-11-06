@@ -337,7 +337,7 @@ namespace TxTools.Agent.Ps
                         all.AddRange(results);
                         var task = new RobotPathCheckTask { Results = results };
                         var details = new JArray();
-                        foreach (var r in results.OrderBy(r => r.Status == ReachabilityStatus.Reachable ? 1 : 0).Take(maxResults))
+                        foreach (var r in results.OrderBy(r => r.Status == ReachabilityStatus.Reachable && !r.HasInterferenceWarning ? 1 : 0).Take(maxResults))
                             details.Add(new JObject
                             {
                                 ["point"] = r.PointName, ["object_id"] = (r.LocationRef as ITxObject)?.Id,

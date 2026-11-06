@@ -69,6 +69,7 @@ namespace TxTools.ThemeTuner
 
             BuildBody();
             BuildBottomBar();
+            BuildAboutNavigation();
 
             RefreshSwatches();
             RefreshPreview();
@@ -112,6 +113,7 @@ namespace TxTools.ThemeTuner
             feedback.Controls.Add(preview, 0, 0);
             feedback.Controls.Add(status, 0, 1);
             body.Controls.Add(feedback, 1, 1);
+            _themeBody = body;
             this.Controls.Add(body);
         }
 
@@ -330,6 +332,7 @@ namespace TxTools.ThemeTuner
             showLogs.CheckedChanged += (s, e) => PluginLog.Enabled = showLogs.Checked;
             bar.Controls.Add(showLogs);
             this.Controls.Add(bar);
+            _themeActions = bar;
             SyncColorUiState();
         }
 

@@ -21,7 +21,9 @@ namespace TxTools.WeldAnnotator
             try
             {
                 var form = new WeldAnnotatorForm();
-                form.Show();
+                var mainHandle = System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle;
+                if (mainHandle != IntPtr.Zero) form.Show(new HostWindow(mainHandle));
+                else form.Show();
                 // 打开后立即把焦点还给 PS 主窗口。
                 try
                 {
@@ -40,5 +42,11 @@ namespace TxTools.WeldAnnotator
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        private sealed class HostWindow : IWin32Window
+        {
+            public IntPtr Handle { get; private set; }
+            public HostWindow(IntPtr handle) { Handle = handle; }
+        }
     }
 }

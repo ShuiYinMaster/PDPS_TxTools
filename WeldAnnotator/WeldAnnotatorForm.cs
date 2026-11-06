@@ -70,7 +70,7 @@ namespace TxTools.WeldAnnotator
         // ════════════════════════════════════════════════════════════════
         //  常量
         // ════════════════════════════════════════════════════════════════
-        private const int C_IDX = 0, C_NAME = 1, C_OP = 2, C_X = 3, C_Y = 4, C_Z = 5, C_VIS = 6, C_TYPE = 7;
+        private const int C_IDX = 0, C_NAME = 1, C_OP = 2, C_X = 3, C_Y = 4, C_Z = 5, C_PREVIEW = 6, C_TYPE = 7;
 
         private static readonly string[] CATEGORY_OPTIONS = {
             "二层板点焊", "二层板补焊",
@@ -93,9 +93,10 @@ namespace TxTools.WeldAnnotator
         private Dictionary<int, string>   _categories     = new Dictionary<int, string>();
         private HashSet<int>              _categoriesManuallyEdited = new HashSet<int>();
 
-        private static readonly D.Size _myDefaultSize = new D.Size(1000, 760);
-        private static readonly D.Size _myMinimumSize = new D.Size(820, 700);
+        private static readonly D.Size _myDefaultSize = new D.Size(920, 570);
+        private static readonly D.Size _myMinimumSize = new D.Size(920, 570);
         private bool _dpiApplied;
+        private bool _clearingSelection, _displayBusy;
 
         // ════════════════════════════════════════════════════════════════
         //  构造 + 生命周期
@@ -108,13 +109,13 @@ namespace TxTools.WeldAnnotator
                 _myDefaultSize, _myMinimumSize);
 
             Font = FormUiKit.BaseFont;
-            ShowInTaskbar = true;
+            ShowInTaskbar = false;
             PlaceTopRight();
 
+            BuildCardPanel();
             BuildMainArea();
             BuildLogPanel();
             BuildStatusBar();
-            BuildCardPanel();
 
             this.FormClosing += WeldAnnotatorForm_FormClosing;
         }
@@ -163,7 +164,9 @@ namespace TxTools.WeldAnnotator
                 if (r == DialogResult.Cancel) { e.Cancel = true; return; }
                 if (r == DialogResult.Yes)
                 {
-                    if (!_displaySession.Restore())
+                    bool restored = false;
+                    RunDisplayAction(() => restored = _displaySession.Restore());
+                    if (!restored)
                     {
                         e.Cancel = true;
                         SetStatus("部分显示状态恢复失败，请查看日志后重试");
@@ -184,11 +187,23 @@ namespace TxTools.WeldAnnotator
         // ════════════════════════════════════════════════════════════════
         private void OnOpInserted(object sender, TxObjGridCtrl_ObjectInsertedEventArgs e)
         {
+            if (_clearingSelection || _displayBusy) return;
             try
             {
                 ITxObject txo = _opGrid.GetObject(0);
                 if (txo == null) return;
+                if (!(txo is ITxOperation))
+                {
+                    ClearOperationSelection();
+                    SetStatus("仅支持选择操作节点");
+                    return;
+                }
 
+                if (_selOpObj == null || _selOpObj.Id != txo.Id)
+                {
+                    _categories.Clear();
+                    _categoriesManuallyEdited.Clear();
+                }
                 _selOpName = SafeGetName(txo);
                 _selOpObj  = txo;
                 _lblOpHint.Text      = _selOpName;
@@ -207,36 +222,43 @@ namespace TxTools.WeldAnnotator
 
         private void OnOpDeleted(object sender, TxObjGridCtrl_RowDeletedEventArgs e)
         {
+            if (_clearingSelection || _displayBusy) return;
             try
             {
                 if (_opGrid.Count > 0)
                 {
                     ITxObject txo = _opGrid.GetObject(0);
-                    if (txo != null)
+                    if (txo is ITxOperation)
                     {
+                        if (_selOpObj == null || _selOpObj.Id != txo.Id)
+                        {
+                            _categories.Clear();
+                            _categoriesManuallyEdited.Clear();
+                        }
                         _selOpName = SafeGetName(txo);
                         _selOpObj  = txo;
                         _lblOpHint.Text      = _selOpName;
                         _lblOpHint.ForeColor = D.Color.DarkGreen;
                         ReadWeldPointsFromSelectedOp();
+                        ApplyAutoThicknessIfEnabled();
                         RefreshGrid();
                         return;
                     }
                 }
             }
             catch { }
-            _selOpName = null;
-            _selOpObj  = null;
-            _lblOpHint.Text      = "选OP或视口选中";
-            _lblOpHint.ForeColor = D.Color.Gray;
-            _points.Clear();
-            RefreshGrid();
+            ResetOperationData();
         }
 
         // ════════════════════════════════════════════════════════════════
         //  快照控制
         // ════════════════════════════════════════════════════════════════
         private void BtnSnap_Click(object sender, EventArgs e)
+        {
+            RunDisplayAction(() => CaptureDisplaySnapshot());
+        }
+
+        private void CaptureDisplaySnapshot()
         {
             SetStatus("拍摄快照中...");
             try
@@ -253,6 +275,11 @@ namespace TxTools.WeldAnnotator
 
         private void BtnRestore_Click(object sender, EventArgs e)
         {
+            RunDisplayAction(() => RestoreDisplay());
+        }
+
+        private void RestoreDisplay()
+        {
             SetStatus("恢复显示状态中...");
             try
             {
@@ -266,6 +293,11 @@ namespace TxTools.WeldAnnotator
         }
 
         private void BtnShowOnly_Click(object sender, EventArgs e)
+        {
+            RunDisplayAction(() => ShowOnlyOperation());
+        }
+
+        private void ShowOnlyOperation()
         {
             if (_selOpObj == null) { SetStatus("请先在左侧选择操作节点"); return; }
             SetStatus("准备白名单...");
@@ -341,9 +373,51 @@ namespace TxTools.WeldAnnotator
 
         private void UpdateDisplayControls()
         {
-            _btnRestore.Enabled = _displaySession.CanRestore;
+            _btnSnap.Enabled = _btnShowOnly.Enabled = !_displayBusy;
+            _btnRestore.Enabled = !_displayBusy && _displaySession.CanRestore;
             _btnRestore.Text = _displaySession.HasSnapshot ? "恢复快照" : "恢复显示";
         }
+
+        private void RunDisplayAction(Action action)
+        {
+            if (_displayBusy) return;
+            _displayBusy = true;
+            try
+            {
+                PickFocus.SetSuspended(_opGrid, true);
+                ReleaseOwnMouseCapture();
+                UseWaitCursor = true;
+                UpdateDisplayControls();
+                action();
+            }
+            finally
+            {
+                // Unsuspend only permits the next explicit picker click; it does not reactivate it.
+                try { PickFocus.SetSuspended(_opGrid, false); }
+                finally
+                {
+                    ReleaseOwnMouseCapture();
+                    UseWaitCursor = false;
+                    _displayBusy = false;
+                    UpdateDisplayControls();
+                }
+            }
+        }
+
+        private void ReleaseOwnMouseCapture()
+        {
+            if (!IsHandleCreated) return;
+            IntPtr captured = GetCapture();
+            if (captured == Handle || (captured != IntPtr.Zero && IsChild(Handle, captured)))
+                ReleaseCapture();
+        }
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetCapture();
+        [DllImport("user32.dll")]
+        private static extern bool IsChild(IntPtr parent, IntPtr child);
+        [DllImport("user32.dll")]
+        private static extern bool ReleaseCapture();
 
         // ════════════════════════════════════════════════════════════════
         //  读取焊点 / 清空 / 导出
@@ -411,11 +485,38 @@ namespace TxTools.WeldAnnotator
 
         private void BtnClear_Click(object sender, EventArgs e)
         {
+            ClearOperationSelection();
+            SetStatus("已清空操作节点及焊点列表");
+        }
+
+        private void ClearOperationSelection()
+        {
+            if (_clearingSelection) return;
+            _clearingSelection = true;
+            try
+            {
+                PickFocus.SetSuspended(_opGrid, true);
+                _opGrid.Objects = new TxObjectList();
+            }
+            finally
+            {
+                _clearingSelection = false;
+                PickFocus.SetSuspended(_opGrid, false);
+                ReleaseOwnMouseCapture();
+            }
+            ResetOperationData();
+        }
+
+        private void ResetOperationData()
+        {
+            _selOpName = null;
+            _selOpObj = null;
+            _lblOpHint.Text = "在 PS 中选择操作节点或视口";
+            _lblOpHint.ForeColor = D.Color.Gray;
             _points.Clear();
             _categories.Clear();
             _categoriesManuallyEdited.Clear();
             RefreshGrid();
-            SetStatus("已清空");
         }
 
         private void ApplyAutoThicknessIfEnabled()
@@ -476,13 +577,13 @@ namespace TxTools.WeldAnnotator
                 Log("INFO", $"已写入活动Excel：{_points.Count} 个焊点，{inVp} 个视口内点已生成可编辑 Shape 标注");
             }
             catch (Exception ex) { Log("ERR", "导出失败：" + ex.Message); SetStatus("导出失败：" + ex.Message); }
-            finally { _btnExport.Enabled = true; _progress.Visible = false; }
+            finally { _btnExport.Enabled = _points.Count > 0; _progress.Visible = false; }
         }
 
         private void BtnStyle_Click(object sender, EventArgs e)
         {
             using (var sf = new AnnotationStyleForm(_style))
-                if (sf.ShowDialog(this) == DialogResult.OK) { _style = sf.Result; Log("INFO", "样式已更新"); }
+                if (sf.ShowDialog(this) == DialogResult.OK) { _style = sf.Result; _grid.Invalidate(); Log("INFO", "样式已更新"); }
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -501,7 +602,6 @@ namespace TxTools.WeldAnnotator
                 _grid[row, C_X]    = pt.X.ToString("F2");
                 _grid[row, C_Y]    = pt.Y.ToString("F2");
                 _grid[row, C_Z]    = pt.Z.ToString("F2");
-                _grid[row, C_VIS]  = pt.InViewport ? "是" : (pt.ScreenX == 0 && pt.ScreenY == 0 ? "-" : "否");
 
                 if (!_categories.TryGetValue(pt.Index, out string cat) || string.IsNullOrEmpty(cat))
                     _categories[pt.Index] = cat = DEFAULT_CATEGORY;
@@ -515,21 +615,12 @@ namespace TxTools.WeldAnnotator
             }
 
             int inVp = _points.Count(p => p.InViewport);
-            _lblCount.Text = _points.Count > 0
-                ? $"焊点：{_points.Count} 个  视口内：{inVp} 个"
-                : "焊点：0 个";
+            _lblCount.Text = $"焊点 {_points.Count} · 视口内 {inVp}";
+            _btnExport.Enabled = _points.Count > 0;
+            _btnClear.Enabled = _opGrid.Count > 0;
+            _emptyState.Visible = _points.Count == 0;
 
-            try
-            {
-                int[] minWidths = { 36, 100, 90, 70, 70, 70, 50, 90 };
-                for (int c = 0; c < _grid.Cols.Count && c < minWidths.Length; c++)
-                {
-                    _grid.AutoSizeCol(c);
-                    if (_grid.Cols[c].Width < minWidths[c]) _grid.Cols[c].Width = minWidths[c];
-                    _grid.Cols[c].Width += 12;
-                }
-            }
-            catch { }
+            FitGridColumns();
         }
 
         private void Grid_AfterEdit(object sender, RowColEventArgs e)
@@ -543,6 +634,7 @@ namespace TxTools.WeldAnnotator
                 int key = _points[e.Row - 1].Index;
                 _categories[key] = newVal;
                 _categoriesManuallyEdited.Add(key);
+                _grid.Invalidate();
                 Log("INFO", $"[Annotator] 点 [{_points[e.Row - 1].Name}] 类型改为 [{newVal}]");
             }
             catch (Exception ex) { Log("WARN", "Grid_AfterEdit: " + ex.Message); }

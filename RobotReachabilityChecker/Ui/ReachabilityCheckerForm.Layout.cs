@@ -29,14 +29,12 @@ namespace TxTools.RobotReachabilityChecker.Ui
         private void InitializeComponent()
         {
             SuspendLayout();
-            BuildToolStrip();
             BuildCardsPanel();
             BuildLogPanel();
             BuildStatusStrip();
             BuildGrid();   // 在 Grid 文件中实现
 
             // DockStyle 优先级：后 Add 的 Top 显示在上；Fill 最后
-            _toolStrip.SendToBack();
             _cardsPanel.SendToBack();
             _statusStrip.SendToBack();
             _logPanel.SendToBack();
@@ -47,20 +45,6 @@ namespace TxTools.RobotReachabilityChecker.Ui
         // =====================================================================
         // ToolStrip（精简：仅保留进度条，检查时显示）
         // =====================================================================
-        private void BuildToolStrip()
-        {
-            _toolStrip = new TxToolStrip
-            {
-                Dock = DockStyle.Top,
-                GripStyle = ToolStripGripStyle.Hidden,
-                Padding = new Padding(4, 2, 4, 2),
-                Visible = false
-            };
-
-            _tsProgress = new ToolStripProgressBar { Width = 200, Visible = false };
-            _toolStrip.Items.Add(_tsProgress);
-            Controls.Add(_toolStrip);
-        }
 
         // =====================================================================
         // 参数区保持单行：短标签、按内容分配列宽，完整说明放入提示。
@@ -299,6 +283,30 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 Margin = new Padding(0, 0, 0, 0)
             };
             flow.Controls.AddRange(new Control[] { _chkStaticInterference, _chkDynamicInterference });
+            _interferenceProgress = new ProgressBar
+            {
+                Width = 110, Height = 12, Minimum = 0, Maximum = 100,
+                Margin = new Padding(0, 4, 0, 2)
+            };
+            _interferenceHint = new Label
+            {
+                Text = "未启用静态干涉", AutoSize = false, Width = 110, Height = 32,
+                Font = FormUiKit.BaseFont, ForeColor = ClrMuted,
+                Margin = new Padding(0)
+            };
+            flow.Controls.Add(_interferenceProgress);
+            flow.Controls.Add(_interferenceHint);
+            flow.SizeChanged += (s, e) =>
+            {
+                int width = Math.Max(40, flow.ClientSize.Width - flow.Padding.Horizontal);
+                _interferenceProgress.Width = width;
+                _interferenceHint.Width = width;
+            };
+            _chkStaticInterference.CheckedChanged += (s, e) =>
+            {
+                if (!_isChecking) _interferenceHint.Text = _chkStaticInterference.Checked
+                    ? "检查时优先复用已有范围" : "未启用静态干涉";
+            };
 
             card.Controls.Add(flow);
             return card;

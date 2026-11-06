@@ -40,6 +40,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
         // =====================================================================
         private void OnOpNodePicked(object sender, EventArgs e)
         {
+            if (_isChecking) return;
             if (_txtOpNode == null) return;
             ITxObject pickedObj = null;
             try { pickedObj = _txtOpNode.Object as ITxObject; }
@@ -433,6 +434,10 @@ namespace TxTools.RobotReachabilityChecker.Ui
 
         private void BtnReset_Click(object sender, EventArgs e)
         {
+            if (_isChecking) return;
+            _interferenceSession.Dispose();
+            _interferenceProgress.Value = 0;
+            _interferenceHint.Text = "干涉范围已重置";
             // 合并原"刷新"功能：清空结果 + 清空拾取记忆 + 重新加载文档状态
             ClearResults();
             _pickedOperation = null;
@@ -467,9 +472,9 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 {
                     $"# 机器人路径可达性检查报告",
                     $"# 机器人: {_currentTask.RobotName}  路径: {_currentTask.PathName}  时间: {_currentTask.CheckTime:yyyy-MM-dd HH:mm:ss}",
-                    $"# 总计:{_currentTask.TotalPoints}  可达:{_currentTask.ReachableCount}  不可达:{_currentTask.UnreachableCount}  近极限:{_currentTask.NearLimitCount}  奇异:{_currentTask.SingularCount}  临界:{_currentTask.CriticalCount}  可达率:{_currentTask.ReachabilityRate:F1}%",
+                    $"# 总计:{_currentTask.TotalPoints}  可达:{_currentTask.ReachableCount}  不可达:{_currentTask.UnreachableCount}  近极限:{_currentTask.NearLimitCount}  奇异:{_currentTask.SingularCount}  临界:{_currentTask.CriticalCount}  干涉:{_currentTask.CollisionCount}  干涉未知:{_currentTask.CollisionUnknownCount}  可达率:{_currentTask.ReachabilityRate:F1}%",
                     "",
-                    "序号,机器人名,操作名称,点名,点类型,状态,J1(°),J2(°),J3(°),J4(°),J5(°),J6(°),最小余量(°),备注"
+                    "序号,机器人名,操作名称,点名,点类型,可达性状态,干涉状态,J1(°),J2(°),J3(°),J4(°),J5(°),J6(°),最小余量(°),备注"
                 };
                 foreach (var r in _currentTask.Results)
                 {
@@ -482,7 +487,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
                         : "未检查";
                     lines.Add(string.Join(",",
                         r.Index, r.RobotName, r.OperationName, r.PointName,
-                        r.PointType, st,
+                        r.PointType, st, r.CollisionSummary,
                         r.J1.ToString("F1"), r.J2.ToString("F1"), r.J3.ToString("F1"),
                         r.J4.ToString("F1"), r.J5.ToString("F1"), r.J6.ToString("F1"),
                         r.JointMargin.ToString("F1"), $"\"{r.ErrorMessage}\""));
@@ -506,6 +511,8 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 TcpMarginMm = _nudTcpMargin != null
                     ? (double)_nudTcpMargin.Value : 200.0,
                 InterferenceEnabled = _chkStaticInterference != null && _chkStaticInterference.Checked,
+                InterferenceSession = _interferenceSession,
+                InterferenceStage = UpdateInterferenceStage,
                 UserSelectedBrand = RobotBrand.Auto
             };
 
@@ -524,14 +531,17 @@ namespace TxTools.RobotReachabilityChecker.Ui
 
         private void StartCheck()
         {
-            if (_pickedOperation == null) return;
+            if (_pickedOperation == null || _isChecking) return;
 
             string opName = _pickedOperation.Name ?? "(未命名)";
             ITxObject opForCheck = _pickedOperation;
 
-            _tsProgress.Visible = true;
-            if (_toolStrip != null) _toolStrip.Visible = true;
-            _tsProgress.ProgressBar.Value = 0;
+            _isChecking = true;
+            _grid.Enabled = false;
+            _txtOpNode.Enabled = false;
+            _lastProgressTime = DateTime.MinValue;
+            _interferenceProgress.Value = 0;
+            _interferenceHint.Text = _chkStaticInterference.Checked ? "准备干涉范围…" : "正在检查可达性…";
             SetStatus($"正在检查 [{opName}]...");
             Log("========================================");
             Log($"开始检查任务: {opName}");
@@ -541,6 +551,8 @@ namespace TxTools.RobotReachabilityChecker.Ui
             // 用 BeginInvoke 让窗体先把"正在检查"状态绘出来再阻塞
             this.BeginInvoke(new Action(() =>
             {
+                try
+                {
                 List<PathPointResult> results = null;
                 try
                 {
@@ -565,19 +577,37 @@ namespace TxTools.RobotReachabilityChecker.Ui
                     CheckTime = DateTime.Now,
                     Results = results ?? new List<PathPointResult>()
                 };
+                _tasks.Clear();
                 _tasks.Add(task);
                 _currentTask = task;
                 RefreshGrid(task.Results);
                 UpdateSummaryCards(task);
 
-                _tsProgress.Visible = false;
-                if (_toolStrip != null) _toolStrip.Visible = false;
+                _interferenceProgress.Value = 100;
+                _interferenceHint.Text = opts.InterferenceEnabled
+                    ? $"完成：干涉 {task.CollisionCount}，未知 {task.CollisionUnknownCount}"
+                    : "可达性检查完成";
                 SetStatus(
                     $"✓ 完成 | {task.TotalPoints} 点 | " +
                     $"可达 {task.ReachableCount} | 不可达 {task.UnreachableCount} | " +
                     $"近极限 {task.NearLimitCount} | 奇异 {task.SingularCount} | " +
-                    $"临界 {task.CriticalCount} | 可达率 {task.ReachabilityRate:F1}%");
+                    $"临界 {task.CriticalCount} | 干涉 {task.CollisionCount} | 未知 {task.CollisionUnknownCount} | 可达率 {task.ReachabilityRate:F1}%");
+                }
+                finally
+                {
+                    _isChecking = false;
+                    _grid.Enabled = true;
+                    _txtOpNode.Enabled = true;
+                }
             }));
+        }
+
+        private void UpdateInterferenceStage(string text)
+        {
+            _interferenceHint.Text = text;
+            _interferenceProgress.Value = Math.Min(90, _interferenceProgress.Value + 15);
+            _interferenceHint.Refresh();
+            _interferenceProgress.Refresh();
         }
 
         // 进度更新节流：每 100ms 最多刷一次（高频回调下避免 UI 卡顿）
@@ -590,10 +620,11 @@ namespace TxTools.RobotReachabilityChecker.Ui
             if (!isEdge && (now - _lastProgressTime).TotalMilliseconds < 100) return;
             _lastProgressTime = now;
 
-            if (_tsProgress?.ProgressBar != null)
+            if (_interferenceProgress != null)
             {
                 int pct = total > 0 ? Math.Min(done * 100 / total, 100) : 0;
-                _tsProgress.ProgressBar.Value = pct;
+                _interferenceProgress.Value = pct;
+                _interferenceHint.Text = $"检查点位 {done}/{total}";
             }
             SetStatus($"检查中 [{opName}] {done}/{total}");
             Application.DoEvents();
@@ -613,6 +644,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             SetStatus($"共 {t.TotalPoints} 点  可达 {t.ReachableCount}  " +
                       $"不可达 {t.UnreachableCount}  接近极限 {t.NearLimitCount}  " +
                       $"奇异 {t.SingularCount}  临界 {t.CriticalCount}  " +
+                      $"干涉 {t.CollisionCount}  干涉未知 {t.CollisionUnknownCount}  " +
                       $"可达率 {t.ReachabilityRate:F1}%");
         }
 

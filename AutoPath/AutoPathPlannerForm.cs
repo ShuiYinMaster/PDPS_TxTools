@@ -194,7 +194,6 @@ namespace TxTools.AutoPathPlanner
         private NumericUpDown _nudGunMaxOpen;    // v6.4 最大开口幅值覆盖
 
         private CheckBox _chkCache;              // v6.3 查询缓存
-        private CheckBox _chkBaselineExempt;   // v6.7 常驻接触豁免
 
         private Button _btnResetParams;
         #endregion
@@ -329,13 +328,10 @@ namespace TxTools.AutoPathPlanner
                     _nudBackoutMax = AddRow(tp1, "最大后撤深度(mm):", 330, ref y2, 800, 100, 2000,
                         "L1 沿枪 -X 后撤的搜索上限");
 
-                    _chkDynamic = AddCheck(tp1, "动态干涉检查 (关节扫掠)", 330, ref y2, true,
-                        "关闭后只做静态点位检查, 看不见枪体扫掠 —— 强烈建议保持开启");
-                    _chkPrune = AddCheck(tp1, "共线过渡点剪枝", 330, ref y2, true,
+                    _chkDynamic = AddCheck(tp1, "启用分段动态修复", 330, ref y2, true,
+                        "开启后增加未通过连接的关节空间修复尝试；搜索碰撞检查和写入后终验始终执行");
+                    _chkPrune = AddCheck(tp1, "关节路径捷径优化", 330, ref y2, true,
                         "直线段上的连续过渡点只保留首尾 (删除后会复验安全性)");
-                    _chkBaselineExempt = AddCheck(tp1, "豁免常驻接触(基线)", 330, ref y2, false,
-                        "初始姿态已存在的接触(如夹具|机器人)在本次规划中不再判碰撞。\n" +
-                        "适用于夹具/机器人几何近似导致的常驻误报; 开启后可能漏检真实碰撞。");
                 }
                 tabs.TabPages.Add(tp1);
 
@@ -361,7 +357,7 @@ namespace TxTools.AutoPathPlanner
                     AddNote(tp2, 330, ref y2,
                         "抬升/横移必须先退够门槛才允许。");
                 }
-                tabs.TabPages.Add(tp2);
+                // Cartesian L1 settings are retained internally; the joint planner does not use this page.
 
                 // ---------- Tab 3: 动态检查 ----------
                 var tp3 = new TabPage("动态检查");
@@ -372,11 +368,11 @@ namespace TxTools.AutoPathPlanner
                     _nudCartQuantum = AddRow(tp3, "笛卡尔量子(mm):", 10, ref y, 15, 3, 100,
                         "扫掠步数 = TCP位移 / 此值。与关节判据取大者。"
                         + "枪长时腕部小角度也会让枪尖扫过很远, 这一项防漏检");
-                    _nudMaxSweep = AddRow(tp3, "扫掠步数上限:", 10, ref y, 64, 8, 200,
+                    _nudMaxSweep = AddRow(tp3, "扫掠步数上限:", 10, ref y, 256, 8, 4096,
                         "单条边的最大扫掠采样数。大=准但慢");
 
                     int y2 = 12;
-                    _nudConfigJump = AddRow(tp3, "构型突变阈值(°):", 330, ref y2, 120, 30, 360,
+                    _nudConfigJump = AddRow(tp3, "大行程提示阈值(°):", 330, ref y2, 120, 30, 360,
                         "相邻点关节跨度超此值判定为构型翻转 (奇异/翻腕)");
                     _nudCollinearTol = AddRow(tp3, "共线容差(mm):", 330, ref y2, 3, 1, 50,
                         "中点到首尾连线垂距小于此值视为共线, 可剪除");
@@ -384,25 +380,25 @@ namespace TxTools.AutoPathPlanner
                 tabs.TabPages.Add(tp3);
 
                 // ---------- Tab 4: RRT & 采样 ----------
-                var tp4 = new TabPage("RRT & 采样");
+                var tp4 = new TabPage("关节空间规划");
                 {
                     int y = 12;
-                    _nudStep = AddRow(tp4, "RRT 步长(mm):", 10, ref y, 50, 10, 400,
-                        "RRT 树扩展步长");
+                    _nudStep = AddRow(tp4, "关节扩展步长(°):", 10, ref y, 12, 2, 45,
+                        "机器人及旋转外部轴的单次扩展步长");
                     _nudIter = AddRow(tp4, "RRT 最大迭代:", 10, ref y, 5000, 200, 50000,
                         "单段 RRT 的迭代上限");
-                    _nudGoalBias = AddRow(tp4, "目标偏置(%):", 10, ref y, 15, 0, 90,
-                        "采样时直接朝目标的概率");
-                    _nudEdgeRes = AddRow(tp4, "连边检测分辨(mm):", 10, ref y, 12, 3, 60,
-                        "边采样间隔。小=防薄板隧穿但慢");
+                    _nudGoalBias = AddRow(tp4, "全局采样占比(%):", 10, ref y, 30, 0, 90,
+                        "全限位范围采样的比例，其余采样偏向两端关节走廊");
+                    _nudEdgeRes = AddRow(tp4, "直线轴步长(mm):", 10, ref y, 25, 1, 100,
+                        "直线外部轴的扩展步长；碰撞检测分辨率由动态检查参数控制");
 
                     int y2 = 12;
-                    _nudInflateXy = AddRow(tp4, "采样膨胀 XY(mm):", 330, ref y2, 300, 0, 2000,
-                        "RRT 采样盒在 XY 方向的膨胀量");
-                    _nudInflateZUp = AddRow(tp4, "采样膨胀 Z上(mm):", 330, ref y2, 400, 0, 2000,
-                        "采样盒向上膨胀");
-                    _nudInflateZDn = AddRow(tp4, "采样膨胀 Z下(mm):", 330, ref y2, 100, 0, 2000,
-                        "采样盒向下膨胀");
+                    _nudInflateXy = AddRow(tp4, "关节树节点预算:", 330, ref y2, 1200, 100, 5000,
+                        "每段搜索允许的双树节点总数");
+                    _nudInflateZUp = AddRow(tp4, "单段搜索时间(s):", 330, ref y2, 25, 3, 120,
+                        "单段搜索预算；SDK 单次调用可能使实际耗时略超出");
+                    _nudInflateZDn = AddRow(tp4, "单段查询预算:", 330, ref y2, 7000, 500, 50000,
+                        "单段搜索允许的状态/碰撞查询次数");
 
                     _chkVariants = AddCheck(tp4, "姿态变体搜索", 330, ref y2, true,
                         "点位不可达时尝试绕枪轴旋转等姿态变体");
@@ -682,19 +678,19 @@ namespace TxTools.AutoPathPlanner
             _chkDynamic.Checked = true;
             _nudJointQuantum.Value = 4;
             _nudCartQuantum.Value = 15;
-            _nudMaxSweep.Value = 64;
+            _nudMaxSweep.Value = 256;
             _nudConfigJump.Value = 120;
             _nudCollinearTol.Value = 3;
             _chkPrune.Checked = true;
 
             // RRT & 采样
-            _nudStep.Value = 50;
+            _nudStep.Value = 12;
             _nudIter.Value = 5000;
-            _nudGoalBias.Value = 15;
-            _nudEdgeRes.Value = 12;
-            _nudInflateXy.Value = 300;
-            _nudInflateZUp.Value = 400;
-            _nudInflateZDn.Value = 100;
+            _nudGoalBias.Value = 30;
+            _nudEdgeRes.Value = 25;
+            _nudInflateXy.Value = 1200;
+            _nudInflateZUp.Value = 25;
+            _nudInflateZDn.Value = 7000;
             _chkVariants.Checked = true;
             _nudMaxVariants.Value = 13;
             _chkCache.Checked = true;
@@ -867,15 +863,15 @@ namespace TxTools.AutoPathPlanner
                     ConfigJumpThreshold = (double)_nudConfigJump.Value,
 
                     // RRT
-                    RrtStepSize = (double)_nudStep.Value,
+                    JointStepDegrees = (double)_nudStep.Value,
                     RrtMaxIterations = (int)_nudIter.Value,
                     RrtGoalBias = (double)_nudGoalBias.Value / 100.0,
-                    EdgeCheckResolution = (double)_nudEdgeRes.Value,
+                    JointLinearStep = (double)_nudEdgeRes.Value,
 
                     // 采样空间膨胀
-                    SampleBoundsInflateXy = (double)_nudInflateXy.Value,
-                    SampleBoundsInflateZUp = (double)_nudInflateZUp.Value,
-                    SampleBoundsInflateZDown = (double)_nudInflateZDn.Value,
+                    JointMaxNodes = (int)_nudInflateXy.Value,
+                    JointSearchSeconds = (double)_nudInflateZUp.Value,
+                    JointQueryBudget = (int)_nudInflateZDn.Value,
 
                     // 姿态变体 / 后处理
                     OrientationVariantsEnabled = _chkVariants.Checked,
@@ -903,8 +899,6 @@ namespace TxTools.AutoPathPlanner
                     // v6.3 性能
                     QueryCacheEnabled = _chkCache.Checked,
 
-                    // v6.7 常驻接触豁免
-                    BaselineExemptionEnabled = _chkBaselineExempt.Checked
                 };
                 planner.IsCancelled = delegate { return _stopRequested; };
 
@@ -971,6 +965,11 @@ namespace TxTools.AutoPathPlanner
                 report.Elapsed.TotalSeconds, report.CollisionQueries), report.Warnings.Count == 0 ? LogLevel.Ok : LogLevel.Warn);
             if (report.Warnings.Count > 0)
                 Log("规划存在未通过或未完成验证的项目，请按警告复核。", LogLevel.Warn);
+            Log(string.Format("准备点: 进枪 {0} / 出枪 {1} / home {2}；仅完成准备的操作 {3}",
+                report.PreparedApproachCount, report.PreparedRetractCount, report.PreparedHomeCount,
+                report.PreparedOnlyOperations), report.PreparedOnlyOperations > 0 ? LogLevel.Warn : LogLevel.Info);
+            Log(string.Format("独立连接验证: 通过 {0} / 未通过 {1}（存在缺口时完整路径未通过）",
+                report.VerifiedPathGroups, report.FailedPathGroups), report.FailedPathGroups > 0 ? LogLevel.Warn : LogLevel.Info);
             if (report.FailedSegments > 0)
                 Log(string.Format("失败段: {0} (需人工处理)", report.FailedSegments), LogLevel.Warn);
             if (report.ClearanceSegments > 0)
@@ -1166,6 +1165,28 @@ namespace TxTools.AutoPathPlanner
                         using (var existing = CollisionSetService.CreateRobotVsWorld(robot, null,
                             CollisionSetService.CollectOperationAppearances(ReadGrid(_gridOps)), s => Log(s, LogLevel.Info)))
                             return existing.IsReady ? CreateOutcome.Reused : CreateOutcome.Failed;
+                    }
+                    if (existingName == "TxTools.AutoPath:" + robot.Id)
+                    {
+                        var update = MessageBox.Show("是否更新这个自动干涉集？\n是 = 预览更新差异\n否 = 新建独立干涉集\n取消 = 返回",
+                            "更新或新建", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                        if (update == DialogResult.Cancel) return CreateOutcome.Cancelled;
+                        if (update == DialogResult.Yes)
+                        {
+                            using (var current = CollisionSetService.CreateRobotVsWorld(robot, null, null,
+                                s => Log(s, LogLevel.Info), attachOnly: true))
+                            using (var candidate = CollisionSetService.CreateRobotVsWorld(robot, null,
+                                CollisionSetService.CollectOperationAppearances(ReadGrid(_gridOps)),
+                                s => Log(s, LogLevel.Info), forceNew: true))
+                            {
+                                if (!current.IsReady || !candidate.IsReady) return CreateOutcome.Failed;
+                                if (MessageBox.Show(current.DescribeUpdate(candidate), "确认自动干涉集成员变化",
+                                    MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+                                    return CreateOutcome.Cancelled;
+                                current.UpdateOwned(candidate);
+                                return CreateOutcome.Reused;
+                            }
+                        }
                     }
                     forceNew = true;
                     Log("  用户确认新建 — 强制创建 (与已有并存)", LogLevel.Info);

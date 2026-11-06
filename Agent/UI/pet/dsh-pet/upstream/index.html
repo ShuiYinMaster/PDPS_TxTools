@@ -63,6 +63,16 @@
         cursor: grab;
         z-index: 1;
       }
+      .pet-recipes {
+        position: absolute; transform: translateX(-50%); z-index: 5;
+        width: 28px; height: 28px; padding: 0; border: 1px solid #c9d9ef;
+        border-radius: 50%; background: #f9fcff; color: #426b9e;
+        font: 17px 'Segoe UI Emoji', sans-serif; cursor: pointer;
+        visibility: hidden; opacity: 0; pointer-events: none;
+        box-shadow: 0 2px 6px #26477126;
+      }
+      .pet-recipes.is-visible { visibility: visible; opacity: 1; pointer-events: auto; }
+      .pet-recipes:hover, .pet-recipes:focus-visible { background: #e1edff; outline: 2px solid #789ed0; }
       .pet-hit.dragging {
         cursor: grabbing;
       }

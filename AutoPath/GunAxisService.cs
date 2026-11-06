@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -151,7 +151,7 @@ namespace TxTools.AutoPathPlanner
                 if (_axes[i].IsActiveGun) { _gunAxisIndex = i; break; }
             }
             // 活动枪没匹配上, 但只有一根枪轴 → 就用它
-            if (_gunAxisIndex < 0)
+            if (_gunAxisIndex < 0 && ActiveGun == null)
             {
                 var gunIdx = new List<int>();
                 for (int i = 0; i < _axes.Count; i++)
@@ -159,6 +159,7 @@ namespace TxTools.AutoPathPlanner
                 if (gunIdx.Count == 1)
                 {
                     _gunAxisIndex = gunIdx[0];
+                    ActiveGun = _axes[_gunAxisIndex].Device as ITxObject;
                     _log("  [外部轴] 活动枪未从 op.Gun 匹配, 但只有 1 根枪轴 → 采用");
                 }
                 else if (gunIdx.Count > 1)
@@ -825,6 +826,10 @@ namespace TxTools.AutoPathPlanner
                 return false;
             }
 
+            var target = location as ITxRoboticLocationOperation;
+            if (target == null) return false;
+            var oldArrival = target.RobotExternalAxesData;
+            var oldDeparture = target.RobotDepartureExternalAxesData;
             try
             {
                 Dictionary<string, double> inherited = ReadAxisValues(inheritFrom);
@@ -840,7 +845,12 @@ namespace TxTools.AutoPathPlanner
                 {
                     var a = _axes[i];
                     if (a.Device == null || a.Joint == null)
-                        throw new InvalidOperationException("外部轴设备/关节缺失，拒绝写入不完整数组");
+                    {
+                        if (i == _gunAxisIndex) throw new InvalidOperationException("活动焊钳轴设备/关节缺失");
+                        // An unrelated unresolved axis must not veto the active gun.
+                        // Its existing location data is preserved below.
+                        continue;
+                    }
 
                     double v;
                     if (i == _gunAxisIndex)
@@ -873,26 +883,40 @@ namespace TxTools.AutoPathPlanner
                     return false;
                 }
 
-                loc.RobotExternalAxesData = list.ToArray();
+                var source = inheritFrom as ITxRoboticLocationOperation;
+                var sourceArrival = source == null ? oldArrival : source.RobotExternalAxesData;
+                var sourceDeparture = source == null ? oldDeparture : source.RobotDepartureExternalAxesData;
+                if (sourceDeparture == null || sourceDeparture.Length == 0) sourceDeparture = sourceArrival;
+                var arrival = MergeAxes(list, sourceArrival, _axes[_gunAxisIndex].Device, _axes[_gunAxisIndex].Joint);
+                var departure = MergeAxes(list, sourceDeparture, _axes[_gunAxisIndex].Device, _axes[_gunAxisIndex].Joint);
+                loc.RobotExternalAxesData = arrival;
                 if (alsoDeparture)
                 {
-                    try { loc.RobotDepartureExternalAxesData = list.ToArray(); }
+                    try { loc.RobotDepartureExternalAxesData = departure; }
                     catch (Exception ex) { throw new InvalidOperationException("离开外部轴写入失败", ex); }
                 }
                 var readBack = loc.RobotExternalAxesData;
-                foreach (var expected in list)
+                foreach (var expected in arrival)
                 {
                     bool found = false;
                     foreach (var actual in readBack ?? new TxRobotExternalAxisData[0])
-                        if (actual != null && Equals(actual.Joint, expected.Joint) &&
-                            Equals(actual.Device, expected.Device) && Math.Abs(actual.JointValue - expected.JointValue) < 1e-4)
+                        if (actual != null && SameObject(actual.Joint, expected.Joint) &&
+                            SameObject(actual.Device, expected.Device) && Math.Abs(actual.JointValue - expected.JointValue) < 1e-4)
                         { found = true; break; }
                     if (!found) throw new InvalidOperationException("外部轴写入后读回不一致");
                 }
+                if (alsoDeparture)
+                    foreach (var expected in departure)
+                        if (!(loc.RobotDepartureExternalAxesData ?? new TxRobotExternalAxisData[0]).Any(actual =>
+                            actual != null && SameObject(actual.Device, expected.Device) &&
+                            SameObject(actual.Joint, expected.Joint) && Math.Abs(actual.JointValue - expected.JointValue) < 1e-4))
+                            throw new InvalidOperationException("离开外部轴读回不一致");
                 return true;
             }
             catch (Exception ex)
             {
+                target.RobotExternalAxesData = oldArrival;
+                target.RobotDepartureExternalAxesData = oldDeparture;
                 if (!_warnedWriteFail)
                 {
                     _warnedWriteFail = true;   // 只报一次, 不刷屏
@@ -900,6 +924,23 @@ namespace TxTools.AutoPathPlanner
                 }
                 return false;
             }
+        }
+
+        private static TxRobotExternalAxisData[] MergeAxes(List<TxRobotExternalAxisData> defaults,
+            TxRobotExternalAxisData[] original, ITxDevice activeDevice, TxJoint activeJoint)
+        {
+            var merged = new List<TxRobotExternalAxisData>(defaults);
+            foreach (var item in original ?? new TxRobotExternalAxisData[0])
+            {
+                if (item == null || item.Device == null || item.Joint == null) continue;
+                if (SameObject(item.Device, activeDevice) && SameObject(item.Joint, activeJoint)) continue;
+                var index = merged.FindIndex(x => SameObject(x.Device, item.Device) && SameObject(x.Joint, item.Joint));
+                var copy = new TxRobotExternalAxisData {
+                    Device = item.Device, Joint = item.Joint, JointValue = item.JointValue
+                };
+                if (index >= 0) merged[index] = copy; else merged.Add(copy);
+            }
+            return merged.ToArray();
         }
 
         private bool _warnedNoJoint;
@@ -1018,6 +1059,8 @@ namespace TxTools.AutoPathPlanner
                 ArrayList jv = cur.JointValues;
                 if (jv == null || idx >= jv.Count) return false;
 
+                double requested = OpeningToJointValue(openingMagnitude);
+                if (Math.Abs(Convert.ToDouble(jv[idx]) - requested) <= 1e-4) return true;
                 var newJv = new ArrayList(jv);      // 复制, 不改原对象
                 newJv[idx] = OpeningToJointValue(openingMagnitude);
 
@@ -1135,15 +1178,10 @@ namespace TxTools.AutoPathPlanner
             return false;
         }
 
-        private static bool SameObject(ITxDevice dev, ITxObject other)
+        private static bool SameObject(ITxObject a, ITxObject b)
         {
-            if (dev == null || other == null) return false;
-            var d = dev as ITxObject;
-            if (d == null) return false;
-            if (ReferenceEquals(d, other)) return true;
-            // PS 可能返回不同代理 → 名字兜底
-            try { return d.Name == other.Name; }
-            catch { return false; }
+            return a != null && b != null && !string.IsNullOrEmpty(a.Id) &&
+                string.Equals(a.Id, b.Id, StringComparison.Ordinal);
         }
     }
 }

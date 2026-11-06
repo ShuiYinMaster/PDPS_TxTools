@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Tecnomatix.Engineering;
 
 namespace TxTools.WeldGunDefiner.Math
@@ -158,21 +158,22 @@ namespace TxTools.WeldGunDefiner.Math
         ///   input_j1（动臂旋转关节）= ((D(j1))*PistonStroke/OpenGap)
         ///        含义：j1线性映射到活塞实际行程
         /// </summary>
-        public GunFormulas BuildFormulas(string j1Name, string j2Name, string inputJ1Name)
+        public GunFormulas BuildFormulas(string j1Name, string j2Name, string inputJ1Name, bool openPositive = false)
         {
             // J2：磨量补偿（双侧电极对称补偿，各补偿一半）
             // (((D(j1))>=0)*((D(j1))/2))
-            string j2Formula = $"(((D({j1Name}))>=0)*((D({j1Name}))/2))";
+            string signedInput = openPositive ? $"((-1)(D({j1Name})))" : $"(D({j1Name}))";
+            string j2Formula = $"(({signedInput}>=0)*({signedInput}/2))";
 
             // input_j1：活塞行程线性换算
             // ((D(j1))*PistonStroke/OpenGap)
-            string inputJ1Formula = $"((D({j1Name}))*{PistonStroke:F4}/{OpenGap:F4})";
+            string inputJ1Formula = FormattableString.Invariant($"(({(openPositive ? -1 : 1)})(D({j1Name})){PistonStroke:F6}/{OpenGap:F6})");
 
             // J1 的 Limit：
             //   High = +WearAllowance（磨损补偿，正值，枪闭合方向）
             //   Low  = -OpenGap      （开口量，负值，枪张开方向）
-            double j1High = WearAllowance;
-            double j1Low  = -OpenGap;
+            double j1High = openPositive ? OpenGap : WearAllowance;
+            double j1Low  = openPositive ? -WearAllowance : -OpenGap;
 
             return new GunFormulas
             {

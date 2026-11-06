@@ -6,124 +6,303 @@ using Tecnomatix.Engineering;
 
 namespace TxTools.AutoPathPlanner
 {
-    /// <summary>
-    /// 干涉集独立服务 — 可复用于任何 TxTools 插件。
-    ///
-    /// 职责: 创建碰撞对 → 查询当前是否碰撞 → Dispose 时删除碰撞对。
-    /// API 基于 RobotReachabilityChecker 验证过的真实路径:
-    ///   TxApplication.ActiveDocument.CollisionRoot
-    ///   → CreateCollisionPair → HasCollidingObjects
-    ///
-    /// 典型用法:
-    ///   using (var cs = CollisionSetService.CreateRobotVsWorld(robot, null, null, log))
-    ///   {
-    ///       // ...把机器人摆到某个姿态...
-    ///       bool hit = cs.QueryColliding();
-    ///   }
-    ///
-    /// ══════════════════════════════════════════════════════════════
-    /// v6.6 修正 (用户反馈: 自动添加干涉集不应包含机器人的各轴关节):
-    ///   - CollectBoundResources 移除 ⑥ robot.Links (TxKinematicLink 运动学连杆) 收集
-    ///     · 安全性: TxKinematicLink 不是 ITxComponent → AddDescendantComponents /
-    ///       CollectWorldObstacles 的 ITxComponent 过滤器均收集不到它 → 删除后
-    ///       FirstList / SecondList 两侧都不含连杆, 不会引发自干涉;
-    ///       机器人本体 (TxRobot) 仍参与碰撞检测
-    /// ══════════════════════════════════════════════════════════════
-    ///
-    /// ══════════════════════════════════════════════════════════════
-    /// v5.1 绑定资源完整收集 (TxAgent 实测 API):
-    ///
-    ///   【问题】FirstList 只有 5 项, fupa 底座落在 SecondList → 机器人与
-    ///   自己的底座永久报干涉。原因: CollectBoundResources 漏收了
-    ///   PrimaryLocator (底座) / Toolbox / AttachmentParent / Links;
-    ///   且靠 IsDescendantOf 父子链排除障碍 —— 但 fupa 不在机器人物理子树内。
-    ///
-    ///   【TxRobot 实测 API】(inspect_type + run_csharp 双重确认):
-    ///     MountedTools    : TxObjectList        ← 焊钳 TxServoGun ×2
-    ///     PrimaryLocator  : ITxObjectCollection ← "KR210_R2700-2-fupa" [Count=8] ★
-    ///     Toolbox         : TxRobotToolbox      ← 常为 null, 必须判空
-    ///     AttachmentParent: ITxLocatableObject  ← 滑轨/外部轴
-    ///     Links           : TxObjectList        ← TxKinematicLink ×9
-    ///     Controller / SimulatingOperations / RoboticPrograms / Signals /
-    ///     PoseList / DrivingJoints / TCPF等Frame → 无几何, 不收
-    ///     **不存在** DressPacks / ExternalAxes / MountedDressPacks (之前一直在瞎猜)
-    ///
-    ///   【双向硬保证】
-    ///     FirstList  = CollectBoundResources() 全部绑定资源
-    ///     SecondList = CollectWorldObstacles() 用 HashSet 引用级排除绑定资源集
-    ///                  (不再依赖 IsDescendantOf 拓扑判断, fupa 这类靠这条兜住)
-    ///     + SanitizeObstacles() 最终安全网, 保证 First ∩ Second = ∅
-    /// ══════════════════════════════════════════════════════════════
-    ///
-    /// ══════════════════════════════════════════════════════════════
-    /// v5.0 致命 bug 修复 (强类型 API 重写):
-    ///
-    ///   【根因】v4.2~v4.10 一直用 root.CollisionPairs / root.GetAllCollisionPairs(),
-    ///   但 TxCollisionRoot 上**根本没有这两个成员** (inspect_type 实测确认)。
-    ///   dynamic 访问抛异常 → 被 catch 吞掉 → pairs 恒为 null → 查找函数永远
-    ///   return null → "永远未找到干涉集"。之前所有 First 侧反射、指纹匹配、
-    ///   宽松兜底代码一行都没被执行过 —— 全在那个 return 之后。
-    ///
-    ///   【正确 API】(TxAgent inspect_type 实测):
-    ///     TxCollisionRoot.Pairs           : ArrayList        ← 碰撞对列表
-    ///     TxCollisionRoot.PairList        : TxObjectList     ← 同上, 另一形态
-    ///     TxCollisionRoot.CheckCollisions : Boolean get set  ← 全局开关!
-    ///     TxCollisionPair.FirstList       : TxObjectList get set
-    ///     TxCollisionPair.SecondList      : TxObjectList get set
-    ///     TxCollisionPair.Active          : Boolean get set
-    ///
-    ///   【改动】
-    ///     - GetAllPairs(): 强类型读 root.Pairs (兜底 PairList)
-    ///     - PairFirstListHasRobot(): 强类型读 pair.FirstList, 只看 First 忽略 Second,
-    ///       按 名字 + 位置(1mm) 匹配 TxRobot
-    ///     - 删除全部反射代码 (PairFirstSideMatches / CollectFirstSide... /
-    ///       MakeFingerprint / Fp / LooksLikeSecondSide / FindAnyPairLoose 等)
-    ///     - _pair 字段改强类型 TxCollisionPair; Active / Delete 直接调用
-    ///     - 新建 pair 时若 root.CheckCollisions == false 则自动开启
-    ///       (实测场景中该全局开关为 false, 会导致所有 pair 不参与计算)
-    /// ══════════════════════════════════════════════════════════════
-    ///
-    /// v4.10 附着模式:
-    ///   - CreateRobotVsWorld 新增 attachOnly 参数; BuildPair 新增同名参数
-    ///   - 规划器改用 attachOnly=true: 只复用现有干涉集, 找不到跳过操作, 绝不新建
-    ///     (修复"注释检测后规划反而每次新建堆积"的问题)
-    ///   - 附着失败时先严格匹配 (FindExistingPairForRobot), 再宽松匹配
-    ///     (FindAnyPairLoose: 任意侧同名机器人即命中, 不比位置)
-    ///   - UI"自动创建"按钮不受影响 (仍可新建)
-    ///
-    /// v4.9 鲁棒化:
-    ///   - MakeFingerprint 从 ITxLocatableObject cast 改为 dynamic 拿位置 (兼容更多 SDK 版本)
-    ///   - CollectFirstSideRobotAndGunFingerprints 从"仅 TxObjectList 属性"改为
-    ///     属性 + 无参 Get* 方法 + IEnumerable 兜底 (兼容 pair First 侧的各种承载类型)
-    ///   - FindExistingPairForRobot / TryFindExistingPairName 新增可选 log 参数,
-    ///     找不到时 dump 期望指纹 + pair 数量 + 前几个 pair 的 First 侧候选,
-    ///     方便定位 (a) 期望没生成 (b) 反射提取失败 (c) 位置不匹配
-    ///
-    /// v4.8 修复 (严格 First 侧对比):
-    ///   - FindExistingPairForRobot 从"仅比机器人身份"改为"机器人+焊钳指纹集合匹配"
-    ///     · 只看 pair.First 侧, 忽略 Second
-    ///     · 提取 First 侧的 TxRobot / 焊钳, 以 (名字, 位置) 指纹存储
-    ///     · 期望集 = 目标 robot + 挂载焊钳, 每项必须在 First 找到 名字+位置(1mm) 匹配
-    ///   - 用位置匹配代替 ReferenceEquals, 天然免疫"PS 每次访问返回不同代理"问题
-    ///   - 抽出 CollectMountedTools 供 FindExistingPair 和 CollectBoundResources 复用
-    ///
-    /// v4.5 修复 (API 优化):
-    ///   - CollectWorldObstacles / customObstacles 首层剔除 ITxComponent.IsEquipment
-    ///     容器 (官方 API 语义: "可包含子组件的容器"), 避免父级 Cell/Group
-    ///     以整个容器边界参与碰撞检测导致大量误报
-    ///
-    /// v4.4 简化:
-    ///   - CollectWorldObstacles 一律剔除场景所有 TxRobot / 焊枪 子树,
-    ///     无论检测方是否精确收集绑定资源, 都不会误报机器人/焊枪永久干涉
-    ///   - customObstacles 追加同步剔除
-    ///
-    /// v4 新增:
-    ///   - TryFindExistingPairName: UI 层入口, 检测已有干涉集并取名
-    ///   - CreateRobotVsWorld(..., forceNew): 跳过复用检测, 强制新建
-    ///   - KeepPairOnDispose: 保留本次创建的碰撞对 (持久干涉集)
-    /// </summary>
+    /// <summary>Robot assembly collision sets. Existing lists are read-only;
+    /// baselines are diagnostic and installation contacts are geometry-pair specific.</summary>
     public sealed class CollisionSetService : IDisposable
     {
+        private const double InstallationTolerance = 0.1; // mm; Contact only, never Collision
+        private TxRobot _robot;
+        private readonly List<ITxObject> _fixedRoots = new List<ITxObject>();
+        private readonly Dictionary<string, ContactRule> _contacts = new Dictionary<string, ContactRule>();
+
+        private static bool SameObject(ITxObject a, ITxObject b)
+        {
+            if (object.ReferenceEquals(a, b)) return true;
+            return a != null && b != null && !string.IsNullOrEmpty(a.Id) &&
+                string.Equals(a.Id, b.Id, StringComparison.Ordinal);
+        }
+
+        private static string PairName(TxRobot robot) { return "TxTools.AutoPath:" + robot.Id; }
+
+        private sealed class ContactRule
+        {
+            public ITxLocatableObject A, B;
+            public TxTransformation PoseA, PoseB;
+        }
+
+        private static string ContactKey(ITxObject a, ITxObject b)
+        {
+            return string.CompareOrdinal(a.Id, b.Id) < 0
+                ? a.Id + "|" + b.Id : b.Id + "|" + a.Id;
+        }
+
+        private static bool Unchanged(ITxLocatableObject obj, TxTransformation pose)
+        {
+            var now = obj.AbsoluteLocation;
+            var a = now.Translation; var b = pose.Translation;
+            var ra = now.RotationRPY_ZYX; var rb = pose.RotationRPY_ZYX;
+            return Math.Abs(a.X-b.X) < 0.001 && Math.Abs(a.Y-b.Y) < 0.001 &&
+                Math.Abs(a.Z-b.Z) < 0.001 && Math.Abs(ra.X-rb.X) < 1e-6 &&
+                Math.Abs(ra.Y-rb.Y) < 1e-6 && Math.Abs(ra.Z-rb.Z) < 1e-6;
+        }
+
+        private bool IsInstallationContact(List<ITxObject> objs)
+        {
+            if (objs.Count != 2) return false;
+            ContactRule rule;
+            return _contacts.TryGetValue(ContactKey(objs[0], objs[1]), out rule) &&
+                Unchanged(rule.A, rule.PoseA) && Unchanged(rule.B, rule.PoseB);
+        }
+
+        private bool InvolvesObstacleSet(List<ITxObject> objs)
+        {
+            foreach (var o in objs)
+                foreach (ITxObject obstacle in _obstacleList)
+                    if (SameObject(o, obstacle) || IsDescendantOf(o, obstacle)) return true;
+            return false;
+        }
+
+        private static TxObjectList ObjectList(IEnumerable<ITxObject> objects)
+        {
+            var list = new TxObjectList();
+            foreach (var o in objects) if (o != null) list.Add(o);
+            return list;
+        }
+
+        private static TxCollisionQueryParams ContactParams()
+        {
+            return new TxCollisionQueryParams {
+                UseAllowedPenetration = true, AllowedPenetration = InstallationTolerance,
+                Mode = TxCollisionQueryParams.TxCollisionQueryMode.All,
+                UseNearMiss = false, UsePredefinedAllowedPairs = false,
+                StopQueryAfterFirstCollision = false
+            };
+        }
+
+        private void Attach(TxCollisionPair pair)
+        {
+            _pair = pair;
+            _checkList = pair.FirstList;
+            _obstacleList = pair.SecondList;
+            if (_checkList == null || _obstacleList == null ||
+                _checkList.Count == 0 || _obstacleList.Count == 0)
+                throw new InvalidOperationException("已有干涉集列表为空");
+            _checkObjects.Clear();
+            foreach (ITxObject o in _checkList) AddUnique(_checkObjects, o);
+            CheckObjectCount = _checkList.Count;
+            ObstacleObjectCount = _obstacleList.Count;
+            CaptureInstallationContacts();
+            _log("  只读附着干涉集: " + pair.Name + "，保留两侧成员和参数");
+        }
+
+        public string DescribeUpdate(CollisionSetService candidate)
+        {
+            var oldFirst = _checkObjects;
+            var oldSecond = _obstacleList.Cast<ITxObject>().ToList();
+            var newFirst = candidate._checkObjects;
+            var newSecond = candidate._obstacleList.Cast<ITxObject>().ToList();
+            Func<string, List<ITxObject>, List<ITxObject>, string> diff = (label, before, after) =>
+                label + "\n增加: " + string.Join(", ", after.Where(o => !before.Any(b => SameObject(o,b))).Select(o => o.Name + " [" + o.Id + "]")) +
+                "\n移除: " + string.Join(", ", before.Where(o => !after.Any(b => SameObject(o,b))).Select(o => o.Name + " [" + o.Id + "]"));
+            return diff("检测方", oldFirst, newFirst) + "\n\n" + diff("障碍方", oldSecond, newSecond);
+        }
+
+        public void UpdateOwned(CollisionSetService candidate)
+        {
+            if (_robot == null || _pair.Name != PairName(_robot))
+                throw new InvalidOperationException("仅允许更新插件拥有的自动干涉集");
+            var oldFirst = _pair.FirstList; var oldSecond = _pair.SecondList;
+            try
+            {
+                _pair.FirstList = candidate._checkList;
+                _pair.SecondList = candidate._obstacleList;
+            }
+            catch
+            {
+                _pair.FirstList = oldFirst; _pair.SecondList = oldSecond;
+                throw;
+            }
+            Attach(_pair);
+        }
+
+        private bool IsFixedRoot(ITxObject obj)
+        {
+            // A robot/tool/device is not fixed merely because it happens to touch something.
+            if (obj is TxDevice || GunAxisService.IsGunObject(obj)) return false;
+            if (_robot != null && (SameObject(obj, _robot) || IsDescendantOf(obj, _robot))) return false;
+            if (_robot != null)
+                foreach (var tool in CollectMountedTools(_robot))
+                    if (SameObject(obj, tool) || IsDescendantOf(obj, tool)) return false;
+            return obj is ITxLocatableObject;
+        }
+
+        private void CaptureInstallationContacts()
+        {
+            _contacts.Clear();
+            _fixedRoots.Clear();
+            if (_robot == null) return;
+            foreach (var obj in _checkObjects)
+                if (IsFixedRoot(obj)) AddUnique(_fixedRoots, obj);
+            if (_fixedRoots.Count == 0) return;
+            try
+            {
+                var results = TxApplication.ActiveDocument.CollisionRoot.GetCollidingObjectsFromLists(
+                    ObjectList(_fixedRoots), _obstacleList, ContactParams());
+                foreach (TxCollisionState state in results.States)
+                {
+                    if (state.Type != TxCollisionState.TxCollisionStateType.Contact) continue;
+                    var a = state.FirstObject as ITxLocatableObject;
+                    var b = state.SecondObject as ITxLocatableObject;
+                    if (a == null || b == null) continue;
+                    _contacts[ContactKey(state.FirstObject, state.SecondObject)] = new ContactRule {
+                        A = a, B = b, PoseA = new TxTransformation(a.AbsoluteLocation),
+                        PoseB = new TxTransformation(b.AbsoluteLocation)
+                    };
+                    _log("  安装接触: " + state.FirstObject.Name + " ↔ " + state.SecondObject.Name +
+                        "，仅在双方位置不变且接触≤0.1mm时允许");
+                }
+            }
+            catch (Exception ex)
+            {
+                _contacts.Clear();
+                _log("  [警告] 安装接触识别不可用，不作豁免: " + ex.Message);
+            }
+        }
+
+        // Distance to the first intersection of the local -Z ray with an AABB.
+        // A pedestal may extend above the installation plane (e.g. collars/bolts).
+        private static double SupportDistance(double minX, double maxX, double minY,
+            double maxY, double minZ, double maxZ)
+        {
+            if (minX > InstallationTolerance || maxX < -InstallationTolerance ||
+                minY > InstallationTolerance || maxY < -InstallationTolerance ||
+                minZ > InstallationTolerance) return double.PositiveInfinity;
+            return Math.Max(0, -maxZ);
+        }
+
+        private bool IsBaseCandidate(ITxObject obj)
+        {
+            if (!(obj is ITxLocatableObject)) return false;
+            for (ITxObject cur = obj; cur != null; cur = GetParent(cur))
+                if (cur is TxRobot || GunAxisService.IsGunObject(cur)) return false;
+            return true;
+        }
+
+        private void DiscoverAssembly(List<ITxObject> check, List<ITxObject> obstacles, bool traceContacts = true)
+        {
+            // A locator is not proof that a physical pedestal was collected.
+            // Always inspect remaining geometry below the robot mounting frame.
+            var candidates = new List<KeyValuePair<double, ITxObject>>();
+            var worldToRobot = _robot.AbsoluteLocation.Inverse;
+            foreach (var obj in obstacles.Where(IsBaseCandidate))
+            {
+                try
+                {
+                    var calculator = new TxBoundingBoxCalculator(ObjectList(new[] { obj }));
+                    calculator.Orientation = new TxTransformation();
+                    var box = calculator.CalculateBoundingBox();
+                    if (box.IsEmpty) continue;
+                    // Transform all eight world box corners explicitly. The calculator's
+                    // Orientation describes orientation, so do not assume it changes origin.
+                    double minX = double.PositiveInfinity, minY = minX, minZ = minX;
+                    double maxX = double.NegativeInfinity, maxY = maxX, maxZ = maxX;
+                    for (int mask = 0; mask < 8; mask++)
+                    {
+                        var corner = new TxTransformation();
+                        corner.Translation = new TxVector(
+                            (mask & 1) == 0 ? box.Lower.X : box.Higher.X,
+                            (mask & 2) == 0 ? box.Lower.Y : box.Higher.Y,
+                            (mask & 4) == 0 ? box.Lower.Z : box.Higher.Z);
+                        var local = (worldToRobot * corner).Translation;
+                        minX = Math.Min(minX, local.X); maxX = Math.Max(maxX, local.X);
+                        minY = Math.Min(minY, local.Y); maxY = Math.Max(maxY, local.Y);
+                        minZ = Math.Min(minZ, local.Z); maxZ = Math.Max(maxZ, local.Z);
+                    }
+                    double distance = SupportDistance(minX, maxX, minY, maxY, minZ, maxZ);
+                    if (double.IsPositiveInfinity(distance)) continue;
+                    candidates.Add(new KeyValuePair<double, ITxObject>(distance, obj));
+                }
+                catch (Exception ex) { _log("  包围盒不可读，保留障碍 " + obj.Name + ": " + ex.Message); }
+            }
+            bool found = false;
+            foreach (var candidate in candidates.OrderBy(c => c.Key).ThenBy(c => c.Value.Id, StringComparer.Ordinal))
+            {
+                var results = TxApplication.ActiveDocument.CollisionRoot.GetCollidingObjectsFromLists(
+                    ObjectList(new ITxObject[] { _robot }), ObjectList(new[] { candidate.Value }), ContactParams());
+                if (!results.States.Cast<TxCollisionState>().Any(st =>
+                    st.Type == TxCollisionState.TxCollisionStateType.Contact)) continue;
+                AddUnique(check, candidate.Value);
+                _log("  底座归入检测方(-Z候选、实际接触确认): " +
+                    candidate.Value.Name + " [" + candidate.Value.Id + "]");
+                found = true;
+                break;
+            }
+            if (!found)
+                _log("  [底座识别] 未确认新增实体底座，向下几何候选 " + candidates.Count +
+                    " 项；定位器非空也不会跳过实体搜索。");
+            SanitizeObstacles(check, obstacles);
+            if (!traceContacts) return;
+            // Discover contact relations outward without promoting arbitrary touched geometry.
+            var frontier = new List<ITxObject>(check);
+            var visited = new HashSet<ITxObject>(check, ReferenceComparer.Instance);
+            while (frontier.Count > 0)
+            {
+                var remaining = obstacles.Where(o => !visited.Contains(o)).ToList();
+                if (remaining.Count == 0) break;
+                var results = TxApplication.ActiveDocument.CollisionRoot.GetCollidingObjectsFromLists(
+                    ObjectList(frontier), ObjectList(remaining), ContactParams());
+                var next = new List<ITxObject>();
+                foreach (TxCollisionState state in results.States)
+                {
+                    if (state.Type != TxCollisionState.TxCollisionStateType.Contact &&
+                        state.Type != TxCollisionState.TxCollisionStateType.Collision) continue;
+                    _log("  接触关系: " + state.FirstObject.Name + " ↔ " + state.SecondObject.Name +
+                        " (" + state.Type + ")；环境资源保留为障碍");
+                    foreach (var obj in remaining)
+                        if (SameObject(state.FirstObject, obj) || IsDescendantOf(state.FirstObject, obj) ||
+                            SameObject(state.SecondObject, obj) || IsDescendantOf(state.SecondObject, obj))
+                            if (visited.Add(obj)) next.Add(obj);
+                }
+                frontier = next;
+            }
+        }
+
+        /// <summary>Temporarily activates only the selected set; restores every original switch.</summary>
+        public sealed class PlanningIsolation : IDisposable
+        {
+            private readonly Dictionary<TxCollisionPair, bool> _states = new Dictionary<TxCollisionPair, bool>();
+            private readonly TxCollisionRoot _root;
+            private readonly bool _enabled;
+            private readonly TxCollisionQueryParams.TxCollisionQueryMode _mode;
+            private readonly Action<string> _log;
+            public PlanningIsolation(Action<string> log)
+            {
+                _root = TxApplication.ActiveDocument.CollisionRoot;
+                _enabled = _root.CheckCollisions;
+                _mode = _root.CollisionQueryMode;
+                _log = log ?? delegate { };
+                foreach (var p in GetAllPairs()) _states[p] = p.Active;
+            }
+            public void Activate(CollisionSetService service)
+            {
+                foreach (var p in GetAllPairs())
+                {
+                    if (!_states.ContainsKey(p)) _states[p] = p.Active;
+                    p.Active = SameObject(p, service._pair);
+                }
+                _root.CollisionQueryMode = TxCollisionQueryParams.TxCollisionQueryMode.DefinedPairs;
+                _root.CheckCollisions = true;
+            }
+            public void Dispose()
+            {
+                foreach (var entry in _states)
+                    try { entry.Key.Active = entry.Value; }
+                    catch (Exception ex) { _log("  [警告] 恢复干涉集状态失败: " + ex.Message); }
+                try { _root.CollisionQueryMode = _mode; _root.CheckCollisions = _enabled; }
+                catch (Exception ex) { _log("  [警告] 恢复碰撞总开关失败: " + ex.Message); }
+            }
+        }
+
         private TxCollisionPair _pair; // v5.0: 强类型 (API 已由 inspect_type 确认)
         private readonly Action<string> _log;
 
@@ -154,27 +333,7 @@ namespace TxTools.AutoPathPlanner
             return svc;
         }
 
-        /// <summary>
-        /// 焊接场景常用入口: (机器人 + 全部绑定资源) vs 场景障碍。
-        ///
-        /// FirstList (检测方) = CollectBoundResources(robot) — v5.1 强类型收集 (v6.6 起不含 Links):
-        ///   robot 本体 / MountedTools(焊钳) / PrimaryLocator(**底座 fupa**) /
-        ///   Toolbox 工具 / AttachmentParent(滑轨/外轴) / 以上各项的 ITxComponent 后代
-        ///
-        /// SecondList (障碍方) = CollectWorldObstacles(check) — 硬保证不含任何绑定资源:
-        ///   PhysicalRoot 全部 ITxComponent, 剔除 [绑定资源集(HashSet引用级) +
-        ///   Equipment 容器 + 所有 TxRobot/焊枪子树]
-        ///
-        /// 双向保证: 绑定资源只在 First, 绝不在 Second。构建 pair 前还有一道
-        /// 最终安全网 (SanitizeObstacles) 做交集校验并剔除。
-        ///
-        /// 已有干涉集检测: CollisionRoot 中已有以本机器人为 FirstList 的碰撞对则复用,
-        /// Dispose 时不删除。
-        ///
-        /// forceNew=true 跳过复用检测, 强制新建 (与已有并存)。
-        /// attachOnly=true 纯附着模式: 只复用现有干涉集, 找不到也不新建 (IsReady=false)。
-        /// 二者互斥, 同时为 true 时 forceNew 优先。
-        /// </summary>
+        /// <summary>构建机器人总成与环境干涉集；默认只读复用，forceNew 显式新建，attachOnly 不创建。</summary>
         public static CollisionSetService CreateRobotVsWorld(
             TxRobot robot,
             IEnumerable<ITxObject> extraCheckObjects,
@@ -184,98 +343,182 @@ namespace TxTools.AutoPathPlanner
             bool attachOnly = false)
         {
             var lg = log ?? delegate { };
-
-            // ---- FirstList: 机器人全部绑定资源 ----
-            var check = CollectBoundResources(robot);
-            if (extraCheckObjects != null)
-                check.AddRange(extraCheckObjects.Where(o => o != null && !check.Any(c => ReferenceEquals(c, o))));
-
-            LogBoundResourceSummary(robot, check, lg);
-
-            // ---- SecondList: 场景障碍 (硬排除全部绑定资源) ----
-            List<ITxObject> obstacles = CollectWorldObstacles(check);
-
-            // 追加用户自定义障碍 (与 CollectWorldObstacles 同一套剔除规则)
-            if (customObstacles != null)
-            {
-                var checkSet0 = new HashSet<ITxObject>(ReferenceComparer.Instance);
-                foreach (var c in check) if (c != null) checkSet0.Add(c);
-
-                int added = 0, skippedInternal = 0, skippedRobotOrGun = 0, skippedEquipment = 0;
-                foreach (var o in customObstacles.Where(o => o != null))
-                {
-                    // ① 绑定资源 (引用级硬排除)
-                    if (checkSet0.Contains(o)) { skippedInternal++; continue; }
-
-                    // ② Equipment 容器
-                    if (IsEquipmentContainer(o)) { skippedEquipment++; continue; }
-
-                    // ③④ TxRobot / 焊枪 子树
-                    if (IsRobotOrGunSubtree(o)) { skippedRobotOrGun++; continue; }
-
-                    // ① 补充: 绑定资源的父容器 / 子树
-                    bool isInternal = false;
-                    foreach (var c in check)
-                    {
-                        if (c == null) continue;
-                        if (IsDescendantOf(o, c) || IsDescendantOf(c, o))
-                        { isInternal = true; break; }
-                    }
-                    if (isInternal) { skippedInternal++; continue; }
-
-                    if (!obstacles.Any(ob => ReferenceEquals(ob, o)))
-                    { obstacles.Add(o); added++; }
-                }
-                if (added > 0)
-                    lg(string.Format("  自定义障碍追加: {0} 项 (剔除 绑定资源{1}/机器人焊枪{2}/Equipment容器{3})",
-                        added, skippedInternal, skippedRobotOrGun, skippedEquipment));
-                else if (skippedInternal + skippedRobotOrGun + skippedEquipment > 0)
-                    lg(string.Format("  [提示] 自定义障碍全部被剔除 (绑定资源{0}/机器人焊枪{1}/Equipment容器{2})",
-                        skippedInternal, skippedRobotOrGun, skippedEquipment));
-            }
-
-            // 以资源原点筛选，法兰使用 Toolframe（不是焊枪 TCP）。
-            double bx, by, bz, fx, fy, fz;
-            if (!TryGetPos(robot, out bx, out by, out bz))
-                throw new InvalidOperationException("无法读取机器人原点，不能建立 5 米干涉范围");
-            bool hasFlange = TryGetPos(robot.Toolframe, out fx, out fy, out fz);
-            Func<ITxObject, bool> nearMount = o =>
-            {
-                double x, y, z;
-                if (!TryGetPos(o, out x, out y, out z)) return false;
-                return SquaredDistance(x, y, z, bx, by, bz) <= 100.0 ||
-                    (hasFlange && SquaredDistance(x, y, z, fx, fy, fz) <= 100.0);
-            };
-            // 保留机器人/焊枪本体，只排除安装资源。
-            check.RemoveAll(o => !(o is TxRobot) && !GunAxisService.IsGunObject(o) && nearMount(o));
-            obstacles.RemoveAll(o =>
-            {
-                double x, y, z;
-                return nearMount(o) || (TryGetPos(o, out x, out y, out z) &&
-                    SquaredDistance(x, y, z, bx, by, bz) > 25000000.0);
-            });
-            lg("  范围筛选: 机器人周边5000mm，基座/法兰原点10mm安装资源排除");
-
-            // ---- 最终安全网: 校验 obstacles 与 check 无交集 ----
-            // 双保险 —— 即使上游有疏漏, 这里也保证绑定资源绝不进 SecondList。
-            int removed = SanitizeObstacles(check, obstacles);
-            if (removed > 0)
-                lg(string.Format("  [安全网] 从障碍方剔除 {0} 项绑定资源 (上游漏网)", removed));
-
-            lg(string.Format("  → FirstList {0} 项 / SecondList {1} 项",
-                check.Count, obstacles.Count));
-
+            if (robot == null) throw new ArgumentNullException("robot");
             var svc = new CollisionSetService(log);
-            // forceNew=true → robot 传 null 屏蔽复用检测, 强制新建
-            // attachOnly=true → 纯附着, 找不到不新建
-            svc.BuildPair(check, obstacles, forceNew ? null : robot, attachOnly && !forceNew);
+            svc._robot = robot;
+            if (!forceNew)
+            {
+                var existing = FindExistingPairForRobot(robot, lg);
+                if (existing != null) { svc.Attach(existing); return svc; }
+                if (attachOnly) return svc;
+            }
+            List<ITxObject> check, obstacles;
+            svc.BuildRobotVsWorldLists(extraCheckObjects, customObstacles, out check, out obstacles);
+            svc.BuildPair(check, obstacles);
             return svc;
         }
 
-        /// <summary>
-        /// 最终安全网: 从 obstacles 中移除任何出现在 check 中的对象 (引用级)。
-        /// 返回移除数量。保证 FirstList ∩ SecondList = ∅。
-        /// </summary>
+        /// <summary>仅构建临时双列表查询范围，不创建场景碰撞对或修改全局碰撞设置。</summary>
+        public static CollisionSetService CreateTemporaryRobotVsWorld(TxRobot robot, Action<string> log,
+            Action<string> stage = null)
+        {
+            if (robot == null) throw new ArgumentNullException("robot");
+            var svc = new CollisionSetService(log) { _robot = robot };
+            stage?.Invoke("查找机器人 / 焊钳已有干涉集");
+            var bound = CollectBoundResources(robot);
+            var tools = CollectMountedTools(robot);
+            var checks = new List<ITxObject>(bound);
+            var world = new List<ITxObject>();
+            bool reused = false;
+            foreach (var pair in GetAllPairs())
+            {
+                var first = pair.FirstList;
+                var second = pair.SecondList;
+                if (first == null || second == null || first.Count == 0 || second.Count == 0) continue;
+                Func<TxObjectList, bool> matches = list => list.Cast<ITxObject>().Any(o =>
+                    SameObject(o, robot) || tools.Any(t => SameObject(o, t) || IsDescendantOf(o, t)));
+                bool forward = matches(first), reverse = matches(second);
+                if (forward == reverse) continue;
+                foreach (ITxObject obj in forward ? first : second) AddUnique(checks, obj);
+                foreach (ITxObject obj in forward ? second : first) AddUnique(world, obj);
+                reused = true;
+            }
+            if (reused)
+            {
+                stage?.Invoke("复用已有干涉集，准备安装接触");
+                SanitizeObstacles(checks, world);
+                // 已有组不完整或两侧全部重叠时，不能把空范围当作检查通过。
+                if (world.Count > 0)
+                {
+                    ExpandAttachedComponents(checks);
+                    SanitizeObstacles(checks, world);
+                }
+                if (world.Count > 0)
+                {
+                    svc._checkObjects.AddRange(checks);
+                    svc._checkList = ObjectList(checks);
+                    svc._obstacleList = ObjectList(world);
+                    svc.CheckObjectCount = checks.Count;
+                    svc.ObstacleObjectCount = world.Count;
+                    svc.CaptureInstallationContacts();
+                    svc._log("  只读复用关联机器人/焊钳干涉集，补齐机器人绑定总成");
+                    return svc;
+                }
+            }
+            stage?.Invoke("收集临时干涉范围");
+            List<ITxObject> check, obstacles;
+            svc.BuildRobotVsWorldLists(null, null, out check, out obstacles, false);
+            svc._checkObjects.AddRange(check);
+            svc._checkList = ObjectList(check);
+            svc._obstacleList = ObjectList(obstacles);
+            svc.CheckObjectCount = check.Count;
+            svc.ObstacleObjectCount = obstacles.Count;
+            stage?.Invoke("准备安装接触");
+            svc.CaptureInstallationContacts();
+            return svc;
+        }
+
+        /// <summary>轻量场景签名：结构、位姿和组成员变化时使窗口缓存失效。</summary>
+        public static string ScopeFingerprint(TxRobot robot)
+        {
+            var parts = new List<string>();
+            foreach (ITxObject obj in TxApplication.ActiveDocument.PhysicalRoot.GetAllDescendants(
+                new TxTypeFilter(typeof(ITxComponent))))
+            {
+                var loc = obj as ITxLocatableObject;
+                var pose = loc.AbsoluteLocation;
+                var t = pose.Translation; var r = pose.RotationRPY_ZYX;
+                parts.Add(obj.Id + ":" + (obj.Collection as ITxObject)?.Id + ":" +
+                    (loc.AttachmentParent as ITxObject)?.Id + ":" + string.Join(",", new[] {
+                        t.X, t.Y, t.Z, r.X, r.Y, r.Z }.Select(v => v.ToString("R", System.Globalization.CultureInfo.InvariantCulture))));
+            }
+            foreach (var pair in GetAllPairs())
+                parts.Add("pair:" + pair.Id + ":" + string.Join(",", (pair.FirstList ?? new TxObjectList()).Cast<ITxObject>().Select(o => o.Id))
+                    + ":" + string.Join(",", (pair.SecondList ?? new TxObjectList()).Cast<ITxObject>().Select(o => o.Id)));
+            parts.Add("mounted:" + string.Join(",", CollectMountedTools(robot).Select(o => o.Id)));
+            parts.Add("locator:" + (robot.PrimaryLocator as ITxObject)?.Id);
+            parts.Sort(StringComparer.Ordinal);
+            return string.Join(";", parts);
+        }
+
+        private void BuildRobotVsWorldLists(IEnumerable<ITxObject> extraCheckObjects,
+            IEnumerable<ITxObject> customObstacles, out List<ITxObject> checkResult, out List<ITxObject> obstacleResult,
+            bool traceContacts = true)
+        {
+            var robot = _robot;
+            var check = CollectBoundResources(robot);
+            if (extraCheckObjects != null)
+                foreach (var o in extraCheckObjects) AddUnique(check, o);
+            ExpandAttachedComponents(check);
+            var obstacles = CollectWorldObstacles(check);
+            if (customObstacles != null)
+                foreach (var o in customObstacles) AddUnique(obstacles, o);
+            DiscoverAssembly(check, obstacles, traceContacts);
+            SanitizeObstacles(check, obstacles);
+            foreach (var obj in check)
+            {
+                if (obstacles.Any(o => SameObject(obj, o) || IsDescendantOf(obj, o) || IsDescendantOf(o, obj)))
+                    throw new InvalidOperationException("干涉集两侧存在重复几何覆盖: " + obj.Name + " [" + obj.Id + "]");
+                _log("  检测方成员: " + obj.Name + " [" + obj.Id + "] (" + obj.GetType().Name + ")");
+            }
+            _log("  归属校验: 检测方与障碍方无重复对象及父子覆盖");
+            checkResult = check;
+            obstacleResult = obstacles;
+        }
+
+        private static void ExpandAttachedComponents(List<ITxObject> check)
+        {
+            var allComponents = TxApplication.ActiveDocument.PhysicalRoot.GetAllDescendants(
+                new TxTypeFilter(typeof(ITxComponent)));
+            bool expanded;
+            do
+            {
+                expanded = false;
+                foreach (ITxObject obj in allComponents)
+                {
+                    var loc = obj as ITxLocatableObject;
+                    if (loc == null) continue;
+                    var parent = loc.AttachmentParent as ITxObject;
+                    if (parent != null && check.Any(c => SameObject(parent, c) || IsDescendantOf(parent, c)))
+                        expanded |= AddUnique(check, obj);
+                }
+            } while (expanded);
+        }
+
+        /// <summary>精确双列表查询；异常返回未知，不回退全场景布尔值。</summary>
+        public bool? QueryScopedCollision(out string detail)
+        {
+            detail = null;
+            if (_checkList == null || _obstacleList == null) return null;
+            if (_obstacleList.Count == 0) return false;
+            try
+            {
+                var results = TxApplication.ActiveDocument.CollisionRoot.GetCollidingObjectsFromLists(
+                    _checkList, _obstacleList, ContactParams());
+                if (results == null || results.States == null) return null;
+                bool unknown = false;
+                foreach (TxCollisionState state in results.States)
+                {
+                    if (state.Type == TxCollisionState.TxCollisionStateType.Unchecked)
+                    { unknown = true; continue; }
+                    if (state.Type != TxCollisionState.TxCollisionStateType.Contact &&
+                        state.Type != TxCollisionState.TxCollisionStateType.Collision) continue;
+                    var objects = new List<ITxObject> { state.FirstObject, state.SecondObject };
+                    if (objects.Any(o => o == null)) { unknown = true; continue; }
+                    if (!InvolvesCheckSet(objects) || !InvolvesObstacleSet(objects)) continue;
+                    if (state.Type == TxCollisionState.TxCollisionStateType.Contact && IsInstallationContact(objects)) continue;
+                    detail = Signature(objects);
+                    return true;
+                }
+                return unknown ? (bool?)null : false;
+            }
+            catch (Exception ex)
+            {
+                _log("  [警告] 临时干涉查询失败: " + ex.Message);
+                return null;
+            }
+        }
+
         private static double SquaredDistance(double x, double y, double z, double a, double b, double c)
         {
             return (x-a)*(x-a) + (y-b)*(y-b) + (z-c)*(z-c);
@@ -307,7 +550,8 @@ namespace TxTools.AutoPathPlanner
                 if (c != null) checkSet.Add(c);
 
             int before = obstacles.Count;
-            obstacles.RemoveAll(o => o == null || checkSet.Contains(o));
+            obstacles.RemoveAll(o => o == null || checkSet.Contains(o) ||
+                check.Any(c => IsDescendantOf(o, c) || IsDescendantOf(c, o)));
             return before - obstacles.Count;
         }
 
@@ -358,34 +602,7 @@ namespace TxTools.AutoPathPlanner
         //  对象收集
         // ================================================================
 
-        /// <summary>
-        /// 收集机器人的全部**物理绑定资源** —— 随机器人一起运动的东西。
-        /// 这些必须全部进 FirstList (检测方), 且绝不能出现在 SecondList (障碍方)。
-        ///
-        /// v5.1 强类型重写 (API 由 TxAgent inspect_type + run_csharp 实测确认):
-        ///   ① robot 本体
-        ///   ② robot.MountedTools    : TxObjectList  ← 焊钳 (TxServoGun 等)
-        ///   ③ robot.PrimaryLocator  : ITxObjectCollection ← **底座/fupa**!
-        ///      实测 KR210_R2700-2.PrimaryLocator = "KR210_R2700-2-fupa" [Count=8]
-        ///      之前一直漏收 → fupa 落入障碍方 → 机器人与自己的底座报永久干涉
-        ///   ④ robot.Toolbox.GetAllTools() : TxRobotWorkTool[]  (Toolbox 可能为 null!)
-        ///   ⑤ robot.AttachmentParent : ITxLocatableObject  ← 机器人挂载的父体 (滑轨/外部轴)
-        ///   ⑥ 以上各项的 ITxComponent 后代 (递归)
-        ///
-        ///   v6.6: 移除 robot.Links (TxKinematicLink 运动学连杆 / 各轴关节) 的收集 —
-        ///   用户反馈: 自动添加干涉集时不应包含机器人的各轴关节。安全性: TxKinematicLink
-        ///   不是 ITxComponent, AddDescendantComponents / CollectWorldObstacles 的
-        ///   ITxComponent 过滤器都收集不到它 → 删除后 FirstList / SecondList 均无连杆,
-        ///   不会引发 "机器人 vs 自己连杆" 自干涉; 机器人本体仍参与碰撞检测。
-        ///
-        /// 不收集 (无几何, 不参与碰撞):
-        ///   Controller / SimulatingOperations / RoboticPrograms / Signals /
-        ///   PoseList / DrivingJoints / Links(各轴连杆) / TCPF-Toolframe-Baseframe-Referenceframe
-        ///
-        /// 已废弃: DressPacks / ExternalAxes / MountedDressPacks —— TxRobot 上
-        /// **不存在这些属性** (inspect_type 确认), 之前的反射查找永远返回 null。
-        /// 线缆包与外轴实际通过 PrimaryLocator / AttachmentParent / 物理子树体现。
-        /// </summary>
+        /// <summary>收集机器人、已安装工具、明确底座和附着父体；不包含仅注册的工具。</summary>
         public static List<ITxObject> CollectBoundResources(TxRobot robot)
         {
             var result = new List<ITxObject>();
@@ -408,28 +625,7 @@ namespace TxTools.AutoPathPlanner
             }
             catch { }
 
-            // ③ (v6.8 移除) PrimaryLocator — 机器人底座/fupa 不作为被检测方
-            //   用户反馈: 底座是机器人固定安装部分, 不应作为干涉集"被检测方"单独列出。
-            //   底座从 FirstList 移除, 同时在 CollectWorldObstacles 中从障碍方排除
-            //   (两边都不参与, 避免 "机器人 vs 自己底座" 误报)。
-
-            // ④ Toolbox 里注册的工具 (Toolbox 常为 null, 必须保护); 仅保留父级
-            try
-            {
-                TxRobotToolbox tb = robot.Toolbox;
-                if (tb != null)
-                {
-                    TxRobotWorkTool[] allTools = tb.GetAllTools();
-                    if (allTools != null)
-                    {
-                        foreach (var wt in allTools)
-                        {
-                            var o = wt as ITxObject;
-                            if (o != null) AddUnique(result, o);
-                        }
-                    }
-                }
-            }
+            try { AddUnique(result, robot.PrimaryLocator as ITxObject); }
             catch { }
 
             // ⑤ AttachmentParent — 机器人挂在什么上 (滑轨/外部轴/变位机); 仅保留父级
@@ -447,7 +643,7 @@ namespace TxTools.AutoPathPlanner
                         {
                             ITxObjectCollection ploc = robot.PrimaryLocator;
                             var po = ploc as ITxObject;
-                            if (po != null && ReferenceEquals(po, apObj)) isBase = true;
+                            if (po != null && SameObject(po, apObj)) isBase = true;
                         }
                         catch { }
                         if (!isBase) AddUnique(result, apObj);
@@ -508,7 +704,7 @@ namespace TxTools.AutoPathPlanner
         {
             if (item == null) return false;
             for (int i = 0; i < list.Count; i++)
-                if (ReferenceEquals(list[i], item)) return false;
+                if (SameObject(list[i], item)) return false;
             list.Add(item);
             return true;
         }
@@ -525,7 +721,7 @@ namespace TxTools.AutoPathPlanner
                 {
                     foreach (ITxObject t in mounted)
                     {
-                        if (t != null && !result.Any(r => ReferenceEquals(r, t)))
+                        if (t != null && !result.Any(r => SameObject(r, t)))
                             result.Add(t);
                     }
                 }
@@ -535,140 +731,34 @@ namespace TxTools.AutoPathPlanner
         }
 
 
-        /// <summary>
-        /// 收集障碍方 (SecondList): PhysicalRoot 下所有 ITxComponent, 剔除:
-        ///
-        ///   ① **检测方绑定资源** (boundResources 及其子树)          ← v5.1 硬保证
-        ///   ② Equipment 容器 (ITxComponent.IsEquipment == true)     (v4.5, 官方 API)
-        ///   ③ 场景所有 TxRobot 及其子树                              (v4.4)
-        ///   ④ 场景所有焊枪类 (类型名含 "Gun") 及其子树                (v4.4)
-        ///
-        /// v5.1 关键修复: 原先只靠 IsDescendantOf 双向父子链判断来排除检测方,
-        /// 但机器人的底座 (PrimaryLocator / fupa) 与挂载父体 (AttachmentParent)
-        /// **不在机器人的物理父子链上** —— IsDescendantOf 判不出来 →
-        /// fupa 落入障碍方 → 机器人与自己的底座永久报干涉。
-        ///
-        /// 现在改为: 用 CollectBoundResources 收集到的完整集合做**引用级 HashSet 排除**,
-        /// 只要是绑定资源 (或其子树), 一律不进障碍方。这是硬保证, 与拓扑关系无关。
-        /// 同时保留 IsDescendantOf 双向检查, 覆盖"绑定资源的父容器"这类间接情况。
-        /// </summary>
+        /// <summary>保留其他机器人、工具、底座及环境；按 ID 排除本总成，合并重复的父子几何覆盖。</summary>
         public static List<ITxObject> CollectWorldObstacles(IList<ITxObject> boundResources)
         {
             var result = new List<ITxObject>();
-
-            // 绑定资源引用集 — O(1) 排除, 硬保证不入障碍方
-            var boundSet = new HashSet<ITxObject>(ReferenceComparer.Instance);
-            if (boundResources != null)
+            var all = TxApplication.ActiveDocument.PhysicalRoot.GetAllDescendants(
+                new TxTypeFilter(typeof(ITxComponent)));
+            foreach (ITxObject obj in all)
             {
-                foreach (var b in boundResources)
-                    if (b != null) boundSet.Add(b);
+                if (boundResources != null && boundResources.Any(b =>
+                    SameObject(obj, b) || IsDescendantOf(obj, b) || IsDescendantOf(b, obj)))
+                    continue;
+                AddUnique(result, obj);
             }
-
-            try
-            {
-            // v6.8: 所有机器人底座 (PrimaryLocator) — 不作为被检测方, 也不作为障碍方
-            //   (底座是机器人固定安装部分, 从 FirstList 移除后必须同时从障碍方剔除,
-            //    否则机器人与自己的底座会误报干涉)
-            var baseObjs = new List<ITxObject>();
-            try
-            {
-                var rFilter = new TxTypeFilter(typeof(TxRobot));
-                TxObjectList robots = TxApplication.ActiveDocument.PhysicalRoot.GetAllDescendants(rFilter);
-                if (robots != null)
-                {
-                    foreach (ITxObject r in robots)
-                    {
-                        try
-                        {
-                            var ro = r as TxRobot;
-                            if (ro == null) continue;
-                            ITxObjectCollection ploc = ro.PrimaryLocator;
-                            var po = ploc as ITxObject;
-                            if (po != null)
-                            {
-                                bool dup = false;
-                                for (int bi = 0; bi < baseObjs.Count; bi++)
-                                {
-                                    if (ReferenceEquals(baseObjs[bi], po)) { dup = true; break; }
-                                }
-                                if (!dup) baseObjs.Add(po);
-                            }
-                        }
-                        catch { }
-                    }
-                }
-            }
-            catch { }
-
-                var filter = new TxTypeFilter(typeof(ITxComponent)); // null filter 会 NRE
-                TxObjectList allComps = TxApplication.ActiveDocument
-                    .PhysicalRoot.GetAllDescendants(filter);
-
-                foreach (ITxObject comp in allComps)
-                {
-                    // ① 绑定资源 — 引用级硬排除 (fupa / AttachmentParent 等靠这条)
-                    if (boundSet.Contains(comp)) continue;
-
-                    // ② Equipment 容器 (无独立几何的逻辑分组)
-                    if (IsEquipmentContainer(comp)) continue;
-
-                    // ③④ 场景所有 TxRobot / 焊枪 子树
-                    if (IsRobotOrGunSubtree(comp)) continue;
-
-                    // ③⑤ v6.8: 机器人底座 (PrimaryLocator) 及其子树 — 不作为障碍方
-                    bool isBase = false;
-                    for (int bi = 0; bi < baseObjs.Count; bi++)
-                    {
-                        ITxObject b = baseObjs[bi];
-                        if (ReferenceEquals(comp, b) || IsDescendantOf(comp, b) || IsDescendantOf(b, comp))
-                        {
-                            isBase = true;
-                            break;
-                        }
-                    }
-                    if (isBase) continue;
-
-
-                    // ① 补充: 绑定资源的父容器 / 子树 (拓扑关联)
-                    bool excluded = false;
-                    if (boundResources != null)
-                    {
-                        foreach (var ex in boundResources)
-                        {
-                            if (ex == null) continue;
-                            if (IsDescendantOf(comp, ex)     // comp 在绑定资源子树内
-                                || IsDescendantOf(ex, comp)) // comp 是绑定资源的祖先容器
-                            {
-                                excluded = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (!excluded) result.Add(comp);
-                }
-            }
-            catch { }
-            return result;
+            return result.Where(o => !result.Any(parent =>
+                !SameObject(parent, o) && IsDescendantOf(o, parent))).ToList();
         }
 
-        /// <summary>按引用比较的 ITxObject 相等器 — PS 对象不可靠 Equals/GetHashCode</summary>
         private sealed class ReferenceComparer : IEqualityComparer<ITxObject>
         {
             public static readonly ReferenceComparer Instance = new ReferenceComparer();
-            public bool Equals(ITxObject a, ITxObject b) { return ReferenceEquals(a, b); }
+            public bool Equals(ITxObject a, ITxObject b) { return SameObject(a, b); }
             public int GetHashCode(ITxObject o)
             {
-                return o == null ? 0 : System.Runtime.CompilerServices
-                    .RuntimeHelpers.GetHashCode(o);
+                return o == null ? 0 : StringComparer.Ordinal.GetHashCode(o.Id);
             }
         }
 
-        /// <summary>
-        /// 判定是否 Equipment 容器 —— 官方 API 语义:
-        /// ITxComponent.IsEquipment = "组件可包含其他子组件"。
-        /// 这类容器无独立几何, 只是逻辑分组, 参与碰撞检测会产生大量误报,
-        /// 且其内部真实设备已被 GetAllDescendants 单独遍历到, 不会漏检。
-        /// </summary>
+        /// <summary>判断 SDK Equipment 标志；该标志不证明对象没有几何。</summary>
         private static bool IsEquipmentContainer(ITxObject obj)
         {
             if (obj == null) return false;
@@ -687,38 +777,6 @@ namespace TxTools.AutoPathPlanner
         /// 焊枪匹配用类型名而非精确类型, 覆盖 TxWeldGun / TxServoGun /
         /// TxPneumaticGun / TxSpotGun 等各种子类, 不需知道具体 SDK 类名。
         /// </summary>
-        private static bool IsRobotOrGunSubtree(ITxObject obj)
-        {
-            if (obj == null) return false;
-            try
-            {
-                object cur = obj;
-                for (int depth = 0; depth < 64; depth++)
-                {
-                    if (cur == null) return false;
-
-                    // TxRobot: 强类型判断, 最可靠
-                    if (cur is TxRobot) return true;
-
-                    // 焊枪: 类型名字符串匹配 (含继承链)
-                    var t = cur.GetType();
-                    while (t != null && t != typeof(object))
-                    {
-                        if (t.Name.IndexOf("Gun", StringComparison.OrdinalIgnoreCase) >= 0)
-                            return true;
-                        t = t.BaseType;
-                    }
-
-                    // 走祖先 (v6.5: ITxObject 没有 Parent 属性! 用 Collection)
-                    ITxObject parent = GetParent(cur as ITxObject);
-                    if (parent == null) return false;
-                    cur = parent;
-                }
-            }
-            catch { }
-            return false;
-        }
-
         /// <summary>
         /// 祖先链遍历。
         ///
@@ -738,7 +796,7 @@ namespace TxTools.AutoPathPlanner
             {
                 ITxObject parent = GetParent(cur);
                 if (parent == null) return false;
-                if (ReferenceEquals(parent, ancestor)) return true;
+                if (SameObject(parent, ancestor)) return true;
                 cur = parent;
             }
             return false;
@@ -783,19 +841,13 @@ namespace TxTools.AutoPathPlanner
                 return null;
             }
 
-            foreach (var pair in pairs)
-            {
-                try
-                {
-                    if (PairFirstListHasRobot(pair, robot))
-                        return pair;
-                }
-                catch { continue; }
-            }
-
-            if (log != null)
-                log(string.Format("  [干涉集] {0} 个碰撞对均无匹配 (FirstList 中未找到 '{1}' @ 当前位置)",
-                    pairs.Count, robot.Name));
+            var matches = pairs.Where(p => PairFirstListHasRobot(p, robot)).ToList();
+            var owned = matches.Where(p => p.Name == PairName(robot)).ToList();
+            if (owned.Count == 1) return owned[0];
+            if (owned.Count == 0 && matches.Count == 1) return matches[0];
+            if (log != null && matches.Count > 1)
+                log("  [干涉集] 多个匹配集合，无法唯一选择。请保留一个用于规划的集合。");
+            if (matches.Count > 1) throw new InvalidOperationException("机器人存在多个候选干涉集，无法唯一附着");
             return null;
         }
 
@@ -848,10 +900,7 @@ namespace TxTools.AutoPathPlanner
             return result;
         }
 
-        /// <summary>
-        /// pair.FirstList 中是否存在与 robot 同名且同位置 (1mm 容差) 的 TxRobot。
-        /// 只看 FirstList, 完全忽略 SecondList。
-        /// </summary>
+        /// <summary>按文档内对象 ID 检查检测方中的机器人身份。</summary>
         private static bool PairFirstListHasRobot(TxCollisionPair pair, TxRobot robot)
         {
             if (pair == null || robot == null) return false;
@@ -861,34 +910,8 @@ namespace TxTools.AutoPathPlanner
             catch { return false; }
             if (first == null || first.Count == 0) return false;
 
-            string targetName;
-            try { targetName = robot.Name; }
-            catch { return false; }
-
-            double rx, ry, rz;
-            bool gotRobotPos = TryGetPos(robot, out rx, out ry, out rz);
-
             foreach (ITxObject o in first)
-            {
-                var r = o as TxRobot;
-                if (r == null) continue;
-
-                // 快路径: 引用相同
-                if (ReferenceEquals(r, robot)) return true;
-
-                // 名字必须一致
-                string n;
-                try { n = r.Name; }
-                catch { continue; }
-                if (!string.Equals(n, targetName, StringComparison.Ordinal)) continue;
-
-                // 位置一致 (同名多机器人靠基座区分)
-                if (!gotRobotPos) return true;  // 拿不到目标位置 → 退化为仅名字匹配
-                double x, y, z;
-                if (!TryGetPos(r, out x, out y, out z)) continue;
-                if (Math.Abs(x - rx) < 1.0 && Math.Abs(y - ry) < 1.0 && Math.Abs(z - rz) < 1.0)
-                    return true;
-            }
+                if (SameObject(o, robot)) return true;
             return false;
         }
 
@@ -1004,14 +1027,8 @@ namespace TxTools.AutoPathPlanner
 
                 if (existingPair != null)
                 {
-                    _pair = existingPair;
-                    _pair.FirstList = checkList;
-                    _pair.SecondList = obstacleList;
-                    _pair.Active = true;
-                    TxApplication.ActiveDocument.CollisionRoot.CheckCollisions = true;
-                    _ownedPair = false;
-                    _log(string.Format("  干涉集复用: 已有碰撞对 '{0}', 不再新建",
-                        TryGetName(existingPair)));
+                    Attach(existingPair);
+                    return;
                 }
                 else if (attachOnly)
                 {
@@ -1031,6 +1048,7 @@ namespace TxTools.AutoPathPlanner
                     TxCollisionRoot root = TxApplication.ActiveDocument.CollisionRoot;
                     _pair = root.CreateCollisionPair(data);
                     _ownedPair = true;
+                    if (_robot != null) _pair.Name = PairName(_robot);
                     _log("  干涉集创建成功");
 
                     // 激活 (v5.0: TxCollisionPair.Active 强类型属性, 已确认存在)
@@ -1052,6 +1070,8 @@ namespace TxTools.AutoPathPlanner
                     }
                     catch { }
                 }
+
+                CaptureInstallationContacts();
 
                 // ---- 基线快照 (仅诊断参考): 记录规划前姿态的接触状态 ----
                 // 基线签名不含位置信息, 不能用于碰撞豁免 (会导致机器人移动后
@@ -1100,22 +1120,10 @@ namespace TxTools.AutoPathPlanner
             }
         }
 
-        /// <summary>
-        /// 当前场景状态下，本干涉集是否存在与检测方相关的碰撞。
-        ///
-        /// 查询模式 (定型于首次调用):
-        ///   1 = 结果集直接判定 (主): GetCollidingObjects → 只统计涉及机器人/焊钳子树的
-        ///       碰撞状态。不再做基线扣除 —— 基线签名不含位置信息, 机器人移动后
-        ///       同对象对的碰撞产生相同签名被错误豁免 (根因: 全段恒报"直连通过")。
-        ///       永久接触 (7轴/线缆包) 通过排除机器人子树对象于障碍方来处理,
-        ///       而非基线扣除。
-        ///   2 = 布尔 HasCollidingObjects(params)  — 无法过滤, 可能被场景既有碰撞污染
-        ///   3 = 布尔 属性/无参                    — 同上
-        ///  -1 = 全部失败 (已dump成员清单)
-        /// </summary>
+        /// <summary>精确结果查询；基线仅诊断。无法验证时按碰撞处理。</summary>
         public bool QueryColliding()
         {
-            if (_pair == null && _fromLists == -1)
+            if (_pair == null)
                 return true; // 查询不可用时拒绝放行。
             try
             {
@@ -1127,20 +1135,7 @@ namespace TxTools.AutoPathPlanner
                     {
                         var sigs = QueryOurCollisionSignatures();
                         if (sigs == null) return true;
-                        bool colliding;
-                        if (BaselineExemption && _baseline != null && _baseline.Count > 0)
-                        {
-                            // v6.7: 豁免基线常驻接触 —— 只算基线外的新增碰撞
-                            colliding = false;
-                            foreach (var s in sigs)
-                            {
-                                if (!_baseline.Contains(s)) { colliding = true; break; }
-                            }
-                        }
-                        else
-                        {
-                            colliding = sigs.Count > 0;
-                        }
+                        bool colliding = sigs.Count > 0;
                         if (_sampleLogBudget > 0)
                         {
                             _sampleLogBudget--;
@@ -1151,17 +1146,6 @@ namespace TxTools.AutoPathPlanner
                                 colliding ? "碰撞" : "安全"));
                         }
                         return colliding;
-                    }
-                    case 2:
-                    {
-                        dynamic root2 = TxApplication.ActiveDocument.CollisionRoot;
-                        return (bool)root2.HasCollidingObjects((dynamic)_queryParams);
-                    }
-                    case 3:
-                    {
-                        dynamic root3 = TxApplication.ActiveDocument.CollisionRoot;
-                        try { return (bool)root3.HasCollidingObjects; }
-                        catch { return (bool)root3.HasCollidingObjects(); }
                     }
                     default:
                         return true;
@@ -1186,12 +1170,6 @@ namespace TxTools.AutoPathPlanner
         private HashSet<string> _baseline = new HashSet<string>();
 
         /// <summary>v6.7: 被排除的障碍对象 (如被焊工件) — 检测方与它们的接触不算碰撞</summary>
-        private readonly HashSet<ITxObject> _excludedObstacles =
-            new HashSet<ITxObject>(ReferenceComparer.Instance);
-
-        /// <summary>v6.7: 常驻接触豁免 — true 时基线内的对象对不再判碰撞 (默认 false)</summary>
-        public bool BaselineExemption { get; set; }
-
         private void DetermineQueryMode()
         {
             if (_queryMode != 0) return;
@@ -1202,46 +1180,12 @@ namespace TxTools.AutoPathPlanner
             if (probe != null)
             {
                 _queryMode = 1;
-                _log("  干涉查询定型: 模式1 结果集过滤 (仅统计机器人/焊钳相关, 基线扣除)");
+                _log("  干涉查询定型: 精确双列表/结果过滤，基线仅诊断，安装接触按对象对判断");
                 return;
             }
 
-            // ---- 模式2/3: 布尔 (无过滤, 有污染风险) ----
-            try
-            {
-                dynamic root = TxApplication.ActiveDocument.CollisionRoot;
-                if (_queryParams != null)
-                {
-                    try
-                    {
-                        bool b = (bool)root.HasCollidingObjects((dynamic)_queryParams);
-                        _queryMode = 2;
-                        _log("  干涉查询定型: 模式2 布尔(params) [警告:无法过滤场景既有碰撞] (首值=" + b + ")");
-                        return;
-                    }
-                    catch { }
-                }
-                try
-                {
-                    bool b2 = (bool)root.HasCollidingObjects;
-                    _queryMode = 3;
-                    _log("  干涉查询定型: 模式3 布尔属性 [警告:无法过滤] (首值=" + b2 + ")");
-                    return;
-                }
-                catch { }
-                try
-                {
-                    bool b3 = (bool)root.HasCollidingObjects();
-                    _queryMode = 3;
-                    _log("  干涉查询定型: 模式3 布尔无参 [警告:无法过滤] (首值=" + b3 + ")");
-                    return;
-                }
-                catch { }
-            }
-            catch { }
-
             _queryMode = -1;
-            _log("  [需确认] 干涉查询全部方式失败 — 成员清单:");
+            _log("  [错误] 无法读取精确碰撞结果，拒绝以全场景布尔值代替；本次查询按碰撞处理");
             DumpCollisionMembers();
         }
 
@@ -1265,7 +1209,7 @@ namespace TxTools.AutoPathPlanner
                     try
                     {
                         results = (object)root.GetCollidingObjectsFromLists(
-                            (dynamic)_checkList, (dynamic)_obstacleList, (dynamic)_queryParams);
+                            (dynamic)_checkList, (dynamic)_obstacleList, ContactParams());
                         if (_fromLists == 0)
                         {
                             _fromLists = 1;
@@ -1315,8 +1259,9 @@ namespace TxTools.AutoPathPlanner
 
                     var objs = ExtractStateObjects(state);
                     if (objs.Count == 0) return null;
-                    if (!InvolvesCheckSet(objs)) continue;
-                    if (InvolvesOnlyExcludedObstacles(objs)) continue; // v6.7 焊枪贴工件允许
+                    if (!InvolvesCheckSet(objs) || !InvolvesObstacleSet(objs)) continue;
+                    if (typeVal == 3 && IsInstallationContact(objs)) continue;
+
                     sigs.Add(Signature(objs));
                 }
                 return sigs;
@@ -1364,6 +1309,13 @@ namespace TxTools.AutoPathPlanner
         private List<ITxObject> ExtractStateObjects(object state)
         {
             var result = new List<ITxObject>();
+            var typed = state as TxCollisionState;
+            if (typed != null)
+            {
+                AddUnique(result, typed.FirstObject);
+                AddUnique(result, typed.SecondObject);
+                return result;
+            }
             try
             {
                 IEnumerable objs = null;
@@ -1409,61 +1361,20 @@ namespace TxTools.AutoPathPlanner
             {
                 foreach (var c in _checkObjects)
                 {
-                    if (ReferenceEquals(o, c) || IsDescendantOf(o, c))
+                    if (SameObject(o, c) || IsDescendantOf(o, c))
                         return true;
                 }
             }
             return false;
         }
 
-        /// <summary>
-        /// v6.7: 碰撞对是否只涉及 [检测方 + 被排除对象] (且至少含一个被排除对象)。
-        /// true = 焊枪贴工件这类工艺允许接触 → 不判碰撞。
-        /// 若碰撞对出现夹具等第三方 → false (真碰撞, 保留)。
-        /// </summary>
-        private bool InvolvesOnlyExcludedObstacles(List<ITxObject> objs)
-        {
-            if (_excludedObstacles.Count == 0) return false;
-            bool hasExcluded = false;
-            foreach (var o in objs)
-            {
-                bool isCheck = false;
-                foreach (var c in _checkObjects)
-                {
-                    if (ReferenceEquals(o, c) || IsDescendantOf(o, c))
-                    {
-                        isCheck = true;
-                        break;
-                    }
-                }
-                bool isExcl = _excludedObstacles.Contains(o);
-                if (isExcl) hasExcluded = true;
-                if (!isCheck && !isExcl) return false; // 第三方(夹具等) → 真碰撞
-            }
-            return hasExcluded;
-        }
-
-        /// <summary>
-        /// v6.7: 把指定对象从障碍判定中排除 — 检测方(机器人/焊枪/底座)与它们的
-        /// 接触/碰撞不再算碰撞。用于被焊工件: 焊枪电极必须接触工件才能焊接,
-        /// 工件不能作为焊枪的障碍。
-        /// </summary>
-        public void ExcludeObstacles(IEnumerable<ITxObject> objs)
-        {
-            if (objs == null) return;
-            foreach (var o in objs)
-            {
-                if (o == null || _excludedObstacles.Contains(o)) continue;
-                _excludedObstacles.Add(o);
-            }
-        }
-
+        /// <summary>使用对象 ID 与名称生成诊断签名。</summary>
         private static string Signature(List<ITxObject> objs)
         {
             var names = new List<string>();
             foreach (var o in objs)
             {
-                try { names.Add(o.Name); }
+                try { names.Add(o.Name + " [" + o.Id + "]"); }
                 catch { names.Add(o.GetType().Name); }
             }
             names.Sort();
@@ -1482,6 +1393,10 @@ namespace TxTools.AutoPathPlanner
                 var pType = asm.GetType("Tecnomatix.Engineering.TxCollisionQueryParams");
                 if (pType == null) return null;
                 object p = Activator.CreateInstance(pType);
+                ((TxCollisionQueryParams)p).Mode = TxCollisionQueryParams.TxCollisionQueryMode.DefinedPairs;
+                ((TxCollisionQueryParams)p).UseAllowedPenetration = true;
+                ((TxCollisionQueryParams)p).AllowedPenetration = InstallationTolerance;
+                ((TxCollisionQueryParams)p).UsePredefinedAllowedPairs = false;
 
                 try
                 {
@@ -1581,6 +1496,10 @@ namespace TxTools.AutoPathPlanner
             // 复用的碰撞对不删除 — 它属于场景原有配置
             // KeepPairOnDispose=true 时, 本次创建的也不删 (持久干涉集)
             _pair = null;
+            _checkList = null;
+            _obstacleList = null;
+            _checkObjects.Clear();
+            _contacts.Clear();
         }
     }
 }

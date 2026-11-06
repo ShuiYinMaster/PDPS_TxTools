@@ -73,7 +73,7 @@ namespace TxTools.WeldSpotGrouper
         // ────────────────────────────────────────────────────────────
         // 2. 在选中节点下枚举焊点位操作（并反查 TxWeldPoint）
         // ────────────────────────────────────────────────────────────
-        private static List<SpotItem> CollectSpots(ITxObject scopeNode, Action<string> log)
+        internal static List<SpotItem> CollectSpots(ITxObject scopeNode, Action<string> log)
         {
             var list = new List<SpotItem>();
             var seenLoc = new HashSet<ITxObject>();
@@ -94,9 +94,8 @@ namespace TxTools.WeldSpotGrouper
                 {
                     if (seenWp.Add(asWp))
                     {
-                        var locOp = FirstWeldLocationOp(asWp);
-                        if (locOp == null || seenLoc.Add(locOp))
-                            list.Add(MakeSpot(locOp ?? obj, asWp));
+                        foreach (ITxObject locOp in asWp.WeldLocationOperations)
+                            if (seenLoc.Add(locOp)) list.Add(MakeSpot(locOp, asWp));
                     }
                     continue;
                 }
@@ -110,12 +109,12 @@ namespace TxTools.WeldSpotGrouper
                 }
             }
 
-            // 兜底：节点本身就是单个焊点
-            if (list.Count == 0)
-            {
-                var asWp = scopeNode as TxWeldPoint;
-                if (asWp != null) list.Add(MakeSpot(FirstWeldLocationOp(asWp) ?? scopeNode, asWp));
-            }
+            var rootWp = scopeNode as TxWeldPoint;
+            if (rootWp != null)
+                foreach (ITxObject loc in rootWp.WeldLocationOperations)
+                    if (seenLoc.Add(loc)) list.Add(MakeSpot(loc, rootWp));
+            var ownWp = WpFromLocOp(scopeNode);
+            if (ownWp != null && seenLoc.Add(scopeNode)) list.Add(MakeSpot(scopeNode, ownWp));
             return list;
         }
 
@@ -201,7 +200,7 @@ namespace TxTools.WeldSpotGrouper
         // ────────────────────────────────────────────────────────────
         // 3. 读绑定零件名（焊点的 AssignedParts 级联 + 反射兜底；只要名字）
         // ────────────────────────────────────────────────────────────
-        private static void ReadPartNames(SpotItem s, Action<string> log)
+        internal static void ReadPartNames(SpotItem s, Action<string> log)
         {
             if (s == null || s.Wp == null) return;
             var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -212,6 +211,7 @@ namespace TxTools.WeldSpotGrouper
                 object raw = TryGet(s.Wp, prop);
                 if (raw == null) continue;
                 CollectNames(raw, s.PartNames, seen);
+                CollectParts(raw, s.Parts);
                 if (s.PartNames.Count > 0) break; // 命中即止
             }
 
@@ -227,6 +227,7 @@ namespace TxTools.WeldSpotGrouper
                             pn.IndexOf("Component", StringComparison.OrdinalIgnoreCase) < 0) continue;
                         object v; try { v = pi.GetValue(s.Wp); } catch { continue; }
                         if (v != null) CollectNames(v, s.PartNames, seen);
+                        if (v != null) CollectParts(v, s.Parts);
                         if (s.PartNames.Count > 0) break;
                     }
                 }
@@ -243,6 +244,14 @@ namespace TxTools.WeldSpotGrouper
                 foreach (var o in en) AddName(o, outNames, seen);
             }
             else AddName(raw, outNames, seen);
+        }
+
+        private static void CollectParts(object raw, List<ITxObject> parts)
+        {
+            var single = raw as ITxObject;
+            if (single != null) { parts.Add(single); return; }
+            var sequence = raw as System.Collections.IEnumerable;
+            if (sequence != null) foreach (var value in sequence) { var part = value as ITxObject; if (part != null) parts.Add(part); }
         }
 
         private static void AddName(object o, List<string> outNames, HashSet<string> seen)
@@ -264,7 +273,7 @@ namespace TxTools.WeldSpotGrouper
         {
             if (partNames == null || partNames.Count == 0) return "";
             var sorted = SortedWithDups(partNames, ignoreCase);
-            return string.Join("\u0001", sorted);
+            return string.Join("\u0001", ignoreCase ? sorted.Select(n => n.ToUpperInvariant()) : sorted);
         }
 
         private static List<string> SortedWithDups(List<string> names, bool ignoreCase)

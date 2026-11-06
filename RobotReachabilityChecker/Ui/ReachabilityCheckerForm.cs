@@ -24,9 +24,10 @@ namespace TxTools.RobotReachabilityChecker.Ui
 {
     public partial class ReachabilityCheckerForm : PickAwareTxForm, ILogger
     {
-        // ====== 顶部工具栏（默认隐藏，仅检查时显示进度条）======
-        private TxToolStrip _toolStrip;
-        private ToolStripProgressBar _tsProgress;
+        private ProgressBar _interferenceProgress;
+        private Label _interferenceHint;
+        private bool _isChecking;
+        private readonly Services.InterferenceSession _interferenceSession = new Services.InterferenceSession();
 
         // ====== 页脚日志按钮（哑元，用于让 ToggleLogPanel 改文字）======
         private Button _btnFooterLog;
@@ -125,11 +126,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
 
             // 全局护栏：UI 线程未处理异常 → 写日志而不是闪退
             // 注：仅对本插件 UI 线程生效；PS 主线程的 SEH 仍可能击穿
-            Application.ThreadException += (s, ev) =>
-            {
-                try { Log($"[全局拦截] {ev.Exception?.GetType().Name}: {ev.Exception?.Message}", "ERR"); }
-                catch { }
-            };
+            Application.ThreadException += HandleThreadException;
 
             try { LoadRobotsAndOperations(); }
             catch (Exception ex) { Log($"加载异常: {ex.Message}", "ERR"); }
@@ -137,6 +134,11 @@ namespace TxTools.RobotReachabilityChecker.Ui
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            if (_isChecking) { e.Cancel = true; return; }
+            base.OnFormClosing(e);
+            if (e.Cancel) return;
+            Application.ThreadException -= HandleThreadException;
+            _interferenceSession.Dispose();
             try
             {
                 if (_txtOpNode != null)
@@ -147,12 +149,17 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 }
             }
             catch { }
-            base.OnFormClosing(e);
         }
 
         // =====================================================================
         // ILogger 实现 — 服务层通过此接口写日志
         // =====================================================================
+        private void HandleThreadException(object sender, System.Threading.ThreadExceptionEventArgs ev)
+        {
+            try { Log($"[全局拦截] {ev.Exception?.GetType().Name}: {ev.Exception?.Message}", "ERR"); }
+            catch { }
+        }
+
         public void Log(string message, string level = "INFO")
         {
             if (_logBox == null || _logBox.IsDisposed) return;

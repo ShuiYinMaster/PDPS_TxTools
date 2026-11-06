@@ -25,6 +25,8 @@ namespace TxTools.RobotReachabilityChecker.Models
         public int NearLimitCount   => Results.Count(r => r.Status == ReachabilityStatus.NearLimit);
         public int SingularCount    => Results.Count(r => r.Status == ReachabilityStatus.Singular);
         public int CriticalCount    => Results.Count(r => r.Status == ReachabilityStatus.Critical);
+        public int CollisionCount => Results.Count(r => r.CollisionState == CollisionCheckState.Collision);
+        public int CollisionUnknownCount => Results.Count(r => r.CollisionState == CollisionCheckState.Error);
 
         /// <summary>
         /// 可达率：可达 + 接近极限 + 临界 三类视作可达。

@@ -21,6 +21,7 @@ namespace TxTools.WeldSpotGrouper
         public TxWeldPoint Wp;                  // 焊点特征 —— 读零件/名字
         public string Name;                     // 焊点名（取自 Wp.Name，回退 LocOp.Name）
         public readonly List<string> PartNames = new List<string>(); // 绑定零件名（原始顺序，含重复）
+        public readonly List<ITxObject> Parts = new List<ITxObject>();
         public string Signature;                // 多重集指纹；无绑定时为 ""
 
         public bool HasBinding { get { return PartNames.Count > 0; } }

@@ -207,45 +207,98 @@ namespace TxTools.WeldGunDefiner.Core
 
         // 姿态仅包含编译后的主动关节；每次都在机构/公式验证完成后读取当前模板。
         public static bool CreatePose(ITxDevice device, string poseName,
-            Dictionary<TxJoint, double> jointValues, out string err)
+            Dictionary<TxJoint, double> jointValues, out string err, Action<string> log = null)
         {
             err = null;
+            string stage = "检查";
+            void Trace(string message) => log?.Invoke($"[POSE {poseName}] {DateTime.Now:HH:mm:ss.fff} {message}");
             try
             {
-                if (device == null) { err = "device为null"; return false; }
-
-                TxPoseData template = device.CurrentPose;
-                if (template == null) { err = "device.CurrentPose为null"; return false; }
-
-                if (jointValues == null || jointValues.Count == 0)
-                    throw new InvalidOperationException("姿态缺少主动关节值");
-                using (var dpd = new TxDevicePoseData(device, template))
+                if (device == null) throw new InvalidOperationException("device为空");
+                if (jointValues == null || jointValues.Count == 0) throw new InvalidOperationException("缺少关节目标值");
+                stage = "读取编译后的默认姿态";
+                Trace(stage);
+                using (var template = device.CurrentPose)
                 {
-                    foreach (var kv in jointValues)
-                    {
-                        if (kv.Key == null || !dpd.DoesHaveJoint(kv.Key))
-                            throw new InvalidOperationException("编译后的设备姿态不包含目标主动关节: " + kv.Key?.Name);
-                        if (double.IsNaN(kv.Value) || double.IsInfinity(kv.Value))
-                            throw new InvalidOperationException("姿态关节值无效: " + kv.Key.Name);
-                        dpd.SetJointValue(kv.Key, kv.Value);
-                    }
-                    // SDK CreatePose 不允许同名；更新现有标准姿态，避免重复生成时失败。
-                    var pose = device.GetPoseByName(poseName);
-                    if (pose == null)
-                        pose = device.CreatePose(new TxPoseCreationData { Name = poseName, PoseData = dpd.PoseData });
-                    else
-                        pose.PoseData = dpd.PoseData;
-                    if (pose == null) throw new InvalidOperationException("CreatePose 返回空对象");
-                    using (var saved = new TxDevicePoseData(device, pose.PoseData))
+                    if (template == null) throw new InvalidOperationException("CurrentPose为空");
+                    using (var defaults = new TxDevicePoseData(device, template))
                     {
                         foreach (var kv in jointValues)
-                            if (!saved.DoesHaveJoint(kv.Key) || System.Math.Abs(saved.GetJointValue(kv.Key) - kv.Value) > 1e-6)
-                                throw new InvalidOperationException("姿态保存后回读值不匹配: " + kv.Key.Name);
+                        {
+                            if (kv.Key == null || !defaults.DoesHaveJoint(kv.Key))
+                                throw new InvalidOperationException("默认姿态不包含目标主动轴: " + kv.Key?.Name);
+                            if (double.IsNaN(kv.Value) || double.IsInfinity(kv.Value))
+                                throw new InvalidOperationException("目标值无效: " + kv.Key.Name);
+                            defaults.SetJointValue(kv.Key, 0);
+                            Trace("默认值 " + kv.Key.Name + "=0；目标值=" + kv.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+                        }
+                        // 某些 PS 资源对不存在的名称调用 GetPoseByName 会抛 TxUnknownErrorException。
+                        // 枚举完整列表区分“没有该姿态”和“读取列表失败”，不将未知错误当作不存在。
+                        stage = "读取 PoseList";
+                        Trace(stage + " 开始（不调用 GetPoseByName）");
+                        var poses = device.PoseList;
+                        if (poses == null) throw new InvalidOperationException("PoseList返回空列表对象，无法确认已有姿态");
+                        Trace("PoseList 数量=" + poses.Count);
+                        TxPose pose = null;
+                        foreach (ITxObject item in poses)
+                        {
+                            var candidate = item as TxPose;
+                            if (candidate == null) continue;
+                            string candidateName = candidate.Name;
+                            Trace("已有姿态: " + candidateName);
+                            if (!string.Equals(candidateName, poseName, StringComparison.OrdinalIgnoreCase)) continue;
+                            if (pose != null && pose.Id != candidate.Id)
+                                throw new InvalidOperationException("PoseList含有多个同名姿态，未自动覆盖: " + poseName);
+                            pose = candidate;
+                        }
+                        Trace(pose == null ? "列表中不存在 " + poseName + "，进入创建阶段" :
+                            "列表中找到 " + poseName + "，进入更新阶段");
+                        if (pose == null)
+                        {
+                            stage = "CreatePose（默认值，实例级）";
+                            Trace(stage + " 开始");
+                            var creation = new TxPoseCreationData(poseName, defaults.PoseData) { CreateAtInstance = true };
+                            pose = device.CreatePose(creation);
+                            if (pose == null) throw new InvalidOperationException("CreatePose返回空对象");
+                            Trace(stage + " 成功，ID=" + pose.Id);
+                        }
+                        else Trace("复用已有姿态，ID=" + pose.Id + "，实例级=" + pose.IsAtInstance);
+
+                        // 新建对象成功后，单独调用 PoseData setter 写目标值，不在创建参数中注入目标值。
+                        stage = "读取已创建姿态";
+                        using (var actual = new TxDevicePoseData(device, pose.PoseData))
+                        {
+                            foreach (var kv in jointValues)
+                            {
+                                if (!actual.DoesHaveJoint(kv.Key)) throw new InvalidOperationException("新姿态缺少主动轴: " + kv.Key.Name);
+                                actual.SetJointValue(kv.Key, kv.Value);
+                            }
+                            stage = "写入目标 PoseData";
+                            Trace(stage + " 开始");
+                            pose.PoseData = actual.PoseData;
+                            Trace(stage + " 成功");
+                        }
+                        stage = "保存值回读";
+                        using (var saved = new TxDevicePoseData(device, pose.PoseData))
+                            foreach (var kv in jointValues)
+                            {
+                                if (!saved.DoesHaveJoint(kv.Key)) throw new InvalidOperationException("保存后缺少主动轴: " + kv.Key.Name);
+                                double value = saved.GetJointValue(kv.Key);
+                                Trace("回读 " + kv.Key.Name + "=" + value.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+                                if (double.IsNaN(value) || double.IsInfinity(value) || System.Math.Abs(value - kv.Value) > 1e-6)
+                                    throw new InvalidOperationException("保存值不匹配: " + kv.Key.Name);
+                            }
+                        Trace("创建/赋值完成");
                     }
                 }
                 return true;
             }
-            catch (Exception ex) { err = poseName + ": " + ex.GetType().Name + " - " + ex.Message; return false; }
+            catch (Exception ex)
+            {
+                err = poseName + " [" + stage + "] " + ex;
+                Trace("失败: " + err);
+                return false;
+            }
         }
 
         public static bool CreatePose(ITxDevice device, string poseName,
@@ -289,7 +342,7 @@ namespace TxTools.WeldGunDefiner.Core
         // NonCollidingEntities(TxObjectList)，再传入 DefineAsTool。
         public static bool DefineAsServoGun(ITxKinematicsModellable device,
             TxFrame tcpFrame, TxTransformation baseLoc,
-            List<ITxObject> nonCollidingEntities, out string err)
+            List<ITxObject> nonCollidingEntities, out string err, Action<string> log = null)
         {
             err = null;
             try
@@ -309,12 +362,28 @@ namespace TxTools.WeldGunDefiner.Core
                 var def = new Tecnomatix.Engineering.DataTypes.TxServoGunDefinitionData(
                     tcpFrame, baseLoc, ncList);
 
-                // 检查可定义性（带参）
-                bool can = true;
-                try { can = device.CanDefineAsTool(def); } catch { can = true; }
-                if (!can) { err = "CanDefineAsTool=false（请检查运动学和工具定义状态）"; return false; }
-
+                // 对已定义 Servo Gun，先核对配置；一致时不重复执行类型转换。
+                var existing = device as TxServoGun;
+                if (existing != null)
+                {
+                    bool same = existing.TCPF != null && existing.TCPF.Id == tcpFrame.Id;
+                    var existingBase = existing.BaseframeAbsoluteLocation;
+                    for (int row = 0; row < 4; row++)
+                        for (int col = 0; col < 4; col++)
+                            same &= existingBase != null && System.Math.Abs(existingBase[row, col] - baseLoc[row, col]) < 1e-6;
+                    var expectedIds = new HashSet<string>();
+                    foreach (ITxObject item in ncList) expectedIds.Add(item.Id);
+                    var actualIds = new HashSet<string>();
+                    foreach (ITxObject item in existing.NonCollidingEntities) actualIds.Add(item.Id);
+                    same &= actualIds.SetEquals(expectedIds);
+                    log?.Invoke("[工具定义] 已有 Servo Gun，TCP/BASE/不检测干涉配置一致=" + same);
+                    if (same) return true;
+                }
+                bool can = device.CanDefineAsTool(def);
+                log?.Invoke("[工具定义] CanDefineAsTool=" + can + ", 已有ServoGun=" + (existing != null));
+                if (!can) { err = "SDK拒绝工具定义；已有定义的TCP、BASE或不检测干涉列表与请求不同"; return false; }
                 device.DefineAsTool(def);
+                log?.Invoke("[工具定义] DefineAsTool 完成");
                 return true;
             }
             catch (Exception ex) { err = (err ?? "") + " | " + ex.Message; return false; }
@@ -473,65 +542,41 @@ namespace TxTools.WeldGunDefiner.Core
             catch (Exception ex) { err = ex.Message; return null; }
         }
 
-        // ── 判断 obj 是否属于 comp（祖先链向上遍历）──
-        // 需求2修复：之前用 GetAllDescendants 集合精确匹配，但 PickLevel.Entity 选到的
-        // 几何实体(TxSolid/TxPolyhedron)往往不在该集合里，导致本体几何也被误判为外部、
-        // 无法选择(且与link无关)。改为从obj向上遍历祖先，到达comp即属于本焊钳。
-        public static bool IsDescendantOf(ITxObject obj, ITxComponent comp)
+        public static bool IsDescendantOf(ITxObject obj, ITxObject root)
         {
-            if (obj == null || comp == null) return false;
+            if (obj == null || root == null) return false;
             try
             {
-                if (ReferenceEquals(obj, comp)) return true;
-                var cur = obj;
-                for (int depth = 0; depth < 64 && cur != null; depth++)
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                ITxObject current = obj;
+                for (int depth = 0; depth < 256 && current != null; depth++)
                 {
-                    if (ReferenceEquals(cur, comp)) return true;
-                    // 向上取宿主：优先反射 Parent / OwningObject，再退回 Collection 的宿主
-                    object parent = GetParentObject(cur);
-                    cur = parent as ITxObject;
+                    if (current.Id == root.Id) return true;
+                    if (!seen.Add(current.Id)) return false;
+                    // Collection 本身就是父对象，不能再猜它的 OwningObject。
+                    current = current.Collection as ITxObject;
                 }
             }
-            catch { }
+            catch { return false; }
             return false;
         }
 
-        private static object GetParentObject(ITxObject obj)
+        public static bool ValidateLinkBody(ITxObject obj, ITxObject root, out string error)
         {
-            if (obj == null) return null;
+            error = null;
             try
             {
-                var t = obj.GetType();
-                // 常见祖先访问属性
-                foreach (var name in new[] { "Parent", "OwningObject", "Owner", "Container" })
-                {
-                    var p = t.GetProperty(name);
-                    if (p != null)
-                    {
-                        var v = p.GetValue(obj, null);
-                        if (v is ITxObject && !ReferenceEquals(v, obj)) return v;
-                    }
-                }
-                // Collection 的宿主对象
-                var collProp = t.GetProperty("Collection");
-                if (collProp != null)
-                {
-                    var coll = collProp.GetValue(obj, null);
-                    if (coll != null)
-                    {
-                        var ownerProp = coll.GetType().GetProperty("OwningObject")
-                                     ?? coll.GetType().GetProperty("Owner")
-                                     ?? coll.GetType().GetProperty("Parent");
-                        if (ownerProp != null)
-                        {
-                            var owner = ownerProp.GetValue(coll, null);
-                            if (owner is ITxObject && !ReferenceEquals(owner, obj)) return owner;
-                        }
-                    }
-                }
+                if (obj == null || root == null) { error = "对象或目标焊钳为空"; return false; }
+                string description = obj.Name + " [ID=" + obj.Id + ", CLR=" + ((object)obj).GetType().FullName + "]";
+                if (obj.Id == root.Id || obj is TxFrame || obj is ITxFace || obj is TxJoint || obj is TxKinematicLink || obj is ITxDevice ||
+                    (!(obj is ITxGeometry) && !(obj is ITxComponent)))
+                { error = "请选择焊钳内实体或零件，不能选择工序、坐标系、设备根节点或运动学节点: " + description; return false; }
+                if (!obj.IsValid()) { error = "资源已失效: " + description; return false; }
+                if (!IsDescendantOf(obj, root))
+                { error = "资源不属于目标焊钳，或无法确认归属: " + description; return false; }
+                return true;
             }
-            catch { }
-            return null;
+            catch (Exception ex) { error = "无法验证几何资源: " + ex.GetType().Name + " - " + ex.Message; return false; }
         }
 
         // ── 收集 Component 下所有后代（保留兼容，但归属判断改用 IsDescendantOf）──

@@ -15,9 +15,9 @@ namespace TxTools.WeldSpotGrouper
 
         private static GrouperForm _form;
 
-        public override string Name { get { return ".焊点快速分组"; } }
+        public override string Name { get { return ".快速分序"; } }
         public override string Category { get { return "TxTools"; } }
-        public override string Description => "对所选焊点按照所绑定的零件进行自动分组";
+        public override string Description => "按零件层级或绑定零件实例组合创建工序并分配焊点，支持预览与人工调整";
         public override void Execute(object cmdParams)
         {
             try

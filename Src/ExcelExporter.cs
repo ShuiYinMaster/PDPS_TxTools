@@ -78,7 +78,8 @@ namespace TxTools.ExportGun
             {
                 foreach (PointInfo pt in op.Points)
                 {
-                    double[] rel = PsReader.ToRelative(pt.TCPMatrix, refMatrix);
+                    double[] reference = op.GetExportReference(refMatrix);
+                    double[] rel = PsReader.ToRelative(pt.TCPMatrix, reference);
 
                     double rx, ry, rz;
                     PsReader.MatrixToEulerDeg(rel, out rx, out ry, out rz);

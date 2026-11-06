@@ -35,14 +35,21 @@ namespace TxTools.RobotReachabilityChecker.Models
         public AxisFlag[] AxisFlags { get; set; } = new AxisFlag[6];
 
         /// <summary>
-        /// 该点位是否发生干涉（PS CollisionRoot.HasCollidingObjects 结果）。
+        /// 该点位是否发生干涉（临时双列表精确查询结果）。
         /// 仅在用户启用"静态干涉检查"时计算，否则保持默认 false。
-        /// 检测到 true 时，Status 会从 Reachable/Critical 升级为 NearLimit（警告级）。
+        /// 与轴限位状态独立，不改变 Status。
         /// </summary>
         public bool HasCollision { get; set; } = false;
 
         /// <summary>干涉检查三态结果（P2-11）。仅在启用干涉检查时从 NotChecked 变为实际状态。</summary>
         public CollisionCheckState CollisionState { get; set; } = CollisionCheckState.NotChecked;
+
+        public bool HasInterferenceWarning => CollisionState == CollisionCheckState.Collision
+            || CollisionState == CollisionCheckState.Error;
+
+        public string CollisionSummary => CollisionState == CollisionCheckState.Collision ? "存在干涉"
+            : CollisionState == CollisionCheckState.Error ? "干涉未知"
+            : CollisionState == CollisionCheckState.Clean ? "无干涉" : "未检查";
 
         /// <summary>
         /// 检查时缓存的 PS 姿态对象（实际类型 Tecnomatix.Engineering.TxPoseData）。

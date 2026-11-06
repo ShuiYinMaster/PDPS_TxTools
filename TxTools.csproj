@@ -585,6 +585,9 @@
     <Compile Include="WeldPointMatrix\SequenceEditorSession.cs" />
     <Compile Include="WeldPointMatrix\NativeLocationCommands.cs" />
     <Compile Include="WeldPointMatrix\PointMatrixGrid.cs" />
+    <Compile Include="SRC\TreeWorkflow.cs" />
+    <Compile Include="SRC\TreeWorkflowUi.cs" />
+    <Compile Include="WeldSpotGrouper\Core\SequencePlan.cs" />
     <Compile Include="WeldSpotGrouper\Core\GroupModels.cs" />
     <Compile Include="WeldSpotGrouper\Ps\GroupWriter.cs" />
     <Compile Include="WeldSpotGrouper\Ps\SpotGrouper.cs" />
@@ -614,6 +617,18 @@
     </Compile>
     <Compile Include="CrossEnvIO\CrossEnvIOCmd.cs" />
     <Compile Include="ThemeTuner\ThemeTunerCmd.cs" />
+    <Compile Include="ThemeTuner\ThemeTunerForm.About.cs" />
+    <Compile Include="ThemeTuner\ReleaseChecker.cs" />
+    <EmbeddedResource Include="LICENSE"><LogicalName>TxTools.Licenses.TxTools</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="NOTICE.md"><LogicalName>TxTools.Licenses.HostNotice</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="ThemeTuner\Licenses\OpenXml.txt"><LogicalName>TxTools.Licenses.OpenXml</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="ExportByColor\Vendor\EarCut\LICENSE"><LogicalName>TxTools.Licenses.EarCut</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="ExportByColor\JtDirectCs\LICENSE.JTReader"><LogicalName>TxTools.Licenses.JTReader</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="ExportByColor\JtDirectCs\THIRD-PARTY-NOTICES.txt"><LogicalName>TxTools.Licenses.JTDependencies</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="Agent\UI\pet\dsh-pet\LICENSE-dsh-pet.txt"><LogicalName>TxTools.Licenses.DshPet</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="Agent\UI\model-logos\LICENSE"><LogicalName>TxTools.Licenses.LobeIcons</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="$(TxToolsNuGetDir)**\LICENSE.*"><LogicalName>TxTools.Licenses.NuGet.%(RecursiveDir)%(Filename)%(Extension)</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="$(TxToolsPetComponentsDir)electron\LICENSE"><LogicalName>TxTools.Licenses.Electron</LogicalName></EmbeddedResource>
     <Compile Include="ThemeTuner\ThemeTunerForm.cs">
       <SubType>Form</SubType>
     </Compile>

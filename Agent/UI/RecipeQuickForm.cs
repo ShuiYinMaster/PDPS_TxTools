@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
@@ -26,6 +27,41 @@ namespace TxTools.Agent.UI
 
         protected override bool ShowWithoutActivation => true;
 
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            UpdateRoundedRegion();
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            UpdateRoundedRegion();
+        }
+
+        protected override void OnDpiChanged(DpiChangedEventArgs e)
+        {
+            base.OnDpiChanged(e);
+            UpdateRoundedRegion();
+        }
+
+        private void UpdateRoundedRegion()
+        {
+            if (IsDisposed || Width <= 0 || Height <= 0) return;
+            int diameter = Math.Min(Math.Min(Width, Height), Math.Max(2, (int)Math.Round(24.0 * DeviceDpi / 96.0)));
+            using (var path = new GraphicsPath())
+            {
+                path.AddArc(0, 0, diameter, diameter, 180, 90);
+                path.AddArc(Width - diameter, 0, diameter, diameter, 270, 90);
+                path.AddArc(Width - diameter, Height - diameter, diameter, diameter, 0, 90);
+                path.AddArc(0, Height - diameter, diameter, diameter, 90, 90);
+                path.CloseFigure();
+                var previous = Region;
+                Region = new Region(path);
+                previous?.Dispose();
+            }
+        }
+
         public RecipeQuickForm(Action manage)
         {
             TxTools.Common.PluginUiPolicy.Attach(this);
@@ -34,7 +70,10 @@ namespace TxTools.Agent.UI
             Font = new Font("Microsoft YaHei UI", 9F);
             AutoScaleDimensions = new SizeF(96, 96);
             AutoScaleMode = AutoScaleMode.Dpi;
-            FormBorderStyle = FormBorderStyle.FixedToolWindow;
+            FormBorderStyle = FormBorderStyle.None;
+            // The shared form policy restores dialog chrome during Load.
+            // Apply the popup exception after that handler has completed.
+            Load += (s, e) => FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             TopMost = true;
             StartPosition = FormStartPosition.Manual;
@@ -233,6 +272,9 @@ namespace TxTools.Agent.UI
                 RecipeUiActions.Changed -= NotifyChanged;
                 Application.ApplicationExit -= OnExit;
                 _studyTimer.Dispose();
+                var previous = Region;
+                Region = null;
+                previous?.Dispose();
             }
             base.Dispose(disposing);
         }

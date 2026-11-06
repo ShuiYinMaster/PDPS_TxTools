@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using Tecnomatix.Engineering;
 
 namespace TxTools.WeldAnnotator
@@ -13,6 +13,10 @@ namespace TxTools.WeldAnnotator
         {
             internal ITxObject Object;
             internal Node Parent;
+            internal string Id;
+            internal TxDisplayableObjectVisibility? Visibility;
+            internal bool Keep, Protected, Covered;
+            internal bool? Applied;
         }
 
         private sealed class State
@@ -25,30 +29,7 @@ namespace TxTools.WeldAnnotator
         {
             internal TxDocument Document;
             internal List<State> States;
-        }
-
-        private sealed class ObjectComparer : IEqualityComparer<ITxObject>
-        {
-            internal static readonly ObjectComparer Instance = new ObjectComparer();
-
-            private static string Id(ITxObject obj)
-            {
-                try { return obj.Id; } catch { return null; }
-            }
-
-            public bool Equals(ITxObject x, ITxObject y)
-            {
-                if (ReferenceEquals(x, y)) return true;
-                if (x == null || y == null) return false;
-                string a = Id(x), b = Id(y);
-                return !string.IsNullOrEmpty(a) && !string.IsNullOrEmpty(b) && a == b;
-            }
-
-            public int GetHashCode(ITxObject obj)
-            {
-                string id = Id(obj);
-                return string.IsNullOrEmpty(id) ? RuntimeHelpers.GetHashCode(obj) : id.GetHashCode();
-            }
+            internal List<Node> Nodes;
         }
 
         private readonly Action<string> _log;
@@ -75,29 +56,30 @@ namespace TxTools.WeldAnnotator
 
         internal bool ShowOnly(IEnumerable<ITxObject> whitelist)
         {
+            var timer = Stopwatch.StartNew();
             CheckDocument();
-            var requested = new HashSet<ITxObject>(ObjectComparer.Instance);
+            var requested = new HashSet<string>(StringComparer.Ordinal);
             if (whitelist != null)
                 foreach (ITxObject obj in whitelist)
-                    if (obj is ITxDisplayableObject) requested.Add(obj);
+                    if (obj is ITxDisplayableObject) requested.Add(obj.Id);
             if (requested.Count == 0)
                 throw new InvalidOperationException("白名单没有可显示的对象，已取消操作。");
 
             Snapshot current = Capture();
-            var keep = new HashSet<ITxObject>(ObjectComparer.Instance);
-            var ancestors = new HashSet<ITxObject>(ObjectComparer.Instance);
-            var found = new HashSet<ITxObject>(ObjectComparer.Instance);
-            foreach (State state in current.States)
+            long captureMs = timer.ElapsedMilliseconds;
+            var found = new HashSet<string>(StringComparer.Ordinal);
+            foreach (Node node in current.Nodes)
             {
-                Node node = state.Node;
-                if (requested.Contains(node.Object)) found.Add(node.Object);
-                for (Node p = node; p != null; p = p.Parent)
+                bool selected = requested.Contains(node.Id);
+                node.Keep = selected || (node.Parent != null && node.Parent.Keep);
+                if (selected)
                 {
-                    if (!requested.Contains(p.Object)) continue;
-                    keep.Add(node.Object); // 白名单组件的整个子树也应保留。
+                    found.Add(node.Id);
                     for (Node parent = node.Parent; parent != null; parent = parent.Parent)
-                        ancestors.Add(parent.Object);
-                    break;
+                    {
+                        if (parent.Protected) break;
+                        parent.Protected = true;
+                    }
                 }
             }
             if (found.Count != requested.Count)
@@ -106,26 +88,30 @@ namespace TxTools.WeldAnnotator
             RememberBaseline(current);
             RunChange("焊点标注：仅显示外观", delegate
             {
-                // 子级先隐藏、父级后隐藏：复合操作自身必须显式 Blank，
-                // 不能从全部点位为 None 推断操作节点已经隐藏。
-                for (int i = current.States.Count - 1; i >= 0; i--)
+                // Display/Blank apply to a whole subtree. Only call at its boundary.
+                // Non-displayable nodes pass coverage through to their children.
+                foreach (Node node in current.Nodes)
                 {
-                    ITxObject obj = current.States[i].Node.Object;
-                    if (!keep.Contains(obj) && !ancestors.Contains(obj)) Set(obj, false);
+                    node.Covered = node.Parent != null && node.Parent.Covered;
+                    if (node.Covered || !node.Visibility.HasValue ||
+                        node.Visibility == TxDisplayableObjectVisibility.CannotBeDisplayed) continue;
+                    if (!node.Keep && node.Protected) continue;
+                    var target = node.Keep ? TxDisplayableObjectVisibility.All : TxDisplayableObjectVisibility.None;
+                    node.Covered = node.Visibility == target || Set(node.Object, node.Keep, true);
                 }
-                // 保留的父组件先显示，随后显式显示其子级。保护祖先不调用
-                // Display，否则会连带显示不属于白名单的兄弟组件。
-                foreach (State state in current.States)
-                    if (keep.Contains(state.Node.Object)) Set(state.Node.Object, true);
             });
 
-            return Verify(current, delegate(State state)
+            long changeMs = timer.ElapsedMilliseconds;
+            bool ok = Verify(current, delegate(State state)
             {
-                ITxObject obj = state.Node.Object;
-                if (keep.Contains(obj)) return TxDisplayableObjectVisibility.All;
-                if (ancestors.Contains(obj)) return null;
+                if (state.Node.Keep) return TxDisplayableObjectVisibility.All;
+                if (state.Node.Protected) return null;
                 return TxDisplayableObjectVisibility.None;
             }, "仅显示外观");
+            _log("[显示] 仅显示外观总耗时 " + timer.ElapsedMilliseconds + " ms，快照 " + captureMs +
+                " ms，规划及变更 " + (changeMs - captureMs) + " ms，校验 " +
+                (timer.ElapsedMilliseconds - changeMs) + " ms，显示/隐藏调用 " + _setCalls);
+            return ok;
         }
 
         internal bool Restore()
@@ -140,14 +126,17 @@ namespace TxTools.WeldAnnotator
 
             RunChange("焊点标注：恢复显示", delegate
             {
-                // Display/Blank 可能影响整个子树，不能逐个比较 bool 后跳过。
-                // 先恢复可见父级，再隐藏原先不可见的子级，以重建 Partial。
-                foreach (State state in snapshot.States)
-                    if (state.Visibility != TxDisplayableObjectVisibility.None)
-                        Set(state.Node.Object, true, true);
-                for (int i = snapshot.States.Count - 1; i >= 0; i--)
-                    if (snapshot.States[i].Visibility == TxDisplayableObjectVisibility.None)
-                        Set(snapshot.States[i].Node.Object, false, true);
+                foreach (Node node in snapshot.Nodes)
+                {
+                    node.Applied = node.Parent == null ? null : node.Parent.Applied;
+                    if (!node.Visibility.HasValue ||
+                        node.Visibility == TxDisplayableObjectVisibility.CannotBeDisplayed) continue;
+                    // Partial requires a visible parent followed by hidden child branches.
+                    bool visible = node.Visibility != TxDisplayableObjectVisibility.None;
+                    if (node.Applied == visible || Set(node.Object, visible, true))
+                        node.Applied = visible;
+                    else node.Applied = null;
+                }
             });
             bool ok = Verify(snapshot, delegate(State state) { return state.Visibility; }, "恢复显示");
             if (ok)
@@ -184,16 +173,18 @@ namespace TxTools.WeldAnnotator
                 var displayable = node.Object as ITxDisplayableObject;
                 if (displayable == null) continue;
                 // 不修改读不到状态的场景，以免失去恢复依据。
-                states.Add(new State { Node = node, Visibility = displayable.Visibility });
+                var visibility = displayable.Visibility;
+                node.Visibility = visibility;
+                states.Add(new State { Node = node, Visibility = visibility });
             }
             if (states.Count == 0) throw new InvalidOperationException("未读取到可显示对象，已取消操作。");
-            return new Snapshot { Document = doc, States = states };
+            return new Snapshot { Document = doc, States = states, Nodes = nodes };
         }
 
         private static List<Node> Enumerate(TxDocument doc)
         {
             var result = new List<Node>();
-            var seen = new HashSet<ITxObject>(ObjectComparer.Instance);
+            var seen = new HashSet<string>(StringComparer.Ordinal);
             dynamic d = doc;
             // 根仅用作遍历入口，不切换根的显示状态。
             var roots = new List<ITxObject>();
@@ -204,13 +195,14 @@ namespace TxTools.WeldAnnotator
             roots.Add(doc.OperationRoot);
             foreach (ITxObject root in roots)
             {
-                if (root == null || !seen.Add(root)) continue;
+                if (root == null || !seen.Add(root.Id)) continue;
                 var pending = new Stack<Node>();
                 PushChildren(root, null, pending);
                 while (pending.Count > 0)
                 {
                     Node node = pending.Pop();
-                    if (!seen.Add(node.Object)) continue;
+                    node.Id = node.Object.Id;
+                    if (!seen.Add(node.Id)) continue;
                     result.Add(node); // 父级在子级前；包含非可显示节点以保留祖先关系。
                     PushChildren(node.Object, node, pending);
                 }
@@ -236,6 +228,7 @@ namespace TxTools.WeldAnnotator
         private void RunChange(string name, Action change)
         {
             _callErrors = 0;
+            _setCalls = 0;
             // 不假设 StartTransaction 接受事务名称：按真实运行时签名选择。
             object undo = TxApplication.ActiveUndoManager;
             if (undo == null) throw new InvalidOperationException("无法获取撤销事务，已取消显示变更。");
@@ -275,34 +268,44 @@ namespace TxTools.WeldAnnotator
             }
         }
 
-        private void Set(ITxObject obj, bool visible, bool force = false)
+        private bool Set(ITxObject obj, bool visible, bool force = false)
         {
             try
             {
                 var displayable = (ITxDisplayableObject)obj;
                 TxDisplayableObjectVisibility target = visible
                     ? TxDisplayableObjectVisibility.All : TxDisplayableObjectVisibility.None;
-                if (!force && displayable.Visibility == target) return;
+                if (!force && displayable.Visibility == target) return true;
+                _setCalls++;
                 if (visible) displayable.Display(); else displayable.Blank();
+                return true;
             }
             catch (Exception ex)
             {
                 // 汇总校验会报告失败数量；逐项错误仅保留前几个示例。
                 if (_callErrors++ < 3) _log("[显示] 调用失败 " + Describe(obj) + "：" + ex.Message);
+                return false;
             }
         }
 
         private int _callErrors;
+        private int _setCalls;
 
         private bool Verify(Snapshot snapshot, Func<State, TxDisplayableObjectVisibility?> expected, string action)
         {
-            int none = 0, partial = 0, all = 0, failed = 0;
+            int none = 0, partial = 0, all = 0, failed = 0, excluded = 0;
             foreach (State state in snapshot.States)
             {
                 ITxObject obj = state.Node.Object;
                 try
                 {
+                    if (state.Visibility == TxDisplayableObjectVisibility.CannotBeDisplayed)
+                    {
+                        excluded++;
+                        continue;
+                    }
                     var actual = ((ITxDisplayableObject)obj).Visibility;
+                    if (actual == TxDisplayableObjectVisibility.CannotBeDisplayed) { excluded++; continue; }
                     if (actual == TxDisplayableObjectVisibility.None) none++;
                     else if (actual == TxDisplayableObjectVisibility.Partial) partial++;
                     else if (actual == TxDisplayableObjectVisibility.All) all++;
@@ -316,8 +319,8 @@ namespace TxTools.WeldAnnotator
                     if (failed++ < 3) _log("[显示] 校验失败 " + Describe(obj) + "：" + ex.Message);
                 }
             }
-            _log(string.Format("[显示] {0}：None={1}，Partial={2}，All={3}，未达目标={4}，调用异常={5}",
-                action, none, partial, all, failed, _callErrors));
+            _log(string.Format("[显示] {0}：None={1}，Partial={2}，All={3}，未达目标={4}，调用异常={5}，不可显示={6}",
+                action, none, partial, all, failed, _callErrors, excluded));
             bool ok = failed == 0 && _callErrors == 0;
             _callErrors = 0;
             return ok;

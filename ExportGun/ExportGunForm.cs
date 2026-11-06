@@ -77,6 +77,19 @@ namespace TxTools.ExportGun
         #region State
         private ExportService _svc;
         private ExportByColorService _cgrGenerator;
+        private int _opsSyncToken, _gunInfoToken, _refLoadToken;
+        private OperationInfo _contextOp;
+        private bool _manualReference;
+        private bool _updatingRefControl;
+        private string _registeredReferenceName;
+        private Label _lblReferenceFallback;
+        private TableLayoutPanel _coordinateActions;
+        private FlowLayoutPanel _pointActions;
+        private CheckBox _chkPerOperationRef;
+        private readonly Dictionary<ITxObject, HashSet<string>> _pointScopes = new Dictionary<ITxObject, HashSet<string>>();
+        private bool _normalizingGrid, _addingSelection;
+        private System.Windows.Forms.Timer _invalidPickTimer;
+        private readonly Dictionary<string, string> _cgrFallbackPaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly SynchronizationContext _psCtx;
         private List<OperationInfo> _ops = new List<OperationInfo>();
         private string _refFrameName = "世界坐标系";
@@ -111,7 +124,6 @@ namespace TxTools.ExportGun
 
         #region UI Controls - 参考坐标
         private TxFrameComboBoxCtrl _frameCombo;
-        private Label _lblRefCoordStatus;
         #endregion
 
         #region UI Controls - 导出设置
@@ -166,7 +178,7 @@ namespace TxTools.ExportGun
         // 日志折叠行高度
         private const int LOG_COLLAPSED_H = 26;
         private const int LOG_EXPANDED_H = 168;
-        private static readonly Size DesignSize = new Size(960, 600);
+        private static readonly Size DesignSize = new Size(880, 600);
 
         // ════════════════════════════════════════════════════════════
         //  构造
@@ -228,6 +240,8 @@ namespace TxTools.ExportGun
                 ApplySideColumnWidths(sc);
             });
 
+            FitContentWidth();
+
             if (_svc == null) return;
             BindFrameComboEvents();
 
@@ -257,7 +271,7 @@ namespace TxTools.ExportGun
                 try
                 {
                     _svc.InvokeOnPs(delegate ()
-                    { ops = PsReader.ParsePickedObjectToOperations(pickedObj); });
+                    { if (pickedObj is ITxOperation) ops = PsReader.ResolveExportSelection(pickedObj); });
                 }
                 catch (Exception ex)
                 { UI(delegate () { Log("[错误] " + ex.Message, LogLevel.Error); }); }
@@ -267,6 +281,7 @@ namespace TxTools.ExportGun
                     UI(delegate ()
                     {
                         MergeOpsByName(ops);
+                        SetOperationContext(_ops.Count > 0 ? _ops[0] : null);
                         RefreshOpList();
                         ReloadPointsList();
                         UpdatePointCount();
@@ -345,6 +360,9 @@ namespace TxTools.ExportGun
 
         private void OnFrameValidSet(object sender, TxFrameComboBoxCtrl_ValidFrameSetEventArgs e)
         {
+            if (_updatingRefControl) return;
+            _manualReference = true;
+            ++_refLoadToken;
             try
             {
                 TxTransformation tx = e.Location as TxTransformation;
@@ -381,14 +399,44 @@ namespace TxTools.ExportGun
         }
 
         private void OnFrameInvalidSet(object sender, TxFrameComboBoxCtrl_InvalidFrameSetEventArgs e)
-        { Log("[坐标] 所选对象不是有效坐标系", LogLevel.Coord); }
+        { if (!_updatingRefControl) Log("[坐标] 所选对象不是有效坐标系", LogLevel.Coord); }
 
         private void UpdateRefCoordStatus(string name, bool isWorld)
         {
-            if (_lblRefCoordStatus == null) return;
-            _lblRefCoordStatus.Text = "当前：" + name;
-            _lblRefCoordStatus.BackColor = isWorld ? Theme.StatusOkBg : Theme.StatusRefBg;
-            _lblRefCoordStatus.ForeColor = isWorld ? Theme.StatusOkFg : Theme.StatusRefFg;
+            if (_frameCombo == null) return;
+            _updatingRefControl = true;
+            try
+            {
+                string caption = _chkPerOperationRef != null && _chkPerOperationRef.Checked
+                    ? "各操作自身参考坐标" : name;
+                if (_registeredReferenceName != null)
+                {
+                    // Clear/reset may already have removed the prior combo entry.
+                    try { _frameCombo.RemoveFrame(_registeredReferenceName); } catch { }
+                }
+                _registeredReferenceName = null;
+                // SetCurrentFrame requires a matching document frame and substitutes FRAME
+                // for inferred coordinates. Register a named combo entry instead.
+                _frameCombo.AddFrame(caption, _refFrameMatrix == null ? new TxTransformation() : PsReader.ArrToTxPublic(_refFrameMatrix));
+                _registeredReferenceName = caption;
+                _frameCombo.SelectFrame(caption);
+            }
+            catch (Exception)
+            {
+                // A host/version that cannot retain named entries uses the separate display.
+                _registeredReferenceName = null;
+            }
+            finally { _updatingRefControl = false; RefreshReferenceCaption(); }
+        }
+
+        private void RefreshReferenceCaption()
+        {
+            if (_lblReferenceFallback == null || _frameCombo == null) return;
+            string caption = _chkPerOperationRef != null && _chkPerOperationRef.Checked
+                ? "各操作自身参考坐标" : _refFrameName;
+            _lblReferenceFallback.Text = "当前：" + caption;
+            _lblReferenceFallback.Visible = _registeredReferenceName == null ||
+                !string.Equals(_frameCombo.Text, caption, StringComparison.Ordinal);
         }
 
         // ════════════════════════════════════════════════════════════
@@ -404,7 +452,7 @@ namespace TxTools.ExportGun
             AutoScaleMode = AutoScaleMode.None;
             Text = "导出插枪 / 点云到 CATIA";
             Size = DesignSize;
-            MinimumSize = new Size(860, 600);
+            MinimumSize = new Size(760, 600);
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -420,6 +468,7 @@ namespace TxTools.ExportGun
                 Padding = new Padding(6, 4, 6, 4)
             };
             _root = root;
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));            // 0 标题
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));           // 1 主体
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, LOG_COLLAPSED_H)); // 2 日志（可折叠）
@@ -598,8 +647,10 @@ namespace TxTools.ExportGun
                 ListenToPick = true,
                 EnableMultipleSelection = true,
                 EnableRecurringObjects = false,
+                ValidatorType = TxValidatorType.Operation,
             };
             _objGrid.ObjectInserted += new TxObjGridCtrl_ObjectInsertedEventHandler(OnGridObjectInserted);
+            _objGrid.SetValidator(new ExportSelectionValidator(ShowInvalidPick));
             _objGrid.RowDeleted += new TxObjGridCtrl_RowDeletedEventHandler(OnGridRowDeleted);
             gridPanel.Controls.Add(_objGrid);
             usingGrid = true;
@@ -643,7 +694,7 @@ namespace TxTools.ExportGun
             var opsHint = new Label
             {
                 Text = usingGrid
-                    ? "提示：亮绿色行为拾取入口，点击后去 PS 中选中对象即可加入"
+                    ? "仅接受操作；在 PS 中选择焊点后，可通过拾取按钮加载所属操作"
                     : "在上方选择框拾取单个操作，自动加入列表；也可在PS中选中后点[拾取自PS]",
                 AutoSize = true,
                 ForeColor = SystemColors.GrayText,
@@ -689,35 +740,61 @@ namespace TxTools.ExportGun
                 });
             }
             flow.Controls.Add(frameCtrlPanel);
-            FillWidthInFlow(flow, frameCtrlPanel);   // 坐标框宽度填满卡片
-
-            _lblRefCoordStatus = new Label
-            {
-                Text = "当前：世界坐标系",
-                AutoSize = false,
-                AutoEllipsis = true,
-                Size = new Size(124, PluginUiPolicy.ButtonHeight),
-                ForeColor = Theme.StatusOkFg,
-                BackColor = Theme.StatusOkBg,
-                Font = FormUiKit.BaseFont,
-                Margin = new Padding(0, 0, 0, 4),
-                Padding = new Padding(6, 3, 6, 3)
-            };
-            var statusRow = MkRowFlow();
-            statusRow.Controls.Add(_lblRefCoordStatus);
+            FillWidthInFlow(flow, frameCtrlPanel);
 
             var btnClrCoord = MkFuncButton("重置坐标", Theme.BtnMuted);
-            btnClrCoord.Margin = new Padding(0, 0, 0, 2);
+            btnClrCoord.Margin = new Padding(6, 0, 0, 0);
             btnClrCoord.Click += delegate
             {
+                _manualReference = true;
+                ++_refLoadToken;
                 _refFrameName = "世界坐标系";
                 _refFrameMatrix = null;
                 if (_frameCombo != null) try { _frameCombo.Clear(); } catch { }
                 UpdateRefCoordStatus("世界坐标系", true);
                 Log("[坐标] 已重置为世界坐标系", LogLevel.Coord);
             };
-            statusRow.Controls.Add(btnClrCoord);
-            flow.Controls.Add(statusRow);
+            _lblReferenceFallback = new Label
+            {
+                Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft,
+                Font = FormUiKit.BaseFont, ForeColor = Theme.StatusRefFg,
+                Margin = Padding.Empty, Visible = false
+            };
+            var coordinateActions = new TableLayoutPanel
+            {
+                ColumnCount = 2, RowCount = 1, Height = PluginUiPolicy.ButtonHeight,
+                Margin = new Padding(0, 0, 0, 4), Padding = Padding.Empty
+            };
+            coordinateActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            coordinateActions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            _coordinateActions = coordinateActions;
+            coordinateActions.Controls.Add(btnClrCoord, 1, 0);
+            flow.Controls.Add(coordinateActions);
+            FillWidthInFlow(flow, coordinateActions);
+
+            _chkPerOperationRef = new CheckBox
+            {
+                Text = "各操作使用自身参考坐标",
+                Checked = false,
+                AutoSize = true,
+                Font = FormUiKit.BaseFont,
+                Margin = new Padding(0, 2, 0, 4)
+            };
+            _chkPerOperationRef.CheckedChanged += delegate
+            {
+                bool perOperation = _chkPerOperationRef.Checked;
+                if (_frameCombo != null) _frameCombo.Enabled = !perOperation;
+                btnClrCoord.Enabled = !perOperation;
+                UpdateRefCoordStatus(_refFrameName, _refFrameMatrix == null);
+                Log(perOperation ? "[坐标] 导出时分别解析各操作的参考坐标；无绑定的操作使用世界坐标系。"
+                    : "[坐标] 导出使用界面中的统一参考坐标。", LogLevel.Coord);
+            };
+            _chkPerOperationRef.Text = "各操作使用自身坐标";
+            _chkPerOperationRef.Margin = new Padding(0, 2, 4, 0);
+            coordinateActions.Controls.Add(_chkPerOperationRef, 0, 0);
+            _lblReferenceFallback.Height = PluginUiPolicy.ButtonHeight;
+            flow.Controls.Add(_lblReferenceFallback);
+            FillWidthInFlow(flow, _lblReferenceFallback);
 
             var coordHint = new Label
             {
@@ -730,8 +807,16 @@ namespace TxTools.ExportGun
             var coordTip = new ToolTip();
             coordTip.SetToolTip(frameCtrlPanel, coordHint.Text);
             coordTip.SetToolTip(btnClrCoord, "重置为世界坐标系");
-            coordTip.SetToolTip(_lblRefCoordStatus, _lblRefCoordStatus.Text);
-            _lblRefCoordStatus.TextChanged += (s, e) => coordTip.SetToolTip(_lblRefCoordStatus, _lblRefCoordStatus.Text);
+            if (_frameCombo != null)
+            {
+                _frameCombo.TextChanged += (s, e) =>
+                {
+                    if (!_updatingRefControl) RefreshReferenceCaption();
+                    coordTip.SetToolTip(_frameCombo, _refFrameName);
+                };
+                _lblReferenceFallback.TextChanged += (s, e) => coordTip.SetToolTip(_lblReferenceFallback, _lblReferenceFallback.Text);
+                UpdateRefCoordStatus(_refFrameName, _refFrameMatrix == null);
+            }
             card.Disposed += (s, e) => coordTip.Dispose();
             coordHint.Dispose();
 
@@ -1074,6 +1159,11 @@ namespace TxTools.ExportGun
             _lvPoints.Columns.Add("点名称", 170);
             _lvPoints.Columns.Add("类型", 70);
             _lvPoints.ItemChecked += new ItemCheckedEventHandler(OnPointItemChecked);
+            _lvPoints.ItemSelectionChanged += delegate (object sender, ListViewItemSelectionChangedEventArgs e)
+            {
+                if (!_suppressPointCheck && e.IsSelected && e.Item.Tag is PointRow row && row.Op != _contextOp)
+                    SetOperationContext(row.Op);
+            };
             _lvPoints.Resize += delegate { StretchPointsColumn(); };
             container.Controls.Add(_lvPoints);
 
@@ -1089,6 +1179,7 @@ namespace TxTools.ExportGun
                 Margin = new Padding(0, 0, 0, 2)
             };
             var btnAll = MkFuncButton("全选", Theme.BtnSecondary);
+            _pointActions = bar;
             var btnNone = MkFuncButton("全不选", Theme.BtnMuted);
             var btnInv = MkFuncButton("反选", Theme.BtnMuted);
             btnAll.Click += delegate { SetAllPointsChecked(true); };
@@ -1187,9 +1278,56 @@ namespace TxTools.ExportGun
             foreach (TableLayoutPanel t in tables)
             {
                 if (t == null || t.ColumnStyles.Count < 3) continue;
+                int width = Math.Max(1, t.ClientSize.Width / 3);
                 foreach (ColumnStyle column in t.ColumnStyles)
-                { column.SizeType = SizeType.Percent; column.Width = 100F / 3; }
+                { column.SizeType = SizeType.Absolute; column.Width = width; }
             }
+        }
+
+        private void FitContentWidth()
+        {
+            float scale = _layoutScale > 0 ? _layoutScale : 1f;
+            if (_pointActions != null)
+            {
+                _pointActions.WrapContents = false;
+                foreach (Control button in _pointActions.Controls)
+                    button.Width = Math.Max((int)Math.Ceiling(54 * scale),
+                        TextRenderer.MeasureText(button.Text, button.Font).Width + (int)Math.Ceiling(16 * scale));
+            }
+            var body = _root.GetControlFromPosition(0, 1) as TableLayoutPanel;
+            if (body == null) return;
+            int rowWidth = Math.Max(MeasureParameterRows(body.GetControlFromPosition(0, 0)),
+                MeasureParameterRows(body.GetControlFromPosition(2, 0)));
+            if (_coordinateActions != null)
+            {
+                int referenceWidth = 0;
+                foreach (Control control in _coordinateActions.Controls)
+                    referenceWidth += (control.AutoSize ? control.GetPreferredSize(Size.Empty).Width : control.Width) + control.Margin.Horizontal;
+                rowWidth = Math.Max(rowWidth, referenceWidth);
+            }
+            // Each equal column needs room for panel margins, card padding and the longest row.
+            int columnWidth = rowWidth + (int)Math.Ceiling(32 * scale);
+            int clientWidth = 3 * columnWidth + _root.Padding.Horizontal + body.Margin.Horizontal;
+            int width = clientWidth + Width - ClientSize.Width;
+            MinimumSize = new Size(width, MinimumSize.Height);
+            Width = width;
+            PerformLayout();
+            ApplySideColumnWidths(scale);
+        }
+
+        private static int MeasureParameterRows(Control root)
+        {
+            if (root == null || (root.GetType().FullName ?? "").StartsWith("Tecnomatix.", StringComparison.Ordinal)) return 0;
+            int width = 0;
+            var flow = root as FlowLayoutPanel;
+            if (flow != null && flow.FlowDirection == FlowDirection.LeftToRight)
+            {
+                foreach (Control child in flow.Controls)
+                    width += (child.AutoSize ? child.GetPreferredSize(Size.Empty).Width : child.Width) + child.Margin.Horizontal;
+                width += flow.Padding.Horizontal + flow.Margin.Horizontal;
+            }
+            foreach (Control child in root.Controls) width = Math.Max(width, MeasureParameterRows(child));
+            return width;
         }
 
         /// <summary>与首次布局缩放相同的系数，供日志展开时计算行高。</summary>
@@ -1248,6 +1386,8 @@ namespace TxTools.ExportGun
 
             int token = ++_pointsLoadToken;
             var opsSnapshot = new List<OperationInfo>(_ops);
+            var scopes = new Dictionary<ITxObject, HashSet<string>>();
+            foreach (var pair in _pointScopes) scopes[pair.Key] = new HashSet<string>(pair.Value, StringComparer.Ordinal);
 
             if (opsSnapshot.Count == 0)
             {
@@ -1293,7 +1433,11 @@ namespace TxTools.ExportGun
 
                             if (op.Points != null)
                                 foreach (var pt in op.Points)
+                                {
+                                    HashSet<string> scope;
+                                    if (scopes.TryGetValue(op.PsObject, out scope) && !pt.MatchesSelection(scope)) continue;
                                     rows.Add(new PointRow { Op = op, Pt = pt, Checked = true });
+                                }
                         }
                     });
                 }
@@ -1362,6 +1506,7 @@ namespace TxTools.ExportGun
             if (_suppressPointCheck) return;
             var row = e.Item.Tag as PointRow;
             if (row != null) row.Checked = e.Item.Checked;
+            if (row != null && e.Item.Checked && row.Op != _contextOp) SetOperationContext(row.Op);
             UpdatePointsSelHeader();
             UpdatePointCount();
         }
@@ -1434,7 +1579,7 @@ namespace TxTools.ExportGun
             int token = ++_tcpLoadToken;
 
             // 取一个代表性操作（首个）枚举其工具的 TCP
-            OperationInfo repOp = (_ops != null && _ops.Count > 0) ? _ops[0] : null;
+            OperationInfo repOp = _contextOp ?? ((_ops != null && _ops.Count > 0) ? _ops[0] : null);
             if (repOp == null)
             {
                 ResetTcpCombo(null);
@@ -1521,10 +1666,58 @@ namespace TxTools.ExportGun
         //  Grid 事件
         // ════════════════════════════════════════════════════════════
         private void OnGridObjectInserted(object sender, TxObjGridCtrl_ObjectInsertedEventArgs e)
-        { SyncOpsFromGrid(); }
+        {
+            if (_normalizingGrid) return;
+            if (e.Obj is TxWeldPoint || e.Obj is ITxRoboticLocationOperation)
+            {
+                var parsed = new List<OperationInfo>();
+                HashSet<string> keys = null;
+                _svc.InvokeOnPs(() => { parsed = PsReader.ResolveExportSelection(e.Obj); keys = PsReader.GetPointSelectionKeys(e.Obj); });
+                _normalizingGrid = true;
+                try
+                {
+                    var objects = new TxObjectList();
+                    var seen = new HashSet<ITxObject>();
+                    for (int i = 0; i < _objGrid.Count; i++)
+                    {
+                        var obj = _objGrid.GetObject(i);
+                        if (obj != null && obj != e.Obj && seen.Add(obj)) objects.Add(obj);
+                    }
+                    foreach (var op in parsed)
+                    {
+                        HashSet<string> scope;
+                        if (!_pointScopes.TryGetValue(op.PsObject, out scope)) _pointScopes[op.PsObject] = scope = new HashSet<string>(StringComparer.Ordinal);
+                        scope.UnionWith(keys);
+                        if (seen.Add(op.PsObject)) objects.Add(op.PsObject);
+                    }
+                    _objGrid.Objects = objects;
+                }
+                finally { _normalizingGrid = false; }
+                if (parsed.Count == 0) ShowInvalidPick();
+            }
+            else if (!_addingSelection && e.Obj != null) _pointScopes.Remove(e.Obj);
+            SyncOpsFromGrid();
+        }
 
         private void OnGridRowDeleted(object sender, TxObjGridCtrl_RowDeletedEventArgs e)
-        { SyncOpsFromGrid(); }
+        { if (!_normalizingGrid) SyncOpsFromGrid(); }
+
+        private void ShowInvalidPick()
+        {
+            UI(() =>
+            {
+                if (_lblListHint == null) return;
+                if (_invalidPickTimer == null)
+                {
+                    _invalidPickTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+                    _invalidPickTimer.Tick += delegate { _invalidPickTimer.Stop(); RefreshHintFromOps(); };
+                }
+                _invalidPickTimer.Stop();
+                _lblListHint.Text = "非焊接操作";
+                _lblListHint.ForeColor = Theme.BtnDanger;
+                _invalidPickTimer.Start();
+            });
+        }
 
         /// <summary>
         /// 从 Grid 当前内容重新构建 _ops。
@@ -1534,6 +1727,7 @@ namespace TxTools.ExportGun
         private void SyncOpsFromGrid()
         {
             if (!(_listAdapter is GridAdapter) || _objGrid == null) return;
+            int token = ++_opsSyncToken;
 
             var gridObjs = new List<ITxObject>();
             int n = 0;
@@ -1545,13 +1739,13 @@ namespace TxTools.ExportGun
                 ITxObject txo = null;
                 try { txo = _objGrid.GetObject(i); }
                 catch { /* 单行读取失败跳过 */ }
-                if (txo != null) gridObjs.Add(txo);
+                if (txo is ITxOperation) gridObjs.Add(txo);
             }
 
             ThreadPool.QueueUserWorkItem(delegate (object s)
             {
                 var newOps = new List<OperationInfo>();
-                var seenNames = new HashSet<string>();
+                var seenObjects = new HashSet<ITxObject>();
                 try
                 {
                     _svc.InvokeOnPs(delegate ()
@@ -1559,11 +1753,17 @@ namespace TxTools.ExportGun
                         foreach (var obj in gridObjs)
                         {
                             List<OperationInfo> parsed = null;
-                            try { parsed = PsReader.ParsePickedObjectToOperations(obj); }
+                            try { parsed = PsReader.ResolveExportSelection(obj); }
                             catch { }
                             if (parsed == null) continue;
                             foreach (var op in parsed)
-                                if (seenNames.Add(op.Name)) newOps.Add(op);
+                            {
+                                string key = null;
+                                try { key = op.PsObject.Id; } catch { }
+                                op.ExportKey = !string.IsNullOrEmpty(key) ? key
+                                    : "object:" + System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(op.PsObject);
+                                if (seenObjects.Add(op.PsObject)) newOps.Add(op);
+                            }
                         }
                     });
                 }
@@ -1572,8 +1772,13 @@ namespace TxTools.ExportGun
 
                 UI(delegate ()
                 {
+                    if (token != _opsSyncToken) return;
                     bool firstFill = (_ops.Count == 0 && newOps.Count > 0);
                     _ops = newOps;
+                    OperationInfo context = null;
+                    foreach (var op in newOps)
+                        if (_contextOp != null && op.PsObject == _contextOp.PsObject) { context = op; break; }
+                    SetOperationContext(context ?? (newOps.Count > 0 ? newOps[0] : null));
                     RefreshHintFromOps();
                     ReloadPointsList();
                     UpdatePointCount();
@@ -1588,13 +1793,27 @@ namespace TxTools.ExportGun
         private void OnOpsFirstFilled()
         {
             LogOperationTools();
-            if (_refFrameName == "世界坐标系" && _refFrameMatrix == null)
-                AutoLoadRefFrameFromOps();
+        }
+
+        private void SetOperationContext(OperationInfo op)
+        {
+            _contextOp = op;
+            ++_refLoadToken;
+            if (!_manualReference)
+            {
+                _refFrameName = "世界坐标系";
+                _refFrameMatrix = null;
+                UpdateRefCoordStatus("世界坐标系", true);
+                if (op != null) AutoLoadRefFrameFromOps();
+            }
+            UpdateGunInfo();
+            ReloadTcpOptions();
         }
 
         private void RefreshHintFromOps()
         {
             if (_lblListHint == null) return;
+            if (_invalidPickTimer != null && _invalidPickTimer.Enabled) return;
             _lblListHint.Text = _ops.Count > 0 ? "共 " + _ops.Count + " 个操作" : "列表为空";
             _lblListHint.ForeColor = _ops.Count > 0 ? Theme.StatusOkFg : SystemColors.GrayText;
         }
@@ -1605,6 +1824,7 @@ namespace TxTools.ExportGun
         // ════════════════════════════════════════════════════════════
         private void UpdateGunInfo()
         {
+            int token = ++_gunInfoToken;
             if (_lblGunInfo == null) return;
 
             if (_ops == null || _ops.Count == 0)
@@ -1618,7 +1838,7 @@ namespace TxTools.ExportGun
             _lblGunInfo.Text = "焊钳：解析中...";
             _lblGunInfo.ForeColor = SystemColors.GrayText;
 
-            var opsSnapshot = new List<OperationInfo>(_ops);
+            var opsSnapshot = _contextOp != null ? new List<OperationInfo> { _contextOp } : new List<OperationInfo>(_ops);
 
             ThreadPool.QueueUserWorkItem(delegate (object s)
             {
@@ -1645,7 +1865,7 @@ namespace TxTools.ExportGun
 
                 UI(delegate ()
                 {
-                    if (_lblGunInfo == null) return;
+                    if (_lblGunInfo == null || token != _gunInfoToken) return;
                     if (names.Count == 0)
                     {
                         _lblGunInfo.Text = "焊钳：（无可用信息）";
@@ -1725,18 +1945,54 @@ namespace TxTools.ExportGun
         // ════════════════════════════════════════════════════════════
         private void OnPickSel(object sender, EventArgs e)
         {
+            int token = ++_opsSyncToken;
             Log("[PS] 从PS当前选中拾取...", LogLevel.Ps);
             _btnPickFromSel.Enabled = false;
             ThreadPool.QueueUserWorkItem(delegate
             {
                 List<OperationInfo> ops = null;
-                try { ops = _svc.LoadFromSelection(new Action<string>(delegate (string m) { Log(m); })); }
+                var scopes = new Dictionary<ITxObject, HashSet<string>>();
+                bool invalid = false;
+                try
+                {
+                    _svc.InvokeOnPs(delegate ()
+                    {
+                        var selected = TxApplication.ActiveSelection.GetItems();
+                        ops = new List<OperationInfo>();
+                        if (selected != null && selected.Count > 0)
+                        {
+                            foreach (ITxObject obj in selected)
+                            {
+                                var parsed = PsReader.ResolveExportSelection(obj);
+                                if (parsed.Count == 0) { invalid = true; continue; }
+                                ops.AddRange(parsed);
+                                bool point = obj is TxWeldPoint || obj is ITxRoboticLocationOperation;
+                                foreach (var op in parsed)
+                                {
+                                    HashSet<string> scope;
+                                    if (!point) scopes[op.PsObject] = null;
+                                    else if (!scopes.TryGetValue(op.PsObject, out scope))
+                                        scopes[op.PsObject] = PsReader.GetPointSelectionKeys(obj);
+                                    else if (scope != null) scope.UnionWith(PsReader.GetPointSelectionKeys(obj));
+                                }
+                            }
+                        }
+                        else ops = PsReader.GetOperationsFromSelection(m => Log(m));
+                    });
+                }
                 catch (Exception ex) { UI(delegate () { Log("[错误] " + ex.Message, LogLevel.Error); }); }
                 var final = ops ?? new List<OperationInfo>();
 
                 UI(delegate ()
                 {
-                    _listAdapter.AddOperations(final);
+                    if (token != _opsSyncToken) { _btnPickFromSel.Enabled = true; return; }
+                    foreach (var pair in scopes)
+                        if (pair.Value == null) _pointScopes.Remove(pair.Key);
+                        else _pointScopes[pair.Key] = pair.Value;
+                    _addingSelection = true;
+                    try { _listAdapter.AddOperations(final); }
+                    finally { _addingSelection = false; }
+                    if (invalid || final.Count == 0) ShowInvalidPick();
                     _btnPickFromSel.Enabled = true;
                 });
             });
@@ -1744,8 +2000,11 @@ namespace TxTools.ExportGun
 
         private void OnClearOps(object sender, EventArgs e)
         {
+            _pointScopes.Clear();
+            ++_opsSyncToken;
             _listAdapter.Clear();
             _ops.Clear();
+            SetOperationContext(null);
             if (_objEditOp != null) _objEditOp.Object = null;
             if (_lblListHint != null)
             {
@@ -1757,14 +2016,14 @@ namespace TxTools.ExportGun
             UpdateGunInfo();
         }
 
-        /// <summary>合并新操作到 _ops（按名称去重，O(n) 而非 O(n²)）。</summary>
+        /// <summary>按实际操作对象去重，保留同名的不同操作供显式校验。</summary>
         private void MergeOpsByName(IEnumerable<OperationInfo> incoming)
         {
             if (incoming == null) return;
-            var existing = new HashSet<string>();
-            foreach (var op in _ops) existing.Add(op.Name);
+            var existing = new HashSet<ITxObject>();
+            foreach (var op in _ops) existing.Add(op.PsObject);
             foreach (var op in incoming)
-                if (existing.Add(op.Name)) _ops.Add(op);
+                if (existing.Add(op.PsObject)) _ops.Add(op);
         }
 
         /// <summary>仅 ListView 回落模式下生效（Grid 模式由 SyncOpsFromGrid 统一处理）。</summary>
@@ -1814,7 +2073,8 @@ namespace TxTools.ExportGun
 
         private void AutoLoadRefFrameFromOps()
         {
-            var ops = new List<OperationInfo>(_ops);
+            int token = ++_refLoadToken;
+            var ops = _contextOp != null ? new List<OperationInfo> { _contextOp } : new List<OperationInfo>(_ops);
             var ptType = GetPtType();
             var useMfg = _chkUseMfgName.Checked;
 
@@ -1846,6 +2106,7 @@ namespace TxTools.ExportGun
                 var bufLocal = logBuf;
                 UI(delegate ()
                 {
+                    if (token != _refLoadToken || _manualReference) return;
                     foreach (var line in bufLocal) Log(line);
 
                     if (rfLocal == null || rfLocal.Source == PsReader.RefFrameSource.None
@@ -1860,6 +2121,7 @@ namespace TxTools.ExportGun
                     if (rfLocal.NeedsUserChoice)
                     {
                         var picked = AskUserPickRefFrame(rfLocal);
+                        if (token != _refLoadToken || _manualReference) return;
                         if (picked == null)
                         {
                             Log("[坐标] 用户取消，保持世界坐标系", LogLevel.Coord);
@@ -1893,7 +2155,7 @@ namespace TxTools.ExportGun
         /// 当零件与夹具坐标不一致时弹窗让用户选择。
         /// 返回 (显示名, 4x4矩阵)；取消返回 null。
         /// </summary>
-        private Tuple<string, double[]> AskUserPickRefFrame(PsReader.RefFrameResult rf)
+        private Tuple<string, double[]> AskUserPickRefFrame(PsReader.RefFrameResult rf, string operationName = null)
         {
             var options = new List<Tuple<string, double[], string>>();
             if (rf.PartCandidates != null)
@@ -1910,7 +2172,7 @@ namespace TxTools.ExportGun
             using (var dlg = new Form())
             {
                 PluginUiPolicy.Attach(dlg);
-                dlg.Text = "选择参考坐标";
+                dlg.Text = "选择参考坐标" + (operationName == null ? "" : " — " + operationName);
                 dlg.StartPosition = FormStartPosition.CenterParent;
                 dlg.FormBorderStyle = FormBorderStyle.FixedDialog;
                 dlg.MinimizeBox = false;
@@ -2014,7 +2276,7 @@ namespace TxTools.ExportGun
             {
                 var row = it.Tag as PointRow;
                 if (it.Checked && row != null)
-                    keys.Add(CatiaBridge.PointKey(row.Op.Name, row.Pt.Name));
+                    keys.Add(CatiaBridge.PointKey(row.Op.Key, row.Pt.Name));
             }
             return keys;
         }
@@ -2028,7 +2290,7 @@ namespace TxTools.ExportGun
                 bool any = false;
                 if (op.Points != null)
                     foreach (var pt in op.Points)
-                        if (keys.Contains(CatiaBridge.PointKey(op.Name, pt.Name))) { any = true; break; }
+                        if (keys.Contains(CatiaBridge.PointKey(op.Key, pt.Name))) { any = true; break; }
                 if (any) order.Add(op);
             }
             return order;
@@ -2052,6 +2314,7 @@ namespace TxTools.ExportGun
                     clone = new OperationInfo
                     {
                         Name = row.Op.Name,
+                        ExportKey = row.Op.ExportKey,
                         TypeLabel = row.Op.TypeLabel,
                         PsObject = row.Op.PsObject,
                         Gun = row.Op.Gun,
@@ -2134,9 +2397,10 @@ namespace TxTools.ExportGun
             if (!EnsureExportSelection(out _, out selKeys)) return;
             // Excel 通道无白名单过滤支持，改传仅含勾选点的副本
             var ops = GetCheckedOpsClones();
+            if (!PrepareOperationReferences(ops)) return;
 
             SetBusy(true);
-            Log("[Excel] 开始导出，参考坐标：" + _refFrameName, LogLevel.Excel);
+            Log("[Excel] 开始导出，参考坐标：" + (_chkPerOperationRef.Checked ? "各操作自身坐标" : _refFrameName), LogLevel.Excel);
             _svc.ExportExcelAsync(ops, GetPtType(), _chkUseMfgName.Checked,
                 DefaultOut(), _refFrameMatrix, _refFrameName,
                 new Action<string>(delegate (string m) { UI(delegate () { Log(m); }); }),
@@ -2171,6 +2435,7 @@ namespace TxTools.ExportGun
             // 用「仅含勾选点」的副本导出：下游按 op.Points 计数即为勾选数；
             // 同时仍带 SelectedKeys 作为几何生成处的白名单兜底。
             var ops = GetCheckedOpsClones();
+            if (!PrepareOperationReferences(ops)) return;
             _lastSelCount = selKeys.Count;
 
             // 第一步：为每个 op 解析 CGR 路径（用户可能取消）
@@ -2187,6 +2452,43 @@ namespace TxTools.ExportGun
         /// 为每个 op 解析 CGR 文件路径。
         /// 返回 null 表示用户取消或失败，已弹窗/打日志通知。
         /// </summary>
+        private bool PrepareOperationReferences(List<OperationInfo> ops)
+        {
+            if (!_chkPerOperationRef.Checked) return true;
+            try
+            {
+                foreach (var op in ops)
+                {
+                    OperationInfo source = op;
+                    foreach (var loaded in _ops)
+                        if (loaded.PsObject == op.PsObject) { source = loaded; break; }
+                    // Resolve from the full operation, so changing point checks cannot change its origin.
+                    PsReader.RefFrameResult reference = null;
+                    _svc.InvokeOnPs(() => reference = PsReader.ResolveOperationRefFrame(source, fallbackToWorld: true));
+                    if (reference == null) throw new InvalidOperationException("无法解析操作参考坐标：" + op.Name);
+                    string name = reference.Name;
+                    double[] matrix = reference.Matrix;
+                    if (reference.NeedsUserChoice)
+                    {
+                        var chosen = AskUserPickRefFrame(reference, op.Name);
+                        if (chosen == null) return false;
+                        name = chosen.Item1;
+                        matrix = chosen.Item2;
+                    }
+                    op.UseOwnReference = true;
+                    op.ReferenceMatrix = matrix == null ? null : (double[])matrix.Clone();
+                    op.ReferenceName = name ?? "世界坐标系";
+                    Log("[坐标] " + op.Name + " → " + op.ReferenceName, LogLevel.Coord);
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "操作参考坐标解析失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+        }
+
         private Dictionary<string, string> ResolveCgrPathsForOps(List<OperationInfo> ops)
         {
             const double HIGH_CONFIDENCE = 0.75;
@@ -2197,25 +2499,36 @@ namespace TxTools.ExportGun
             bool hasGlobalCustom = !string.IsNullOrEmpty(globalCustomPath) && File.Exists(globalCustomPath);
 
             var perOpPaths = new Dictionary<string, string>();
+            var generatedToolPaths = new Dictionary<string, string>(StringComparer.Ordinal);
 
             foreach (var op in ops)
             {
                 if (hasGlobalCustom)
                 {
-                    perOpPaths[op.Name] = globalCustomPath;
+                    perOpPaths[op.Key] = globalCustomPath;
                     continue;
                 }
 
                 PsReader.CgrLookupResult lookup = null;
+                string toolKey = null;
                 try
                 {
                     _svc.InvokeOnPs(delegate ()
                     {
                         lookup = PsReader.LookupCgrForOperation(op,
                             delegate (string m) { UI(delegate () { Log(m); }); });
+                        if (lookup != null && lookup.ToolObject != null)
+                            toolKey = lookup.ToolObject.Id;
                     });
                 }
                 catch (Exception ex) { Log("[错误] CGR 查找异常：" + ex.Message, LogLevel.Error); }
+
+                string resolvedPath;
+                if (!string.IsNullOrEmpty(toolKey) && generatedToolPaths.TryGetValue(toolKey, out resolvedPath))
+                {
+                    perOpPaths[op.Key] = resolvedPath;
+                    continue;
+                }
 
                 if (lookup == null || lookup.Candidates == null || lookup.Candidates.Count == 0)
                 {
@@ -2231,15 +2544,16 @@ namespace TxTools.ExportGun
                         Log("[CGR] 已中止：" + reason, LogLevel.Warn);
                         return null;
                     }
-                    perOpPaths[op.Name] = manualPath;
-                    Log("[CGR] " + op.Name + " → " + Path.GetFileName(manualPath) + "（手动浏览）");
+                    perOpPaths[op.Key] = manualPath;
+                    if (!string.IsNullOrEmpty(toolKey)) generatedToolPaths[toolKey] = manualPath;
+                    Log("[CGR] " + op.Name + " → " + Path.GetFileName(manualPath));
                     continue;
                 }
 
                 var best = lookup.Candidates[0];
                 if (best.Similarity >= HIGH_CONFIDENCE)
                 {
-                    perOpPaths[op.Name] = best.Path;
+                    perOpPaths[op.Key] = best.Path;
                     bool exact = best.Similarity >= 0.999;
                     Log("[CGR] " + op.Name + " → " + Path.GetFileName(best.Path)
                         + (exact ? "（精确命中）"
@@ -2253,7 +2567,7 @@ namespace TxTools.ExportGun
                         Log("[CGR] 用户取消，已中止导出", LogLevel.Warn);
                         return null;
                     }
-                    perOpPaths[op.Name] = chosen;
+                    perOpPaths[op.Key] = chosen;
                     Log("[CGR] " + op.Name + " → " + Path.GetFileName(chosen) + "（用户确认）");
                 }
             }
@@ -2275,6 +2589,7 @@ namespace TxTools.ExportGun
                 GunOriginAtTCP = _chkGunOriginTCP.Checked,
                 CustomModelPath = hasGlobalCustom ? globalCustomPath : null,
                 PerOpModelPaths = perOpPaths,
+                CgrFallbackPaths = new Dictionary<string, string>(_cgrFallbackPaths, StringComparer.OrdinalIgnoreCase),
                 CustomProductName = string.IsNullOrWhiteSpace(_txtGunProductName.Text) ? null : _txtGunProductName.Text.Trim(),
                 Format = ExportFormat.Xml3d,
                 OutputPath = DefaultOut(),
@@ -2542,21 +2857,19 @@ namespace TxTools.ExportGun
                 {
                     try
                     {
-                        string output = CgrOutputPaths.Create(sameDir, toolName);
-                        Log("[CGR] 已选择兼容临时文件及 CATIA 的输出路径（" + output.Length + " 字符）：" + output, LogLevel.Info);
-                        Log("[CGR] 正在从当前工具几何生成：" + output, LogLevel.Info);
                         if (_cgrGenerator == null) _cgrGenerator = new ExportByColorService(_psCtx);
-                        string generated = _cgrGenerator.GenerateCgrForObject(toolObject, output,
-                            delegate (string message) { UI(delegate () { Log(message); }); });
-                        Log("[CGR] 已生成：" + generated, LogLevel.Ok);
-                        return generated;
+                        var generated = CgrOutputPaths.Generate(sameDir, toolName, output =>
+                            _cgrGenerator.GenerateCgrForObject(toolObject, output,
+                                delegate (string message) { UI(delegate () { Log(message); }); }));
+                        if (generated.TemporaryPath != null)
+                            _cgrFallbackPaths[generated.Path] = generated.TemporaryPath;
+                        Log("[CGR] 已生成：" + generated.Path, LogLevel.Ok);
+                        return generated.Path;
                     }
                     catch (Exception ex)
                     {
-                        MessageBox.Show(this, "生成 CGR 失败：" + ex.Message, "生成失败",
-                            MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        Log("[CGR] 生成失败：" + ex.Message, LogLevel.Error);
-                        return null;
+                        Log("[CGR] 自动生成未完成，可选择已有模型继续：" + ex.Message, LogLevel.Warn);
+                        browse = true;
                     }
                 }
                 if (!browse) return null;
@@ -2629,9 +2942,10 @@ namespace TxTools.ExportGun
             HashSet<string> selKeys;
             if (!EnsureExportSelection(out _, out selKeys)) return;
 
-            SetBusy(true);
             _lastSelCount = selKeys.Count;
             var ops = GetCheckedOpsClones();   // 仅含勾选点，使下游计数=勾选数
+            if (!PrepareOperationReferences(ops)) return;
+            SetBusy(true);
             var optMap = new[] { BallExportOption.TrajectoryAndBall, BallExportOption.TrajectoryOnly, BallExportOption.BallOnly };
             var p = new BallExportParams
             {
@@ -2664,6 +2978,10 @@ namespace TxTools.ExportGun
 
         private void OnReset(object sender, EventArgs e)
         {
+            _pointScopes.Clear();
+            _chkPerOperationRef.Checked = false;
+            ++_opsSyncToken;
+            ++_refLoadToken;
             _chkExportTCP.Checked = false;
             _chkGunOriginTCP.Checked = true;
             _chkCustomGun.Checked = false;
@@ -2690,6 +3008,8 @@ namespace TxTools.ExportGun
             if (_objEditOp != null) _objEditOp.Object = null;
             _listAdapter.Clear();
             _ops.Clear();
+            _manualReference = false;
+            SetOperationContext(null);
             if (_lblListHint != null)
             {
                 _lblListHint.Text = "列表为空";
@@ -2817,6 +3137,7 @@ namespace TxTools.ExportGun
         // ════════════════════════════════════════════════════════════
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            if (_invalidPickTimer != null) { _invalidPickTimer.Stop(); _invalidPickTimer.Dispose(); }
             if (_frameCombo != null)
             {
                 try { _frameCombo.ValidFrameSet -= new TxFrameComboBoxCtrl_ValidFrameSetEventHandler(OnFrameValidSet); } catch { }
@@ -2872,6 +3193,35 @@ namespace TxTools.ExportGun
         // ════════════════════════════════════════════════════════════
         //  IOpListAdapter — 抽象列表适配，消除 _useGrid 分支
         // ════════════════════════════════════════════════════════════
+        private sealed class ExportSelectionValidator : ITxValidator
+        {
+            private readonly Action _invalid;
+            internal ExportSelectionValidator(Action invalid) { _invalid = invalid; }
+            private static bool Accepts(ITxObject obj) { return obj is ITxOperation || obj is TxWeldPoint; }
+            public bool IsValidObject(ITxObject obj, out string errorMessage)
+            {
+                errorMessage = string.Empty; // Suppress the SDK's resource-name error message.
+                if (obj == null || Accepts(obj)) return true;
+                _invalid();
+                return false;
+            }
+            public bool IsValidText(string text, out string errorMessage)
+            {
+                errorMessage = string.Empty;
+                if (string.IsNullOrWhiteSpace(text) || GetObject(text) != null) return true;
+                _invalid();
+                return false;
+            }
+            public ITxObject GetObject(string text)
+            {
+                if (string.IsNullOrWhiteSpace(text) || TxApplication.ActiveDocument == null) return null;
+                var objects = TxApplication.ActiveDocument.GetObjectsByName(text);
+                if (objects != null) foreach (ITxObject obj in objects) if (Accepts(obj)) return obj;
+                return null;
+            }
+            public string GetText(ITxObject obj) { return obj != null && Accepts(obj) ? obj.Name : string.Empty; }
+        }
+
         private interface IOpListAdapter
         {
             /// <summary>添加一批 op（Grid: 推入控件触发同步；ListView: 直接刷新）。</summary>
@@ -2901,7 +3251,8 @@ namespace TxTools.ExportGun
                 }
                 _f.Log("[PS] 已推入 " + added + " 个对象到列表"
                     + (skipped > 0 ? "（跳过 " + skipped + "）" : ""), LogLevel.Ps);
-                if (added > 0) _f.SyncOpsFromGrid();
+                // An existing operation can receive a new point-only scope even if no row is added.
+                if (ops.Count > 0) _f.SyncOpsFromGrid();
             }
 
             public void Clear()

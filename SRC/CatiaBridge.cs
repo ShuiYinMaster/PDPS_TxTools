@@ -53,6 +53,7 @@ namespace TxTools.ExportGun
         public bool GunOriginAtTCP;
         public string CustomModelPath;
         public Dictionary<string, string> PerOpModelPaths;
+        public Dictionary<string, string> CgrFallbackPaths;
         public string CustomProductName;
         public ExportFormat Format;
         public string OutputPath;
@@ -108,7 +109,7 @@ namespace TxTools.ExportGun
         // ════════════════════════════════════════════════════════════
         //  选中点过滤辅助
         // ════════════════════════════════════════════════════════════
-        /// <summary>选中点唯一键：操作名 + 点名（与 UI 侧保持一致）。</summary>
+        /// <summary>选中点唯一键：操作导出标识 + 点名；旧调用方可继续使用操作名。</summary>
         public static string PointKey(string opName, string ptName)
         {
             return (opName ?? "") + "\u0001" + (ptName ?? "");
@@ -173,6 +174,27 @@ namespace TxTools.ExportGun
         // ════════════════════════════════════════════════════════════
         //  导出点球（含基准坐标系）
         // ════════════════════════════════════════════════════════════
+        private sealed class BallOperationGroup
+        {
+            internal OperationInfo Operation;
+            internal readonly List<PointInfo> Points = new List<PointInfo>();
+            internal double[] ReferenceMatrix;
+        }
+
+        private static List<BallOperationGroup> BuildBallExportGroups(BallExportParams p)
+        {
+            var groups = new List<BallOperationGroup>();
+            foreach (var op in p.Operations)
+            {
+                if (op?.Points == null) continue;
+                var group = new BallOperationGroup { Operation = op, ReferenceMatrix = op.GetExportReference(p.RefMatrix) };
+                foreach (var pt in op.Points)
+                    if (pt != null && IsPointSelected(p.SelectedKeys, op.Key, pt.Name)) group.Points.Add(pt);
+                if (group.Points.Count > 0) groups.Add(group);
+            }
+            return groups;
+        }
+
         public void ExportBalls(BallExportParams p, Action<ExportProgress> onProgress, Action<string> onLog)
         {
             if (_catia == null) throw new InvalidOperationException("CATIA 未连接");
@@ -180,24 +202,18 @@ namespace TxTools.ExportGun
             INFITF.Window initialWindow = null;
             try { initialWindow = _catia.ActiveWindow; } catch { }
 
-            string refInfo = p.RefMatrix != null ? p.RefName ?? "自定义参考系" : "世界坐标系";
+            string refInfo = p.Operations.Exists(op => op.UseOwnReference) ? "各操作自身参考坐标"
+                : p.RefMatrix != null ? p.RefName ?? "自定义参考系" : "世界坐标系";
             onLog($"[Catia] 导出点球，参考坐标系：{refInfo}");
 
             string customPartName = string.IsNullOrWhiteSpace(p.CustomPartName) ? null : p.CustomPartName.Trim();
 
-            var allPts = new List<PointInfo>();
-            foreach (var op in p.Operations)
-            {
-                if (op?.Points == null) continue;
-                foreach (var pt in op.Points)
-                    if (IsPointSelected(p.SelectedKeys, op.Name, pt.Name))
-                        allPts.Add(pt);
-            }
-            if (allPts.Count == 0) throw new InvalidOperationException("无可导出的点，请检查勾选和点类型筛选。");
+            var groups = BuildBallExportGroups(p);
+            int total = 0;
+            foreach (var group in groups) total += group.Points.Count;
+            if (total == 0) throw new InvalidOperationException("无可导出的点，请检查勾选和点类型筛选。");
 
-            int total = allPts.Count;
-            string geomSetName = string.IsNullOrEmpty(p.GeomSetName) ? "Geometry_Spheres" : p.GeomSetName;
-            string namePrefix = string.IsNullOrEmpty(p.NamePrefix) ? "SPHERE" : p.NamePrefix;
+            string namePrefix = string.IsNullOrWhiteSpace(p.NamePrefix) ? "SPHERE" : p.NamePrefix.Trim();
             double radius = p.BallDiameter / 2.0;
 
             PartDocument partDoc = null;
@@ -258,69 +274,80 @@ namespace TxTools.ExportGun
                 stage = "获取几何工厂及几何集";
                 HybridShapeFactory sf = (HybridShapeFactory)part.HybridShapeFactory;
 
-                // —— 获取/创建几何集 ——
-                HybridBody geomSet = null;
                 HybridBodies bodies = part.HybridBodies;
-                for (int i = 1; i <= bodies.Count; i++)
-                {
-                    HybridBody b = bodies.Item(i);
-                    if (b.get_Name() == geomSetName) { geomSet = b; break; }
-                }
-                if (geomSet == null) { geomSet = bodies.Add(); geomSet.set_Name(geomSetName); }
-
-                // [新增] 创建基准坐标系（由原点 + 三条线段表示）
+                var usedGroupNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var usedFeatureNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                CollectBallGeometryNames(bodies, usedGroupNames, usedFeatureNames);
                 double[] identity = new double[] { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
-                CreateAxisVisual(part, geomSet, sf, p.RefMatrix ?? identity, "参考坐标系", onLog);
-
-                // —— 阶段1：创建点 ——
-                onLog($"[Catia] 创建 {total} 个点...");
-                var createdPoints = new List<HybridShapePointCoord>();
-                var createdNames = new List<string>();
+                bool createSpheres = p.Option != BallExportOption.TrajectoryOnly;
+                int steps = createSpheres ? total * 2 : total;
+                int current = 0, pointCount = 0, sphereCount = 0;
                 Exception firstFailure = null;
-                for (int i = 0; i < allPts.Count; i++)
+                foreach (var group in groups)
                 {
-                    try
-                    {
-                        double[] m = allPts[i].TCPMatrix;
-                        if (p.RefMatrix != null && !PsReader.IsIdentity(p.RefMatrix))
-                            m = PsReader.ToRelative(m, p.RefMatrix);
-                        HybridShapePointCoord pt = sf.AddNewPointCoord(m[3], m[7], m[11]);
-                        geomSet.AppendHybridShape(pt);
-                        createdPoints.Add(pt);
-                        createdNames.Add(allPts[i].Name);
-                    }
-                    catch (Exception ex)
-                    { firstFailure = firstFailure ?? ex; onLog($"  ! 点{i + 1} 异常：{ex.Message}"); continue; }
-                    onProgress?.Invoke(new ExportProgress { Total = total * 2, Current = i + 1, CurrentItem = allPts[i].Name });
-                }
-                onLog($"[Catia] 已创建 {createdPoints.Count} 个点");
-                stage = "更新轨迹点";
-                part.Update();
+                    string groupName = GunExportNaming.NextGeometryName(group.Operation.Name,
+                        string.IsNullOrWhiteSpace(p.GeomSetName) ? "Operation" : p.GeomSetName, usedGroupNames, true);
+                    stage = "创建操作图形集：" + groupName;
+                    // New export batches never merge into or rename existing geometry.
+                    HybridBody geomSet = bodies.Add();
+                    geomSet.set_Name(groupName);
+                    onLog("[Catia] " + group.Operation.Name + " → 图形集 " + groupName + "（" + group.Points.Count + " 个点）");
+                    CreateAxisVisual(part, geomSet, sf, identity, groupName + "_参考坐标", onLog);
 
-                // —— 阶段2：创建球体 ——
-                onLog($"[Catia] 创建球体，半径={radius}mm...");
-                int ok = 0, fail = 0;
-                for (int i = 0; i < createdPoints.Count; i++)
-                {
-                    string ballName = Sanitize(namePrefix + "_" + createdNames[i]);
-                    try
+                    var createdPoints = new List<HybridShapePointCoord>();
+                    var createdNames = new List<string>();
+                    for (int i = 0; i < group.Points.Count; i++)
                     {
-                        Reference ptRef = part.CreateReferenceFromObject(createdPoints[i]);
-                        HybridShapeSphere sphere = sf.AddNewSphere(ptRef, null, radius, -90.0, 90.0, 0.0, 360.0);
-                        geomSet.AppendHybridShape(sphere);
-                        sphere.set_Name(ballName);
-                        ok++;
-                        Marshal.ReleaseComObject(ptRef);
+                        var source = group.Points[i];
+                        string pointStem = string.IsNullOrWhiteSpace(source.Name)
+                            ? (i + 1).ToString("D3") : source.Name;
+                        try
+                        {
+                            stage = "创建轨迹点：" + groupName + "/" + pointStem;
+                            double[] m = source.TCPMatrix;
+                            if (group.ReferenceMatrix != null && !PsReader.IsIdentity(group.ReferenceMatrix))
+                                m = PsReader.ToRelative(m, group.ReferenceMatrix);
+                            var point = sf.AddNewPointCoord(m[3], m[7], m[11]);
+                            geomSet.AppendHybridShape(point);
+                            point.set_Name(GunExportNaming.NextGeometryName("POINT_" + pointStem, "POINT", usedFeatureNames));
+                            createdPoints.Add(point);
+                            createdNames.Add(pointStem);
+                            pointCount++;
+                        }
+                        catch (Exception ex)
+                        { firstFailure = firstFailure ?? ex; onLog("  ! [" + groupName + "/" + pointStem + "] 创建点失败：" + ex.Message); }
+                        onProgress?.Invoke(new ExportProgress { Total = steps, Current = ++current, CurrentItem = source.Name });
                     }
-                    catch (Exception ex)
-                    { firstFailure = firstFailure ?? ex; onLog($"  ! [{ballName}] {ex.Message}"); fail++; continue; }
-                    onProgress?.Invoke(new ExportProgress { Total = createdPoints.Count * 2, Current = createdPoints.Count + i + 1, CurrentItem = ballName });
+                    stage = "更新操作轨迹点：" + groupName;
+                    part.Update();
+                    if (!createSpheres) continue;
+
+                    for (int i = 0; i < createdPoints.Count; i++)
+                    {
+                        string ballName = GunExportNaming.NextGeometryName(namePrefix + "_" + createdNames[i], "SPHERE", usedFeatureNames);
+                        Reference ptRef = null;
+                        try
+                        {
+                            stage = "创建点球：" + groupName + "/" + ballName;
+                            ptRef = part.CreateReferenceFromObject(createdPoints[i]);
+                            HybridShapeSphere sphere = sf.AddNewSphere(ptRef, null, radius, -90.0, 90.0, 0.0, 360.0);
+                            geomSet.AppendHybridShape(sphere);
+                            sphere.set_Name(ballName);
+                            sphereCount++;
+                        }
+                        catch (Exception ex)
+                        { firstFailure = firstFailure ?? ex; onLog("  ! [" + groupName + "/" + ballName + "] 创建球失败：" + ex.Message); }
+                        finally { if (ptRef != null) Marshal.ReleaseComObject(ptRef); }
+                        onProgress?.Invoke(new ExportProgress { Total = steps, Current = ++current, CurrentItem = ballName });
+                    }
+                    stage = "更新操作点球：" + groupName;
+                    part.Update();
+                    if (p.Option == BallExportOption.BallOnly) HideBallSupportPoints(partDoc, createdPoints);
                 }
-                stage = "更新点球";
-                part.Update();
-                onLog($"[Catia] 点球完成：成功 {ok}，失败 {fail}");
-                if (createdPoints.Count != total || fail > 0)
-                    throw new InvalidOperationException($"点球未完整导出：点 {createdPoints.Count}/{total}，球 {ok}/{total}。已创建的几何保留在 CATIA 中，请查看日志。", firstFailure);
+                int expectedSpheres = createSpheres ? total : 0;
+                onLog($"[Catia] 点球完成：{groups.Count} 个图形集，点 {pointCount}/{total}，球 {sphereCount}/{expectedSpheres}");
+                if (pointCount != total || sphereCount != expectedSpheres)
+                    throw new InvalidOperationException($"点球未完整导出：点 {pointCount}/{total}，球 {sphereCount}/{expectedSpheres}。已创建的几何保留在 CATIA 中，请查看日志。", firstFailure);
 
                 stage = "保存零件";
                 if (!p.ExportToCurrentDoc)
@@ -338,6 +365,31 @@ namespace TxTools.ExportGun
                 throw new InvalidOperationException("CATIA 点球导出失败，步骤：" + stage + "。" + ex.Message, ex);
             }
             finally { if (initialWindow != null) try { initialWindow.Activate(); } catch { } }
+        }
+
+        private static void CollectBallGeometryNames(HybridBodies bodies, ISet<string> groupNames, ISet<string> featureNames)
+        {
+            for (int i = 1; i <= bodies.Count; i++)
+            {
+                HybridBody body = bodies.Item(i);
+                groupNames.Add(body.get_Name());
+                var shapes = body.HybridShapes;
+                for (int j = 1; j <= shapes.Count; j++) featureNames.Add(shapes.Item(j).get_Name());
+                CollectBallGeometryNames(body.HybridBodies, groupNames, featureNames);
+            }
+        }
+
+        private static void HideBallSupportPoints(PartDocument document, List<HybridShapePointCoord> points)
+        {
+            if (points.Count == 0) return;
+            Selection selection = document.Selection;
+            try
+            {
+                selection.Clear();
+                foreach (var point in points) selection.Add(point);
+                selection.VisProperties.SetShow(CatVisPropertyShow.catVisPropertyNoShowAttr);
+            }
+            finally { selection.Clear(); }
         }
 
         // [新增] 创建由原点 + 三轴线段表示的坐标系（使用 AddNewLinePtPt）
@@ -379,6 +431,7 @@ namespace TxTools.ExportGun
             double ex = ox + dx * length, ey = oy + dy * length, ez = oz + dz * length;
             HybridShapePointCoord endPt = sf.AddNewPointCoord(ex, ey, ez);
             geomSet.AppendHybridShape(endPt);
+            endPt.set_Name(name + "_端点");
 
             Reference refOrigin = part.CreateReferenceFromObject(origin);
             Reference refEnd = part.CreateReferenceFromObject(endPt);
@@ -526,7 +579,7 @@ namespace TxTools.ExportGun
                 {
                     if (op.Gun == null || op.Points == null) continue;
                     foreach (var pt in op.Points)
-                        if (IsPointSelected(p.SelectedKeys, op.Name, pt.Name)) total++;
+                        if (IsPointSelected(p.SelectedKeys, op.Key, pt.Name)) total++;
                 }
                 int current = 0;
                 int inserted = 0;
@@ -550,13 +603,13 @@ namespace TxTools.ExportGun
                     {
                         onLog?.Invoke($"  ! [{op.Name}] 未找到模型文件");
                         foreach (var pt in op.Points)
-                            if (IsPointSelected(p.SelectedKeys, op.Name, pt.Name)) failed++;
+                            if (IsPointSelected(p.SelectedKeys, op.Key, pt.Name)) failed++;
                         continue;
                     }
 
                     var opPts = new List<PointInfo>();
                     foreach (var pt in op.Points)
-                        if (IsPointSelected(p.SelectedKeys, op.Name, pt.Name)) opPts.Add(pt);
+                        if (IsPointSelected(p.SelectedKeys, op.Key, pt.Name)) opPts.Add(pt);
                     if (opPts.Count == 0) continue;
 
                     // TCP 覆盖
@@ -586,6 +639,7 @@ namespace TxTools.ExportGun
                     // 准备源实例
                     Product sourceInst;
                     int startIdx = 0;
+                    bool detachNext = false;
 
                     if (!sourceCache.TryGetValue(modelPath, out sourceInst))
                     {
@@ -593,7 +647,22 @@ namespace TxTools.ExportGun
                         {
                             stage = "加载模型：" + modelPath;
                             int before = targetProducts.Count;
-                            targetProducts.AddComponentsFromFiles(new object[] { modelPath }, "All");
+                            string fallbackPath = null;
+                            if (p.CgrFallbackPaths != null) p.CgrFallbackPaths.TryGetValue(modelPath, out fallbackPath);
+                            try
+                            {
+                                targetProducts.AddComponentsFromFiles(new object[] { modelPath }, "All");
+                                if (targetProducts.Count <= before) throw new InvalidOperationException("加载模型后组件数未增加");
+                                // Only the JT copy is referenced. The short-path staging file is redundant.
+                                CgrOutputPaths.TryDelete(fallbackPath);
+                            }
+                            catch
+                            {
+                                if (targetProducts.Count > before) throw;
+                                if (string.IsNullOrEmpty(fallbackPath) || !SysFile.Exists(fallbackPath)) throw;
+                                targetProducts.AddComponentsFromFiles(new object[] { fallbackPath }, "All");
+                                // CATIA now references the temporary file; it must be retained.
+                            }
                             if (targetProducts.Count <= before)
                                 throw new InvalidOperationException("加载模型后组件数未增加");
                         }
@@ -616,7 +685,7 @@ namespace TxTools.ExportGun
 
                         try
                         {
-                            double[] placed0 = ComputePlaced(p, gun, pt0);
+                            double[] placed0 = ComputePlaced(p, op, gun, pt0);
                             sourceInst.Position.SetComponents(ToSetComp(placed0));
                             inserted++;
 
@@ -651,7 +720,8 @@ namespace TxTools.ExportGun
                     }
                     else
                     {
-                        onLog?.Invoke($"    Reference 复用: {System.IO.Path.GetFileName(modelPath)}");
+                        detachNext = string.Equals(SysPath.GetExtension(modelPath), ".cgr", StringComparison.OrdinalIgnoreCase);
+                        onLog?.Invoke($"    {(detachNext ? "新操作断链粘贴" : "Reference 复用")}: {System.IO.Path.GetFileName(modelPath)}");
                     }
 
                     // Copy 源
@@ -690,10 +760,14 @@ namespace TxTools.ExportGun
                                 {
                                     sel.Clear();
                                     sel.Add(container);
-                                    sel.Paste();
+                                    if (detachNext) sel.PasteSpecial("CATSpecBreakLink");
+                                    else sel.Paste();
                                 }
                                 catch (Exception pex)
                                 {
+                                    // COM can report an error after insertion. Do not create a duplicate on retry.
+                                    afterCount = targetProducts.Count;
+                                    if (afterCount > beforeCount) break;
                                     if (attempt == 2) throw;
                                     onLog?.Invoke($"    … [{pt.Name}] Paste 第1次失败({pex.Message.Trim()})，重试");
                                     System.Threading.Thread.Sleep(80);
@@ -713,7 +787,17 @@ namespace TxTools.ExportGun
                                 throw new Exception("Paste 后实例数未增加");
 
                             Product inst = targetProducts.Item(afterCount);
-                            double[] placed = ComputePlaced(p, gun, pt);
+                            if (detachNext)
+                            {
+                                // Subsequent points copy the independent instance in this operation.
+                                sourceInst = inst;
+                                detachNext = false;
+                                if (i + 1 < opPts.Count)
+                                {
+                                    sel.Clear(); sel.Add(sourceInst); sel.Copy();
+                                }
+                            }
+                            double[] placed = ComputePlaced(p, op, gun, pt);
                             inst.Position.SetComponents(ToSetComp(placed));
                             inserted++;
 
@@ -777,8 +861,9 @@ namespace TxTools.ExportGun
         private static string ResolveModelPath(GunExportParams p, OperationInfo op, GunInfo gun)
         {
             if (p.PerOpModelPaths != null &&
-                p.PerOpModelPaths.TryGetValue(op.Name, out string perOpPath) &&
-                !string.IsNullOrEmpty(perOpPath) && SysFile.Exists(perOpPath))
+                p.PerOpModelPaths.TryGetValue(op.Key, out string perOpPath) &&
+                !string.IsNullOrEmpty(perOpPath) && (SysFile.Exists(perOpPath) ||
+                    (p.CgrFallbackPaths != null && p.CgrFallbackPaths.ContainsKey(perOpPath))))
                 return perOpPath;
 
             if (!string.IsNullOrEmpty(p.CustomModelPath) && SysFile.Exists(p.CustomModelPath))
@@ -800,7 +885,7 @@ namespace TxTools.ExportGun
             if (tcpWorld == null)
             {
                 if (p.ResolvedTcpMatrices != null)
-                    p.ResolvedTcpMatrices.TryGetValue(op.Name, out tcpWorld);
+                    p.ResolvedTcpMatrices.TryGetValue(op.Key, out tcpWorld);
                 else tcpWorld = PsReader.ResolveTcpWorldByName(op, p.TcpName, onLog);
             }
             if (tcpWorld == null)
@@ -1075,14 +1160,15 @@ namespace TxTools.ExportGun
 
 
         // ---------- 辅助：位置矩阵计算 ----------
-        private double[] ComputePlaced(GunExportParams p, dynamic gun, PointInfo pt)
+        private double[] ComputePlaced(GunExportParams p, OperationInfo op, dynamic gun, PointInfo pt)
         {
             double[] placed = p.GunOriginAtTCP
                 ? CalcGunPlacedMatrix(pt.TCPMatrix, gun.ToolMatrix, gun.TcpWorldMatrix, gun.TcpRelTool)
                 : pt.TCPMatrix;
 
-            if (p.RefMatrix != null && !PsReader.IsIdentity(p.RefMatrix))
-                placed = PsReader.ToRelative(placed, p.RefMatrix);
+            double[] reference = op.GetExportReference(p.RefMatrix);
+            if (reference != null && !PsReader.IsIdentity(reference))
+                placed = PsReader.ToRelative(placed, reference);
 
             return placed;
         }

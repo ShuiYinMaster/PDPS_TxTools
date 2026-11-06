@@ -10,291 +10,244 @@ namespace TxTools.WeldAnnotator
 {
     public partial class WeldAnnotatorForm
     {
-        // ════════════════════════════════════════════════════════════════
-        //  UI 构建方法
-        // ════════════════════════════════════════════════════════════════
+        private TableLayoutPanel _workspace, _footer;
+        private Label _emptyState;
+        private static readonly Color Accent = Color.FromArgb(0, 116, 120);
+        private static readonly Color Surface = Color.FromArgb(246, 248, 250);
 
         private void BuildCardPanel()
         {
-            Panel rail = new Panel
+            _workspace = new TableLayoutPanel
             {
-                Dock = DockStyle.Left,
-                Width = 270,
-                AutoScroll = false,
-                BackColor = FormUiKit.CardBack,
-                Padding = new Padding(6, 4, 6, 4)
+                Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2,
+                Padding = new Padding(6), BackColor = Surface
             };
+            _workspace.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 210));
+            _workspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            _workspace.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            _workspace.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+            Controls.Add(_workspace);
 
-            FlowLayoutPanel stack = new FlowLayoutPanel
+            var sidebar = new TableLayoutPanel
             {
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                FlowDirection = FlowDirection.TopDown,
-                WrapContents = false,
-                BackColor = Color.Transparent
+                Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 7,
+                BackColor = Color.White, Padding = new Padding(0),
+                Margin = new Padding(0, 0, 6, 0)
             };
-
-            // 卡片①：操作节点（OP）
-            GroupBox opCard = MakeRailCard("操作节点 (OP)");
-            // 与 ExportGun 同款：Objects 选择框外包 FixedSingle 边框面板，
-            // 保证四周/右侧边界可见（PS 原生控件自身不画外框）
+            sidebar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            int[] heights = { 0, 24, 148, 6, 104, 170 };
+            for (int row = 0; row < heights.Length; row++)
+                sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, heights[row]));
+            sidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            _workspace.Controls.Add(sidebar, 0, 0);
+            _lblOpHint = new Label
+            {
+                Text = "在 PS 中选择操作节点或视口", Dock = DockStyle.Fill,
+                ForeColor = Color.DimGray, TextAlign = ContentAlignment.MiddleLeft
+            };
+            sidebar.Controls.Add(_lblOpHint, 0, 1);
             var opHost = new Panel
             {
-                Dock = DockStyle.Top,
-                Height = 112,
-                BackColor = SystemColors.Window,
-                Padding = new Padding(1),
-                Margin = new Padding(0, 0, 0, 2),
-                BorderStyle = BorderStyle.FixedSingle
+                Dock = DockStyle.Fill, BackColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle, Padding = new Padding(1)
             };
             _opGrid = new TxObjGridCtrl
             {
-                Dock = DockStyle.Fill,
-                MinimumSize = new Size(0, 0),   // 允许收缩：PS 网格默认最小宽较大，会撑破宿主面板并盖住右侧边框
-                AutoSize = false,
-                ListenToPick = true,
-                EnableMultipleSelection = false,
-                EnableRecurringObjects = false
+                Dock = DockStyle.Fill, MinimumSize = Size.Empty, AutoSize = false,
+                ListenToPick = true, EnableMultipleSelection = false, EnableRecurringObjects = false
             };
-            // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点
+            _opGrid.ValidatorType = TxValidatorType.Operation;
+            opHost.Controls.Add(_opGrid);
+            var nodeSection = SectionBox("操作节点");
+            nodeSection.Controls.Add(opHost);
+            sidebar.Controls.Add(nodeSection, 0, 2);
             FormUiKit.GridPickFocus.Wire(_opGrid);
             _opGrid.ObjectInserted += OnOpInserted;
-            _opGrid.RowDeleted      += OnOpDeleted;
-            opHost.Controls.Add(_opGrid);
-            _lblOpHint = new Label
-            {
-                Text = "在 PS 中选 OP 或视口选中",
-                Dock = DockStyle.Bottom,
-                Height = 18,
-                ForeColor = Color.Gray,
-                Font = new Font(FormUiKit.BaseFont.FontFamily, 8f),
-                TextAlign = ContentAlignment.MiddleCenter
-            };
-            opCard.Controls.Add(_lblOpHint);
-            opCard.Controls.Add(opHost);
+            _opGrid.RowDeleted += OnOpDeleted;
 
-            // 卡片②：显示控制
-            GroupBox snapCard = MakeRailCard("显示控制");
-            _btnSnap     = MkRailBtn("拍摄快照",   BtnSnap_Click,    Theme.BtnPrimary);
-            _btnRestore  = MkRailBtn("恢复显示",   BtnRestore_Click, Theme.StatusOk);
-            _btnShowOnly = MkRailBtn("仅显示外观", BtnShowOnly_Click,Theme.StatusWarn);
-            _btnRestore.Enabled = false;
-            _sharedToolTip.SetToolTip(_btnSnap, "记录当前场景的显示状态，包含操作节点和点位；可重复恢复此快照。");
-            _sharedToolTip.SetToolTip(_btnRestore, "优先恢复手动快照；未拍快照时，恢复本窗口首次显示/隐藏前的状态。");
-            _sharedToolTip.SetToolTip(_btnShowOnly, "仅显示操作绑定外观、机器人及工具；同时隐藏操作节点、焊点和过渡点。自动保留恢复记录。");
-            _lblSnapStatus = new Label
-            {
-                Text = "", AutoSize = false, Height = 16, Width = 240,
-                ForeColor = Color.Gray, Font = new Font(FormUiKit.BaseFont.FontFamily, 8f),
-                Margin = new Padding(0, 4, 0, 0), TextAlign = ContentAlignment.MiddleLeft
-            };
-            FillRailCardGrid(snapCard, 2,
-                new Control[] { _btnSnap, _btnRestore, _btnShowOnly },
-                new Control[] { _lblSnapStatus });
-
-            // 卡片③：导出设置
-            GroupBox cfgCard = MakeRailCard("导出设置");
-            _chkNewSheet = new CheckBox
-            {
-                Text = "写入新 Sheet", Checked = false, AutoSize = true, Margin = new Padding(0, 2, 0, 2)
-            };
-            _chkWriteList = new CheckBox
-            {
-                Text = "附焊点数据表", Checked = false, AutoSize = true, Margin = new Padding(0, 2, 0, 2)
-            };
-            new ToolTip().SetToolTip(_chkWriteList,
-                "勾选后，在截图下方附加焊点数据表（序号/名称/操作/XYZ/视口状态/类型）。");
-            _chkAutoThick = new CheckBox
-            {
-                Text = "自动检测板厚", Checked = false, AutoSize = true, Margin = new Padding(0, 2, 0, 2)
-            };
-            new ToolTip().SetToolTip(_chkAutoThick,
-                "按焊点绑定的不重复零件数自动设置类型：\n  2 个零件 → 二层板点焊\n  3+ 个零件 → 三层板及以上点焊\n已手动修改过类型的焊点不会被覆盖。");
+            var settings = VerticalStack();
+            _chkNewSheet = SettingCheck("写入新工作表");
+            _chkWriteList = SettingCheck("附加焊点数据表");
+            _chkAutoThick = SettingCheck("自动检测板厚");
+            settings.Controls.AddRange(new Control[] { _chkNewSheet, _chkWriteList, _chkAutoThick });
+            _sharedToolTip.SetToolTip(_chkWriteList, "在截图下方附加焊点数据表（序号、名称、操作、坐标、视口状态和类型）。");
+            _sharedToolTip.SetToolTip(_chkAutoThick, "按绑定的不重复零件数设置板层类型；手动修改过的类型不会被覆盖。");
             _chkAutoThick.CheckedChanged += (s, e) => ApplyAutoThicknessIfEnabled();
+            var exportSection = SectionBox("导出设置");
+            exportSection.Controls.Add(settings);
+            sidebar.Controls.Add(exportSection, 0, 4);
 
-            Label lblMode = new Label
-            {
-                Text = "标注命名：", AutoSize = true, Margin = new Padding(0, 8, 0, 2),
-                Font = new Font(FormUiKit.BaseFont.FontFamily, 8.5f, FontStyle.Bold)
-            };
+            var naming = VerticalStack();
             _cmbLabelMode = new ComboBox
             {
-                DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, Margin = new Padding(0, 0, 0, 2)
+                DropDownStyle = ComboBoxStyle.DropDownList, Width = 174,
+                Margin = new Padding(0, 4, 0, 8)
             };
             _cmbLabelMode.Items.AddRange(new object[] { "按序号", "按焊点名", "前缀+序号", "序号+后缀", "序号+焊点名" });
             _cmbLabelMode.SelectedIndex = 0;
             _cmbLabelMode.SelectedIndexChanged += (s, e) => UpdateLabelCardEnabled();
-
-            FlowLayoutPanel pfxRow = new FlowLayoutPanel
+            naming.Controls.Add(_cmbLabelMode);
+            var fields = new TableLayoutPanel
             {
-                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                FlowDirection = FlowDirection.LeftToRight, WrapContents = false,
-                Margin = new Padding(0, 0, 0, 2)
+                Width = 174, Height = 58, ColumnCount = 2, RowCount = 2,
+                Margin = Padding.Empty
             };
-            _lblPrefix = new Label { Text = "前缀", AutoSize = true, Margin = new Padding(0, 7, 2, 0) };
-            _txtPrefix = new TextBox { Width = 60, Margin = new Padding(0, 4, 8, 0) };
-            _lblSuffix = new Label { Text = "后缀", AutoSize = true, Margin = new Padding(0, 7, 2, 0) };
-            _txtSuffix = new TextBox { Width = 60, Margin = new Padding(0, 4, 0, 0) };
-            pfxRow.Controls.AddRange(new Control[] { _lblPrefix, _txtPrefix, _lblSuffix, _txtSuffix });
-
-            FlowLayoutPanel cfgInner = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(2, 2, 2, 2)
-            };
-            cfgInner.Controls.Add(_chkNewSheet);
-            cfgInner.Controls.Add(_chkWriteList);
-            cfgInner.Controls.Add(_chkAutoThick);
-            cfgInner.Controls.Add(lblMode);
-            cfgInner.Controls.Add(_cmbLabelMode);
-            cfgInner.Controls.Add(pfxRow);
-            cfgCard.Controls.Add(cfgInner);
+            fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44));
+            fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            fields.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            fields.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            _lblPrefix = new Label { Text = "前缀", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+            _lblSuffix = new Label { Text = "后缀", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+            _txtPrefix = new TextBox { Dock = DockStyle.Fill };
+            _txtSuffix = new TextBox { Dock = DockStyle.Fill };
+            fields.Controls.Add(_lblPrefix, 0, 0);
+            fields.Controls.Add(_txtPrefix, 1, 0);
+            fields.Controls.Add(_lblSuffix, 0, 1);
+            fields.Controls.Add(_txtSuffix, 1, 1);
+            naming.Controls.Add(fields);
+            _btnStyle = ActionButton("标注样式…", BtnStyle_Click);
+            naming.Controls.Add(_btnStyle);
+            var namingSection = SectionBox("标注命名");
+            namingSection.Controls.Add(naming);
+            sidebar.Controls.Add(namingSection, 0, 5);
             UpdateLabelCardEnabled();
 
-            // 卡片④：操作按钮 + 状态
-            GroupBox actCard = MakeRailCard("操作");
-            _btnExport = MkRailBtnWide("导出到 Excel", BtnExport_Click, Theme.BtnPrimary);
-            _btnExport.Font = new Font(FormUiKit.BaseFont.FontFamily, 10f, FontStyle.Bold);
-            _btnExport.Height = 32;
-
-            _btnClear = MkRailBtn("清空列表", BtnClear_Click, Theme.BtnDanger);
-            _btnStyle = MkRailBtn("标注样式", BtnStyle_Click, Theme.StatusNeutral);
-            Button btnMinimize = MkRailBtn("最小化",
-                (s, e) => WindowState = FormWindowState.Minimized, Theme.TextFaint);
-            _sharedToolTip.SetToolTip(btnMinimize, "最小化本窗口，以便在 PS 中调整视角、选择/隐藏对象。");
-
+            _footer = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1,
+                Margin = new Padding(0, 4, 0, 0)
+            };
+            _footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            _footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            _workspace.Controls.Add(_footer, 0, 1);
+            _workspace.SetColumnSpan(_footer, 2);
             _lblCount = new Label
             {
-                Text = "焊点：0  视口内：0", AutoSize = true, Dock = DockStyle.Top,
-                Margin = new Padding(0, 4, 0, 4),
-                Font = new Font(FormUiKit.BaseFont.FontFamily, 9f, FontStyle.Bold),
-                ForeColor = Theme.CardTitle, TextAlign = ContentAlignment.MiddleLeft
+                Text = "焊点 0 · 视口内 0", AutoSize = true,
+                Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, 20, 0)
             };
-
-            FillRailCardGrid(actCard, 1,
-                new Control[] { _btnExport },
-                new Control[] { });
-
-            TableLayoutPanel subGrid = new TableLayoutPanel
-            {
-                Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                ColumnCount = 2, RowCount = 2, Margin = new Padding(0, 4, 0, 0)
-            };
-            subGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-            subGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-            subGrid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            subGrid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            subGrid.Controls.Add(_btnClear, 0, 0);
-            subGrid.Controls.Add(_btnStyle, 1, 0);
-            subGrid.Controls.Add(btnMinimize, 0, 1);
-
-            actCard.Controls.Add(subGrid);
-            actCard.Controls.Add(_lblCount);
-
-            stack.Controls.Add(cfgCard);
-            stack.Controls.Add(actCard);
-
-            rail.Controls.Add(stack);
-            Controls.Add(rail);
-            var selection = new TableLayoutPanel
-            {
-                Dock = DockStyle.Top, Height = 166, ColumnCount = 2, RowCount = 1,
-                Padding = new Padding(6, 4, 6, 0)
-            };
-            selection.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 270));
-            selection.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            opCard.Dock = snapCard.Dock = DockStyle.Fill;
-            selection.Controls.Add(opCard, 0, 0);
-            selection.Controls.Add(snapCard, 1, 0);
-            Controls.Add(selection);
+            _footer.Controls.Add(_lblCount, 0, 0);
+            _btnExport = ActionButton("导出 Excel", BtnExport_Click, true);
+            _btnExport.Enabled = false;
+            _btnExport.Anchor = AnchorStyles.Right;
+            _footer.Controls.Add(_btnExport, 2, 0);
+            _sharedToolTip.SetToolTip(_btnExport, "选择包含焊点的操作节点后导出。");
         }
 
-        // ── 卡片 / 按钮工厂 ──────────────────────────────────────────────
+        private Label SectionTitle(string text)
+        {
+            return new FormUiKit.FlatColorLabel
+            {
+                Text = text, Width = 210, Height = 28, Margin = Padding.Empty,
+                Font = new Font(Font, FontStyle.Bold), ForeColor = Color.FromArgb(40, 48, 56),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+        }
 
-        private GroupBox MakeRailCard(string title)
+        private GroupBox SectionBox(string text)
         {
             return new FormUiKit.ColoredGroupBox
             {
-                Text = title, Dock = DockStyle.Top, Width = 254,
-                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Font = new Font(FormUiKit.BaseFont.FontFamily, 9f, FontStyle.Bold),
-                HeaderColor = Theme.CardTitle,
-                ForeColor = Theme.CardTitle,
-                Padding = new Padding(6, 12, 6, 4),
-                Margin = new Padding(0, 0, 0, 4),
-                MinimumSize = new Size(254, 0)
+                Text = text, Dock = DockStyle.Fill,
+                // GroupBox already reserves the title font height in DisplayRectangle.
+                Padding = new Padding(8, 3, 8, 6), Margin = new Padding(0, 0, 0, 4),
+                BackColor = Color.White, HeaderColor = Color.FromArgb(40, 48, 56),
+                BorderColor = Color.FromArgb(190, 198, 205)
             };
         }
 
-        private Button MkRailBtn(string text, EventHandler h, Color fg)
+        private FlowLayoutPanel VerticalStack()
         {
-            // 中调色(Status*/TextFaint)做按钮底会显得浑浊且黑字对比偏低：
-            // 统一压深 30% 成"彩色按钮"再用白字；近白底色(如 BtnPrimary/BtnDanger)保持原样用主题黑字。
-            var bg = fg.GetBrightness() > 0.85f ? fg : ControlPaint.Dark(fg, 0.30f);
-            var b = new FormUiKit.FlatColorButton
+            return new FlowLayoutPanel
             {
-                Text = text, Width = 116, Height = 26,
-                BgColor = bg,
-                ForeColor = bg.GetBrightness() > 0.62f ? Theme.BtnFore : Color.White,
-                BorderColor = FormUiKit.Theme.BtnBorder,
-                HoverColor = FormUiKit.Theme.BtnHover,
-                Font = new Font(FormUiKit.BaseFont.FontFamily, 9f, FontStyle.Regular),
-                Margin = new Padding(0, 2, 4, 2), Padding = new Padding(4, 2, 4, 2),
-                FlatStyle = FlatStyle.Flat
+                Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown,
+                WrapContents = false, Margin = Padding.Empty
             };
-            b.Click += h;
-            return b;
         }
 
-        private Button MkRailBtnWide(string text, EventHandler h, Color fg)
+        private CheckBox SettingCheck(string text)
         {
-            var bg = fg.GetBrightness() > 0.85f ? fg : ControlPaint.Dark(fg, 0.30f);
-            var b = new FormUiKit.FlatColorButton
-            {
-                Text = text, Width = 240, Height = 28,
-                Dock = DockStyle.Top,
-                BgColor = bg,
-                ForeColor = bg.GetBrightness() > 0.62f ? Theme.BtnFore : Color.White,
-                BorderColor = FormUiKit.Theme.BtnBorder,
-                HoverColor = FormUiKit.Theme.BtnHover,
-                Font = new Font(FormUiKit.BaseFont.FontFamily, 10f, FontStyle.Bold),
-                Padding = new Padding(4), FlatStyle = FlatStyle.Flat
-            };
-            b.Click += h;
-            return b;
+            return new CheckBox { Text = text, AutoSize = true, Margin = new Padding(0, 2, 0, 3) };
         }
 
-        private void FillRailCardGrid(GroupBox card, int cols, Control[] buttons, Control[] extras)
+        private Button ActionButton(string text, EventHandler handler, bool primary = false)
         {
-            var tlp = new TableLayoutPanel
+            var button = new FormUiKit.FlatColorButton
             {
-                Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                ColumnCount = cols, RowCount = (buttons.Length + cols - 1) / cols
+                Text = text, Width = primary ? 100 : 86, Height = 26,
+                Font = primary ? new Font(Font, FontStyle.Bold) : Font,
+                BgColor = primary ? Accent : Color.White,
+                ForeColor = primary ? Color.White : Color.FromArgb(40, 48, 56),
+                BorderColor = primary ? Accent : Color.FromArgb(204, 210, 216),
+                HoverColor = primary ? Color.FromArgb(0, 98, 102) : Color.FromArgb(235, 243, 244),
+                Margin = new Padding(0, 2, 6, 2)
             };
-            for (int c = 0; c < cols; c++)
-                tlp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / cols));
-            for (int i = 0; i < buttons.Length; i++)
-                tlp.Controls.Add(buttons[i], i % cols, i / cols);
-            card.Controls.Add(tlp);
-            if (extras != null)
-                foreach (var c in extras) card.Controls.Add(c);
+            button.Click += handler;
+            return button;
         }
 
         private void UpdateLabelCardEnabled()
         {
             if (_cmbLabelMode == null) return;
-            var m = (LabelNamingMode)_cmbLabelMode.SelectedIndex;
-            bool pfx = m == LabelNamingMode.Prefix;
-            bool sfx = m == LabelNamingMode.Suffix;
-            _lblPrefix.Enabled = _txtPrefix.Enabled = pfx;
-            _lblSuffix.Enabled = _txtSuffix.Enabled = sfx;
+            var mode = (LabelNamingMode)_cmbLabelMode.SelectedIndex;
+            _lblPrefix.Enabled = _txtPrefix.Enabled = mode == LabelNamingMode.Prefix;
+            _lblSuffix.Enabled = _txtSuffix.Enabled = mode == LabelNamingMode.Suffix;
+            _sharedToolTip.SetToolTip(_txtPrefix, "选择“前缀+序号”后可填写。");
+            _sharedToolTip.SetToolTip(_txtSuffix, "选择“序号+后缀”后可填写。");
         }
 
         private void BuildMainArea()
         {
-            Panel main = new Panel { Dock = DockStyle.Fill };
-
+            var main = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3,
+                Margin = Padding.Empty, BackColor = Color.White
+            };
+            main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            var toolbar = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty
+            };
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            toolbar.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+            toolbar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            var actions = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty
+            };
+            _btnSnap = ActionButton("拍摄快照", BtnSnap_Click);
+            _btnShowOnly = ActionButton("仅显示外观", BtnShowOnly_Click);
+            _btnRestore = ActionButton("恢复显示", BtnRestore_Click);
+            _btnRestore.Enabled = false;
+            actions.Controls.AddRange(new Control[] { _btnSnap, _btnShowOnly, _btnRestore });
+            _sharedToolTip.SetToolTip(_btnSnap, "记录当前场景显示状态，可重复恢复。");
+            _sharedToolTip.SetToolTip(_btnShowOnly, "保留操作绑定外观、机器人及工具，隐藏其他对象，并保留恢复记录。");
+            _sharedToolTip.SetToolTip(_btnRestore, "拍摄快照或执行显示操作后，可以恢复场景显示状态。");
+            _lblSnapStatus = new Label
+            {
+                Text = "可先拍摄快照，保存当前显示状态",
+                Dock = DockStyle.Fill, ForeColor = Color.DimGray, Margin = Padding.Empty,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            toolbar.Controls.Add(actions, 0, 0);
+            toolbar.Controls.Add(_lblSnapStatus, 0, 1);
+            var displaySection = SectionBox("显示控制");
+            displaySection.Controls.Add(toolbar);
+            main.Controls.Add(displaySection, 0, 0);
+            var heading = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+            heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            heading.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            heading.Controls.Add(SectionTitle("焊点列表"), 0, 0);
+            _btnClear = ActionButton("清空列表", BtnClear_Click);
+            _btnClear.Enabled = false;
+            heading.Controls.Add(_btnClear, 1, 0);
+            main.Controls.Add(heading, 0, 1);
+            var gridHost = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, BorderStyle = BorderStyle.FixedSingle };
+            main.Controls.Add(gridHost, 0, 2);
             _grid = new TxFlexGrid
             {
                 Dock = DockStyle.Fill, AllowEditing = true, SelectionMode = SelectionModeEnum.Row
@@ -302,46 +255,182 @@ namespace TxTools.WeldAnnotator
             _grid.Rows.Fixed = 1;
             _grid.Cols.Count = 8;
             _grid.Rows.Count = 1;
-
-            string[] hdrs  = { "#", "焊点名称", "操作名", "X(mm)", "Y(mm)", "Z(mm)", "视口", "类型" };
-            int[]  widths = { 36, 140, 110, 78, 78, 78, 52, 92 };
-            for (int c = 0; c < hdrs.Length; c++)
+            string[] headers = { "#", "焊点名称", "操作名", "X (mm)", "Y (mm)", "Z (mm)", "预览", "类型" };
+            int[] widths = { 28, 148, 54, 66, 66, 66, 40, 120 };
+            for (int c = 0; c < headers.Length; c++)
             {
-                _grid[0, c] = hdrs[c];
+                _grid[0, c] = headers[c];
                 _grid.Cols[c].Width = widths[c];
                 _grid.Cols[c].AllowSorting = false;
-                _grid.Cols[c].AllowEditing = (c == C_TYPE);
+                _grid.Cols[c].AllowEditing = c == C_TYPE;
             }
-            _grid.Cols[C_TYPE].ComboList = string.Join("|", CATEGORY_OPTIONS);
+            var typeEditor = new CategoryComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Font = Font };
+            typeEditor.Items.AddRange(CATEGORY_OPTIONS);
+            _grid.Cols[C_TYPE].Editor = typeEditor;
+            typeEditor.SelectionChangeCommitted += (s, e) => _grid.FinishEditing();
             _grid.Cols[C_TYPE].TextAlign = TextAlignEnum.CenterCenter;
-
-            _grid.Styles[CellStyleEnum.Fixed].BackColor    = Theme.GridHeader;
-            _grid.Styles[CellStyleEnum.Fixed].ForeColor    = SystemColors.ControlText;   // 表头浅底配深字，白字在浅底上不可读
-            _grid.Styles[CellStyleEnum.Fixed].Font         = new Font(FormUiKit.BaseFont.FontFamily, 9f, FontStyle.Bold);
+            for (int c = C_X; c <= C_Z; c++)
+                _grid.Cols[c].TextAlign = TextAlignEnum.RightCenter;
+            _grid.Font = Font;
+            _grid.Rows.DefaultSize = 23;
+            _grid.Rows[0].Height = 25;
+            _grid.BackColor = Color.White;
+            _grid.Styles[CellStyleEnum.EmptyArea].BackColor = Color.White;
+            _grid.DrawMode = DrawModeEnum.OwnerDraw;
+            _grid.OwnerDrawCell += DrawPreviewCell;
+            _grid.SizeChanged += (s, e) => FitGridColumns();
+            _grid.Styles[CellStyleEnum.Fixed].BackColor = Theme.GridHeader;
+            _grid.Styles[CellStyleEnum.Fixed].ForeColor = SystemColors.ControlText;
+            _grid.Styles[CellStyleEnum.Fixed].Font = new Font(Font, FontStyle.Bold);
             _grid.Styles[CellStyleEnum.Alternate].BackColor = Theme.GridAlt;
-
+            _grid.Styles[CellStyleEnum.Highlight].BackColor = Color.FromArgb(216, 240, 238);
+            _grid.Styles[CellStyleEnum.Highlight].ForeColor = Color.FromArgb(30, 55, 55);
             _grid.AfterEdit += Grid_AfterEdit;
-
-            main.Controls.Add(_grid);
-            Controls.Add(main);
+            gridHost.Controls.Add(_grid);
+            _emptyState = new Label
+            {
+                Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter,
+                Text = "尚未添加焊点\n\n请在 Process Simulate 中选择操作节点或视口\n焊点将自动显示在此处",
+                BackColor = Color.White, ForeColor = Color.DimGray
+            };
+            gridHost.Controls.Add(_emptyState);
+            _emptyState.BringToFront();
+            _workspace.Controls.Add(main, 1, 0);
         }
 
         private void BuildStatusBar()
         {
-            _status = new StatusStrip();
+            _status = new StatusStrip { Dock = DockStyle.Fill, SizingGrip = false, BackColor = Surface };
             _lblStatus = new ToolStripStatusLabel("就绪")
             {
                 Spring = true, TextAlign = ContentAlignment.MiddleLeft
             };
             _progress = new ToolStripProgressBar
             {
-                Width = 150, Visible = false, Alignment = ToolStripItemAlignment.Right
+                Width = 100, Visible = false, Alignment = ToolStripItemAlignment.Right
             };
-            var tsLog = new ToolStripButton("日志 ▲");
-            tsLog.Click += (s, e) => ToggleLog(tsLog);
-            PluginLog.Register(_logPanel, false, tsLog);
-            _status.Items.AddRange(new ToolStripItem[] { _lblStatus, _progress, tsLog });
-            Controls.Add(_status);
+            var logButton = new ToolStripButton("日志 ▲");
+            logButton.Click += (s, e) => ToggleLog(logButton);
+            PluginLog.Register(_logPanel, false, logButton);
+            _status.Items.AddRange(new ToolStripItem[] { _lblStatus, _progress, logButton });
+            _footer.Controls.Add(_status, 1, 0);
+        }
+
+        private void FitGridColumns()
+        {
+            if (_grid == null || _grid.Cols.Count != 8) return;
+            // Keep coordinates and type readable without letting long names expand the table.
+            float scale = _grid.Rows[0].Height / 25f;
+            int[] widths = { 28, 148, 54, 66, 66, 66, 40, 120 };
+            int total = 0;
+            for (int c = 0; c < widths.Length; c++)
+            {
+                widths[c] = (int)Math.Round(widths[c] * scale);
+                total += widths[c];
+            }
+            int available = _grid.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4;
+            widths[C_NAME] = Math.Max((int)(100 * scale), widths[C_NAME] + available - total);
+            for (int c = 0; c < widths.Length; c++) _grid.Cols[c].Width = widths[c];
+        }
+
+        private void DrawPreviewCell(object sender, OwnerDrawCellEventArgs e)
+        {
+            if (e.Row < 1 || e.Col != C_PREVIEW || e.Measuring) return;
+            e.DrawCell(DrawCellFlags.Background | DrawCellFlags.Border);
+            string category = _grid[e.Row, C_TYPE] as string ?? DEFAULT_CATEGORY;
+            int shape = 9;
+            bool filled = true;
+            if (_style.CategoryShapes != null && _style.CategoryShapes.ContainsKey(category))
+                shape = _style.CategoryShapes[category];
+            if (_style.CategoryFilled != null && _style.CategoryFilled.ContainsKey(category))
+                filled = _style.CategoryFilled[category];
+            float size = Math.Min(e.Bounds.Height - 7, e.Bounds.Width - 8);
+            if (size <= 0) return;
+            float x = e.Bounds.Left + (e.Bounds.Width - size) / 2;
+            float y = e.Bounds.Top + (e.Bounds.Height - size) / 2;
+            using (var path = new System.Drawing.Drawing2D.GraphicsPath())
+            {
+                switch (shape)
+                {
+                    case 1: path.AddRectangle(new RectangleF(x, y, size, size)); break;
+                    case 5:
+                        float r = size / 3;
+                        path.AddArc(x, y, r, r, 180, 90);
+                        path.AddArc(x + size - r, y, r, r, 270, 90);
+                        path.AddArc(x + size - r, y + size - r, r, r, 0, 90);
+                        path.AddArc(x, y + size - r, r, r, 90, 90);
+                        path.CloseFigure();
+                        break;
+                    case 4:
+                        path.AddPolygon(new[] { new PointF(x + size / 2, y), new PointF(x + size, y + size / 2),
+                            new PointF(x + size / 2, y + size), new PointF(x, y + size / 2) });
+                        break;
+                    case 7:
+                        path.AddPolygon(new[] { new PointF(x + size / 2, y), new PointF(x + size, y + size), new PointF(x, y + size) });
+                        break;
+                    case 10:
+                    case 12:
+                        int count = shape == 12 ? 10 : 6;
+                        var vertices = new PointF[count];
+                        for (int i = 0; i < count; i++)
+                        {
+                            double angle = -Math.PI / 2 + i * Math.PI * 2 / count;
+                            float radius = size / 2 * (shape == 12 && i % 2 == 1 ? 0.4f : 1f);
+                            vertices[i] = new PointF(x + size / 2 + radius * (float)Math.Cos(angle),
+                                y + size / 2 + radius * (float)Math.Sin(angle));
+                        }
+                        path.AddPolygon(vertices);
+                        break;
+                    default: path.AddEllipse(x, y, size, size); break;
+                }
+                var previous = e.Graphics.SmoothingMode;
+                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                using (var brush = new SolidBrush(_style.DotColor))
+                using (var pen = new Pen(_style.DotColor, filled ? 1f : 1.5f))
+                {
+                    if (filled) e.Graphics.FillPath(brush, path);
+                    e.Graphics.DrawPath(pen, path);
+                }
+                e.Graphics.SmoothingMode = previous;
+            }
+        }
+
+        // Paint both the selected value and popup items explicitly under the PS skin.
+        private sealed class CategoryComboBox : ComboBox
+        {
+            public CategoryComboBox()
+            {
+                DrawMode = System.Windows.Forms.DrawMode.OwnerDrawFixed;
+                BackColor = Color.White;
+                ForeColor = Color.FromArgb(35, 40, 45);
+                IntegralHeight = false;
+                MaxDropDownItems = 12;
+                DropDownHeight = 260;
+                DropDownWidth = 180;
+                ItemHeight = 22;
+            }
+
+            public void C1EditorInitialize(object value, System.Collections.IDictionary attributes)
+            {
+                SelectedItem = value as string;
+                BackColor = Color.White;
+                ForeColor = Color.FromArgb(35, 40, 45);
+                if (attributes["Font"] is Font editorFont) Font = editorFont;
+            }
+
+            public object C1EditorGetValue() { return SelectedItem ?? Text; }
+            public bool C1EditorValueIsValid() { return SelectedIndex >= 0; }
+
+            protected override void OnDrawItem(DrawItemEventArgs e)
+            {
+                bool selected = (e.State & DrawItemState.Selected) != 0;
+                using (var brush = new SolidBrush(selected ? Color.FromArgb(216, 240, 238) : Color.White))
+                    e.Graphics.FillRectangle(brush, e.Bounds);
+                string text = e.Index >= 0 && e.Index < Items.Count ? Items[e.Index].ToString() : Text;
+                TextRenderer.DrawText(e.Graphics, text, Font, Rectangle.Inflate(e.Bounds, -3, 0),
+                    Color.FromArgb(35, 40, 45), TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                e.DrawFocusRectangle();
+            }
         }
 
         private void BuildLogPanel()
@@ -349,19 +438,19 @@ namespace TxTools.WeldAnnotator
             _logPanel = new Panel { Dock = DockStyle.Bottom, Height = 110, Visible = false };
             _logBox = new RichTextBox
             {
-                Dock = DockStyle.Fill, BackColor = Theme.LogBg,
-                ForeColor = Theme.LogText, Font = new Font("Consolas", 8f), ReadOnly = true
+                Dock = DockStyle.Fill, BackColor = Theme.LogBg, ForeColor = Theme.LogText,
+                Font = new Font("Consolas", 8f), ReadOnly = true
             };
             _logPanel.Controls.Add(_logBox);
-            Controls.Add(_logPanel);
+            _grid.Parent.Controls.Add(_logPanel);
         }
 
-        private void ToggleLog(ToolStripButton btn)
+        private void ToggleLog(ToolStripButton button)
         {
             if (!PluginLog.Enabled) return;
             _logVisible = !_logVisible;
             PluginLog.SetVisible(_logPanel, _logVisible);
-            btn.Text = _logVisible ? "日志 ▼" : "日志 ▲";
+            button.Text = _logVisible ? "日志 ▼" : "日志 ▲";
         }
     }
 }

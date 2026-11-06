@@ -36,6 +36,8 @@ namespace TxTools.RobotReachabilityChecker.Services
         public bool   TcpCheckEnabled         { get; set; } = false;
         public double TcpMarginMm             { get; set; } = 200.0;
         public bool   InterferenceEnabled     { get; set; } = false;
+        public InterferenceSession InterferenceSession { get; set; }
+        public Action<string> InterferenceStage { get; set; }
         public RobotBrand UserSelectedBrand   { get; set; } = RobotBrand.Auto;
     }
 
@@ -63,6 +65,7 @@ namespace TxTools.RobotReachabilityChecker.Services
             TxRobot robotRef = null;
             TxPoseData savedPose = null;
             double[] savedJointValues = null;
+            InterferenceContext ifCtx = null;
 
             try
             {
@@ -150,11 +153,12 @@ namespace TxTools.RobotReachabilityChecker.Services
                 RobotBrand brand = BrandResolver.Resolve(robot.Name, options.UserSelectedBrand);
 
                 // 干涉检查准备：用户启用 + 构造无副作用的两列表查询上下文
-                InterferenceContext ifCtx = null;
                 if (options.InterferenceEnabled)
                 {
                     log.Log("准备干涉检查…");
-                    ifCtx = InterferenceService.Prepare(robot, doc, log);
+                    ifCtx = options.InterferenceSession != null
+                        ? options.InterferenceSession.Acquire(preferredOp, robot, doc, log, options.InterferenceStage)
+                        : InterferenceService.Prepare(robot, doc, log, options.InterferenceStage);
                     if (ifCtx == null || !ifCtx.Ready) log.Log("  干涉检查准备失败，本次跳过干涉判定", "WARN");
                 }
 
@@ -283,6 +287,11 @@ namespace TxTools.RobotReachabilityChecker.Services
                             if (vals0 != null && vals0.Length > 0)
                             {
                                 joints2 = vals0; gotJoints = true; okA++;
+                                res.PoseDataRef = new TxPoseData
+                                {
+                                    JointValues = new System.Collections.ArrayList(
+                                        vals0.Select(value => value * Math.PI / 180.0).ToArray())
+                                };
                                 log.Log($"  [{res.PointName}] IK 兜底成功", "DEBUG");
                             }
                             else
@@ -342,10 +351,13 @@ namespace TxTools.RobotReachabilityChecker.Services
 
                         // 静态干涉检查 — 驱动机器人到该姿态再查询（无副作用两列表查询）
                         // 完整路径检查结束后由 RestoreRobotPose 统一恢复
-                        if (ifCtx != null && ifCtx.Ready && res.PoseDataRef is TxPoseData pdForIf)
+                        if (options.InterferenceEnabled)
                         {
                             try
                             {
+                                var pdForIf = res.PoseDataRef as TxPoseData;
+                                if (ifCtx == null || !ifCtx.Ready || pdForIf == null)
+                                    throw new InvalidOperationException("临时干涉范围或点位姿态不可用");
                                 robot.CurrentPose = pdForIf;
                                 bool? hit = InterferenceService.CheckCollisionAtCurrentPose(ifCtx, log);
                                 if (hit == true)
@@ -353,10 +365,7 @@ namespace TxTools.RobotReachabilityChecker.Services
                                     res.HasCollision = true;
                                     res.CollisionState = CollisionCheckState.Collision;
                                     collisionCount++;
-                                    if (res.Status == ReachabilityStatus.Reachable
-                                        || res.Status == ReachabilityStatus.Critical)
-                                        res.Status = ReachabilityStatus.NearLimit;
-                                    string note = "存在干涉";
+                                    string note = "存在干涉: " + ifCtx.LastCollisionDetail;
                                     res.ErrorMessage = string.IsNullOrEmpty(res.ErrorMessage)
                                         ? note
                                         : res.ErrorMessage + "; " + note;
@@ -425,6 +434,10 @@ namespace TxTools.RobotReachabilityChecker.Services
                 log.Log($"检查异常: {ex.Message}", "ERR");
                 log.Log($"  StackTrace: {ex.StackTrace?.Split('\n').FirstOrDefault()}", "ERR");
                 try { RestoreRobotPose(robotRef, savedPose, savedJointValues); } catch { }
+            }
+            finally
+            {
+                if (options.InterferenceSession == null) ifCtx?.Dispose();
             }
             return results;
         }

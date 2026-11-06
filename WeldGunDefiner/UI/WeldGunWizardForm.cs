@@ -52,7 +52,7 @@ namespace TxTools.WeldGunDefiner.UI
 
         // ── Step1：Link 几何体 ───────────────────────────────────────────
         private TxObjGridCtrl _gridFixedLink, _gridInputLink, _gridCouplerLink, _gridOutputLink, _gridLnk2;
-        private bool _gunFilterReliable = false;  // 需求2：祖先链判断是否可靠(自检结果)，不可靠则不剔除
+        private bool _synchronizingTarget, _rejectingPick;  // 需求2：祖先链判断是否可靠(自检结果)，不可靠则不剔除
         // 需求2/3：每个Link grid 关联(grid, 几何体list, 显示名, 高亮色)，用于交叉校验+刷新
         private System.Collections.Generic.List<System.Tuple<TxObjGridCtrl, System.Collections.Generic.List<ITxObject>, string, TxColor>> _linkGrids
             = new System.Collections.Generic.List<System.Tuple<TxObjGridCtrl, System.Collections.Generic.List<ITxObject>, string, TxColor>>();
@@ -68,6 +68,7 @@ namespace TxTools.WeldGunDefiner.UI
         // ── Step3：生成 ──────────────────────────────────────────────────
         private TxObjGridCtrl _gridTargetDevice;
         private TextBox _txtJ1, _txtJ2, _txtInputJ1;
+        private CheckBox _chkOpenPositive;
         private CheckBox _chkOpenAdapt;   // 需求4：OPEN状态适配勾选
         private RichTextBox _txtFormula2, _txtFormulaInput;
         private RichTextBox _txtResult;
@@ -111,6 +112,11 @@ namespace TxTools.WeldGunDefiner.UI
                 _inst = null;
             };
             _service = new WeldGunService(_model);
+            _service.ConfirmJointCleanup = names => MessageBox.Show(this,
+                "检测到以下已有 Joint / Link：\n\n" + names +
+                "\n\n将把已有 Link 内几何移回设备并保留世界位置，然后清理全部 Joint 与 Link（含手工机构）并重新创建。是否继续？",
+                "确认清理 Joint 与 Link", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) == DialogResult.Yes;
             BuildUi();
         }
 
@@ -137,6 +143,7 @@ namespace TxTools.WeldGunDefiner.UI
                 RowCount = 4,
                 Padding = new Padding(6)
             };
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));  // 步骤指示
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));  // 标题
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));  // 内容
@@ -166,6 +173,7 @@ namespace TxTools.WeldGunDefiner.UI
                 BuildStep2(),
                 BuildStep3(),
             };
+            foreach (var panel in _stepPanels) WireGenerationInvalidation(panel);
             foreach (var p in _stepPanels) { p.Dock = DockStyle.Fill; p.Visible = false; host.Controls.Add(p); }
 
             root.Controls.Add(BuildButtonBar(), 0, 3);
@@ -215,8 +223,15 @@ namespace TxTools.WeldGunDefiner.UI
             _btnGenerate = NewBtn("生成"); _btnGenerate.Click += (s, e) => DoGenerate(); _btnGenerate.Visible = false;
             _btnNext = NewBtn("下一步 >"); _btnNext.Click += (s, e) => GoNext();
             _btnBack = NewBtn("< 上一步"); _btnBack.Click += (s, e) => GoBack(); _btnBack.Enabled = false;
-            // 7. 完成按钮（生成成功后才可见）
-            _btnFinish = NewBtn("完成 ✓"); _btnFinish.Click += (s, e) => Close(); _btnFinish.Visible = false;
+            // 完成按钮固定显示在生成按钮右侧，生成成功后启用。
+            _btnFinish = NewBtn("完成 ✓"); _btnFinish.Click += (s, e) => Close();
+            _btnFinish.EnabledChanged += (sender, e) =>
+            {
+                if (_btnFinish is FormUiKit.FlatColorButton colored)
+                    colored.BgColor = _btnFinish.Enabled ? Theme.BtnSecondary : Color.Gainsboro;
+                _btnFinish.ForeColor = _btnFinish.Enabled ? Theme.BtnFore : SystemColors.GrayText;
+            };
+            _btnFinish.Enabled = false;
             bar.Controls.Add(_btnFinish);
             bar.Controls.Add(_btnGenerate);
             bar.Controls.Add(_btnNext);
@@ -247,25 +262,38 @@ namespace TxTools.WeldGunDefiner.UI
             var devPanel = new Panel { Dock = DockStyle.Fill, Height = 80, BackColor = SystemColors.Window, BorderStyle = BorderStyle.FixedSingle };
             _gridTargetDevice = MkGrid(); _gridTargetDevice.PickLevel = TxPickLevel.Component;
             _gridTargetDevice.Dock = DockStyle.Fill;
-            _gridTargetDevice.ObjectInserted += (s, e) =>
+            _gridTargetDevice.ObjectInserted += (sender, e) =>
             {
-                var a = e as TxObjGridCtrl_ObjectInsertedEventArgs;
-                var obj = a?.Obj ?? _gridTargetDevice.GetObject(0) as ITxObject;
-                if (obj == null) return;
-                _model.TargetComponent = obj as ITxComponent;
-                _model.TargetKinematics = obj as ITxKinematicsModellable;
-                _model.TargetDevice = obj as ITxDevice;
-                // 需求2：自检祖先链判断是否可靠——取焊钳一个已知后代测试，
-                // 若连自己的后代都识别不了，说明祖先链API在此环境不通，
-                // 则禁用外部剔除(放行所有选取)，避免误删本体几何。
-                _gunFilterReliable = TestAncestorReliable(_model.TargetComponent);
-                // 延迟更新状态，避免在拾取回调里同步改布局干扰焦点
-                try { BeginInvoke((Action)UpdateModelingStatus); } catch { UpdateModelingStatus(); }
+                if (_synchronizingTarget) return;
+                var obj = (e as TxObjGridCtrl_ObjectInsertedEventArgs)?.Obj ?? _gridTargetDevice.GetObject(0) as ITxObject;
+                _synchronizingTarget = true;
+                try
+                {
+                    if (!(obj is ITxComponent) || !(obj is ITxKinematicsModellable))
+                    {
+                        ResetGridObjects(_gridTargetDevice, new List<ITxObject>());
+                        ResetSelectedSetup();
+                        _model.TargetComponent = null; _model.TargetKinematics = null; _model.TargetDevice = null;
+                        MessageBox.Show("请选择支持运动学建模的焊钳组件根节点。", "目标无效");
+                    }
+                    else
+                    {
+                        if (_model.TargetKinematics == null || _model.TargetKinematics.Id != obj.Id) ResetSelectedSetup();
+                        if (_gridTargetDevice.Count > 1) ResetGridObjects(_gridTargetDevice, new List<ITxObject> { obj });
+                        _model.TargetComponent = obj as ITxComponent;
+                        _model.TargetKinematics = obj as ITxKinematicsModellable;
+                        _model.TargetDevice = obj as ITxDevice;
+                    }
+                    UpdateModelingStatus();
+                }
+                finally { _synchronizingTarget = false; }
             };
-            _gridTargetDevice.RowDeleted += (s, e) =>
+            _gridTargetDevice.RowDeleted += (sender, e) =>
             {
+                if (_synchronizingTarget) return;
+                ResetSelectedSetup();
                 _model.TargetComponent = null; _model.TargetKinematics = null; _model.TargetDevice = null;
-                try { BeginInvoke((Action)UpdateModelingStatus); } catch { UpdateModelingStatus(); }
+                UpdateModelingStatus();
             };
             devPanel.Controls.Add(_gridTargetDevice);
             stack.Controls.Add(MkFixedCard("焊枪设备根节点", 120, devPanel), 0, 1);
@@ -412,6 +440,15 @@ namespace TxTools.WeldGunDefiner.UI
                 Action<ITxObject> update = obj =>
                 {
                     if (_restoringSetup) { previous = obj; return; }
+                    if (_rejectingPick) return;
+                    if (obj != null && !PsSdkHelper.ValidateLinkBody(obj, _model.TargetKinematics, out string reason))
+                    {
+                        _rejectingPick = true;
+                        try { g.Object = null; } finally { _rejectingPick = false; }
+                        PsSdkHelper.Unhighlight(previous); previous = null; onDelete(); RefreshAllLinkHighlights();
+                        MessageBox.Show(reason, "电极帽选择无效");
+                        return;
+                    }
                     PsSdkHelper.Unhighlight(previous);
                     previous = obj;
                     if (obj == null) onDelete(); else onInsert(obj);
@@ -438,6 +475,7 @@ namespace TxTools.WeldGunDefiner.UI
             {
                 try
                 {
+                    if (!_restoringSetup) _model.TcpFrame = null;
                     var loc = _tcpEditBox.GetLocation();
                     if (loc != null)
                     {
@@ -448,6 +486,12 @@ namespace TxTools.WeldGunDefiner.UI
                 }
                 catch { }
             };
+            _tcpEditBox.InvalidFrameSet += (sender, e) =>
+            {
+                if (_restoringSetup) return;
+                _model.TcpFrame = null; _model.WorldGunTcp = default(Vec3); _tcpPickedLocation = null;
+                PsSdkHelper.RefreshView();
+            };
             // Picked：若用户点选的是已有 TxFrame 对象，直接作为 TCP Frame
             try
             {
@@ -456,7 +500,7 @@ namespace TxTools.WeldGunDefiner.UI
                     try
                     {
                         var pe = e as TxFrameEditBoxCtrl_PickedEventArgs;
-                        _model.TcpFrame = pe?.Object as TxFrame;   // 是Frame就直接用，否则null(生成时建TCPF)
+                        _model.TcpFrame = pe?.Object is TxFrame frame && PsSdkHelper.IsDescendantOf(frame, _model.TargetKinematics) ? frame : null;   // 是Frame就直接用，否则null(生成时建TCPF)
                         if (pe != null && pe.Location != null)
                         {
                             _tcpPickedLocation = pe.Location;
@@ -489,7 +533,7 @@ namespace TxTools.WeldGunDefiner.UI
             baseRow.Controls.Add(clearBase, 1, 0);
             miscLayout.Controls.Add(baseRow, 1, mrow++);
             miscLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-            var baseHint = new Label { Text = "BASE 留空：使用焊钳自身坐标。", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.DimGray };
+            var baseHint = new Label { Text = "电极帽自动归入对应臂；BASE 留空使用焊钳自身坐标。", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.DimGray };
             miscLayout.Controls.Add(baseHint, 0, mrow++);
             miscLayout.SetColumnSpan(baseHint, 2);
             miscLayout.RowCount = mrow;
@@ -514,22 +558,17 @@ namespace TxTools.WeldGunDefiner.UI
                 Action refresh = () => {
                     PsSdkHelper.UnhighlightAll(lst);            // 先取消旧高亮
                     lst.Clear();
-                    for (int i = 0; i < 200; i++) { var o = g.GetObject(i) as ITxObject; if (o == null) break; lst.Add(o); }
+                    for (int i = 0; i < g.Count; i++) { var o = g.GetObject(i) as ITxObject; if (o != null) lst.Add(o); }
                     RefreshAllLinkHighlights();
                 };
                 g.ObjectInserted += (s, e) => {
-                    // 需求1/2：静默剔除不属于当前焊钳的对象（无弹窗）
-                    // 仅在祖先链判断可靠时启用；不可靠则放行所有(防误删本体)
-                    var a = e as TxObjGridCtrl_ObjectInsertedEventArgs;
-                    var obj = a?.Obj;
-                    if (obj != null && _model.TargetComponent != null && _gunFilterReliable)
+                    var obj = (e as TxObjGridCtrl_ObjectInsertedEventArgs)?.Obj;
+                    if (obj != null && !PsSdkHelper.ValidateLinkBody(obj, _model.TargetKinematics, out string reason))
                     {
-                        if (!PsSdkHelper.IsDescendantOf(obj, _model.TargetComponent))
-                        {
-                            try { RemoveObjectFromGrid(g, obj); } catch { }
-                            refresh();
-                            return;
-                        }
+                        RemoveObjectFromGrid(g, obj);
+                        refresh();
+                        MessageBox.Show(reason, "Link 几何选择无效");
+                        return;
                     }
                     refresh();
                 };
@@ -769,6 +808,7 @@ namespace TxTools.WeldGunDefiner.UI
         private Panel BuildStep3()
         {
             var scroll = MkScroll();
+            scroll.AutoScroll = true;
             var stack = MkStack(3);
 
             // 关节命名（设备已在Step1选取）
@@ -808,8 +848,19 @@ namespace TxTools.WeldGunDefiner.UI
                 ForeColor = Color.DimGray,
                 Margin = new Padding(20, 0, 4, 4)
             };
+            _chkOpenPositive = new CheckBox
+            {
+                Text = "OPEN 使用正值（CLOSE=0，磨量补偿使用负值）",
+                Dock = DockStyle.Top, AutoSize = true, Margin = new Padding(4, 6, 4, 4)
+            };
+            _chkOpenPositive.CheckedChanged += (sender, e) =>
+            {
+                _model.OpenPositive = _chkOpenPositive.Checked;
+                RefreshFormulaPreview();
+            };
             var nameWrap = new Panel { Dock = DockStyle.Top, AutoSize = true };
             nameWrap.Controls.Add(hintOpen);
+            nameWrap.Controls.Add(_chkOpenPositive);
             nameWrap.Controls.Add(_chkOpenAdapt);
             nameWrap.Controls.Add(nameLayout);
             stack.Controls.Add(MkCard("关节命名 & 状态适配", nameWrap), 0, 0);
@@ -929,29 +980,6 @@ namespace TxTools.WeldGunDefiner.UI
         /// 取焊钳几个已知后代，若 IsDescendantOf 能正确识别它们属于焊钳，则可靠；
         /// 否则(API在此环境走不通)返回false，调用方据此禁用外部剔除，避免误删本体。
         /// </summary>
-        private bool TestAncestorReliable(ITxComponent comp)
-        {
-            if (comp == null) return false;
-            try
-            {
-                var coll = comp as Tecnomatix.Engineering.ITxObjectCollection;
-                if (coll == null) return false;
-                var filter = new Tecnomatix.Engineering.TxTypeFilter(typeof(ITxObject));
-                var desc = coll.GetAllDescendants(filter);
-                if (desc == null) return false;
-                int tested = 0, passed = 0;
-                foreach (ITxObject o in desc)
-                {
-                    if (o == null) continue;
-                    tested++;
-                    if (PsSdkHelper.IsDescendantOf(o, comp)) passed++;
-                    if (tested >= 5) break;   // 抽样几个即可
-                }
-                // 抽样后代里至少能识别一个，才认为祖先链可用
-                return tested > 0 && passed > 0;
-            }
-            catch { return false; }
-        }
 
 
         /// 若离开的 grid 与其他 grid 有共同几何体，弹窗三选项：
@@ -1037,6 +1065,7 @@ namespace TxTools.WeldGunDefiner.UI
         {
             try
             {
+                _model.SynchronizeElectrodeBindings();
                 foreach (var t in _linkGrids) PsSdkHelper.UnhighlightAll(t.Item2);
                 foreach (var t in _linkGrids) PsSdkHelper.HighlightAll(t.Item2, t.Item4);
                 PsSdkHelper.Highlight(_model.ObjStaticTip, PsSdkHelper.ColorLnk2);
@@ -1254,7 +1283,7 @@ namespace TxTools.WeldGunDefiner.UI
             _model.Mechanism.PistonStroke = _model.PistonStroke;
             _model.Mechanism.OpenGap = _model.OpenGap;
             _model.Mechanism.WearAllowance = _model.WearAllowance;
-            var formulas = _model.Mechanism.BuildFormulas(_model.J1_Name, _model.J2_Name, _model.InputJ1_Name);
+            var formulas = _model.Mechanism.BuildFormulas(_model.J1_Name, _model.J2_Name, _model.InputJ1_Name, _model.OpenPositive);
             _txtFormula2.Text = formulas.J2_Formula;
             _txtFormulaInput.Text = formulas.InputJ1_Formula;
             _model.Formulas = formulas;
@@ -1265,8 +1294,12 @@ namespace TxTools.WeldGunDefiner.UI
         // ═════════════════════════════════════════════════════════════════
         private void DoGenerate()
         {
+            _btnFinish.Enabled = false;
             try
             {
+                if (!ReadParameters(out string parameterError)) { MessageBox.Show(parameterError, "参数无效"); return; }
+                if (!_model.AllHingesReady || _model.ObjStaticTip == null || _model.ObjMovingTip == null || _model.Plane == null)
+                { MessageBox.Show("选点或电极帽已失效，请返回第二步重新确认。", "输入不完整"); return; }
                 if (!ReadOptionalBase(out string baseError))
                 {
                     MessageBox.Show(baseError, "BASE 坐标", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -1314,10 +1347,9 @@ namespace TxTools.WeldGunDefiner.UI
                     _txtResult.Text = result.Summary();
                     _txtResult.ForeColor = result.Success ? Color.DarkGreen : Color.DarkRed;
 
-                    // 7. 生成成功后显示完成按钮
+                    // 生成成功后启用完成按钮
                     if (result.Success)
                     {
-                        _btnFinish.Visible = true;
                         // 问题5：OPEN适配成功后，几何已被驱动并置零为CLOSE状态。
                         // 自动取消勾选，避免再次点生成时重复驱动+置零导致过冲。
                         if (_model.OpenStateAdapt)
@@ -1326,6 +1358,7 @@ namespace TxTools.WeldGunDefiner.UI
                             try { if (_chkOpenAdapt != null) _chkOpenAdapt.Checked = false; } catch { }
                         }
                     }
+                    _btnFinish.Enabled = result.Success;
 
                 }
 
@@ -1337,6 +1370,33 @@ namespace TxTools.WeldGunDefiner.UI
         // ═════════════════════════════════════════════════════════════════
         // 步骤导航
         // ═════════════════════════════════════════════════════════════════
+        private void WireGenerationInvalidation(Control parent)
+        {
+            void InvalidateResult() { if (_btnFinish != null) _btnFinish.Enabled = false; }
+            if (parent is TxObjGridCtrl grid)
+            {
+                grid.ObjectInserted += (sender, e) => InvalidateResult();
+                grid.RowDeleted += (sender, e) => InvalidateResult();
+                grid.Picked += (sender, e) => InvalidateResult();
+            }
+            else if (parent is TxObjEditBoxCtrl single)
+            {
+                single.Picked += (sender, e) => InvalidateResult();
+                single.TypeValid += (sender, e) => InvalidateResult();
+                single.TypeInvalid += (sender, e) => InvalidateResult();
+            }
+            else if (parent is TxFrameEditBoxCtrl frame)
+            {
+                frame.ValidFrameSet += (sender, e) => InvalidateResult();
+                frame.InvalidFrameSet += (sender, e) => InvalidateResult();
+            }
+            else if (parent is TextBox text && !text.ReadOnly) text.TextChanged += (sender, e) => InvalidateResult();
+            else if (parent is CheckBox check) check.CheckedChanged += (sender, e) => InvalidateResult();
+            // SDK 控件内部有编辑框；只监听其公开事件。
+            if (parent is TxObjGridCtrl || parent is TxObjEditBoxCtrl || parent is TxFrameEditBoxCtrl) return;
+            foreach (Control child in parent.Controls) WireGenerationInvalidation(child);
+        }
+
         private void GoNext()
         {
             if (!ValidateStep(out string err))
@@ -1358,6 +1418,7 @@ namespace TxTools.WeldGunDefiner.UI
                     _txtOpenGap.Text = _model.OpenGap.ToString();
                     _txtWear.Text = _model.WearAllowance.ToString();
                     _chkOpenAdapt.Checked = _model.OpenStateAdapt;
+                    _chkOpenPositive.Checked = _model.OpenPositive;
                 }
                 finally { _restoringSetup = false; }
                 foreach (var entry in _linkGrids) ResetGridObjects(entry.Item1, new List<ITxObject>(entry.Item2));
@@ -1392,9 +1453,45 @@ namespace TxTools.WeldGunDefiner.UI
 
         private void GoBack() { _currentStep = System.Math.Max(_currentStep - 1, 0); UpdateStepUi(); }
 
+        private bool ReadParameters(out string error)
+        {
+            error = null;
+            if (!double.TryParse(_txtPistonStroke.Text, out double stroke) || !(stroke > 0) || double.IsInfinity(stroke) ||
+                !double.TryParse(_txtOpenGap.Text, out double gap) || !(gap > 0) || double.IsInfinity(gap) ||
+                !double.TryParse(_txtWear.Text, out double wear) || !(wear >= 0) || double.IsInfinity(wear))
+            { error = "行程、开口必须是有限正数，磨量必须是有限非负数，请检查参数输入。"; return false; }
+            _model.PistonStroke = stroke; _model.OpenGap = gap; _model.WearAllowance = wear;
+            return true;
+        }
+
+        private void ResetSelectedSetup()
+        {
+            _restoringSetup = true;
+            try
+            {
+                PsSdkHelper.Unhighlight(_model.ObjStaticTip); PsSdkHelper.Unhighlight(_model.ObjMovingTip);
+                _model.ObjStaticTip = null; _model.ObjMovingTip = null;
+                foreach (var entry in _linkGrids)
+                { PsSdkHelper.UnhighlightAll(entry.Item2); entry.Item2.Clear(); ResetGridObjects(entry.Item1, new List<ITxObject>()); }
+                _model.SynchronizeElectrodeBindings();
+                _model.HasO = _model.HasA = _model.HasC = false;
+                _model.HingeO = _model.HingeA = _model.HingeC = null;
+                _model.Plane = null; _model.PlaneNormal = default(Vec3); _model.Mechanism = null; _model.Formulas = null;
+                _model.WorldGunTcp = default(Vec3); _model.TcpFrame = null; _model.BaseLocation = null; _tcpPickedLocation = null;
+                foreach (var picker in new[] { _gridO, _gridA, _gridC, _gridStaticTip, _gridMovingTip }) picker.Object = null;
+                _tcpEditBox.Text = string.Empty; _baseEditBox.Text = string.Empty;
+                ClearErr(_lblErrO); ClearErr(_lblErrA); ClearErr(_lblErrC);
+                foreach (var text in new[] { _txtRAuto, _txtDAuto, _txtDAO, _txtr, _txtL, _txtAlpha }) text.Clear();
+                _txtCoordCard.Clear(); _txtFormula2.Clear(); _txtFormulaInput.Clear(); _txtResult.Clear();
+                _btnFinish.Enabled = false;
+            }
+            finally { _restoringSetup = false; PsSdkHelper.RefreshView(); }
+        }
+
         private bool ValidateStep(out string err)
         {
             err = null;
+            if (_currentStep >= 2 && (!ReadParameters(out err) || !ReadOptionalBase(out err))) return false;
             if (_currentStep == 0)
             {
                 // Step0：必须选取焊枪本体且开启建模状态
@@ -1412,7 +1509,8 @@ namespace TxTools.WeldGunDefiner.UI
                 if (!_model.HasC) { err = "请设置 C 点坐标"; return false; }
                 if (_model.ObjStaticTip == null) { err = "请选取静电极帽"; return false; }
                 if (_model.ObjMovingTip == null) { err = "请选取动电极帽"; return false; }
-                if (_model.WorldGunTcp.Length < 1e-6) { err = "请选取焊钳TCP（静电极尖端坐标，用于臂长和开口计算）"; return false; }
+                if (_model.ObjStaticTip.Equals(_model.ObjMovingTip)) { err = "静、动电极帽不能选择同一个对象"; return false; }
+                if (_model.TcpFrame == null && _tcpPickedLocation == null) { err = "请选取焊钳TCP（静电极尖端坐标，用于臂长和开口计算）"; return false; }
                 // 投影偏移已确定必须执行，不再提示
             }
             return true;
@@ -1436,6 +1534,16 @@ namespace TxTools.WeldGunDefiner.UI
             return false;
         }
 
+        private void SetStepPicking(Control parent, bool suspended)
+        {
+            if (parent is TxObjGridCtrl || parent is TxObjEditBoxCtrl || parent is TxFrameEditBoxCtrl)
+            {
+                PickFocus.SetSuspended(parent, suspended);
+                return;
+            }
+            foreach (Control child in parent.Controls) SetStepPicking(child, suspended);
+        }
+
         private void UpdateStepUi()
         {
             string[] titles = {
@@ -1444,13 +1552,16 @@ namespace TxTools.WeldGunDefiner.UI
                 "Step 3/4  --  确认机构参数",
                 "Step 4/4  --  生成运动学定义",
             };
+            // 第三页及生成页禁止继续拾取；返回选择页时只恢复该页的拾取资格。
+            for (int index = 0; index < _stepPanels.Length; index++)
+                SetStepPicking(_stepPanels[index], index != _currentStep || _currentStep >= 2);
             _lblStepTitle.Text = titles[_currentStep];
             for (int i = 0; i < _stepPanels.Length; i++) _stepPanels[i].Visible = i == _currentStep;
             _btnBack.Enabled = _currentStep > 0;
             _btnNext.Visible = _currentStep < _stepPanels.Length - 1;
             _btnGenerate.Visible = _currentStep == _stepPanels.Length - 1;
-            // 切换步骤时隐藏完成按钮（只在生成成功后显示）
-            if (_currentStep < _stepPanels.Length - 1) _btnFinish.Visible = false;
+            // 返回前置步骤后需重新生成；完成按钮始终显示。
+            if (_currentStep < _stepPanels.Length - 1) _btnFinish.Enabled = false;
 
             foreach (Control c in _stepIndicator.Controls)
             {
@@ -1462,12 +1573,20 @@ namespace TxTools.WeldGunDefiner.UI
                 }
             }
             FitStepHeight();
+            if (_currentStep >= 2 && IsHandleCreated)
+                BeginInvoke((Action)(() =>
+                {
+                    if (!IsDisposed && _currentStep >= 2 && _btnNext.Visible)
+                    { ActiveControl = _btnNext; _btnNext.Focus(); }
+                    else if (!IsDisposed && _currentStep >= 2 && _btnGenerate.Visible)
+                    { ActiveControl = _btnGenerate; _btnGenerate.Focus(); }
+                }));
         }
 
         private void FitStepHeight()
         {
             if (!_dpiApplied) return;
-            int[] designHeights = { 480, 890, 640, 560 };
+            int[] designHeights = { 480, 890, 640, 640 };
             int target = (int)System.Math.Round(designHeights[_currentStep] * FormUiKit.GetLayoutScale(this));
             int available = Screen.FromControl(this).WorkingArea.Height - 16;
             Height = System.Math.Min(available, System.Math.Max(MinimumSize.Height, target));

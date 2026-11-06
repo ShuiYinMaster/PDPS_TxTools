@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace TxTools.AutoPathPlanner
@@ -18,6 +18,11 @@ namespace TxTools.AutoPathPlanner
         public double GoalTolerance = 80.0;   // 兼容保留 (Connect版不依赖)
         public double GoalBias = 0.15;        // 兼容保留 (Connect版无需目标偏置)
         public int MaxIterations = 3000;
+        public double MaxPlanningSeconds = 20;
+        public int MaxStateQueries = 6000;
+        private System.Diagnostics.Stopwatch _timer;
+        private int _stateQueries;
+        private bool _planningActive;
         public double EdgeCheckResolution = 25.0;
         public int SmoothingAttempts = 60;
 
@@ -66,6 +71,8 @@ namespace TxTools.AutoPathPlanner
             if (IsStateFree == null)
                 throw new InvalidOperationException("IsStateFree 未设置");
             LastFailReason = null;
+            _timer = System.Diagnostics.Stopwatch.StartNew();
+            _stateQueries = 0;
             LastExploredFreeStates = new List<Vec3>();
 
             var treeStart = new List<Node> { new Node { P = start, Parent = -1 } }; // 根=起点
@@ -79,6 +86,11 @@ namespace TxTools.AutoPathPlanner
             _stagnationCounter = 0;
             _lastBridgeDist = _bridgeDist;
 
+            _planningActive = true;
+            int lastGrowth = 0;
+            int lastSize = treeStart.Count + treeGoal.Count;
+            try
+            {
             // ---- 种子注入: 中继池点挂接到最近的树节点 ----
             if (SeedStates != null)
             {
@@ -91,22 +103,21 @@ namespace TxTools.AutoPathPlanner
                 }
             }
 
-            try
-            {
                 for (int iter = 0; iter < MaxIterations; iter++)
                 {
                     if (ShouldAbort != null && ShouldAbort())
                     {
-                        LastFailReason = "用户中止";
+                        LastFailReason = "用户取消或达到本段搜索预算";
                         return null;
                     }
-                    if (iter == StagnationCheckIters
-                        && treeStart.Count + treeGoal.Count <= 2)
+                    int size = treeStart.Count + treeGoal.Count;
+                    if (size != lastSize) { lastGrowth = iter; lastSize = size; }
+                    if (iter - lastGrowth >= StagnationCheckIters)
                     {
-                        LastFailReason = string.Format(
-                            "停滞: {0}次迭代两树零生长 (端点邻域被包围或姿态无法逆解)", iter);
+                        LastFailReason = "停滞: 连续 " + StagnationCheckIters + " 次迭代无新增节点";
                         return null;
                     }
+                    if (BudgetExceeded()) return null;
                     // 桥接停滞: 连续 N 次迭代桥接距离无改进 → 提前放弃
                     if (iter > StagnationBridgeIters && _stagnationCounter > StagnationBridgeIters / 2)
                     {
@@ -153,11 +164,12 @@ namespace TxTools.AutoPathPlanner
                     extendStartTree = !extendStartTree; // 交替生长
                 }
 
-                LastFailReason = "迭代耗尽未会师";
+                if (LastFailReason == null) LastFailReason = "迭代耗尽未会师";
                 return null;
             }
             finally
             {
+                _planningActive = false;
                 // 无论成败, 收割两树自由节点供中继池复用 (均匀截断至200)
                 HarvestFreeStates(treeStart);
                 HarvestFreeStates(treeGoal);
@@ -165,6 +177,25 @@ namespace TxTools.AutoPathPlanner
         }
 
         /// <summary>向目标延伸一步; 成功返回新节点索引, 失败-1</summary>
+        private bool BudgetExceeded()
+        {
+            if ((ShouldAbort != null && ShouldAbort()) ||
+                (_planningActive && _timer != null && MaxPlanningSeconds > 0 && _timer.Elapsed.TotalSeconds >= MaxPlanningSeconds) ||
+                (_planningActive && MaxStateQueries > 0 && _stateQueries >= MaxStateQueries))
+            {
+                LastFailReason = "搜索预算或时间上限已到";
+                return true;
+            }
+            return false;
+        }
+
+        private bool StateFree(Vec3 point)
+        {
+            if (BudgetExceeded()) return false;
+            _stateQueries++;
+            return IsStateFree(point);
+        }
+
         private int Extend(List<Node> tree, Vec3 target)
         {
             int nearest = 0;
@@ -184,7 +215,7 @@ namespace TxTools.AutoPathPlanner
             double step = _failStreak >= 50 ? Math.Max(20.0, StepSize * 0.5) : StepSize;
             Vec3 newP = dist <= step ? target : from + dir.Normalized() * step;
 
-            if (!IsStateFree(newP)) { _failStreak++; return -1; }
+            if (!StateFree(newP)) { _failStreak++; return -1; }
             if (!IsEdgeFree(from, newP)) { _failStreak++; return -1; }
 
             _failStreak = 0;
@@ -268,7 +299,7 @@ namespace TxTools.AutoPathPlanner
                 if (d < best) { best = d; nearest = i; }
             }
             if (best > StepSize * 6) return false; // 太远, 挂接边验证不划算
-            if (!IsStateFree(seed)) return false;
+            if (!StateFree(seed)) return false;
             if (!IsEdgeFree(tree[nearest].P, seed)) return false;
             tree.Add(new Node { P = seed, Parent = nearest });
             return true;
@@ -279,7 +310,7 @@ namespace TxTools.AutoPathPlanner
         {
             reached = false;
             int last = -1;
-            for (int guard = 0; guard < 256; guard++) // 防死循环
+            for (int guard = 0; guard < 256 && !BudgetExceeded(); guard++) // 防死循环
             {
                 int n = Extend(tree, target);
                 if (n < 0) return last; // 受阻
@@ -300,7 +331,7 @@ namespace TxTools.AutoPathPlanner
             int steps = Math.Max(1, (int)Math.Ceiling(len / EdgeCheckResolution));
             for (int s = 1; s <= steps; s++)
             {
-                if (!IsStateFree(Vec3.Lerp(a, b, (double)s / steps)))
+                if (!StateFree(Vec3.Lerp(a, b, (double)s / steps)))
                     return false;
             }
             return true;
@@ -363,7 +394,7 @@ namespace TxTools.AutoPathPlanner
                     {
                         Vec3 mid = Vec3.Lerp(path[i - 1], path[i], (double)s / nSteps);
                         // 只做位置有效性检查 (姿态由 WeldPathPlanner.BuildTransitPoints 择优)
-                        if (IsStateFree(mid))
+                        if (StateFree(mid))
                             result.Add(mid);
                     }
                 }
@@ -380,4 +411,171 @@ namespace TxTools.AutoPathPlanner
                 LastExploredFreeStates.Add(tree[i].P);
         }
     }
+    /// <summary>Bidirectional RRT-Connect over actual, unwrapped joint values.
+    /// Every accepted tree edge and shortcut uses the same motion validator.</summary>
+    public sealed class JointRrtPlanner
+    {
+        public double[] Lower, Upper, Scale;
+        public Func<double[], bool> IsStateFree;
+        public Func<double[], double[], bool> IsMotionFree;
+        public Func<bool> ShouldAbort;
+        public Action<int, int> OnProgress;
+        private int _iteration;
+        private double _lastProgress;
+        public int MaxIterations = 2000;
+        public int MaxNodes = 1200;
+        public int NoGrowthIterations = 160;
+        public double MaxSeconds = 25;
+        public double GlobalSamplingProbability = 0.3;
+        public string LastFailure;
+        public int NodeCount;
+        private readonly Random _random = new Random(1729);
+        private System.Diagnostics.Stopwatch _clock;
+        private sealed class Node { public double[] Q; public int Parent; }
+
+        private bool Stop()
+        {
+            if (OnProgress != null && _clock.Elapsed.TotalSeconds-_lastProgress >= 0.25)
+            { _lastProgress = _clock.Elapsed.TotalSeconds; OnProgress(_iteration, NodeCount); }
+            if (ShouldAbort != null && ShouldAbort()) { LastFailure = "取消或段预算已到"; return true; }
+            if (_clock.Elapsed.TotalSeconds >= MaxSeconds) { LastFailure = "关节搜索时间预算已到"; return true; }
+            return false;
+        }
+
+        private double Distance(double[] a, double[] b)
+        {
+            double value = 0;
+            for (int i = 0; i < a.Length; i++)
+                value = Math.Max(value, Math.Abs(a[i]-b[i])/Scale[i]);
+            return value;
+        }
+
+        private double[] Sample(double[] start, double[] goal)
+        {
+            var q = new double[start.Length];
+            bool global = _random.NextDouble() < Math.Max(0, Math.Min(1, GlobalSamplingProbability));
+            double t = _random.NextDouble();
+            for (int i = 0; i < q.Length; i++)
+            {
+                double center = start[i]+t*(goal[i]-start[i]);
+                double width = Math.Max(4*Scale[i], Math.Abs(goal[i]-start[i])*0.4);
+                q[i] = global ? Lower[i]+_random.NextDouble()*(Upper[i]-Lower[i])
+                    : Math.Max(Lower[i], Math.Min(Upper[i], center+(2*_random.NextDouble()-1)*width));
+            }
+            return q;
+        }
+
+        private int Extend(List<Node> tree, double[] target)
+        {
+            if (Stop() || NodeCount >= MaxNodes) return -1;
+            int nearest = 0;
+            double distance = double.PositiveInfinity;
+            for (int i = 0; i < tree.Count; i++)
+            {
+                double d = Distance(tree[i].Q, target);
+                if (d < distance) { distance = d; nearest = i; }
+            }
+            if (distance < 1e-9) return nearest;
+            double t = Math.Min(1, 1/distance);
+            var q = new double[target.Length];
+            for (int i = 0; i < q.Length; i++) q[i] = tree[nearest].Q[i]+t*(target[i]-tree[nearest].Q[i]);
+            if (!IsMotionFree(tree[nearest].Q, q)) return -1;
+            tree.Add(new Node { Q = q, Parent = nearest });
+            NodeCount++;
+            return tree.Count-1;
+        }
+
+        private int Connect(List<Node> tree, double[] target)
+        {
+            for (int i = 0; i < 256 && !Stop(); i++)
+            {
+                int at = Extend(tree, target);
+                if (at < 0) return -1;
+                if (Distance(tree[at].Q, target) < 1e-9) return at;
+            }
+            return -1;
+        }
+
+        private static List<double[]> Trace(List<Node> tree, int at)
+        {
+            var result = new List<double[]>();
+            while (at >= 0) { result.Add((double[])tree[at].Q.Clone()); at = tree[at].Parent; }
+            result.Reverse();
+            return result;
+        }
+
+        private List<double[]> Finish(List<double[]> path)
+        {
+            for (int attempt = 0; attempt < 12 && path.Count > 2 && !Stop(); attempt++)
+            {
+                int a = _random.Next(path.Count-2);
+                int b = _random.Next(a+2, path.Count);
+                if (IsMotionFree(path[a], path[b])) path.RemoveRange(a+1, b-a-1);
+            }
+            // Keep written PTP edges within 36 degrees / 75mm at default scale.
+            var dense = new List<double[]> { path[0] };
+            for (int i = 1; i < path.Count; i++)
+            {
+                int steps = Math.Max(1, (int)Math.Ceiling(Distance(path[i-1], path[i])/3));
+                for (int k = 1; k <= steps; k++)
+                {
+                    var q = new double[path[i].Length];
+                    for (int j = 0; j < q.Length; j++)
+                        q[j] = path[i-1][j]+(path[i][j]-path[i-1][j])*k/steps;
+                    dense.Add(q);
+                }
+            }
+            return dense;
+        }
+
+        public List<double[]> Plan(double[] start, double[] goal)
+        {
+            LastFailure = null; NodeCount = 2; _iteration = 0; _lastProgress = 0;
+            _clock = System.Diagnostics.Stopwatch.StartNew();
+            if (start == null || goal == null || start.Length == 0 || start.Length != goal.Length ||
+                Lower == null || Upper == null || Scale == null ||
+                Lower.Length != start.Length || Upper.Length != start.Length || Scale.Length != start.Length)
+                throw new ArgumentException("关节搜索维度不一致");
+            if (IsStateFree == null || IsMotionFree == null) throw new InvalidOperationException("关节验证器未设置");
+            for (int i = 0; i < start.Length; i++)
+                if (double.IsNaN(Scale[i]) || double.IsInfinity(Scale[i]) || Scale[i] <= 0 ||
+                    double.IsNaN(Lower[i]) || double.IsNaN(Upper[i]) || double.IsInfinity(Lower[i]) || double.IsInfinity(Upper[i]) ||
+                    Lower[i] > Upper[i] || double.IsNaN(start[i]) || double.IsNaN(goal[i]) ||
+                    start[i] < Lower[i] || start[i] > Upper[i] || goal[i] < Lower[i] || goal[i] > Upper[i])
+                { LastFailure = "关节端点或限位无效"; return null; }
+            if (Stop()) return null;
+            if (!IsStateFree(start) || !IsStateFree(goal)) { LastFailure = "关节端点不可用"; return null; }
+            if (IsMotionFree(start, goal)) return Finish(new List<double[]> { (double[])start.Clone(), (double[])goal.Clone() });
+            var first = new List<Node> { new Node { Q = (double[])start.Clone(), Parent = -1 } };
+            var last = new List<Node> { new Node { Q = (double[])goal.Clone(), Parent = -1 } };
+            bool forward = true;
+            int lastGrowth = 0;
+            for (int iter = 0; iter < MaxIterations && !Stop() && NodeCount < MaxNodes; iter++)
+            {
+                _iteration = iter;
+                int before = NodeCount;
+                var a = forward ? first : last; var b = forward ? last : first;
+                int added = Extend(a, Sample(start, goal));
+                if (added >= 0)
+                {
+                    int met = Connect(b, a[added].Q);
+                    if (met >= 0)
+                    {
+                        var head = Trace(first, forward ? added : met);
+                        var tail = Trace(last, forward ? met : added);
+                        tail.Reverse();
+                        for (int i = 1; i < tail.Count; i++) head.Add(tail[i]);
+                        return Finish(head);
+                    }
+                }
+                if (NodeCount != before) lastGrowth = iter;
+                if (iter-lastGrowth >= NoGrowthIterations)
+                { LastFailure = "关节树连续无生长"; return null; }
+                forward = !forward;
+            }
+            if (LastFailure == null) LastFailure = NodeCount >= MaxNodes ? "关节树节点预算已到" : "关节搜索未连通";
+            return null;
+        }
+    }
+
 }

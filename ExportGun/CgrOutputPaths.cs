@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -12,6 +14,66 @@ namespace TxTools.ExportGun
         // CgrWriter appends "." + 32 hex digits + ".partial" (41 chars).
         // Keep both final and temporary paths below legacy .NET/CATIA limits.
         internal const int MaxOutputLength = 200;
+
+        internal sealed class GeneratedFile
+        {
+            internal string Path;
+            internal string TemporaryPath;
+        }
+
+        internal static GeneratedFile Generate(string directory, string toolName, Action<string> generate,
+            IEnumerable<string> cacheRoots = null)
+        {
+            string output = Create(directory, toolName, cacheRoots);
+            try { generate(output); }
+            catch
+            {
+                // Retry the encoder once with a short path. Never overwrite existing CGRs.
+                TryDelete(output);
+                output = Create(null, toolName, cacheRoots);
+                try { generate(output); }
+                catch { TryDelete(output); throw; }
+            }
+            if (!string.IsNullOrEmpty(directory) &&
+                !string.Equals(System.IO.Path.GetDirectoryName(output), directory.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    string destination = System.IO.Path.Combine(directory, System.IO.Path.GetFileName(output));
+                    // The final file may fit CATIA's limit even when the encoder's .partial path does not.
+                    if (!CopyFile(ToExtendedPath(output), ToExtendedPath(destination), true))
+                        throw new IOException("CGR 复制失败", new Win32Exception(Marshal.GetLastWin32Error()));
+                    return new GeneratedFile { Path = destination, TemporaryPath = output };
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+                catch (ArgumentException) { }
+                catch (NotSupportedException) { }
+            }
+            return new GeneratedFile { Path = output };
+        }
+
+        [DllImport("kernel32.dll", EntryPoint = "CopyFileW", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CopyFile(string source, string destination, [MarshalAs(UnmanagedType.Bool)] bool failIfExists);
+
+        private static string ToExtendedPath(string path)
+        {
+            string full = path.Replace('/', '\\');
+            // Storage paths are absolute; prefix before legacy GetFullPath can reject a deep directory.
+            if (!(full.StartsWith(@"\\", StringComparison.Ordinal) ||
+                (full.Length >= 3 && full[1] == ':' && full[2] == '\\')))
+                full = System.IO.Path.GetFullPath(full);
+            if (full.StartsWith(@"\\?\", StringComparison.Ordinal)) return full;
+            return full.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + full.Substring(2) : @"\\?\" + full;
+        }
+
+        internal static void TryDelete(string path)
+        {
+            try { if (!string.IsNullOrEmpty(path) && File.Exists(path)) File.Delete(path); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
 
         internal static string Create(string preferredDirectory, string toolName, IEnumerable<string> cacheRoots = null)
         {

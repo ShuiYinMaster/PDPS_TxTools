@@ -7,6 +7,23 @@ namespace TxTools.ExportGun
 {
     internal static class GunExportNaming
     {
+        internal static string NextGeometryName(string requestedName, string fallback, ISet<string> usedNames, bool preserveOperationName = false)
+        {
+            string stem = string.IsNullOrWhiteSpace(requestedName) ? fallback : requestedName.Trim();
+            if (string.IsNullOrWhiteSpace(stem)) stem = "Item";
+            stem = Regex.Replace(stem, preserveOperationName ? @"[\x00-\x1f]" : @"[/\\:*?""<>|\x00-\x1f]", "_");
+            int maxLength = preserveOperationName ? int.MaxValue : 80;
+            string first = stem.Substring(0, Math.Min(stem.Length, maxLength));
+            if (usedNames.Add(first)) return first;
+            for (int sequence = 2; sequence < int.MaxValue; sequence++)
+            {
+                string suffix = "_" + sequence.ToString("D3", CultureInfo.InvariantCulture);
+                string candidate = stem.Substring(0, Math.Min(stem.Length, maxLength - suffix.Length)) + suffix;
+                if (usedNames.Add(candidate)) return candidate;
+            }
+            throw new InvalidOperationException("几何名称序号已超出范围。");
+        }
+
         internal static string NextOperationName(string operationName, DateTime exportedAt, ISet<string> usedNames)
         {
             string stem = string.IsNullOrWhiteSpace(operationName) ? "Operation" : operationName.Trim();

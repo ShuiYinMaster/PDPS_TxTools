@@ -31,7 +31,7 @@ select{font:inherit}.field select{width:100%;border:1px solid #dce4f0;background
 .icon:disabled,.primary:disabled,.pick button:disabled,.query-search:disabled,footer button:disabled{opacity:.45;cursor:default;filter:none}
 .tab{min-height:30px;border-radius:6px;font-size:12px}
 </style></head><body><div id="app">
-<header><div class="heading"><h1>🐳 快捷配方</h1><button class="icon" id="refresh" title="刷新配方" aria-label="刷新配方">↻</button><button class="icon" id="close" title="收起" aria-label="收起">×</button></div><div id="study">正在读取研究…</div><input id="search" type="search" placeholder="搜索名称或用途…" aria-label="搜索配方"><nav class="tabs" aria-label="配方分类"><button class="tab active" data-tab="home">常用</button><button class="tab" data-tab="recent">最近</button><button class="tab" data-tab="all">全部</button></nav></header>
+<header><div class="heading"><h1>🐳 快捷配方</h1><button class="icon" id="refresh" title="刷新配方" aria-label="刷新配方">↻</button><button class="icon" id="close" title="收起" aria-label="收起">×</button></div><div id="study">正在读取研究…</div><input id="search" type="search" placeholder="搜索名称或用途…" aria-label="搜索配方"></header>
 <main id="content"><div class="empty">正在加载配方…</div></main><div id="notice" role="status"></div><footer><span id="count"></span><button id="manage">配方管理 ↗</button></footer></div>
 <script>
 'use strict';
@@ -185,7 +185,7 @@ function renderMarkdown(text) {
 
 const $=id=>document.getElementById(id);
 const objectQueries={};
-const state={recipes:[],favorites:[],recent:[],saved:{},study:null,tab:'home',selected:null,busy:false,runningId:null,args:{},bindings:{},results:{},schemas:{},revealResult:null};
+const state={recipes:[],favorites:[],recent:[],saved:{},study:null,selected:null,busy:false,runningId:null,args:{},bindings:{},results:{},schemas:{},revealResult:null};
 let sequence=0; const pending=new Map();let renderedView=null;
 function send(type,data={},callback){const seq=++sequence;if(callback)pending.set(seq,callback);window.chrome.webview.postMessage({type,seq,...data});return seq;}
 function notice(text){$('notice').textContent=text||'';$('notice').classList.toggle('show',!!text);}
@@ -228,25 +228,23 @@ function favorite(r,button){button.disabled=true;send('recipe.favorite',{recipeI
 function card(r){
  const node=el('div','card');const open=el('button','card-main');open.append(el('span','name',r.name||r.id),markdown('desc',r.description||'打开查看参数并运行',true));
  const visible=(r.params||[]).filter(p=>!(r.actions||[]).length||!r.actions.every(a=>Object.prototype.hasOwnProperty.call(a.args||{},p.name)));const objects=visible.filter(p=>p.kind==='object'||p.kind==='objects');open.append(el('span','badge',(objects.length?'需要选择对象 · ':visible.length?'填写参数 · ':'')+((r.actions||[]).length?r.actions.length+' 个执行按钮':visible.length?visible.length+' 项参数':'无参数 · 点击运行')));
- open.onclick=()=>{state.selected=r.id;notice('');render();};const star=el('button','star'+(state.favorites.includes(r.id)?' on':''),state.favorites.includes(r.id)?'★':'☆');star.title=state.favorites.includes(r.id)?'取消收藏':'收藏配方';star.setAttribute('aria-label',star.title+' '+r.name);star.onclick=()=>favorite(r,star);node.append(open,star);return node;
+ open.onclick=()=>{state.selected=r.id;notice('');render();};const star=el('button','star'+(state.favorites.includes(r.id)?' on':''),state.favorites.includes(r.id)?'★':'☆');star.title=state.favorites.includes(r.id)?'取消置顶':'置顶配方';star.setAttribute('aria-label',star.title+' '+r.name);star.onclick=()=>favorite(r,star);node.append(open,star);return node;
 }
 function render(){
- const content=$('content');const view=state.selected?'detail:'+state.selected:'list:'+state.tab+':'+$('search').value;const resetScroll=view!==renderedView;renderedView=view;content.replaceChildren();document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===state.tab));
+ const content=$('content');const view=state.selected?'detail:'+state.selected:'list:'+$('search').value;const resetScroll=view!==renderedView;renderedView=view;content.replaceChildren();
  if(state.selected){const r=state.recipes.find(x=>x.id===state.selected);if(r){renderDetail(r,content);if(resetScroll)content.scrollTop=0;return;}}
  const query=$('search').value.trim().toLocaleLowerCase();let rows=state.recipes.filter(r=>!query||((r.name||'')+' '+(r.description||'')).toLocaleLowerCase().includes(query));
  function section(title,items){if(!items.length)return;content.append(el('div','section-title',title));items.forEach(r=>content.append(card(r)));}
- if(query||state.tab==='all')section(query?'搜索结果':'全部配方',rows);
- else if(state.tab==='recent')section('最近使用',state.recent.map(id=>rows.find(r=>r.id===id)).filter(Boolean));
- else{
-  const favorites=state.favorites.map(id=>rows.find(r=>r.id===id)).filter(Boolean);section('置顶配方',favorites.slice(0,5));
-  section('最近使用',state.recent.filter(id=>!state.favorites.includes(id)).map(id=>rows.find(r=>r.id===id)).filter(Boolean));
-  if(!favorites.length&&!state.recent.length)section('点击 ☆ 收藏常用配方',rows.slice(0,5));
- }
+ rows.sort((a,b)=>(Number(b.runCount)||0)-(Number(a.runCount)||0)
+  ||(state.recent.indexOf(a.id)<0?Infinity:state.recent.indexOf(a.id))-(state.recent.indexOf(b.id)<0?Infinity:state.recent.indexOf(b.id))
+  ||(a.name||a.id).localeCompare(b.name||b.id,'zh-CN'));
+ section('置顶配方',rows.filter(r=>state.favorites.includes(r.id)));
+ section(query?'搜索结果':'全部配方',rows.filter(r=>!state.favorites.includes(r.id)));
  if(!content.childNodes.length)content.append(el('div','empty',query?'没有找到匹配的配方':state.recipes.length?'还没有最近使用的配方':'还没有已固化配方\n可从“配方管理”中添加'));
  if(resetScroll)content.scrollTop=0;
 }
 function renderDetail(r,content){
- const heading=el('div','detail-title');const back=el('button','icon','‹');back.title='返回列表';back.onclick=()=>{state.selected=null;render();};heading.append(back,el('h2','',r.name||r.id));const star=el('button','star'+(state.favorites.includes(r.id)?' on':''),state.favorites.includes(r.id)?'★':'☆');star.title='收藏 / 取消收藏';star.onclick=()=>favorite(r,star);heading.append(star);content.append(heading,markdown('purpose',r.description||'检查参数和目标对象后运行。'));
+ const heading=el('div','detail-title');const back=el('button','icon','‹');back.title='返回列表';back.onclick=()=>{state.selected=null;render();};heading.append(back,el('h2','',r.name||r.id));const star=el('button','star'+(state.favorites.includes(r.id)?' on':''),state.favorites.includes(r.id)?'★':'☆');star.title='置顶 / 取消置顶';star.onclick=()=>favorite(r,star);heading.append(star);content.append(heading,markdown('purpose',r.description||'检查参数和目标对象后运行。'));
  const args=state.args[r.id]||(state.args[r.id]={...state.saved[r.id]});const bindings=state.bindings[r.id]||(state.bindings[r.id]={});
  const actions=(r.actions||[]).length?r.actions:[null];const runs=actions.map((action,i)=>{const button=el('button','primary',state.busy?'执行中…':action?action.label:'运行配方');button.id=i?'run-'+action.id:'run';return {button,action};});const run=runs[0].button;const hint=el('div','', '');hint.id='run-hint';
  function fixed(p){return (r.actions||[]).length>0&&r.actions.every(a=>Object.prototype.hasOwnProperty.call(a.args||{},p.name));}
@@ -317,6 +315,6 @@ window.chrome.webview.addEventListener('message',event=>{
  const callback=pending.get(msg.seq);if(callback){pending.delete(msg.seq);callback(msg);}else if(msg.type==='recipe.list.result')applyList(msg);
  if(msg.type==='quick.error'){notice(msg.error);refresh();}
 });
-$('search').oninput=()=>{state.selected=null;render();};document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{state.tab=b.dataset.tab;state.selected=null;notice('');render();});$('refresh').onclick=refresh;$('manage').onclick=()=>send('quick.manage');$('close').onclick=()=>send('quick.close');document.addEventListener('keydown',e=>{if(e.key==='Escape')send('quick.close');});
+$('search').oninput=()=>{state.selected=null;render();};$('refresh').onclick=refresh;$('manage').onclick=()=>send('quick.manage');$('close').onclick=()=>send('quick.close');document.addEventListener('keydown',e=>{if(e.key==='Escape')send('quick.close');});
 send('quick.ready');
 </script></body></html>

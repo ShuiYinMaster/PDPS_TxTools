@@ -53,11 +53,6 @@ namespace TxTools.WeldSpotGrouper
                 var makeWeld = ResolveCreator(parent, ScoreWeld, "[建-焊]", log);
                 if (makeWeld == null)
                 {
-                    log("[建-焊] 父容器下未找到建焊接操作的方法，降级为在其下建复合子操作");
-                    makeWeld = ResolveCreator(parent, ScoreCompound, "[建-焊降级]", log);
-                }
-                if (makeWeld == null)
-                {
                     Fail(rep, "父容器下无可用创建方法");
                     try { parent.Delete(); } catch (Exception ex) { Fail(rep, "清理新父容器失败: " + ex.Message); }
                     AbortUndo(um, log); return rep;
@@ -100,7 +95,7 @@ namespace TxTools.WeldSpotGrouper
         // 通用创建器解析：在 parent 的接口/自身方法里找「单参 Create*(XxxCreationData)」，
         // 按 scorer 打分选最优，再用所选方法实际参数类型构造数据。
         // ════════════════════════════════════════════════════════════
-        private static Func<ITxObject, string, Action<string>, ITxObject> ResolveCreator(
+        internal static Func<ITxObject, string, Action<string>, ITxObject> ResolveCreator(
             ITxObject parent, Func<MethodInfo, int> scorer, string tag, Action<string> log)
         {
             var methods = new List<MethodInfo>();
@@ -137,9 +132,10 @@ namespace TxTools.WeldSpotGrouper
         }
 
         // 偏好焊接操作；焊点位(Location)强排斥；复合操作垫底
-        private static int ScoreWeld(MethodInfo m)
+        internal static int ScoreWeld(MethodInfo m)
         {
             string n = m.Name, p = m.GetParameters()[0].ParameterType.Name;
+            if (!(Has(n, "Weld") || Has(p, "Weld")) || Has(n, "Location") || Has(p, "Location")) return -1000;
             int s = 0;
             if (Has(n, "Weld") || Has(p, "Weld")) s += 100;
             if (Has(n, "Location") || Has(p, "Location")) s -= 300;
@@ -150,9 +146,10 @@ namespace TxTools.WeldSpotGrouper
         }
 
         // 偏好复合操作；焊点位强排斥；焊接操作不当父容器
-        private static int ScoreCompound(MethodInfo m)
+        internal static int ScoreCompound(MethodInfo m)
         {
             string n = m.Name, p = m.GetParameters()[0].ParameterType.Name;
+            if (!Has(n, "Compound") || Has(n, "Location") || Has(p, "Location")) return -1000;
             int s = 0;
             if (Has(n, "Compound") || Has(p, "Compound")) s += 100;
             if (Has(n, "Location") || Has(p, "Location")) s -= 300;
@@ -187,7 +184,7 @@ namespace TxTools.WeldSpotGrouper
         // ════════════════════════════════════════════════════════════
         // 移动一条 location 进目标操作（验证过的级联）
         // ════════════════════════════════════════════════════════════
-        private static bool MoveLocationInto(ITxObject target, ITxObject loc, ITxObject after, Action<string> log)
+        internal static bool MoveLocationInto(ITxObject target, ITxObject loc, ITxObject after, Action<string> log)
         {
             if (after != null)
             {

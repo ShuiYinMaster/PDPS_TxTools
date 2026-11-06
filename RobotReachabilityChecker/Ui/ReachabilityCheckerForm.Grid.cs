@@ -106,7 +106,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
                 int row = hit.Column == COL_RESULT ? hit.Row : -1;
                 PathPointResult result;
                 string text = _rowToResult.TryGetValue(row, out result)
-                    ? StatusToText(result.Status) + "\n" + result.ErrorMessage : "";
+                    ? CompactResultText(result) : "";
                 if (text == tooltipText) return;
                 tooltipText = text;
                 details.SetToolTip(_grid, text);
@@ -230,7 +230,9 @@ namespace TxTools.RobotReachabilityChecker.Ui
                     _grid[row, COL_RESULT] = CompactResultText(r);
 
                     // 行背景色：从预制 Style 池中取，避免每行创建新 Style
-                    _grid.Rows[row].Style = PickRowStyle(r.Status, i);
+                    _grid.Rows[row].Style = r.CollisionState == CollisionCheckState.Collision ? _rsFail
+                        : r.HasInterferenceWarning && r.Status == ReachabilityStatus.Reachable
+                            ? _rsWarn : PickRowStyle(r.Status, i);
 
                     // 单元格级染色
                     ApplyCellAxisFlags(r, row);
@@ -247,8 +249,10 @@ namespace TxTools.RobotReachabilityChecker.Ui
 
         private void ApplyCellAxisFlags(PathPointResult r, int row)
         {
-            if (r.AxisFlags == null) return;
             int[] jCols = { COL_J1, COL_J2, COL_J3, COL_J4, COL_J5, COL_J6 };
+            // 重复检查复用行时，先清理上次的单元格颜色。
+            foreach (int column in jCols) _grid.SetCellStyle(row, column, (C1.Win.C1FlexGrid.CellStyle)null);
+            if (r.CollisionState == CollisionCheckState.Collision || r.AxisFlags == null) return;
             for (int ax = 0; ax < 6 && ax < r.AxisFlags.Length; ax++)
             {
                 AxisFlag af = r.AxisFlags[ax];
@@ -268,8 +272,12 @@ namespace TxTools.RobotReachabilityChecker.Ui
         private string CompactResultText(PathPointResult result)
         {
             string status = StatusToText(result.Status);
+            if (result.Status == ReachabilityStatus.Reachable && result.HasInterferenceWarning)
+                status = result.CollisionSummary;
             var notes = (result.ErrorMessage ?? "").Split(new[] { ';', '；', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
                 .Select(n => n.Trim()).Where(n => n.Length > 0 && n != status).Distinct().ToList();
+            if (result.HasInterferenceWarning && !notes.Any(n => n.Contains(result.CollisionSummary)))
+                notes.Add(result.CollisionSummary);
             for (int i = 0; i < notes.Count; i++)
                 notes[i] = System.Text.RegularExpressions.Regex.Replace(notes[i],
                     @"TCP余量 ([-\d.]+)mm \((.+?)方向\) < 阈值 ([-\d.]+)mm", "TCP $2：$1mm < $3mm");
@@ -302,7 +310,7 @@ namespace TxTools.RobotReachabilityChecker.Ui
             var q = src.AsEnumerable();
 
             if (_chkHideNormal != null && _chkHideNormal.Checked)
-                q = q.Where(r => r.Status != ReachabilityStatus.Reachable);
+                q = q.Where(r => r.Status != ReachabilityStatus.Reachable || r.HasInterferenceWarning);
 
             if (_cbPointTypeFilter != null)
             {
