@@ -10,7 +10,30 @@ namespace TxTools.WeldAnnotator
         PointName  = 1,  // 按焊点名称
         Prefix     = 2,  // 前缀 + 序号
         Suffix     = 3,  // 序号 + 后缀
-        SeqAndName = 4   // 序号 + 焊点名称
+        SeqAndName = 4,  // 序号 + 焊点名称
+        MfgName    = 5
+    }
+
+    internal static class AnnotationLabelFormatter
+    {
+        internal static string Format(string pointName, string mfgName, int ordinal,
+            LabelNamingMode mode, string prefix, string suffix, bool useMfgName = false)
+        {
+            string name = (useMfgName || mode == LabelNamingMode.MfgName) && !string.IsNullOrWhiteSpace(mfgName)
+                ? mfgName : pointName ?? "";
+            string sequence = ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            string label;
+            switch (mode)
+            {
+                case LabelNamingMode.PointName: label = name; break;
+                case LabelNamingMode.MfgName:
+                    label = name;
+                    break;
+                case LabelNamingMode.SeqAndName: label = sequence + "-" + name; break;
+                default: label = sequence; break;
+            }
+            return (prefix ?? "") + label + (suffix ?? "");
+        }
     }
 
     /// <summary>标注样式配置。</summary>

@@ -30,9 +30,17 @@ select{font:inherit}.field select{width:100%;border:1px solid #dce4f0;background
 .icon:focus-visible,.primary:focus-visible,.pick button:focus-visible,.query-search:focus-visible,footer button:focus-visible{outline:2px solid #3b82f6;outline-offset:2px}
 .icon:disabled,.primary:disabled,.pick button:disabled,.query-search:disabled,footer button:disabled{opacity:.45;cursor:default;filter:none}
 .tab{min-height:30px;border-radius:6px;font-size:12px}
+
+.object-filters{gap:5px;margin-top:6px;padding:7px}.filter-actions{grid-column:1/-1;display:flex;gap:4px}.filter-actions button{flex:1;min-width:0;min-height:28px;padding:0 5px;font-size:11px;white-space:nowrap}.filter-actions .query-primary{background:#dbeafe;border-color:#93c5fd;color:#1d4ed8}.filter-actions .binding-clear{background:#fff1f2;border-color:#fecdd3;color:#be123c}.field{margin-bottom:9px}
+
+.recipe-guide{margin:6px 0 9px;border:1px solid #e3e9f3;border-radius:6px;padding:6px 8px}.recipe-guide summary{cursor:pointer;font-size:12px;color:#5277b6}.recipe-guide .purpose{margin:7px 0 0}.check-row{display:flex;align-items:center;gap:6px}.check-row label{display:flex;align-items:center;gap:6px;margin:0;font-weight:500}.check-row input[type=checkbox]{order:-1;width:14px;height:14px;margin:0;flex:0 0 auto;accent-color:#3b82f6}
+
+.list-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 13px;background:#fff;border-bottom:1px solid #e4eaf5;min-height:50px;box-sizing:border-box}.list-toolbar[hidden]{display:none}.list-title{font-size:12px;font-weight:600;color:#52647f;white-space:nowrap}.search-box{display:flex;align-items:center;justify-content:flex-end;min-width:0;border:1px solid transparent;border-radius:8px;transition:background .15s,border-color .15s;gap:3px}.search-box.is-searching{flex:1;background:#f5f8fd;border-color:#cfddf0}.search-box:focus-within{border-color:#8bb2ef;box-shadow:0 0 0 2px #eaf2ff}.search-box #search{margin:0;padding:6px 3px 6px 8px;min-width:0;width:100%;background:transparent;border:0;font-size:12px;outline:none;box-shadow:none}.search-box #search[hidden]{display:none}.search-toggle{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;padding:0;flex:0 0 30px;border:0;border-radius:7px;background:#eef4fc;color:#5277b6;cursor:pointer}.search-toggle:hover{background:#dfeaff;color:#245caa}.search-toggle:focus-visible{outline:2px solid #3b82f6;outline-offset:2px}
+
+#content{padding-top:8px}
 </style></head><body><div id="app">
-<header><div class="heading"><h1>🐳 快捷配方</h1><button class="icon" id="refresh" title="刷新配方" aria-label="刷新配方">↻</button><button class="icon" id="close" title="收起" aria-label="收起">×</button></div><div id="study">正在读取研究…</div><input id="search" type="search" placeholder="搜索名称或用途…" aria-label="搜索配方"></header>
-<main id="content"><div class="empty">正在加载配方…</div></main><div id="notice" role="status"></div><footer><span id="count"></span><button id="manage">配方管理 ↗</button></footer></div>
+<header><div class="heading"><h1>🐳 快捷配方</h1><button class="icon" id="refresh" title="刷新配方" aria-label="刷新配方">↻</button><button class="icon" id="close" title="收起" aria-label="收起">×</button></div><div id="study">正在读取研究…</div></header>
+<div id="list-toolbar" class="list-toolbar"><span class="list-title">全部配方</span><div id="search-box" class="search-box"><input id="search" type="search" placeholder="搜索名称或用途…" aria-label="搜索配方" hidden><button id="search-toggle" class="search-toggle" type="button" title="搜索配方" aria-label="搜索配方" aria-expanded="false" aria-controls="search"><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg></button></div></div><main id="content"><div class="empty">正在加载配方…</div></main><div id="notice" role="status"></div><footer><span id="count"></span><button id="manage">配方管理 ↗</button></footer></div>
 <script>
 'use strict';
 // Markdown follows the Agent renderer; parity is checked by QuickMarkdownRegression.js.
@@ -231,20 +239,22 @@ function card(r){
  open.onclick=()=>{state.selected=r.id;notice('');render();};const star=el('button','star'+(state.favorites.includes(r.id)?' on':''),state.favorites.includes(r.id)?'★':'☆');star.title=state.favorites.includes(r.id)?'取消置顶':'置顶配方';star.setAttribute('aria-label',star.title+' '+r.name);star.onclick=()=>favorite(r,star);node.append(open,star);return node;
 }
 function render(){
+ $("list-toolbar").hidden=!!state.selected;
  const content=$('content');const view=state.selected?'detail:'+state.selected:'list:'+$('search').value;const resetScroll=view!==renderedView;renderedView=view;content.replaceChildren();
  if(state.selected){const r=state.recipes.find(x=>x.id===state.selected);if(r){renderDetail(r,content);if(resetScroll)content.scrollTop=0;return;}}
  const query=$('search').value.trim().toLocaleLowerCase();let rows=state.recipes.filter(r=>!query||((r.name||'')+' '+(r.description||'')).toLocaleLowerCase().includes(query));
- function section(title,items){if(!items.length)return;content.append(el('div','section-title',title));items.forEach(r=>content.append(card(r)));}
+ function section(title,items){if(!items.length)return;if(title)content.append(el('div','section-title',title));items.forEach(r=>content.append(card(r)));}
  rows.sort((a,b)=>(Number(b.runCount)||0)-(Number(a.runCount)||0)
   ||(state.recent.indexOf(a.id)<0?Infinity:state.recent.indexOf(a.id))-(state.recent.indexOf(b.id)<0?Infinity:state.recent.indexOf(b.id))
   ||(a.name||a.id).localeCompare(b.name||b.id,'zh-CN'));
- section('置顶配方',rows.filter(r=>state.favorites.includes(r.id)));
- section(query?'搜索结果':'全部配方',rows.filter(r=>!state.favorites.includes(r.id)));
+ section('',rows.filter(r=>state.favorites.includes(r.id)));
+ section(query?'搜索结果':'',rows.filter(r=>!state.favorites.includes(r.id)));
  if(!content.childNodes.length)content.append(el('div','empty',query?'没有找到匹配的配方':state.recipes.length?'还没有最近使用的配方':'还没有已固化配方\n可从“配方管理”中添加'));
  if(resetScroll)content.scrollTop=0;
 }
 function renderDetail(r,content){
- const heading=el('div','detail-title');const back=el('button','icon','‹');back.title='返回列表';back.onclick=()=>{state.selected=null;render();};heading.append(back,el('h2','',r.name||r.id));const star=el('button','star'+(state.favorites.includes(r.id)?' on':''),state.favorites.includes(r.id)?'★':'☆');star.title='置顶 / 取消置顶';star.onclick=()=>favorite(r,star);heading.append(star);content.append(heading,markdown('purpose',r.description||'检查参数和目标对象后运行。'));
+ const heading=el('div','detail-title');const back=el('button','icon','‹');back.title='返回列表';back.onclick=()=>{state.selected=null;render();};heading.append(back,el('h2','',r.name||r.id));const star=el('button','star'+(state.favorites.includes(r.id)?' on':''),state.favorites.includes(r.id)?'★':'☆');star.title='置顶 / 取消置顶';star.onclick=()=>favorite(r,star);heading.append(star);content.append(heading);
+ const guide=el("details","recipe-guide");state.guideOpen=state.guideOpen||{};guide.open=!!state.guideOpen[r.id];guide.append(el("summary","","使用说明"),markdown("purpose",r.description||"检查参数和目标对象后运行。"));guide.ontoggle=()=>{state.guideOpen[r.id]=guide.open;};content.append(guide);
  const args=state.args[r.id]||(state.args[r.id]={...state.saved[r.id]});const bindings=state.bindings[r.id]||(state.bindings[r.id]={});
  const actions=(r.actions||[]).length?r.actions:[null];const runs=actions.map((action,i)=>{const button=el('button','primary',state.busy?'执行中…':action?action.label:'运行配方');button.id=i?'run-'+action.id:'run';return {button,action};});const run=runs[0].button;const hint=el('div','', '');hint.id='run-hint';
  function fixed(p){return (r.actions||[]).length>0&&r.actions.every(a=>Object.prototype.hasOwnProperty.call(a.args||{},p.name));}
@@ -266,35 +276,36 @@ function renderDetail(r,content){
     send('recipe.pickSelection',{recipeId:r.id,param:p.name,multi:p.kind==='objects',study:state.study,search,objectType:query.type,objectName:query.name},msg=>{
      queryBusy=false;pick.disabled=state.busy;queryControls.forEach(e=>e.disabled=state.busy);if(typeof updateSearch==='function')updateSearch();
      if(signature!==JSON.stringify(query))return;if(!msg.ok){notice(msg.error);return;}if(state.study!==msg.study){state.bindings={};state.study=msg.study;notice('研究已切换，请重新取对象。');refresh();return;}
-     bindings[p.name]={id:msg.id,label:msg.name+(msg.count>1?' 等 '+msg.count+' 个对象':''),study:msg.study};bound.textContent=bindings[p.name].label;notice('');update();
+     bindings[p.name]={id:msg.id,label:msg.name+(msg.count>1?' 等 '+msg.count+' 个对象':''),study:msg.study};bound.textContent=bindings[p.name].label;clear.disabled=state.busy;notice('');update();
     });}
    pick.onclick=()=>choose(false);row.append(bound,pick);field.append(row);
    let updateSearch;
+   const clear=el("button","icon binding-clear","清除绑定");clear.disabled=state.busy||!bindings[p.name];clear.onclick=()=>{delete bindings[p.name];render();};
    if(p.objectFilter){
     const filters=el('div','object-filters');const typeLabel=el('label','','对象类型');const type=el('select');type.id='object-type-'+p.name;typeLabel.htmlFor=type.id;
     for(const c of (p.objectTypes?.length?p.objectTypes:[{label:'全部类型',value:'all'}])){const option=el('option','',c.label);option.value=c.value;type.append(option);}type.value=query.type;
     const nameLabel=el('label','','名称包含');const name=el('input');name.type='text';name.id='object-name-'+p.name;nameLabel.htmlFor=name.id;name.value=query.name;name.placeholder='输入名称关键词，可留空';name.maxLength=200;
-    const search=el('button','query-search','按条件查找');queryControls=[type,name,search];queryControls.forEach(e=>e.disabled=state.busy);
+    const search=el('button','query-search query-primary','按条件查找');queryControls=[type,name,search];queryControls.forEach(e=>e.disabled=state.busy);
     updateSearch=()=>{search.disabled=state.busy||queryBusy||(query.type==='all'&&!query.name.trim());};
-    const changed=()=>{query.type=type.value;query.name=name.value;delete bindings[p.name];bound.textContent='尚未选择对象';notice('');updateSearch();update();};
+    const changed=()=>{query.type=type.value;query.name=name.value;delete bindings[p.name];bound.textContent='尚未选择对象';clear.disabled=true;notice('');updateSearch();update();};
     type.onchange=changed;name.oninput=changed;search.onclick=()=>choose(true);updateSearch();const refreshTypes=el('button','query-search',p.typesLoading?'读取类型中…':'刷新类型');refreshTypes.disabled=state.busy||!!p.typesLoading;refreshTypes.onclick=()=>{loadObjectTypes(r,p);render();};
-    filters.append(typeLabel,type,nameLabel,name,search,refreshTypes,el('div','help','类型来自当前场景；名称按关键词匹配。'));field.append(filters);
+    queryControls.push(refreshTypes,clear);const tools=el("div","filter-actions");tools.append(search,refreshTypes,clear);filters.append(typeLabel,type,nameLabel,name,tools);field.append(filters);
     if(p.objectTypesLoaded===false&&!p.typesLoading&&!state.busy)setTimeout(()=>{if(state.selected===r.id&&state.recipes.includes(r))loadObjectTypes(r,p);},0);
    }
-   if(bindings[p.name]){const clear=el('button','icon','清除绑定');clear.disabled=state.busy;clear.onclick=()=>{delete bindings[p.name];render();};field.append(clear);}
+   if(!p.objectFilter){queryControls.push(clear);field.append(clear);}
   }else{
    if(args[p.name]===undefined)args[p.name]=p.def!==null&&p.def!==undefined?p.def:(p.kind==='bool'?'false':'');
    const choices=p.choices||[];const input=el(choices.length?'select':'input');input.id='param-'+p.name;label.htmlFor=input.id;input.disabled=state.busy;
    if(choices.length){const empty=el('option','','请选择…');empty.value='';input.append(empty);for(const c of choices){const option=el('option','',c.label);option.value=c.value;input.append(option);}input.value=args[p.name];input.onchange=()=>{args[p.name]=input.value;update();};}
    else if(p.kind==='bool'){input.type='checkbox';input.checked=['true','1','on'].includes(String(args[p.name]).toLowerCase());input.onchange=()=>{args[p.name]=String(input.checked);update();};}
-   else{input.type=p.kind==='color'?'color':p.kind==='number'?'number':'text';if(p.kind==='number')input.step='any';if(p.kind==='color'&&!/^#[0-9a-f]{6}$/i.test(String(args[p.name])))args[p.name]=p.def||'#4F83CC';input.value=args[p.name];input.oninput=input.onchange=()=>{args[p.name]=input.value;update();};}field.append(input);
+   else{input.type=p.kind==='color'?'color':p.kind==='number'?'number':'text';if(p.kind==='number')input.step='any';if(p.kind==='color'&&!/^#[0-9a-f]{6}$/i.test(String(args[p.name])))args[p.name]=p.def||'#4F83CC';input.value=args[p.name];input.oninput=input.onchange=()=>{args[p.name]=input.value;update();};}if(p.kind==="bool"&&!choices.length){field.className+=" check-row";field.append(input);}else field.append(input);
    if(p.kind==='color'){
     input.className='color-picker';const hex=el('span','color-value',String(args[p.name]).toUpperCase());field.append(hex);const palette=el('div','palette');
     for(const color of ['#4F83CC','#E45B5B','#49A879','#F0BC4D','#AD73D4','#F28D4B','#FFFFFF','#333333']){const swatch=el('button','swatch');swatch.type='button';swatch.style.backgroundColor=color;swatch.title=color;swatch.setAttribute('aria-label','选择颜色 '+color);swatch.disabled=state.busy;swatch.onclick=()=>{input.value=color;input.oninput();};palette.append(swatch);}
     const saveColor=input.oninput;input.oninput=input.onchange=()=>{saveColor();hex.textContent=input.value.toUpperCase();};field.append(palette);
    }
   }
-  if(p.help)field.append(markdown('help',p.help));content.append(field);
+  if(p.help)label.title=p.help;content.append(field);
  }
  if((r.params||[]).some(p=>p.kind!=='object'&&p.kind!=='objects'&&!fixed(p))){const reset=el('button','icon','恢复默认值');reset.disabled=state.busy;reset.onclick=()=>{for(const p of r.params||[])if(p.kind!=='object'&&p.kind!=='objects')args[p.name]=p.def!=null?p.def:(p.kind==='bool'?'false':'');render();};content.append(reset);}
  runs.forEach(({button,action})=>button.onclick=()=>{
@@ -315,6 +326,9 @@ window.chrome.webview.addEventListener('message',event=>{
  const callback=pending.get(msg.seq);if(callback){pending.delete(msg.seq);callback(msg);}else if(msg.type==='recipe.list.result')applyList(msg);
  if(msg.type==='quick.error'){notice(msg.error);refresh();}
 });
+function setSearchOpen(open){$("search-box").classList.toggle("is-searching",open);$("search").hidden=!open;$("search-toggle").setAttribute("aria-expanded",String(open));if(open)$("search").focus();else $("search-toggle").focus();}
+$("search-toggle").onclick=()=>{const open=$("search").hidden;if(!open){$("search").value="";render();}setSearchOpen(open);};
+$("search").onkeydown=e=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();$("search").value="";setSearchOpen(false);render();}};
 $('search').oninput=()=>{state.selected=null;render();};$('refresh').onclick=refresh;$('manage').onclick=()=>send('quick.manage');$('close').onclick=()=>send('quick.close');document.addEventListener('keydown',e=>{if(e.key==='Escape')send('quick.close');});
 send('quick.ready');
 </script></body></html>

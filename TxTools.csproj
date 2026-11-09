@@ -407,6 +407,15 @@
     </Compile>
     <Compile Include="AutoRecorder\PsReader.cs" />
     <Compile Include="AutoRecorder\RecordingService.cs" />
+    <Compile Include="AutoRecorder\CameraShot.cs" />
+    <Compile Include="AutoRecorder\ShotPlan.cs" />
+    <Compile Include="AutoRecorder\ViewSchedule.cs" />
+    <Compile Include="AutoRecorder\ShotPreset.cs" />
+    <Compile Include="AutoRecorder\SimulationPreview.cs" />
+    <Compile Include="AutoRecorder\CameraShotEditor.cs" />
+    <Compile Include="AutoRecorder\TransportIconButton.cs" />
+    <Compile Include="AutoRecorder\RecorderWorkspace.cs" />
+    <Compile Include="AutoRecorder\RecordingSettingsDialog.cs" />
     <Compile Include="LibPathSync\LibPathTargets.cs" />
     <Compile Include="LibPathSync\SyncLibPathCommand.cs" />
     <Compile Include="LibPathSync\SyncToSelectedComponentCommand.cs" />
@@ -533,6 +542,7 @@
     </Compile>
     <Compile Include="SRC\PsReader.cs" />
     <Compile Include="WeldAnnotator\AnnotationStyle.cs" />
+    <Compile Include="WeldAnnotator\AnnotationStyleConfig.cs" />
     <Compile Include="WeldAnnotator\AnnotationExportService.cs" />
     <Compile Include="WeldAnnotator\DisplaySession.cs" />
     <Compile Include="WeldAnnotator\AnnotationStyleForm.cs">

@@ -30,6 +30,8 @@ namespace TxTools.AutoPathPlanner
         private TxFrame _operationTool;
 
         private double[] _anchorJoints;
+        private List<TxPoseData> _lastIkCandidates;
+        private bool _preferContinuity;
         private GunAxisService _activeGun;
         private double _searchOpening;
         public string LastPoseRejection { get; private set; }
@@ -115,6 +117,27 @@ namespace TxTools.AutoPathPlanner
                     joint.LowerSoftLimit+margin, joint.UpperSoftLimit-margin);
             }
             return new TxPoseData { JointValues = centered };
+        }
+
+        private IEnumerable<TxPoseData> WristTurnCandidates(TxPoseData original)
+        {
+            if (!HasSixRevoluteAxes()) { yield return original; yield break; }
+            yield return original;
+            var centered = CenterWristTurns(original);
+            for(int a=-1;a<=1;a++) for(int b=-1;b<=1;b++)
+            {
+                var values=new ArrayList(centered.JointValues);
+                values[3]=Convert.ToDouble(values[3])+a*2*Math.PI;
+                values[5]=Convert.ToDouble(values[5])+b*2*Math.PI;
+                bool inside=true;
+                foreach(int axis in new[]{3,5})
+                {
+                    var joint=(TxJoint)_robot.DrivingJoints[axis];
+                    double q=Convert.ToDouble(values[axis]),margin=JointLimitMarginDegrees*Math.PI/180;
+                    if(q<=joint.LowerSoftLimit+margin||q>=joint.UpperSoftLimit-margin)inside=false;
+                }
+                if(inside)yield return new TxPoseData{JointValues=values};
+            }
         }
 
         private bool IsHealthyPose(TxPoseData pose)
@@ -268,47 +291,62 @@ namespace TxTools.AutoPathPlanner
             _useLocalFrame = false;
             _backend = PoseBackend.Inverse;
             var changed = new List<KeyValuePair<ITxRoboticLocationOperation, TxRobotConfigurationData>>();
+            var poses = new List<List<double[]>>();
+            var originalConfigs = new List<TxRobotConfigurationData>();
+            var targets = new List<TxTransformation>();
             try
             {
                 foreach (var loc in sourceLocations)
                 {
-                    TxRobotConfigurationData existing = null;
-                    try { existing = loc.RobotConfigurationData; } catch (TxRobotConfigurationDoesNotExistException) { }
-                    // Preserve arm configuration; compare wrist branches and record the selected full Config.
-                    _requiredConfig = existing;
-                    var target = ((ITxLocatableObject)loc).AbsoluteLocation;
-                    if (!TryPoseTcpAt(target)) throw new InvalidOperationException(
-                        "源点 Config/姿态不可用: " + ((ITxObject)loc).Name + " / " + LastPoseRejection);
-                    var pose = _robot.CurrentPose;
-                    var cfg = _robot.GetPoseConfiguration(pose);
-                    if (existing == null || !SameConfiguration(existing, cfg))
+                    TxRobotConfigurationData existing=null;
+                    try { existing=loc.RobotConfigurationData; } catch(TxRobotConfigurationDoesNotExistException) { }
+                    originalConfigs.Add(existing); _requiredConfig=existing; _lastIkCandidates=null;
+                    var target=((ITxLocatableObject)loc).AbsoluteLocation; targets.Add(target);
+                    if(!TryPoseTcpAt(target))throw new InvalidOperationException(
+                        "源点 Config/姿态不可用: "+((ITxObject)loc).Name+" / "+LastPoseRejection);
+                    var options=_lastIkCandidates ?? new List<TxPoseData>{SnapshotCurrentPose()};
+                    var unique=new Dictionary<string,double[]>(StringComparer.Ordinal);
+                    foreach(var option in options)
                     {
-                        changed.Add(new KeyValuePair<ITxRoboticLocationOperation, TxRobotConfigurationData>(loc, existing));
-                        LockLocation(loc, pose);
-                        var j = ReadJoints(pose);
-                        if (HasSixRevoluteAxes() && j != null)
-                            _log(string.Format("  Config 腕部优选 {0}: J4={1:F2}° / J5={2:F2}° / J6={3:F2}°",
-                                ((ITxObject)loc).Name, j[3]*180/Math.PI, j[4]*180/Math.PI, j[5]*180/Math.PI));
+                        var q=ReadJoints(option);
+                        string key=string.Join(",",q.Select(v=>Math.Round(v,6).ToString("R",System.Globalization.CultureInfo.InvariantCulture)));
+                        if(!unique.ContainsKey(key))unique.Add(key,q);
                     }
-                    if (_anchorJoints == null)
-                    {
-                        _anchorJoints = ReadJoints(pose);
-                        _requiredConfig = cfg;
-                    }
+                    poses.Add(unique.Values.ToList());
+                    _anchorJoints=ReadJoints(_robot.CurrentPose);
                 }
-                // Search uses a stable operation anchor, never the previous random sample.
-                if (_anchorJoints != null)
+                var allowance=new List<double>();
+                for(int i=1;i<targets.Count;i++)
                 {
-                    var anchor = new TxPoseData { JointValues = new ArrayList(_anchorJoints) };
-                    _requiredConfig = _robot.GetPoseConfiguration(anchor);
+                    double trace=0;
+                    for(int col=0;col<3;col++)for(int row=0;row<3;row++)trace+=targets[i-1][row,col]*targets[i][row,col];
+                    double angle=Math.Acos(Math.Max(-1,Math.Min(1,(trace-1)/2)))*180/Math.PI;
+                    var a=targets[i-1].Translation;var b=targets[i].Translation;
+                    double distance=Math.Sqrt((a.X-b.X)*(a.X-b.X)+(a.Y-b.Y)*(a.Y-b.Y)+(a.Z-b.Z)*(a.Z-b.Z));
+                    allowance.Add(1+angle/20+distance/200);
                 }
-                _enforceConfiguration = false;
-                InvalidateCache();
+                var selected=JointSequenceOptimizer.Select(poses,allowance,HasSixRevoluteAxes());
+                for(int i=0;i<selected.Count;i++)
+                {
+                    var pose=new TxPoseData{JointValues=new ArrayList(selected[i])};
+                    _robot.CurrentPose=pose;
+                    if(_activeGun!=null&&_activeGun.HasGunAxis&&!_activeGun.ApplyOpeningToDevice(_searchOpening))
+                        throw new InvalidOperationException("序列选解时焊钳状态恢复失败");
+                    if(!MatchesTarget(pose,targets[i])||!IsHealthyPose(pose))
+                        throw new InvalidOperationException("序列选解回放失败: "+LastPoseRejection);
+                    changed.Add(new KeyValuePair<ITxRoboticLocationOperation,TxRobotConfigurationData>(sourceLocations[i],originalConfigs[i]));
+                    LockLocation(sourceLocations[i],pose);
+                    if(selected[i].Length>=6)
+                        _log(string.Format("  Config 序列选解 {0}: J4={1:F2}° / J5={2:F2}° / J6={3:F2}°",
+                            ((ITxObject)sourceLocations[i]).Name,selected[i][3]*180/Math.PI,selected[i][4]*180/Math.PI,selected[i][5]*180/Math.PI));
+                }
+                _anchorJoints=selected.Count==0?null:selected[0];
+                _enforceConfiguration=false; InvalidateCache();
             }
             catch
             {
-                _enforceConfiguration = false;
-                foreach (var entry in changed) entry.Key.RobotConfigurationData = entry.Value;
+                _enforceConfiguration=false;
+                foreach(var entry in changed)entry.Key.RobotConfigurationData=entry.Value;
                 throw;
             }
         }
@@ -954,15 +992,16 @@ namespace TxTools.AutoPathPlanner
                 stage = "构型及姿态约束选解";
                 var reference = _anchorJoints ?? ReadJoints(_savedPose);
                 var candidates = new List<TxPoseData>();
+                var seen = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var item in sols)
                 {
                     var original = item as TxPoseData;
                     if (original == null) continue;
-                    var centered = CenterWristTurns(original);
-                    var variants = JointMaxDelta(ReadJoints(original), ReadJoints(centered)) < 1e-9
-                        ? new[] { original } : new[] { original, centered };
-                    foreach (var pose in variants)
+                    foreach (var pose in WristTurnCandidates(original))
                     {
+                        var q=ReadJoints(pose);
+                        string key=string.Join(",",q.Select(v=>Math.Round(v,6).ToString("R",System.Globalization.CultureInfo.InvariantCulture)));
+                        if (!seen.Add(key)) continue;
                         if (!MatchesTarget(pose, target) || !IsHealthyPose(pose)) continue;
                         if (_enforceConfiguration && _requiredConfig != null &&
                             !SameArmConfiguration(_requiredConfig, _robot.GetPoseConfiguration(pose)))
@@ -975,7 +1014,9 @@ namespace TxTools.AutoPathPlanner
                     LastPoseRejection = LastPoseRejection ?? "无满足 Config 状态及圈数的健康逆解";
                     return false;
                 }
-                object chosen = candidates.OrderBy(p => PosePreferenceScore(p, reference)).First();
+                _lastIkCandidates = candidates;
+                object chosen = candidates.OrderBy(p => _preferContinuity ? JointMaxDelta(ReadJoints(p),reference) : 0)
+                    .ThenBy(p => PosePreferenceScore(p, reference)).First();
 
                 stage = "解应用";
                 return ApplySolution(chosen);
@@ -1495,6 +1536,54 @@ namespace TxTools.AutoPathPlanner
                 }
             }
 
+            private readonly Dictionary<string,int> _rejections=new Dictionary<string,int>();
+            private void Reject(string reason)
+            {
+                reason=reason??"状态回放失败";
+                int value;_rejections.TryGetValue(reason,out value);_rejections[reason]=value+1;
+            }
+            public string DiagnosticSummary { get {
+                return string.Join(" / ",_rejections.OrderByDescending(p=>p.Value).Take(3).Select(p=>p.Key+" ×"+p.Value));
+            } }
+
+            public void SetOpeningBand(double cap)
+            {
+                for(int i=0;i<_axes.Count;i++)
+                {
+                    int axis=_robotCount+i;
+                    bool gun=_world._activeGun!=null&&_world._activeGun.ActiveGun!=null&&
+                        _axes[i].Device.Id==_world._activeGun.ActiveGun.Id;
+                    if(gun)
+                    {
+                        double start=_world._activeGun.JointValueToOpening(Start[axis]);
+                        double goal=_world._activeGun.JointValueToOpening(Goal[axis]);
+                        double minimum=Math.Min(start,goal),maximum=Math.Max(Math.Max(start,goal),cap);
+                        double a=_world._activeGun.OpeningToJointValue(minimum);
+                        double b=_world._activeGun.OpeningToJointValue(maximum);
+                        Lower[axis]=Math.Min(a,b);Upper[axis]=Math.Max(a,b);
+                    }
+                    else if(Math.Abs(Start[axis]-Goal[axis])<1e-6)
+                        Lower[axis]=Upper[axis]=Start[axis];
+                }
+            }
+
+            public List<double[]> ReorientationSeeds()
+            {
+                var result=new List<double[]>();
+                if(_robotCount<6||Math.Max(Math.Abs(Start[3]-Goal[3]),Math.Abs(Start[5]-Goal[5]))<Math.PI/2)
+                    return result;
+                foreach(double t in new[]{0.25,0.5,0.75})
+                {
+                    var q=(double[])Start.Clone();
+                    for(int i=0;i<q.Length;i++)q[i]+=t*(Goal[i]-Start[i]);
+                    q[3]=Math.Max(Lower[3],Math.Min(Upper[3],0));
+                    q[5]=Math.Max(Lower[5],Math.Min(Upper[5],0));
+                    for(int i=_robotCount;i<q.Length;i++)q[i]=Math.Max(Lower[i],Math.Min(Upper[i],q[i]));
+                    result.Add(q);
+                }
+                return result;
+            }
+
             private TxPoseData RobotPose(double[] state)
             { return new TxPoseData { JointValues = new ArrayList(state.Take(_robotCount).ToArray()) }; }
 
@@ -1532,9 +1621,11 @@ namespace TxTools.AutoPathPlanner
             public bool IsFree(double[] state)
             {
                 if (_world.ShouldAbortMotion != null && _world.ShouldAbortMotion()) return false;
-                if (!Apply(state) || !_world.IsHealthyPose(_world._robot.CurrentPose)) return false;
+                if (!Apply(state)) { Reject("状态/限位回放失败"); return false; }
+                if (!_world.IsHealthyPose(_world._robot.CurrentPose)) { Reject(_world.LastPoseRejection); return false; }
                 _world.QueryCount++;
-                return !_world._collisionSet.QueryColliding();
+                if (_world._collisionSet.QueryColliding()) { Reject("状态碰撞"); return false; }
+                return true;
             }
 
             public bool IsMotionFree(double[] a, double[] b)
@@ -1563,6 +1654,7 @@ namespace TxTools.AutoPathPlanner
                     double violation;
                     LastMotionIssue = _world.CheckJointMotion(RobotPose(a), RobotPose(b), out violation);
                     LastViolation = violation;
+                    if(LastMotionIssue!=null)Reject(LastMotionIssue);
                     return LastMotionIssue == null;
                 }
                 finally
@@ -1616,6 +1708,27 @@ namespace TxTools.AutoPathPlanner
             if (values != null && JointMaxDelta(values, _anchorJoints) > 1e-8)
             {
                 _anchorJoints = values;
+                InvalidateCache();
+            }
+        }
+
+        public T WithAdjacentConfiguration<T>(TxPoseData reference, Func<T> action)
+        {
+            var savedAnchor=_anchorJoints; var savedConfig=_requiredConfig;
+            bool savedEnforce=_enforceConfiguration, savedPreference=_preferContinuity;
+            try
+            {
+                _anchorJoints=ReadJoints(reference);
+                if (_anchorJoints==null) throw new InvalidOperationException("邻接焊点缺少已选关节解");
+                _requiredConfig=_robot.GetPoseConfiguration(reference);
+                _enforceConfiguration=true; _preferContinuity=true;
+                InvalidateCache();
+                return action();
+            }
+            finally
+            {
+                _anchorJoints=savedAnchor; _requiredConfig=savedConfig;
+                _enforceConfiguration=savedEnforce; _preferContinuity=savedPreference;
                 InvalidateCache();
             }
         }

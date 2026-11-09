@@ -116,6 +116,7 @@ namespace TxTools.WeldAnnotator
             BuildMainArea();
             BuildLogPanel();
             BuildStatusBar();
+            _style = AnnotationStyleConfig.Load(message => Log("WARN", message));
 
             this.FormClosing += WeldAnnotatorForm_FormClosing;
         }
@@ -460,6 +461,7 @@ namespace TxTools.WeldAnnotator
                     {
                         Index          = idx++,
                         Name           = string.IsNullOrEmpty(pi.Name) ? ("P" + idx) : pi.Name,
+                        MfgName        = pi.MfgName,
                         OpName         = op.Name ?? "(未知)",
                         X = pi.Position[0], Y = pi.Position[1], Z = pi.Position[2],
                         WorldTx        = null,
@@ -645,18 +647,8 @@ namespace TxTools.WeldAnnotator
         // ════════════════════════════════════════════════════════════════
         private string GetAnnotationLabel(WeldAnnotationPoint pt, int ordinal)
         {
-            var mode = (LabelNamingMode)(_cmbLabelMode?.SelectedIndex ?? 0);
-            string name = pt.Name ?? "";
-            string pfx  = _txtPrefix?.Text ?? "";
-            string sfx  = _txtSuffix?.Text ?? "";
-            switch (mode)
-            {
-                case LabelNamingMode.PointName:  return name;
-                case LabelNamingMode.Prefix:     return pfx + ordinal;
-                case LabelNamingMode.Suffix:     return ordinal + sfx;
-                case LabelNamingMode.SeqAndName: return ordinal + "-" + name;
-                default:                         return ordinal.ToString();
-            }
+            return AnnotationLabelFormatter.Format(pt.Name, pt.MfgName, ordinal,
+                SelectedLabelMode, _txtPrefix?.Text, _txtSuffix?.Text, _chkUseMfgName.Checked);
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -669,7 +661,8 @@ namespace TxTools.WeldAnnotator
                 {
                     NewSheet = _chkNewSheet.Checked,
                     WriteList = _chkWriteList.Checked,
-                    LabelMode = (LabelNamingMode)(_cmbLabelMode?.SelectedIndex ?? 0),
+                    LabelMode = SelectedLabelMode,
+                    UseMfgName = _chkUseMfgName.Checked,
                     Prefix = _txtPrefix?.Text ?? "",
                     Suffix = _txtSuffix?.Text ?? ""
                 }, Log, value => { if (_progress != null) _progress.Value = value; });

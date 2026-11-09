@@ -314,7 +314,7 @@ namespace TxTools.Agent.UI
                         {
                             var stream = new MemoryStream(htmlBytes);
                             ev.Response = _webView.CoreWebView2.Environment.CreateWebResourceResponse(
-                                stream, 200, "OK", "Content-Type: text/html; charset=utf-8");
+                                stream, 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
                         }
                         else if (uri.EndsWith("/recipe-sidebar.css", StringComparison.OrdinalIgnoreCase))
                         {
@@ -322,7 +322,7 @@ namespace TxTools.Agent.UI
                             if (css != null)
                                 ev.Response = _webView.CoreWebView2.Environment.CreateWebResourceResponse(
                                     new MemoryStream(System.Text.Encoding.UTF8.GetBytes(css)),
-                                    200, "OK", "Content-Type: text/css; charset=utf-8");
+                                    200, "OK", "Content-Type: text/css; charset=utf-8\r\nCache-Control: no-store");
                             else
                                 ev.Response = _webView.CoreWebView2.Environment.CreateWebResourceResponse(
                                     null, 404, "Not Found", "");
@@ -333,7 +333,7 @@ namespace TxTools.Agent.UI
                             if (js != null)
                                 ev.Response = _webView.CoreWebView2.Environment.CreateWebResourceResponse(
                                     new MemoryStream(System.Text.Encoding.UTF8.GetBytes(js)),
-                                    200, "OK", "Content-Type: application/javascript; charset=utf-8");
+                                    200, "OK", "Content-Type: application/javascript; charset=utf-8\r\nCache-Control: no-store");
                             else
                                 ev.Response = _webView.CoreWebView2.Environment.CreateWebResourceResponse(
                                     null, 404, "Not Found", "");

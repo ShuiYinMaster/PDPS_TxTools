@@ -31,6 +31,7 @@ namespace TxTools.ExportGun
                 || keys.Contains("name:" + Name);
         }
         public string Name;
+        public string MfgName;
         public PointType Type;
         public double[] TCPMatrix;
         public double[] Position;
@@ -91,6 +92,7 @@ namespace TxTools.ExportGun
         // ── PS 数据（由 GetPointsFromSelection 填充）────────────────────────
         public int Index;
         public string Name;
+        public string MfgName;
         public string OpName;
         public double X, Y, Z;                  // 世界坐标 mm
         public TxTransformation WorldTx;        // 完整变换矩阵（备用）
@@ -1814,8 +1816,8 @@ namespace TxTools.ExportGun
             dynamic d = item;
             if (useMfg)
             {
-                try { TxWeldPoint wp = d.MfgFeature as TxWeldPoint; if (wp != null) return MfgOpName(wp) ?? wp.Name; } catch { }
-                try { TxWeldPoint wp = d.Feature as TxWeldPoint; if (wp != null) return MfgOpName(wp) ?? wp.Name; } catch { }
+                string name = GetMfgName(item);
+                if (!string.IsNullOrWhiteSpace(name)) return name;
             }
             try { string nm = d.Name as string; if (!string.IsNullOrEmpty(nm)) return nm; } catch { }
             try { string nm = d.DisplayName as string; if (!string.IsNullOrEmpty(nm)) return nm; } catch { }
@@ -1853,6 +1855,17 @@ namespace TxTools.ExportGun
             return null;
         }
 
+        // Shared with weld annotation: preserve the MFG naming rules used by gun export.
+        internal static string GetMfgName(object source)
+        {
+            try
+            {
+                var point = GetWpFromPm(source);
+                return point == null ? null : MfgOpName(point) ?? point.Name;
+            }
+            catch { return null; }
+        }
+
         private static PointInfo MakePt(TxTransformation tx, string name, PointType pt)
         {
             double[] m = TxToArr(tx);
@@ -1871,6 +1884,7 @@ namespace TxTools.ExportGun
         {
             PointInfo info = MakePt(tx, name, pt);
             if (source == null) return info;
+            if (pt == PointType.WeldPoint) info.MfgName = GetMfgName(source);
             try { var obj = source as ITxObject; if (obj != null) info.SourceId = obj.Id; } catch { }
             try
             {

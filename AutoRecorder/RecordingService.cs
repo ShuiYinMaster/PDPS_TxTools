@@ -17,27 +17,6 @@ namespace TxTools.AutoRecorder
 
     public enum LogLevel { Detail, Info, Success, Warn, Error }
 
-    /// <summary>关键帧：到达第 N 个 location 时切换到指定视角</summary>
-    public class CameraKeyframe
-    {
-        public int LocationIndex;   // 1-based：到达第 N 个 location 触发
-        public TxCamera Camera;
-    }
-
-    /// <summary>一个 operation 的视角脚本</summary>
-    public class OperationViewSchedule
-    {
-        /// <summary>op 开播时套用（对应 LocationIndex=0）。null = 不强制起始视角</summary>
-        public TxCamera InitialCamera;
-        /// <summary>关键帧列表（推荐按 LocationIndex 升序）</summary>
-        public List<CameraKeyframe> Keyframes = new List<CameraKeyframe>();
-
-        public bool IsEmpty
-        {
-            get { return InitialCamera == null && (Keyframes == null || Keyframes.Count == 0); }
-        }
-    }
-
     /// <summary>单个录制任务（一个操作 → 一个视频文件）</summary>
     public class RecordingJob
     {
@@ -111,6 +90,13 @@ namespace TxTools.AutoRecorder
         private int _destCount;
         // 是否已订阅 OperationReachedDestination
         private bool _hasDestSub;
+        private CameraShotScheduler _shotScheduler;
+        private double _shotTime;
+        internal static List<CameraShot> BuildShotList(OperationViewSchedule schedule)
+        {
+            return schedule.BuildShots();
+        }
+        private int _recordingThreadId;
 
         public RecordingService() : this(null) { }
 
@@ -133,12 +119,19 @@ namespace TxTools.AutoRecorder
             }
             if (jobs == null || jobs.Count == 0) { Fail("未指定任何录制任务"); return; }
             if (options == null) { Fail("未指定录制参数"); return; }
+            try
+            {
+                foreach (var job in jobs)
+                    if (job.Schedule != null) CameraShotScheduler.Validate(job.Schedule.Shots);
+            }
+            catch (Exception ex) { Fail("镜头编排无效：" + ex.Message); return; }
 
             // 取主视口
             _viewer = PsReader.GetGraphicViewer();
             if (_viewer == null) { Fail("无法获取主视口"); return; }
 
             _jobs = new List<RecordingJob>(jobs);
+            _recordingThreadId = Thread.CurrentThread.ManagedThreadId;
             _options = options;
             TotalJobs = _jobs.Count;
             CurrentJobIndex = 0;
@@ -203,7 +196,7 @@ namespace TxTools.AutoRecorder
             try
             {
                 // 1. 应用起始相机 / 聚焦视角
-                if (_options.FocusOnOperation)
+                if (_options.FocusOnOperation || (_currentJob.Schedule != null && _currentJob.Schedule.InitialCamera != null))
                 {
                     var sched = _currentJob.Schedule;
                     if (sched != null && sched.InitialCamera != null)
@@ -249,6 +242,18 @@ namespace TxTools.AutoRecorder
                 _recorder = PsReader.CreateMovieRecorder(_viewer);
                 _player = new TxSimulationPlayer();
                 TrySetOperation(_player, _currentJob.Operation);
+                _shotTime = 0;
+                _shotScheduler = null;
+                if (_currentJob.Schedule != null && _currentJob.Schedule.Shots.Count > 0)
+                {
+                    var combined = BuildShotList(_currentJob.Schedule);
+                    _shotScheduler = new CameraShotScheduler(combined);
+                }
+                if (_shotScheduler != null)
+                {
+                    _player.TimeInterval = 1.0 / _options.FrameRate;
+                    _player.TimeIntervalReached += OnShotTime;
+                }
 
                 // 只订阅 Ended：自然完成的唯一可靠信号
                 // 不订阅 SimulationStopped —— PS 在自然结束时会同时触发两者，制造重复处理；
@@ -260,7 +265,7 @@ namespace TxTools.AutoRecorder
                 Interlocked.Exchange(ref _destCount, 0);
                 if (_currentJob.Schedule != null
                     && _currentJob.Schedule.Keyframes != null
-                    && _currentJob.Schedule.Keyframes.Count > 0)
+                    && (_currentJob.Schedule.Keyframes.Count > 0 || _shotScheduler != null))
                 {
                     try
                     {
@@ -271,6 +276,7 @@ namespace TxTools.AutoRecorder
                     }
                     catch (Exception ex)
                     {
+                        if (_shotScheduler != null) throw new InvalidOperationException("无法订阅 Location 镜头事件", ex);
                         EmitLog("  关键帧订阅失败：" + ex.Message, LogLevel.Warn);
                         _hasDestSub = false;
                     }
@@ -278,6 +284,8 @@ namespace TxTools.AutoRecorder
 
                 // 5. 倒带 → 启录 → 播放
                 _player.Rewind();
+                ApplyShot(0);
+                if (_isCancelling) return;
                 _recorder.Start(_settings);
                 SetState(RecordingState.Recording);
                 _player.Play();
@@ -299,10 +307,13 @@ namespace TxTools.AutoRecorder
         // ============================================================
         private void OnDestinationReached(object sender, EventArgs e)
         {
+            if (!ReferenceEquals(sender, _player)) return;
+            var owner = _player;
             int idx = Interlocked.Increment(ref _destCount);
             _ctx.Post(_ =>
             {
-                if (_isCancelling) return;
+                if (_isCancelling || !ReferenceEquals(owner, _player)) return;
+                if (_shotScheduler != null) { ApplyShot(_shotTime, idx); return; }
                 if (_currentJob == null || _currentJob.Schedule == null) return;
                 var kfs = _currentJob.Schedule.Keyframes;
                 if (kfs == null || kfs.Count == 0) return;
@@ -327,15 +338,49 @@ namespace TxTools.AutoRecorder
             }, null);
         }
 
+        private void OnShotTime(object sender, TxSimulationPlayer_TimeIntervalReachedEventArgs e)
+        {
+            var owner = _player;
+            if (!ReferenceEquals(sender, owner)) return;
+            double time = e.CurrentTime;
+            Action update = () =>
+            {
+                if (_isCancelling || !ReferenceEquals(owner, _player)) return;
+                _shotTime = time;
+                ApplyShot(time);
+            };
+            if (Thread.CurrentThread.ManagedThreadId == _recordingThreadId) update();
+            else _ctx.Post(_ => update(), null);
+        }
+
+        private void ApplyShot(double time, int location = 0)
+        {
+            if (_shotScheduler == null) return;
+            try
+            {
+                var camera = _shotScheduler.Tick(time, location);
+                if (camera != null && !PsReader.SetCurrentCamera(_viewer, camera, false))
+                    throw new InvalidOperationException("无法应用相机");
+            }
+            catch (Exception ex)
+            {
+                EmitLog("镜头调度失败：" + ex.Message, LogLevel.Error);
+                _shotScheduler = null;
+                Cancel();
+            }
+        }
+
         // ============================================================
         // 仿真自然结束 —— 抢占 flag 后 Post 到主线程处理
         // 注意：worker 线程不做任何 SDK 调用（含 unsubscribe），避免 PS 事件系统死锁
         // ============================================================
         private void OnSimulationEnded(object sender, EventArgs e)
         {
+            var owner = _player;
+            if (!ReferenceEquals(sender, owner)) return;
             // 抢占：只有第一个进入的事件能继续；同一任务的重复触发会被丢弃
             if (Interlocked.CompareExchange(ref _jobEndHandled, 1, 0) != 0) return;
-            _ctx.Post(_ => OnSimulationEndedUi(), null);
+            _ctx.Post(_ => { if (ReferenceEquals(owner, _player)) OnSimulationEndedUi(); }, null);
         }
 
         private void OnSimulationEndedUi()
@@ -411,8 +456,10 @@ namespace TxTools.AutoRecorder
         // ============================================================
         private void CleanupCurrent()
         {
+            _shotScheduler = null;
             if (_player != null)
             {
+                try { _player.TimeIntervalReached -= OnShotTime; } catch { }
                 // 在 UI 线程上 unsubscribe（worker 线程做这个可能跟 PS 事件系统冲突）
                 try { _player.Ended -= OnSimulationEnded; } catch { }
                 if (_hasDestSub)
@@ -420,6 +467,7 @@ namespace TxTools.AutoRecorder
                     try { _player.OperationReachedDestination -= OnDestinationReached; } catch { }
                     _hasDestSub = false;
                 }
+                try { _player.ResetToDefaultSetting(); } catch { }
                 _player = null;
             }
             _recorder = null;

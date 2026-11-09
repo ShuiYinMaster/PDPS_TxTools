@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Collections.Generic;
 
 namespace TxTools.AutoPathPlanner
@@ -416,6 +417,7 @@ namespace TxTools.AutoPathPlanner
     public sealed class JointRrtPlanner
     {
         public double[] Lower, Upper, Scale;
+        public IList<double[]> SeedStates;
         public Func<double[], bool> IsStateFree;
         public Func<double[], double[], bool> IsMotionFree;
         public Func<bool> ShouldAbort;
@@ -450,15 +452,29 @@ namespace TxTools.AutoPathPlanner
             return value;
         }
 
+        private bool WithinLimits(double[] state)
+        {
+            if (state==null || state.Length!=Lower.Length) return false;
+            for(int i=0;i<state.Length;i++)
+                if(double.IsNaN(state[i]) || double.IsInfinity(state[i]) || state[i]<Lower[i] || state[i]>Upper[i])
+                    return false;
+            return true;
+        }
+
         private double[] Sample(double[] start, double[] goal)
         {
             var q = new double[start.Length];
-            bool global = _random.NextDouble() < Math.Max(0, Math.Min(1, GlobalSamplingProbability));
+            // Neutral-wrist seeds also guide multi-edge searches when a two-edge
+            // connection is blocked. Every extension still uses the motion validator.
+            var seed = SeedStates != null && SeedStates.Count>0 && _random.NextDouble()<0.2
+                ? SeedStates[_random.Next(SeedStates.Count)] : null;
+            if (!WithinLimits(seed)) seed=null;
+            bool global = seed == null && _random.NextDouble() < Math.Max(0, Math.Min(1, GlobalSamplingProbability));
             double t = _random.NextDouble();
             for (int i = 0; i < q.Length; i++)
             {
-                double center = start[i]+t*(goal[i]-start[i]);
-                double width = Math.Max(4*Scale[i], Math.Abs(goal[i]-start[i])*0.4);
+                double center = seed==null ? start[i]+t*(goal[i]-start[i]) : seed[i];
+                double width = seed==null ? Math.Max(4*Scale[i], Math.Abs(goal[i]-start[i])*0.4) : 2*Scale[i];
                 q[i] = global ? Lower[i]+_random.NextDouble()*(Upper[i]-Lower[i])
                     : Math.Max(Lower[i], Math.Min(Upper[i], center+(2*_random.NextDouble()-1)*width));
             }
@@ -546,6 +562,13 @@ namespace TxTools.AutoPathPlanner
             if (Stop()) return null;
             if (!IsStateFree(start) || !IsStateFree(goal)) { LastFailure = "关节端点不可用"; return null; }
             if (IsMotionFree(start, goal)) return Finish(new List<double[]> { (double[])start.Clone(), (double[])goal.Clone() });
+            if(SeedStates!=null)foreach(var seed in SeedStates)
+            {
+                if(Stop())return null;
+                if(!WithinLimits(seed)||!IsStateFree(seed))continue;
+                if(IsMotionFree(start,seed)&&IsMotionFree(seed,goal))
+                    return Finish(new List<double[]>{(double[])start.Clone(),(double[])seed.Clone(),(double[])goal.Clone()});
+            }
             var first = new List<Node> { new Node { Q = (double[])start.Clone(), Parent = -1 } };
             var last = new List<Node> { new Node { Q = (double[])goal.Clone(), Parent = -1 } };
             bool forward = true;
@@ -575,6 +598,58 @@ namespace TxTools.AutoPathPlanner
             }
             if (LastFailure == null) LastFailure = NodeCount >= MaxNodes ? "关节树节点预算已到" : "关节搜索未连通";
             return null;
+        }
+    }
+
+    /// <summary>Choose a continuous sequence of real joint solutions before writing Config.
+    /// Large target changes provide cheaper opportunities to unwind the wrist.</summary>
+    public static class JointSequenceOptimizer
+    {
+        public static List<double[]> Select(IList<List<double[]>> candidates, IList<double> allowance, bool wristPreference = true)
+        {
+            if (candidates == null || candidates.Count == 0) return new List<double[]>();
+            if (allowance != null && allowance.Count != candidates.Count-1)
+                throw new ArgumentException("转移段权重数量不一致");
+            int dimensions=candidates[0]!=null && candidates[0].Count>0 && candidates[0][0]!=null ? candidates[0][0].Length : 0;
+            foreach (var list in candidates)
+                if (list==null || list.Count==0 || list.Any(q=>q==null || q.Length!=dimensions || q.Any(v=>double.IsNaN(v)||double.IsInfinity(v))))
+                    throw new ArgumentException("候选关节解无效");
+            if (allowance!=null && allowance.Any(v=>double.IsNaN(v)||double.IsInfinity(v)))
+                throw new ArgumentException("转移段权重无效");
+            var costs = new List<double[]>(); var parents = new List<int[]>();
+            for (int point=0; point<candidates.Count; point++)
+            {
+                if (candidates[point].Count == 0) throw new ArgumentException("点位缺少候选关节解");
+                var score = new double[candidates[point].Count]; var previous = new int[score.Length];
+                for (int j=0;j<score.Length;j++)
+                {
+                    var q=candidates[point][j];
+                    double center = wristPreference && q.Length>=6 ? 0.2*(Math.Abs(q[3])+Math.Abs(q[5])+Math.Max(Math.Abs(q[3]),Math.Abs(q[5]))) : 0;
+                    score[j]=point==0 ? center : double.PositiveInfinity; previous[j]=-1;
+                    if (point==0) continue;
+                    double room = allowance == null ? 1 : Math.Max(1, allowance[point-1]);
+                    for(int k=0;k<candidates[point-1].Count;k++)
+                    {
+                        var from=candidates[point-1][k];
+                        if(from.Length!=q.Length) throw new ArgumentException("候选关节维度不一致");
+                        double travel=0, wrist=0;
+                        for(int axis=0;axis<q.Length;axis++)
+                        {
+                            double delta=Math.Abs(q[axis]-from[axis]); travel+=delta;
+                            if(wristPreference && (axis==3||axis==5))wrist=Math.Max(wrist,delta);
+                        }
+                        double jump=Math.Max(0,wrist-Math.PI/3);
+                        double value=costs[point-1][k]+center+travel+12*jump*jump/room;
+                        if(value<score[j]){score[j]=value;previous[j]=k;}
+                    }
+                }
+                costs.Add(score);parents.Add(previous);
+            }
+            int best=0,last=costs.Count-1;
+            for(int j=1;j<costs[last].Length;j++)if(costs[last][j]<costs[last][best])best=j;
+            var result=new List<double[]>();
+            for(int point=last;point>=0;point--){result.Add((double[])candidates[point][best].Clone());best=parents[point][best];}
+            result.Reverse();return result;
         }
     }
 

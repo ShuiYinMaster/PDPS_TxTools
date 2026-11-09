@@ -374,7 +374,15 @@
         card.appendChild(deleteConfirm);
         // 体
         var body = el('div', 'rcp-card-body');
-        if (rec.description) body.appendChild(renderDescription('rcp-desc', rec.description));
+        if (rec.description) {
+            var guide = el("details", "rcp-guide");
+            state.guideOpen = state.guideOpen || {};
+            guide.open = !!state.guideOpen[rec.id];
+            guide.appendChild(el("summary", null, "使用说明"));
+            guide.appendChild(renderDescription("rcp-desc", rec.description));
+            guide.ontoggle = function () { state.guideOpen[rec.id] = guide.open; };
+            body.appendChild(guide);
+        }
 
         (rec.params || []).forEach(function (p) {
             if (!fixedByActions(rec, p)) body.appendChild(renderParam(rec, p, function () { card.updateRunButtons(); }));
@@ -506,13 +514,10 @@
             pick.onclick = function () { beginPick(rec, p); };
             row.appendChild(pick);
 
-            if (b && !picking && !pickErr) {
-                var clr = el('button', 'rcp-btn', '×');
-                clr.title = '清除';
-                clr.disabled = busy;
-                clr.onclick = function () { setBinding(rec.id, p.name, null); render(); };
-                row.appendChild(clr);
-            }
+            var clr = el("button", "rcp-btn rcp-clear", "清除绑定");
+            clr.disabled = busy || picking || !b;
+            clr.onclick = function () { setBinding(rec.id, p.name, null); render(); };
+            if (!p.objectFilter) row.appendChild(clr);
             wrap.appendChild(row);
             if (p.objectFilter) {
                 var query = objectQuery(rec, p);
@@ -525,7 +530,7 @@
                 var nameLabel = el('label', 'rcp-filter-label', '名称包含');
                 var name = el('input', 'rcp-input'); name.type = 'text'; name.id = 'rcp-name-' + rec.id + '-' + p.name; nameLabel.htmlFor = name.id;
                 name.value = query.name; name.placeholder = '输入名称关键词，可留空'; name.maxLength = 200; name.disabled = busy || picking;
-                var search = el('button', 'rcp-btn rcp-search', '按条件查找');
+                var search = el('button', 'rcp-btn rcp-search rcp-primary', '按条件查找');
                 search.disabled = busy || picking || (query.type === 'all' && !query.name.trim());
                 function changeQuery() {
                     query.type = type.value; query.name = name.value;
@@ -536,11 +541,12 @@
                 }
                 type.onchange = changeQuery; name.oninput = changeQuery;
                 search.onclick = function () { beginPick(rec, p, true); };
-                filters.appendChild(typeLabel); filters.appendChild(type); filters.appendChild(nameLabel); filters.appendChild(name); filters.appendChild(search);
+                filters.appendChild(typeLabel); filters.appendChild(type); filters.appendChild(nameLabel); filters.appendChild(name);
+                var tools = el("div", "rcp-filter-actions"); tools.appendChild(search);
                 var refreshTypes = el('button', 'rcp-btn rcp-search', p.typesLoading ? '读取类型中…' : '刷新类型');
                 refreshTypes.disabled = busy || picking || !!p.typesLoading; refreshTypes.onclick = function(){ loadObjectTypes(rec,p); render(); };
-                filters.appendChild(refreshTypes);
-                filters.appendChild(el('div', 'rcp-filter-help', '类型来自当前场景；名称按关键词匹配。'));
+                tools.appendChild(refreshTypes); tools.appendChild(clr); filters.appendChild(tools);
+                filters.appendChild(el('div', 'rcp-filter-help', '类型含资源与原型分类；名称按关键词匹配。'));
                 if (p.objectTypesLoaded === false && state.open[rec.id] && !root.classList.contains('rcp-collapsed') && !busy && !p.typesLoading) setTimeout(function(){ if (state.open[rec.id] && !root.classList.contains("rcp-collapsed") && state.recipes.indexOf(rec) >= 0) loadObjectTypes(rec,p); }, 0);
                 wrap.appendChild(filters);
             }
@@ -570,7 +576,10 @@
                 setBinding(rec.id, p.name, { value: p.kind === 'bool' ? inp.checked : inp.value });
                 updateButtons();
             };
-            wrap.appendChild(inp);
+            if (p.kind === "bool" && !choices.length) {
+                wrap.className += " rcp-check-row";
+                wrap.appendChild(inp);
+            } else wrap.appendChild(inp);
             if (p.kind === 'color') {
                 var hex = el('span', 'rcp-color-value', String(value).toUpperCase());
                 wrap.appendChild(hex);

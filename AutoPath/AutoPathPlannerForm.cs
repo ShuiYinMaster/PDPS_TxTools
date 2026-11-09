@@ -188,6 +188,7 @@ namespace TxTools.AutoPathPlanner
         // --- v6.0 焊钳外部轴 ---
         private CheckBox _chkGunAxis;            // GunAxisWriteEnabled
         private NumericUpDown _nudTargetOpening; // TargetGunOpening
+        private NumericUpDown _nudWeldOpening;
         private CheckBox _chkAdaptiveGun;        // AdaptiveGunOpening
         private NumericUpDown _nudTransitOpening;// TransitGunOpening
         private ComboBox _cboGunDir;             // v6.4 开口方向覆盖
@@ -425,17 +426,20 @@ namespace TxTools.AutoPathPlanner
                         "过渡点运动类型设为 Joint —— 各关节以最高效方式移动。\r\n"
                         + "用 Linear 是节拍杀手 (TCP 走直线, 关节被迫绕路)");
 
+                    _nudWeldOpening = AddRow(tp5, "焊点开口(mm):", 10, ref y, 0, 0, 300,
+                        "焊接位置的到达/离开开口，0 表示 CLOSE 位姿；可按工件厚度调整。");
+
                     int y2 = 12;
                     _chkGunAxis = AddCheck(tp5, "焊钳开口写入外部轴", 330, ref y2, true,
-                        "把开口值写进 Via 点的 RobotExternalAxesData。\r\n"
+                        "把焊点及 Via 开口写进 RobotExternalAxesData。\r\n"
                         + "需要焊钳已注册为机器人外部轴 (否则日志会提示)");
                     _nudTargetOpening = AddRow(tp5, "进/出枪开口(mm):", 330, ref y2, 30, 0, 300,
                         "进/出枪点的开口 —— 够越过翻边即可");
                     _chkAdaptiveGun = AddCheck(tp5, "过渡点按需最小开口", 330, ref y2, true,
                         "从小到大试开口, 第一个不干涉的就用。\r\n"
                         + "开口大=伺服行程长=慢, 且枪臂张开包络更大反而更容易撞");
-                    _nudTransitOpening = AddRow(tp5, "过渡点开口(mm):", 330, ref y2, 60, 0, 300,
-                        "关闭\"按需最小开口\"时, 过渡点统一用此开口");
+                    _nudTransitOpening = AddRow(tp5, "过渡开口上限(mm):", 330, ref y2, 60, 0, 300,
+                        "关闭\"按需最小开口\"时, 联合搜索以此为开口上限，home 默认用此开口");
 
                     // v6.4 开口方向手动覆盖
                     tp5.Controls.Add(new Label
@@ -702,6 +706,7 @@ namespace TxTools.AutoPathPlanner
             _chkMotionJoint.Checked = true;
             _chkGunAxis.Checked = true;
             _nudTargetOpening.Value = 30;
+            _nudWeldOpening.Value = 0;
             _chkAdaptiveGun.Checked = true;
             _nudTransitOpening.Value = 60;
             _cboGunDir.SelectedIndex = 0;
@@ -888,6 +893,7 @@ namespace TxTools.AutoPathPlanner
                     // v6.0 焊钳外部轴
                     GunAxisWriteEnabled = _chkGunAxis.Checked,
                     TargetGunOpening = (double)_nudTargetOpening.Value,
+                    WeldGunOpening = (double)_nudWeldOpening.Value,
                     AdaptiveGunOpening = _chkAdaptiveGun.Checked,
                     TransitGunOpening = (double)_nudTransitOpening.Value,
                     // v6.4: 0=自动 / 1=正向 / 2=负向  →  0 / +1 / -1

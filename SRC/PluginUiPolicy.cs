@@ -7,6 +7,11 @@ using System.Windows.Forms;
 
 namespace TxTools.Common
 {
+    /// <summary>图标按钮使用独立的设计尺寸，不套用文字按钮最小宽度。</summary>
+    public interface ICompactIconButton
+    {
+        Size DesignButtonSize { get; }
+    }
     /// <summary>96-DPI design dimensions, scaled once by FormUiKit.</summary>
     public static class PluginUiPolicy
     {
@@ -65,6 +70,17 @@ namespace TxTools.Common
             var button = root as Button;
             if (button != null)
             {
+                var icon=button as ICompactIconButton;
+                if(icon!=null)
+                {
+                    button.AutoSize=false;
+                    button.Padding=Padding.Empty;
+                    button.MinimumSize=button.MaximumSize=Size.Empty;
+                    button.Size=new Size((int)Math.Round(icon.DesignButtonSize.Width*scale),
+                        (int)Math.Round(icon.DesignButtonSize.Height*scale));
+                    button.Anchor=AnchorStyles.Top|AnchorStyles.Left;
+                    return;
+                }
                 button.AutoSize = false;
                 button.Padding = new Padding(4, 0, 4, 0);
                 button.MinimumSize = button.MaximumSize = Size.Empty;

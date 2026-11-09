@@ -22,6 +22,7 @@ namespace TxTools.WeldAnnotator
         public bool NewSheet { get; set; } = true;
         public bool WriteList { get; set; } = true;
         public LabelNamingMode LabelMode { get; set; } = LabelNamingMode.Sequence;
+        public bool UseMfgName { get; set; }
         public string Prefix { get; set; } = "";
         public string Suffix { get; set; } = "";
     }
@@ -33,14 +34,8 @@ namespace TxTools.WeldAnnotator
 
         private static string GetAnnotationLabel(WeldAnnotationPoint pt, int ordinal, AnnotationExportOptions options)
         {
-            switch (options.LabelMode)
-            {
-                case LabelNamingMode.PointName: return pt.Name ?? "";
-                case LabelNamingMode.Prefix: return options.Prefix + ordinal;
-                case LabelNamingMode.Suffix: return ordinal + options.Suffix;
-                case LabelNamingMode.SeqAndName: return ordinal + "-" + pt.Name;
-                default: return ordinal.ToString();
-            }
+            return AnnotationLabelFormatter.Format(pt.Name, pt.MfgName, ordinal,
+                options.LabelMode, options.Prefix, options.Suffix, options.UseMfgName);
         }
 
         public static AnnotationExportResult ExportToActiveExcel(D.Bitmap bmp, List<WeldAnnotationPoint> points,

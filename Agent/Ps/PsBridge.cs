@@ -497,7 +497,7 @@ namespace TxTools.Agent.Ps
                                 .Where(n => !string.IsNullOrEmpty(n)).Distinct(StringComparer.OrdinalIgnoreCase).Count();
                             var point = new WeldAnnotationPoint
                             {
-                                Index = points.Count + 1, Name = pi.Name, OpName = op.Name,
+                                Index = points.Count + 1, Name = pi.Name, MfgName = pi.MfgName, OpName = op.Name,
                                 X = pi.Position[0], Y = pi.Position[1], Z = pi.Position[2], BoundPartsCount = parts
                             };
                             points.Add(point);

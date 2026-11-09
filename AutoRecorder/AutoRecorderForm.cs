@@ -19,22 +19,12 @@ namespace TxTools.AutoRecorder
     /// <summary>
     /// 操作录像主窗口。
     ///
-    /// GUI v2（本次重构）：
-    ///   · 原版整窗绝对坐标手排（Left/Top/y+=），折叠展开靠 RelayoutBelowKeyframePanel
-    ///     遍历平移所有下方控件 + 硬编码 798/928 高度常量，高 DPI 下脆弱且难维护。
-    ///   · 现改为：单列根 TableLayoutPanel（AutoSize 行），关键帧卡 / 日志卡折叠展开
-    ///     只改自身 Height，下方内容自动回流；窗体高度由 UpdateFormHeight 按内容实测
-    ///     （常量法兜底），RelayoutBelowKeyframePanel 整个删除。
-    ///   · 录像参数卡内部改为 TableLayoutPanel 参数行（标签列 AutoSize + 内容列 100%），
-    ///     替换逐控件像素定位，200% DPI 下对齐稳定。
-    ///   · 保持 600 宽窄竖条 + 右上角定位（不遮挡 3D 主视口拾取的设计意图不变）。
-    ///   · 录制服务、关键帧编辑、批量任务等业务逻辑零改动。
+    /// 操作使用 SDK 多选网格；右侧编辑独立镜头片段及兼容 Location 视角。
+    /// 预览在 PS 主视口执行，录制由仿真时间事件驱动。
     /// </summary>
     public class AutoRecorderForm : PickAwareTxForm
     {
         // ===== 根布局 =====
-        private TableLayoutPanel _mainSplit;   // 外两层：左（参数/日志）+ 右（视角关键帧）
-        private TableLayoutPanel _leftPanel;   // 左列：单列 AutoSize 内容表（原 _root）
 
         // ===== 操作选择 =====
         private TxObjGridCtrl _grid;
@@ -52,6 +42,16 @@ namespace TxTools.AutoRecorder
         private ComboBox _cmbKfOpSelector;  // 当前编辑哪个 op
         private bool _syncingKfFromGrid;    // 防止 grid→下拉 同步造成的回环
         private DataGridView _gridKf;           // location 表
+        private CameraShotEditor _shotEditor;
+        private SimulationPreview _fullPreview;
+        private bool _closeAfterPreviewStop;
+        private Button _planButton;
+
+        private RecorderWorkspace _workspace;
+        private Control _settingsTable;
+        private Label _editingTitle;
+        private Button _advancedSettingsButton;
+        private readonly TableLayoutPanel _advancedFields=new TableLayoutPanel {Dock=DockStyle.Fill,AutoScroll=true,ColumnCount=2,Padding=new Padding(12)};
         private Button _btnKfSet;         // 用当前视角设定/更新
         private Button _btnKfPreview;     // 预览
         private Button _btnKfClear;       // 清除
@@ -100,12 +100,12 @@ namespace TxTools.AutoRecorder
 
         // 布局常量（仅作初始值 / 兜底；实际高度由 UpdateFormHeight 按内容实测）
         private const int PAD = 8;
-        private const int FORM_W = 880;
-        private const float LEFT_PCT = 54F;    // 左列宽度占比
-        private const float RIGHT_PCT = 46F;   // 右列（视角关键帧）宽度占比
-        private const int CARD1_H = 258;
+        private const int FORM_W = 1060;
+        private const float LEFT_PCT = 46F;
+        private const float RIGHT_PCT = 54F;
+        private const int CARD1_H = 290;
         private const int LOG_H = 130;
-        private const int FORM_H_FALLBACK = 700;
+        private const int FORM_H_FALLBACK = 680;
         private static readonly Size _designSize = new Size(FORM_W, FORM_H_FALLBACK);
         private bool _dpiApplied;
 
@@ -114,18 +114,31 @@ namespace TxTools.AutoRecorder
         public AutoRecorderForm(SynchronizationContext psCtx)
         {
             SemiModal = false;
-            _psCtx = psCtx
-                     ?? SynchronizationContext.Current
-                     ?? new SynchronizationContext();
+            var context = psCtx ?? SynchronizationContext.Current;
+            _psCtx = context == null || context.GetType() == typeof(SynchronizationContext)
+                ? new WindowsFormsSynchronizationContext() : context;
 
             // 统一窗体规范 + DPI（套件唯一一处缩放设置，详见 FormUiKit）。
             // 串扰修复：InitStandardForm 内部已按 ExportGun 方案设唯一 Name，
             // 各窗体几何独立持久化、互不干扰。本窗体固定尺寸、折叠展开由 ClientSize 驱动。
             FormUiKit.InitStandardForm(this, "TxTools 操作录像",
-                _designSize, Size.Empty, sizable: false);
+                _designSize, new Size(1000, 620), sizable: true);
             this.StartPosition = FormStartPosition.Manual;   // 自行 PositionTopRight，不挡主视口
             this.ClientSize = new Size(FORM_W, FORM_H_FALLBACK);
 
+            _fullPreview=new SimulationPreview(_psCtx);
+            _fullPreview.StateChanged+=()=>{if(IsDisposed||Disposing||_shotEditor==null)return;_shotEditor.SetPreviewPaused(_fullPreview.Paused);RefreshButtonState();};
+            _fullPreview.Progress+=time=> {if(!IsDisposed)_shotEditor.UpdateSimulationTime(time);};
+            _fullPreview.Finished+=message=>
+            {
+                if(IsDisposed||Disposing)return;
+                RefreshButtonState();UpdateStatusLabel(message,"—");
+                if(_closeAfterPreviewStop)
+                {
+                    _closeAfterPreviewStop=false;
+                    if(!_fullPreview.Running&&IsHandleCreated)BeginInvoke(new Action(Close));
+                }
+            };
             _svc = new RecordingService(_psCtx);
             _svc.Log += OnSvcLog;
             _svc.StateChanged += OnSvcState;
@@ -204,32 +217,6 @@ namespace TxTools.AutoRecorder
         // ============================================================
         private void BuildUi()
         {
-            _mainSplit = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 2,
-                RowCount = 1,
-                Padding = new Padding(PAD, PAD, PAD, 0),
-                Margin = Padding.Empty
-            };
-            _mainSplit.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, LEFT_PCT));
-            _mainSplit.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, RIGHT_PCT));
-            _mainSplit.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-
-            // ---------- 左列：单列 AutoSize 内容表 ----------
-            _leftPanel = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                AutoSize = false,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                ColumnCount = 1,
-                RowCount = 0,
-                Padding = Padding.Empty,
-                Margin = new Padding(0, 0, PAD, 0)
-            };
-            _leftPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            _mainSplit.Controls.Add(_leftPanel, 0, 0);
-
             // ---------- 卡片 1：操作选择（固定高，grid Fill） ----------
             var grp1 = NewGroupBox("操作选择（多选批量；每个操作可独立设置视角）");
             grp1.Height = CARD1_H;
@@ -244,7 +231,8 @@ namespace TxTools.AutoRecorder
                 Margin = Padding.Empty,
                 BorderStyle = BorderStyle.FixedSingle
             };
-            _grid = new TxObjGridCtrl { Dock = DockStyle.Fill };
+            gridPanel.MinimumSize = new Size(0, 190);
+            _grid = new TxObjGridCtrl { Dock = DockStyle.Fill, ValidatorType = TxValidatorType.Operation };
             try
             {
                 _grid.EnableMultipleSelection = true;
@@ -307,7 +295,7 @@ namespace TxTools.AutoRecorder
                 Enabled = false,
                 BgColor = Theme.BtnSecondary,
                 ForeColor = Theme.BtnFore,
-                BorderColor = FormUiKit.Theme.BtnBorder,
+                BorderColor = Color.FromArgb(190,203,215),
                 HoverColor = FormUiKit.Theme.BtnHover,
                 Anchor = AnchorStyles.Right,
                 Margin = new Padding(6, 2, 0, 0)
@@ -316,90 +304,34 @@ namespace TxTools.AutoRecorder
 
             grp1.Controls.Add(gridPanel);      // Fill（先 Add）
             grp1.Controls.Add(grp1Bottom);     // Bottom（后 Add → 占住底边）
-            AddRootRow(grp1, SizeType.Percent, 100, dockFill: true);
 
-            // ---------- 卡片 2：录像参数 ----------
-            var grp2 = NewGroupBox("录像参数");
-            grp2.AutoSize = false;
-            grp2.Padding = new Padding(10, 20, 10, 10);
-            var paramsTable = BuildParamsTable();
-            grp2.Controls.Add(paramsTable);
-            bool fittingParams = false;
-            paramsTable.Layout += (s, e) =>
-            {
-                if (fittingParams) return;
-                fittingParams = true;
-                try
-                {
-                    int height = paramsTable.Bottom + grp2.Padding.Bottom;
-                    if (height > 0 && grp2.Height != height) grp2.Height = height;
-                }
-                finally { fittingParams = false; }
-            };
-            AddRootRow(grp2, SizeType.AutoSize, 0, dockFill: false);
 
-            // ---------- 按钮行 ----------
-            _btnStart = NewButton("开始录制", 110, primary: true);
-            _btnCancel = NewButton("取消录制", 110, primary: false);
-            _btnClose = NewButton("关闭", 90, primary: false);
-
-            var pnlBtns = new FlowLayoutPanel
-            {
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                FlowDirection = FlowDirection.RightToLeft,
-                Margin = new Padding(0, 0, 0, PAD)
-            };
-            pnlBtns.Controls.Add(_btnClose);
-            pnlBtns.Controls.Add(_btnCancel);
-            pnlBtns.Controls.Add(_btnStart);
-            AddRootRow(pnlBtns, SizeType.AutoSize, 0, dockFill: false);
-
-            // ---------- 日志折叠按钮 ----------
-            _btnToggleLog = new FormUiKit.FlatColorButton
-            {
-                Width = 140,
-                Height = 26,
-                Text = "▼ 展开日志",
-                FlatStyle = FlatStyle.Flat,
-                TextAlign = ContentAlignment.MiddleLeft,
-                Font = FormUiKit.BaseFont,
-                BgColor = SystemColors.ControlLight,
-                ForeColor = SystemColors.ControlText,
-                BorderColor = FormUiKit.Theme.BtnBorder,
-                HoverColor = FormUiKit.Theme.BtnHover,
-                Anchor = AnchorStyles.Left,
-                Margin = new Padding(0, 0, 0, 4)
-            };
-            AddRootRow(_btnToggleLog, SizeType.AutoSize, 0, dockFill: false, stretch: false);
-
-            // ---------- 日志容器（默认收起，Height 切换 0/LOG_H）----------
-            _pnlLogContainer = new Panel
-            {
-                Height = 0,
-                BorderStyle = BorderStyle.FixedSingle,
-                Visible = false,
-                Margin = new Padding(0, 0, 0, PAD)
-            };
-            _rtbLog = new RichTextBox
-            {
-                Dock = DockStyle.Fill,
-                ReadOnly = true,
-                Font = new Font(FontFamily.GenericMonospace, 8.5F),
-                BackColor = Theme.InputBg,
-                BorderStyle = BorderStyle.None,
-                DetectUrls = false,
-                HideSelection = false,
-            };
+            // 参数控件保留原有读写逻辑，基础输出栏与高级设置分开布局。
+            _settingsTable = BuildParamsTable();
+            _btnStart = NewButton("5  开始录制", 140, primary: true);
+            _btnCancel = NewButton("取消录制", 100, primary: false);
+            _btnClose = NewButton("关闭", 80, primary: false);
+            _btnToggleLog = new Button {Text="查看日志",AutoSize=true};
+            var actions=new FlowLayoutPanel {AutoSize=true,FlowDirection=FlowDirection.RightToLeft,WrapContents=false,Padding=new Padding(4)};
+            actions.Controls.Add(_btnClose);actions.Controls.Add(_btnCancel);actions.Controls.Add(_btnStart);actions.Controls.Add(_btnToggleLog);
+            _planButton=new Button {Text="检查配置",AutoSize=true};_planButton.Click+=(sender,args)=>ShowPlanReport();actions.Controls.Add(_planButton);
+            _pnlLogContainer=new Panel {Height=0,Visible=false};
+            _rtbLog=new RichTextBox {Dock=DockStyle.Fill,ReadOnly=true,BorderStyle=BorderStyle.FixedSingle,DetectUrls=false};
             _pnlLogContainer.Controls.Add(_rtbLog);
-            AddRootRow(_pnlLogContainer, SizeType.AutoSize, 0, dockFill: false);
-            PluginLog.Register(_pnlLogContainer, false, _btnToggleLog);
+            PluginLog.Register(_pnlLogContainer,false,_btnToggleLog);
+            var advanced=new Button {Text="高级设置…",AutoSize=true};
+            advanced.Click+=(sender,args)=>ShowAdvancedSettings();
+            var output=RecorderWorkspace.OutputBar(_lblPath,_txtPath,_btnBrowse,_numFps,advanced);
+            _advancedSettingsButton=advanced;
+            grp1.Text="1  录制操作（可多选）";grp1.Padding=new Padding(8,24,8,8);
+            _lblOpInfo.AutoSize=false;_lblOpInfo.Dock=DockStyle.Fill;_lblOpInfo.Height=62;
+            _lblOpInfo.Text="在 PS 主视口拾取操作，可多次追加。选中一行后编排该操作的镜头。";
+            _chkAutoApplyView.Text="拾取后定位视角";_chkAutoApplyView.ForeColor=Color.DimGray;
+            _btnSaveView.Visible=false;
 
-            // ---------- 右列：视角关键帧（占满全部高度） ----------
             BuildKeyframeCard();
-            _mainSplit.Controls.Add(_grpKf, 1, 0);
-
-            this.Controls.Add(_mainSplit);
+            _workspace = new RecorderWorkspace(grp1,_grpKf,output,actions,_pnlLogContainer);
+            Controls.Add(_workspace);
 
             // ---------- StatusStrip ----------
             _statusStrip = new StatusStrip { Font = FormUiKit.BaseFont };
@@ -417,7 +349,7 @@ namespace TxTools.AutoRecorder
             };
             _statusStrip.Items.Add(_lblStatus);
             _statusStrip.Items.Add(_lblTimer);
-            this.Controls.Add(_statusStrip);
+            _workspace.AttachStatus(_statusStrip);
         }
 
         /// <summary>
@@ -426,27 +358,6 @@ namespace TxTools.AutoRecorder
         /// 其余行 AutoSize，控件 Dock=Top（宽度占满、高度自带）。
         /// stretch=false 时控件保持自身宽度靠左（如日志折叠按钮）。
         /// </summary>
-        private void AddRootRow(Control ctrl, SizeType sizeType, float height,
-                                bool dockFill, bool stretch = true)
-        {
-            int r = _leftPanel.RowCount;
-            _leftPanel.RowCount = r + 1;
-            _leftPanel.RowStyles.Add(sizeType != SizeType.AutoSize
-                ? new RowStyle(sizeType, height)
-                : new RowStyle(SizeType.AutoSize));
-
-            if (dockFill) ctrl.Dock = DockStyle.Fill;
-            else if (stretch) ctrl.Dock = DockStyle.Top;
-            // stretch=false：不 Dock，按控件自身 Width + Anchor 排
-
-            if (ctrl.Margin == Padding.Empty)
-                ctrl.Margin = new Padding(0, 0, 0, PAD);
-            _leftPanel.Controls.Add(ctrl, 0, r);
-        }
-
-        // ============================================================
-        // 录像参数表（标签列 AutoSize + 内容列 100%）
-        // ============================================================
         private Control BuildParamsTable()
         {
             var t = new TableLayoutPanel
@@ -475,9 +386,9 @@ namespace TxTools.AutoRecorder
                 Height = 26,
                 FlatStyle = FlatStyle.Flat,
                 Font = FormUiKit.BaseFont,
-                BgColor = Theme.BtnMuted,
+                BgColor = Color.FromArgb(237,242,247),
                 ForeColor = Theme.BtnFore,
-                BorderColor = FormUiKit.Theme.BtnBorder,
+                BorderColor = Color.FromArgb(190,203,215),
                 HoverColor = FormUiKit.Theme.BtnHover,
                 Anchor = AnchorStyles.Right,
                 Margin = new Padding(0, 1, 0, 1)
@@ -697,8 +608,8 @@ namespace TxTools.AutoRecorder
             {
                 Text = text,
                 Font = FormUiKit.BaseFont,
-                HeaderColor = Theme.CardTitle,
-                ForeColor = Theme.CardTitle
+                HeaderColor = Color.FromArgb(35,81,116),
+                ForeColor = Color.FromArgb(35,81,116)
             };
         }
 
@@ -712,9 +623,9 @@ namespace TxTools.AutoRecorder
                 FlatStyle = FlatStyle.Flat,
                 Font = FormUiKit.BaseFont,
                 Margin = new Padding(4, 0, 4, 0),
-                BgColor = primary ? Theme.BtnPrimary : SystemColors.ControlLight,
-                ForeColor = primary ? Theme.BtnFore : SystemColors.ControlText,
-                BorderColor = FormUiKit.Theme.BtnBorder,
+                BgColor = primary ? Color.FromArgb(20,105,166) : SystemColors.ControlLight,
+                ForeColor = primary ? Color.White : SystemColors.ControlText,
+                BorderColor = Color.FromArgb(190,203,215),
                 HoverColor = FormUiKit.Theme.BtnHover
             };
         }
@@ -722,6 +633,13 @@ namespace TxTools.AutoRecorder
         // ============================================================
         // 事件绑定
         // ============================================================
+        private void ShowAdvancedSettings()
+        {
+            using(var dialog=new RecordingSettingsDialog(_advancedFields,Font,_cmbCodec,_cmbTimeSource,
+                _numCompression,_chkCustomRes,_numResW,_numResH,_cmbSpeedup,_chkFocus))
+                dialog.ShowDialog(this);
+        }
+
         private void BindEvents()
         {
             // TxObjGridCtrl 拾取
@@ -734,6 +652,7 @@ namespace TxTools.AutoRecorder
             _btnClose.Click += (s, e) => this.Close();
             _btnToggleLog.Click += OnToggleLog;
             _btnSaveView.Click += OnSaveCurrentView;
+            _btnSaveView.Visible = false; // 起始视角统一在右侧起始行记录。
 
             _chkCustomRes.CheckedChanged += (s, e) =>
             {
@@ -894,7 +813,7 @@ namespace TxTools.AutoRecorder
 
             _btnKfSet = new FormUiKit.FlatColorButton
             {
-                Text = "[设定为当前视角]",
+                Text = "记录当前视角",
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 MinimumSize = new Size(140, 26),
@@ -905,14 +824,14 @@ namespace TxTools.AutoRecorder
                 Enabled = false,
                 BgColor = Theme.BtnPrimary,
                 ForeColor = Theme.BtnFore,
-                BorderColor = FormUiKit.Theme.BtnBorder,
+                BorderColor = Color.FromArgb(190,203,215),
                 HoverColor = FormUiKit.Theme.BtnHover
             };
             _btnKfSet.Click += OnKfSet;
 
             _btnKfPreview = new FormUiKit.FlatColorButton
             {
-                Text = "[预览]",
+                Text = "预览视角",
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 MinimumSize = new Size(70, 26),
@@ -923,14 +842,14 @@ namespace TxTools.AutoRecorder
                 Enabled = false,
                 BgColor = Theme.BtnSecondary,
                 ForeColor = Theme.BtnFore,
-                BorderColor = FormUiKit.Theme.BtnBorder,
+                BorderColor = Color.FromArgb(190,203,215),
                 HoverColor = FormUiKit.Theme.BtnHover
             };
             _btnKfPreview.Click += OnKfPreview;
 
             _btnKfClear = new FormUiKit.FlatColorButton
             {
-                Text = "[清除]",
+                Text = "清除",
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 MinimumSize = new Size(70, 26),
@@ -939,9 +858,9 @@ namespace TxTools.AutoRecorder
                 Font = FormUiKit.BaseFont,
                 Margin = new Padding(0),
                 Enabled = false,
-                BgColor = Theme.BtnMuted,
+                BgColor = Color.FromArgb(237,242,247),
                 ForeColor = Theme.BtnFore,
-                BorderColor = FormUiKit.Theme.BtnBorder,
+                BorderColor = Color.FromArgb(190,203,215),
                 HoverColor = FormUiKit.Theme.BtnHover
             };
             _btnKfClear.Click += OnKfClear;
@@ -1049,6 +968,8 @@ namespace TxTools.AutoRecorder
             });
 
             _gridKf.SelectionChanged += (s, e) => RefreshKfButtonState();
+            foreach (DataGridViewColumn column in _gridKf.Columns)
+                column.SortMode = DataGridViewColumnSortMode.NotSortable;
 
             // 按 Dock 优先级 Add：WinForms 是"后 Add 的更贴边"，所以
             //   最贴底边的（状态行）最后 Add 在 Bottom 组里
@@ -1061,6 +982,36 @@ namespace TxTools.AutoRecorder
             // 保存引用
             _pnlOpRow = pnlOpRow;
             _pnlKfBtns = pnlKfBtns;
+
+            var legacy = new TabPage("Location 视角");
+            legacy.Controls.Add(_gridKf);
+            legacy.Controls.Add(pnlKfBtns);
+            legacy.Controls.Add(_lblKfStatus);
+            var shots = new TabPage("镜头编排");
+            _shotEditor = new CameraShotEditor();
+            _shotEditor.Changed+=()=> {if(_kfEditingOp==null)return;GetOrCreateSchedule(_kfEditingOp).Quick=_shotEditor.QuickMode;RefreshButtonState();};
+            _shotEditor.SaveRequested+=SaveCurrentPlan;
+            _shotEditor.LoadRequested+=LoadCurrentPlan;
+            _shotEditor.CopyRequested+=CopyCurrentPlan;
+            _shotEditor.SimulationRequested+=StartOperationPreview;
+            _shotEditor.StopRequested+=()=>_fullPreview.Stop();
+            _shotEditor.RestoreViewRequested+=()=>
+            {
+                bool restored=_fullPreview.RestoreView();
+                _shotEditor.SetRestoreAvailable(_fullPreview.CanRestoreView);
+                UpdateStatusLabel(restored?"已恢复预演前视角（仿真位置保持不变）":"没有可恢复的预演视角，或预演尚未停止","—");
+            };
+            _shotEditor.PauseRequested+=()=>_fullPreview.TogglePause();
+            shots.Controls.Add(_shotEditor);
+            var tabs = new TabControl { Dock = DockStyle.Fill };
+            tabs.TabPages.Add(shots);
+            tabs.TabPages.Add(legacy);
+            _grpKf.Controls.Add(tabs);
+            tabs.BringToFront();
+            pnlOpRow.BringToFront();
+            _cmbKfOpSelector.Visible=false;lblOp.Visible=false;
+            _editingTitle=new Label {Dock=DockStyle.Fill,Text="当前操作：尚未选择",Padding=new Padding(6,4,0,0),ForeColor=Color.FromArgb(35,81,116)};
+            pnlOpRow.Controls.Add(_editingTitle);_editingTitle.BringToFront();
         }
 
         // 保存对 op 选择行容器 / 按钮行容器的引用
@@ -1072,29 +1023,12 @@ namespace TxTools.AutoRecorder
         /// </summary>
         private void UpdateFormHeight()
         {
-            int h;
-            try
-            {
-                _leftPanel.PerformLayout();
-                int statusH = (_statusStrip != null && _statusStrip.Height > 0)
-                    ? _statusStrip.Height : 24;
-                h = _leftPanel.PreferredSize.Height + statusH;
-                if (h < 300) throw new InvalidOperationException("layout not ready");
-            }
-            catch
-            {
-                // 兜底：常量法（与原版一致）
-                int logExtra = _logExpanded ? (LOG_H + 2) : 0;
-                h = (int)Math.Round((FORM_H_FALLBACK + logExtra) *
-                    FormUiKit.GetLayoutScale(this));
-            }
-            var wa = Screen.FromControl(this).WorkingArea;
-            int chromeHeight = this.Height - this.ClientSize.Height;
-            int maxClientHeight = Math.Max(1, wa.Height - chromeHeight - 32);
-            AutoScroll = false;
-            AutoScrollMinSize = Size.Empty;
-            this.ClientSize = new Size(this.ClientSize.Width, Math.Min(h, maxClientHeight));
-            if (_statusStrip != null) _statusStrip.BringToFront();
+            // 保持用户调整后的窗口尺寸，不随日志和属性变化反复重设高度。
+            var wa=Screen.FromControl(this).WorkingArea;
+            if(Width>wa.Width||Height>wa.Height)
+                Size=new Size(Math.Min(Width,wa.Width),Math.Min(Height,wa.Height));
+            if(_workspace!=null)_workspace.PerformLayout();
+            if(_statusStrip!=null)_statusStrip.BringToFront();
         }
 
         /// <summary>
@@ -1237,7 +1171,13 @@ namespace TxTools.AutoRecorder
         {
             if (_gridKf == null) return;
             _gridKf.Rows.Clear();
+            if (_editingTitle != null) _editingTitle.Text = _kfEditingOp == null ? "当前操作：尚未选择" : "当前操作：" + PsReader.GetObjectName(_kfEditingOp);
             _kfLocations = null;
+            if (_shotEditor != null)
+            {
+                var current=_kfEditingOp==null?null:GetOrCreateSchedule(_kfEditingOp);
+                _shotEditor.Bind(current?.Shots,PsReader.GetOperationDuration(_kfEditingOp),current?.Quick??true,_kfEditingOp==null?0:PsReader.GetOperationLocations(_kfEditingOp).Count);
+            }
 
             if (_kfEditingOp == null)
             {
@@ -1254,6 +1194,7 @@ namespace TxTools.AutoRecorder
                 "—",
                 sched.InitialCamera != null ? "已设" : "—");
             _gridKf.Rows[rowStart].DefaultCellStyle.BackColor = Theme.GridAlt;
+            _gridKf.Rows[rowStart].Tag = 0;
 
             // 接下来一行行 = location 列表
             try
@@ -1280,10 +1221,11 @@ namespace TxTools.AutoRecorder
                         { hasKf = true; break; }
                     }
                 }
-                _gridKf.Rows.Add(locIdx.ToString(),
+                int locationRow = _gridKf.Rows.Add(locIdx.ToString(),
                                  "到达第 " + locIdx + " 点",
                                  locName,
                                  hasKf ? "已设" : "—");
+                _gridKf.Rows[locationRow].Tag = locIdx;
             }
 
             int setCount = (sched.InitialCamera != null ? 1 : 0)
@@ -1312,7 +1254,7 @@ namespace TxTools.AutoRecorder
                 _gridKf.Rows[0].Selected = true;
             }
 
-            RefreshKfButtonState();
+            RefreshButtonState();
         }
 
         private void RefreshKfButtonState()
@@ -1322,7 +1264,8 @@ namespace TxTools.AutoRecorder
             bool hasSel = _gridKf != null && _gridKf.SelectedRows.Count > 0;
             bool isRecording = _svc != null
                 && (_svc.State == RecordingState.Recording
-                 || _svc.State == RecordingState.Preparing);
+                 || _svc.State == RecordingState.Preparing || _fullPreview.Running);
+            if (_shotEditor != null) _shotEditor.SetBusy(isRecording);
 
             _btnKfSet.Enabled = hasOp && hasSel && !isRecording;
             _btnKfPreview.Enabled = hasOp && hasSel && HasCameraForSelectedRow() && !isRecording;
@@ -1336,7 +1279,7 @@ namespace TxTools.AutoRecorder
             int rowIdx = _gridKf.SelectedRows[0].Index;
             var sched = GetOrCreateSchedule(_kfEditingOp);
             if (rowIdx == 0) return sched.InitialCamera != null;
-            int locIdx = rowIdx;
+            int locIdx = Convert.ToInt32(_gridKf.SelectedRows[0].Tag);
             if (sched.Keyframes == null) return false;
             return sched.Keyframes.Any(k => k != null
                                          && k.LocationIndex == locIdx
@@ -1350,11 +1293,12 @@ namespace TxTools.AutoRecorder
 
             var viewer = PsReader.GetGraphicViewer();
             if (viewer == null) { AppendLog("无法获取主视口", LogLevel.Error); return; }
-            var cam = PsReader.GetCurrentCamera(viewer);
+            var cam = CameraShot.Snapshot(PsReader.GetCurrentCamera(viewer));
             if (cam == null) { AppendLog("无法读取当前视角", LogLevel.Warn); return; }
 
             int rowIdx = _gridKf.SelectedRows[0].Index;
             var sched = GetOrCreateSchedule(_kfEditingOp);
+            sched.Quick=false;
 
             if (rowIdx == 0)
             {
@@ -1364,7 +1308,7 @@ namespace TxTools.AutoRecorder
             }
             else
             {
-                int locIdx = rowIdx;
+                int locIdx = Convert.ToInt32(_gridKf.SelectedRows[0].Tag);
                 if (sched.Keyframes == null) sched.Keyframes = new List<CameraKeyframe>();
                 var existing = sched.Keyframes.FirstOrDefault(k => k != null && k.LocationIndex == locIdx);
                 if (existing != null)
@@ -1405,7 +1349,7 @@ namespace TxTools.AutoRecorder
             }
             else if (sched.Keyframes != null)
             {
-                int locIdx = rowIdx;
+                int locIdx = Convert.ToInt32(_gridKf.SelectedRows[0].Tag);
                 var kf = sched.Keyframes.FirstOrDefault(k => k != null && k.LocationIndex == locIdx);
                 if (kf != null) cam = kf.Camera;
             }
@@ -1429,7 +1373,7 @@ namespace TxTools.AutoRecorder
             }
             else if (sched.Keyframes != null)
             {
-                int locIdx = rowIdx;
+                int locIdx = Convert.ToInt32(_gridKf.SelectedRows[0].Tag);
                 sched.Keyframes.RemoveAll(k => k != null && k.LocationIndex == locIdx);
                 AppendLog("已清除第 " + locIdx + " 点视角切换", LogLevel.Info);
             }
@@ -1450,7 +1394,7 @@ namespace TxTools.AutoRecorder
             OperationViewSchedule s;
             if (!_opSchedules.TryGetValue(op, out s))
             {
-                s = new OperationViewSchedule();
+                s = new OperationViewSchedule {Quick=true};
                 _opSchedules[op] = s;
             }
             return s;
@@ -1469,7 +1413,7 @@ namespace TxTools.AutoRecorder
             {
                 var viewer = PsReader.GetGraphicViewer();
                 if (viewer == null) return;
-                var cam = PsReader.GetCurrentCamera(viewer);
+                var cam = CameraShot.Snapshot(PsReader.GetCurrentCamera(viewer));
                 if (cam == null)
                 {
                     AppendLog("无法读取当前视口视角，未记录起始视角", LogLevel.Warn);
@@ -1499,7 +1443,7 @@ namespace TxTools.AutoRecorder
             if (_lastPickedOp == null) { Beep("请先拾取一个操作"); return; }
             var viewer = PsReader.GetGraphicViewer();
             if (viewer == null) { AppendLog("无法获取主视口", LogLevel.Error); return; }
-            var cam = PsReader.GetCurrentCamera(viewer);
+            var cam = CameraShot.Snapshot(PsReader.GetCurrentCamera(viewer));
             if (cam == null) { AppendLog("无法读取当前视角", LogLevel.Warn); return; }
 
             GetOrCreateSchedule(_lastPickedOp).InitialCamera = cam;
@@ -1514,6 +1458,7 @@ namespace TxTools.AutoRecorder
             _lblOpInfo.Text = "未选择操作（在主视口拾取操作，可多次拾取以批量录制）";
             _lblOpInfo.ForeColor = SystemColors.GrayText;
             _lblPath.Text = "输出路径：";
+            foreach(var schedule in _opSchedules.Values)foreach(var shot in schedule.Shots)shot.DisposeThumbnails();
             _opSchedules.Clear();
             _lastPickedOp = null;
             _kfEditingOp = null;
@@ -1579,8 +1524,81 @@ namespace TxTools.AutoRecorder
         // ============================================================
         // 开始录制 —— 自动适应单/多操作模式
         // ============================================================
+        private List<string> PlanMessages(bool errorsOnly)
+        {
+            var messages=new List<string>();
+            foreach(var op in GetSelectedOperations())
+            {
+                var schedule=GetOrCreateSchedule(op);string name=PsReader.GetObjectName(op);
+                var issues=schedule.Quick?new List<string>():ShotPlan.Issues(schedule,PsReader.GetOperationDuration(op),PsReader.GetOperationLocations(op).Count);
+                if(issues.Count==0&&!errorsOnly)messages.Add(name+"："+(schedule.Quick?"快速录像，使用默认/自动聚焦视角":ShotPlan.Summary(schedule.Shots,PsReader.GetOperationDuration(op))));
+                messages.AddRange(issues.Select(issue=>name+"："+issue));
+            }
+            return messages;
+        }
+        private void ShowPlanReport()
+        {
+            using(var dialog=new Form {Text="录制配置检查",ClientSize=new Size(620,380),StartPosition=FormStartPosition.CenterParent,Font=Font})
+            {
+                var root=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=1,RowCount=2,Padding=new Padding(8)};
+                root.RowStyles.Add(new RowStyle(SizeType.Percent,100));root.RowStyles.Add(new RowStyle(SizeType.Absolute,38));
+                root.Controls.Add(new TextBox {Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,Dock=DockStyle.Fill,Text=string.Join(Environment.NewLine,PlanMessages(false))},0,0);
+                var close=new Button {Text="返回配置",Dock=DockStyle.Right,Width=100};close.Click+=(sender,args)=>dialog.Close();root.Controls.Add(close,0,1);dialog.Controls.Add(root);dialog.ShowDialog(this);
+            }
+        }
+        private void SaveCurrentPlan()
+        {
+            if(_kfEditingOp==null)return;
+            using(var dialog=new SaveFileDialog {Title="保存当前操作的镜头配置",Filter="镜头配置 (*.txcamera.xml)|*.txcamera.xml",FileName=MakeSafeFileName(PsReader.GetObjectName(_kfEditingOp))+".txcamera.xml"})
+                if(dialog.ShowDialog(this)==DialogResult.OK)try{ShotPreset.Save(dialog.FileName,GetOrCreateSchedule(_kfEditingOp));UpdateStatusLabel("镜头配置已保存","—");}catch(Exception ex){Beep(ex.Message);}
+        }
+        private void LoadCurrentPlan()
+        {
+            if(_kfEditingOp==null)return;
+            using(var dialog=new OpenFileDialog {Title="载入并替换当前操作的镜头配置",Filter="镜头配置 (*.txcamera.xml)|*.txcamera.xml"})
+                if(dialog.ShowDialog(this)==DialogResult.OK)try
+                {
+                    var loaded=ShotPreset.Load(dialog.FileName);var old=GetOrCreateSchedule(_kfEditingOp);
+                    foreach(var shot in old.Shots)shot.DisposeThumbnails();_opSchedules[_kfEditingOp]=loaded;
+                    RefreshKfPanelContent();RefreshButtonState();
+                    UpdateStatusLabel("配置已载入；对象焦点需用原生选择框重新选取","—");
+                }
+                catch(Exception ex){Beep(ex.Message);}
+        }
+        private void CopyCurrentPlan()
+        {
+            if(_kfEditingOp==null)return;
+            var targets=GetSelectedOperations().Where(op=>!ReferenceEquals(op,_kfEditingOp)).ToList();
+            if(targets.Count==0){Beep("请先在左侧原生多选框追加目标操作");return;}
+            var source=GetOrCreateSchedule(_kfEditingOp);
+            string names=string.Join("、",targets.Select(PsReader.GetObjectName));
+            if(MessageBox.Show(this,"将替换以下操作的镜头配置："+names+"。对象焦点需重新选取。","复制镜头配置",MessageBoxButtons.OKCancel)!=DialogResult.OK)return;
+            foreach(var op in targets)
+            {
+                var old=GetOrCreateSchedule(op);foreach(var shot in old.Shots)shot.DisposeThumbnails();
+                var copy=new OperationViewSchedule {Quick=source.Quick,InitialCamera=CameraShot.Snapshot(source.InitialCamera),Shots=source.Shots.Select(shot=>shot.Clone(true)).ToList()};
+                copy.Keyframes=source.Keyframes.Select(key=>new CameraKeyframe {LocationIndex=key.LocationIndex,Camera=CameraShot.Snapshot(key.Camera)}).ToList();_opSchedules[op]=copy;
+            }
+            RefreshButtonState();UpdateStatusLabel("已复制到 "+targets.Count+" 个操作；请检查焦点和操作时长","—");
+        }
+        private void StartOperationPreview()
+        {
+            if(_kfEditingOp==null)return;
+            var schedule=GetOrCreateSchedule(_kfEditingOp);
+            if(!schedule.Quick&&ShotPlan.Issues(schedule,PsReader.GetOperationDuration(_kfEditingOp),PsReader.GetOperationLocations(_kfEditingOp).Count).Count>0){ShowPlanReport();return;}
+            try{_shotEditor.Restore();_fullPreview.Start(_kfEditingOp,schedule.Quick?null:schedule,_chkFocus.Checked);RefreshButtonState();UpdateStatusLabel("整段操作预演中（不生成视频）","—");}
+            catch(Exception ex){Beep(ex.Message);RefreshButtonState();}
+        }
+
         private void OnStart(object sender, EventArgs e)
         {
+            _shotEditor.Restore();
+            try
+            {
+                var errors=PlanMessages(true);
+                if(errors.Count>0){ShowPlanReport();return;}
+            }
+            catch (Exception ex) { Beep(ex.Message); return; }
             var ops = GetSelectedOperations();
             if (ops.Count == 0) { Beep("请先选择至少一个操作"); return; }
             if (string.IsNullOrWhiteSpace(_txtPath.Text)) { Beep("请先指定输出路径"); return; }
@@ -1645,7 +1663,7 @@ namespace TxTools.AutoRecorder
                             Operation     = ops[0],
                             FilePath      = path,
                             OperationName = PsReader.GetObjectName(ops[0]),
-                            Schedule      = schedSingle,
+                            Schedule      = schedSingle==null||schedSingle.Quick?null:schedSingle,
                         }
                     };
                 }
@@ -1694,7 +1712,9 @@ namespace TxTools.AutoRecorder
 
             _tickElapsed = 0;
             _uiTimer.Start();
+            _shotEditor.SetBusy(true);
             _svc.Start(jobs, opts);
+            RefreshButtonState();
         }
 
         /// <summary>多操作模式：在目录下为每个 op 生成唯一文件名。</summary>
@@ -1721,7 +1741,7 @@ namespace TxTools.AutoRecorder
                     Operation = op,
                     FilePath = path,
                     OperationName = rawName,
-                    Schedule = sched,
+                    Schedule = sched==null||sched.Quick?null:sched,
                 });
             }
             return jobs;
@@ -1753,12 +1773,16 @@ namespace TxTools.AutoRecorder
 
         private void OnCancel(object sender, EventArgs e)
         {
-            _svc.Cancel();
+            if(_fullPreview.Running)_fullPreview.Stop();else _svc.Cancel();
             _uiTimer.Stop();
         }
 
         private void OnFormClosing(object sender, FormClosingEventArgs e)
         {
+            if(_fullPreview.Running)
+            {
+                e.Cancel=true;_closeAfterPreviewStop=true;_fullPreview.Stop();return;
+            }
             if (_svc.State == RecordingState.Recording ||
                 _svc.State == RecordingState.Preparing)
             {
@@ -1770,6 +1794,7 @@ namespace TxTools.AutoRecorder
                 if (r != DialogResult.Yes) { e.Cancel = true; return; }
                 _svc.Cancel();
             }
+            _fullPreview.Stop();
             _uiTimer.Stop();
         }
 
@@ -1889,13 +1914,27 @@ namespace TxTools.AutoRecorder
         private void RefreshButtonState()
         {
             bool isRunning = _svc.State == RecordingState.Recording
-                          || _svc.State == RecordingState.Preparing;
+                          || _svc.State == RecordingState.Preparing || _fullPreview.Running;
+            _shotEditor.SetBusy(isRunning);
             bool canStart = !isRunning
                           && GetGridCount() > 0
                           && !string.IsNullOrWhiteSpace(_txtPath.Text);
 
-            _btnStart.Enabled = canStart;
-            _btnCancel.Enabled = isRunning;
+            var issues=isRunning?new List<string>():PlanMessages(true);
+            _btnStart.Enabled = canStart&&issues.Count==0;
+            if(_planButton!=null){_planButton.Enabled=!isRunning&&GetGridCount()>0;_planButton.Text=isRunning?"配置已锁定":GetGridCount()==0?"配置检查：先选操作":issues.Count==0?"配置检查：就绪":"配置检查：待补 "+issues.Count;}
+            if(_editingTitle!=null&&_kfEditingOp!=null&&!isRunning)
+            {
+                var schedule=GetOrCreateSchedule(_kfEditingOp);
+                _workspace.SetQuickMode(schedule.Quick);
+                _editingTitle.Text="当前操作："+PsReader.GetObjectName(_kfEditingOp)+" · "+(schedule.Quick?"快速录像":ShotPlan.Summary(schedule.Shots,PsReader.GetOperationDuration(_kfEditingOp)));
+            }
+            _workspace.SetQuickMode(_kfEditingOp==null||GetOrCreateSchedule(_kfEditingOp).Quick);
+            _shotEditor.SetSimulationState(_fullPreview.Running,stopping:_fullPreview.Stopping);
+            _shotEditor.SetPreviewPaused(_fullPreview.Paused);
+            _shotEditor.SetRestoreAvailable(_fullPreview.CanRestoreView);
+            if(_advancedSettingsButton!=null)_advancedSettingsButton.Enabled=!isRunning;
+            _btnCancel.Enabled = isRunning&&!_fullPreview.Stopping;
 
             // 参数编辑在录制中禁用
             _txtPath.Enabled = !isRunning;
@@ -1910,6 +1949,8 @@ namespace TxTools.AutoRecorder
             _chkFocus.Enabled = !isRunning;
             if (_cmbSpeedup != null) _cmbSpeedup.Enabled = !isRunning;
             try { _grid.Enabled = !isRunning; } catch { }
+            PickFocus.SetSuspended(_grid, isRunning);
+            _cmbKfOpSelector.Enabled = !isRunning;
             if (_btnSaveView != null)
                 _btnSaveView.Enabled = !isRunning && _lastPickedOp != null;
             if (_chkAutoApplyView != null)
@@ -2070,6 +2111,10 @@ namespace TxTools.AutoRecorder
         {
             if (disposing)
             {
+                _fullPreview?.Dispose();
+                foreach(var schedule in _opSchedules.Values)foreach(var shot in schedule.Shots)shot.DisposeThumbnails();
+                _advancedFields.Dispose();
+                if (_settingsTable != null) _settingsTable.Dispose();
                 try { if (_uiTimer != null) { _uiTimer.Stop(); _uiTimer.Dispose(); } } catch { }
                 try
                 {

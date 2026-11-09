@@ -420,3 +420,16 @@
 .rcp-confirm-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .rcp-danger { color: #fff; border-color: var(--rcp-bad); background: var(--rcp-bad); }
 .rcp-danger:hover:not(:disabled) { color: #fff; border-color: var(--rcp-bad); background: var(--rcp-bad); filter: brightness(.94); }
+
+/* Compact object selection actions. */
+.rcp-filter-actions{grid-column:1/-1;display:flex;gap:4px}
+.rcp-filter-actions .rcp-btn{flex:1;min-width:0;min-height:28px;padding:0 5px;font-size:11px;margin:0}
+.rcp-primary{background:#dbeafe;border-color:#93c5fd;color:#1d4ed8}
+.rcp-clear{background:#fff1f2;border-color:#fecdd3;color:#be123c}
+.rcp-object-filters{margin-top:5px;padding:6px;gap:4px}
+.rcp-filter-help{display:none}
+.rcp-param{margin-bottom:6px}
+
+.rcp-guide{margin:0 0 8px;padding:6px 8px;border:1px solid var(--rcp-line);border-radius:6px}.rcp-guide summary{cursor:pointer;color:var(--rcp-accent);font-size:12px}.rcp-guide .rcp-desc{margin:7px 0 0}.rcp-check-row .rcp-param-label{display:flex;align-items:center;gap:6px;margin:0}.rcp-check-row input[type=checkbox]{width:14px;height:14px;margin:0;flex:0 0 auto}
+
+.rcp-check-row{display:flex;align-items:center;gap:6px}.rcp-check-row input[type=checkbox]{order:-1}

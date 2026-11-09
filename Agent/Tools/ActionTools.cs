@@ -160,7 +160,8 @@ namespace TxTools.Agent.Tools
                 'new_sheet':{'type':'boolean','default':true},
                 'write_list':{'type':'boolean','default':true},
                 'auto_thickness':{'type':'boolean','default':true,'description':'根据绑定零件数区分二层板和三层以上焊点'},
-                'label_mode':{'type':'string','enum':['Sequence','PointName','Prefix','Suffix','SeqAndName'],'default':'Sequence'},
+                'label_mode':{'type':'string','enum':['Sequence','PointName','MfgName','Prefix','Suffix','SeqAndName'],'default':'Sequence'},
+                'use_mfg_name':{'type':'boolean','default':false,'description':'将标注中的焊点名替换为MFG名称，缺失时使用焊点名'},
                 'prefix':{'type':'string'},'suffix':{'type':'string'}
             }}"); } }
         public override string Execute(JObject input)
@@ -169,13 +170,14 @@ namespace TxTools.Agent.Tools
             TxTools.WeldAnnotator.LabelNamingMode mode;
             if (!System.Enum.TryParse(GetString(input, "label_mode", "Sequence"), true, out mode)
                 || !System.Enum.IsDefined(typeof(TxTools.WeldAnnotator.LabelNamingMode), mode))
-                return "Error: label_mode 必须是 Sequence/PointName/Prefix/Suffix/SeqAndName。";
+                return "Error: label_mode 必须是 Sequence/PointName/MfgName/Prefix/Suffix/SeqAndName。";
             return PsBridge.ExportWeldScreenshots(GetString(input, "operation", null), GetString(input, "object_id", null),
                 new TxTools.WeldAnnotator.AnnotationExportOptions
                 {
                     NewSheet = ToolInputHelpers.Bool(input["new_sheet"], true),
                     WriteList = ToolInputHelpers.Bool(input["write_list"], true),
-                    LabelMode = mode, Prefix = GetString(input, "prefix", ""), Suffix = GetString(input, "suffix", "")
+                    LabelMode = mode, UseMfgName = ToolInputHelpers.Bool(input["use_mfg_name"], false),
+                    Prefix = GetString(input, "prefix", ""), Suffix = GetString(input, "suffix", "")
                 }, ToolInputHelpers.Bool(input["auto_thickness"], true));
         }
     }

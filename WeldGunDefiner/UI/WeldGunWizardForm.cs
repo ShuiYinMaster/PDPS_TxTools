@@ -44,7 +44,6 @@ namespace TxTools.WeldGunDefiner.UI
 
         // ── Step1：铰点 ──────────────────────────────────────────────────
         private TxObjEditBoxCtrl _gridO, _gridA, _gridC;
-        private Label _lblErrO, _lblErrA, _lblErrC;
         private TxObjEditBoxCtrl _gridStaticTip, _gridMovingTip;
         private TxFrameEditBoxCtrl _tcpEditBox;
         private TxFrameEditBoxCtrl _baseEditBox;
@@ -66,7 +65,7 @@ namespace TxTools.WeldGunDefiner.UI
         private RichTextBox _txtCoordCard;
 
         // ── Step3：生成 ──────────────────────────────────────────────────
-        private TxObjGridCtrl _gridTargetDevice;
+        private TxObjEditBoxCtrl _targetPicker;
         private TextBox _txtJ1, _txtJ2, _txtInputJ1;
         private CheckBox _chkOpenPositive;
         private CheckBox _chkOpenAdapt;   // 需求4：OPEN状态适配勾选
@@ -75,14 +74,17 @@ namespace TxTools.WeldGunDefiner.UI
 
         // ── DPI（FormUiKit 标准方案）────────────────────────────────────────
         private bool _dpiApplied;
-        private static readonly Size _designSize = new Size(900, 640);
+        private static readonly Size _designSize = new Size(790, 680);
 
         // ── 步骤导航 ─────────────────────────────────────────────────────
         private Panel[] _stepPanels;
         private Button _btnBack, _btnNext, _btnGenerate, _btnFinish;
         private Label _lblStepTitle;
+        private Label _lblStepProgress;
         private Panel _stepIndicator;
         private int _currentStep = 0;
+        private const int PickerHeight = 26;
+        private const int PickerRowHeight = 34;
 
         // ── 构造 ─────────────────────────────────────────────────────────
         public WeldGunWizardForm()
@@ -91,7 +93,7 @@ namespace TxTools.WeldGunDefiner.UI
             FormUiKit.InitStandardForm(this,
                 "X 型焊枪快速定义向导",
                 _designSize,
-                new Size(860, 420),
+                new Size(790, 420),
                 sizable: true);
             StartPosition = FormStartPosition.CenterParent;
             FormClosed += (s, e) =>
@@ -144,10 +146,10 @@ namespace TxTools.WeldGunDefiner.UI
                 Padding = new Padding(6)
             };
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));  // 步骤指示
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));  // 标题
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));  // 步骤指示
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));   // 步骤名称已在指示条显示
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));  // 内容
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));  // 按钮
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));  // 按钮
             Controls.Add(root);
 
             root.Controls.Add(BuildStepIndicator(), 0, 0);
@@ -156,7 +158,7 @@ namespace TxTools.WeldGunDefiner.UI
             {
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Font = new Font(FormUiKit.BaseFont.FontFamily, 10, FontStyle.Bold),
+                Font = FormUiKit.BoldFont,
                 ForeColor = Theme.CardTitle,
                 Padding = new Padding(2, 0, 0, 0)
             };
@@ -168,7 +170,6 @@ namespace TxTools.WeldGunDefiner.UI
 
             _stepPanels = new Panel[]
             {
-                BuildStep0(),
                 BuildStep1(),
                 BuildStep2(),
                 BuildStep3(),
@@ -185,29 +186,39 @@ namespace TxTools.WeldGunDefiner.UI
         // ─────────────────────────────────────────────────────────────────
         private Panel BuildStepIndicator()
         {
-            _stepIndicator = new Panel { Dock = DockStyle.Fill };
-            // 步骤条下方补一条 1px 分隔线：原来面板无边框、底色与窗体相同，
-            // 选项卡底部没有任何边界，看起来像四个悬空的框
+            var steps = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3,
+                RowCount = 1, Margin = Padding.Empty, Padding = Padding.Empty };
+            steps.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            _stepIndicator = steps;
+            // Continuous baseline joins the equal-width step indicators.
             _stepIndicator.Paint += (s, e) =>
             {
                 using (var pen = new Pen(FormUiKit.CardBorder))
                     e.Graphics.DrawLine(pen, 0, _stepIndicator.Height - 1,
                                         _stepIndicator.Width, _stepIndicator.Height - 1);
             };
-            string[] labels = { "1. 焊枪本体", "2. 铰点/Link", "3. 参数", "4. 生成" };
-            int w = 120;
+            string[] labels = { "1. 选择与绑定", "2. 参数", "3. 生成" };
             for (int i = 0; i < labels.Length; i++)
             {
                 int idx = i;
-                _stepIndicator.Controls.Add(new Label
+                steps.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+                var label = new Label
                 {
                     Text = labels[i],
                     Tag = idx,
-                    Location = new Point(i * w, 2),
-                    Size = new Size(w - 2, 28),
+                    Dock = DockStyle.Fill,
+                    Margin = Padding.Empty,
                     TextAlign = ContentAlignment.MiddleCenter,
-                    BorderStyle = BorderStyle.FixedSingle
-                });
+                    BorderStyle = BorderStyle.None
+                };
+                label.Paint += (s, e) =>
+                {
+                    int thickness = idx == _currentStep
+                        ? System.Math.Max(2, (int)System.Math.Round(3 * FormUiKit.GetLayoutScale(this))) : 1;
+                    using (var brush = new SolidBrush(idx == _currentStep ? Color.FromArgb(0, 120, 215) : Color.FromArgb(210, 215, 220)))
+                        e.Graphics.FillRectangle(brush, 0, label.Height - thickness, label.Width, thickness);
+                };
+                steps.Controls.Add(label, i, 0);
             }
             return _stepIndicator;
         }
@@ -218,12 +229,14 @@ namespace TxTools.WeldGunDefiner.UI
             {
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.RightToLeft,
-                Padding = new Padding(4, 6, 4, 0)
+                Padding = new Padding(4, 2, 4, 0),
+                Margin = Padding.Empty,
+                WrapContents = false
             };
             _btnGenerate = NewBtn("生成"); _btnGenerate.Click += (s, e) => DoGenerate(); _btnGenerate.Visible = false;
             _btnNext = NewBtn("下一步 >"); _btnNext.Click += (s, e) => GoNext();
             _btnBack = NewBtn("< 上一步"); _btnBack.Click += (s, e) => GoBack(); _btnBack.Enabled = false;
-            // 完成按钮固定显示在生成按钮右侧，生成成功后启用。
+            // 完成按钮仅在生成页显示，生成成功后启用。
             _btnFinish = NewBtn("完成 ✓"); _btnFinish.Click += (s, e) => Close();
             _btnFinish.EnabledChanged += (sender, e) =>
             {
@@ -236,72 +249,67 @@ namespace TxTools.WeldGunDefiner.UI
             bar.Controls.Add(_btnGenerate);
             bar.Controls.Add(_btnNext);
             bar.Controls.Add(_btnBack);
-            return bar;
+            var footer = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
+            bar.Dock = DockStyle.Right;
+            bar.Width = 390;
+            _lblStepProgress = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = Color.FromArgb(80, 85, 90), Padding = new Padding(4, 0, 0, 0) };
+            footer.Controls.Add(_lblStepProgress);
+            footer.Controls.Add(bar);
+            return footer;
         }
 
         // ═════════════════════════════════════════════════════════════════
         // Step 0：选取焊枪本体 + 建模状态检测
         // ═════════════════════════════════════════════════════════════════
-        private Panel BuildStep0()
+        private Control BuildTargetSelection()
         {
-            var scroll = MkScroll();
-            var stack = MkStack(3);
-
-            // 说明
-            var hint = new Label
-            {
-                Text = "第一步：选取焊枪设备根节点（Component 层级）。\n选取后将自动检测建模状态，未开启则可一键启用。",
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                ForeColor = Color.DimGray,
-                Margin = new Padding(2, 2, 2, 6)
-            };
-            stack.Controls.Add(MkCard("操作说明", hint), 0, 0);
+            var content = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, RowCount = 3,
+                Margin = Padding.Empty };
+            content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, PickerRowHeight));
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
 
             // 设备节点选取（Component 级）
-            var devPanel = new Panel { Dock = DockStyle.Fill, Height = 80, BackColor = SystemColors.Window, BorderStyle = BorderStyle.FixedSingle };
-            _gridTargetDevice = MkGrid(); _gridTargetDevice.PickLevel = TxPickLevel.Component;
-            _gridTargetDevice.Dock = DockStyle.Fill;
-            _gridTargetDevice.ObjectInserted += (sender, e) =>
+            _targetPicker = NewSinglePicker();
+            _targetPicker.PickLevel = TxPickLevel.Component;
+            void UpdateTarget(ITxObject obj)
             {
                 if (_synchronizingTarget) return;
-                var obj = (e as TxObjGridCtrl_ObjectInsertedEventArgs)?.Obj ?? _gridTargetDevice.GetObject(0) as ITxObject;
                 _synchronizingTarget = true;
                 try
                 {
-                    if (!(obj is ITxComponent) || !(obj is ITxKinematicsModellable))
+                    if (obj == null || !(obj is ITxComponent) || !(obj is ITxKinematicsModellable))
                     {
-                        ResetGridObjects(_gridTargetDevice, new List<ITxObject>());
+                        _targetPicker.Object = null;
                         ResetSelectedSetup();
                         _model.TargetComponent = null; _model.TargetKinematics = null; _model.TargetDevice = null;
-                        MessageBox.Show("请选择支持运动学建模的焊钳组件根节点。", "目标无效");
+                        if (obj != null) MessageBox.Show("请选择支持运动学建模的焊钳组件根节点。", "目标无效");
                     }
                     else
                     {
-                        if (_model.TargetKinematics == null || _model.TargetKinematics.Id != obj.Id) ResetSelectedSetup();
-                        if (_gridTargetDevice.Count > 1) ResetGridObjects(_gridTargetDevice, new List<ITxObject> { obj });
+                        bool targetChanged = _model.TargetKinematics == null || _model.TargetKinematics.Id != obj.Id;
+                        if (targetChanged) ResetSelectedSetup();
                         _model.TargetComponent = obj as ITxComponent;
                         _model.TargetKinematics = obj as ITxKinematicsModellable;
                         _model.TargetDevice = obj as ITxDevice;
+                        if (targetChanged && _chkReuseLinks.Checked) RestoreExistingSetup();
                     }
                     UpdateModelingStatus();
                 }
                 finally { _synchronizingTarget = false; }
-            };
-            _gridTargetDevice.RowDeleted += (sender, e) =>
-            {
-                if (_synchronizingTarget) return;
-                ResetSelectedSetup();
-                _model.TargetComponent = null; _model.TargetKinematics = null; _model.TargetDevice = null;
-                UpdateModelingStatus();
-            };
-            devPanel.Controls.Add(_gridTargetDevice);
-            stack.Controls.Add(MkFixedCard("焊枪设备根节点", 120, devPanel), 0, 1);
+            }
+            _targetPicker.Picked += (sender, e) => UpdateTarget(e.IsValidObjectPicked ? e.Object : null);
+            _targetPicker.TypeValid += (sender, e) => UpdateTarget(_targetPicker.Object);
+            _targetPicker.TypeInvalid += (sender, e) => UpdateTarget(null);
+            content.Controls.Add(_targetPicker, 0, 0);
 
             // 建模状态 + 启用按钮
-            var statusPanel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
+            var statusPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
             statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+            statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+            statusPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             _lblModelingStatus = new Label
             {
                 Text = "请先选取焊枪设备",
@@ -309,21 +317,17 @@ namespace TxTools.WeldGunDefiner.UI
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = Color.Gray
             };
-            _btnEnableModeling = NewBtn("启用建模状态");
+            _btnEnableModeling = NewBtn("启用建模");
+            _btnEnableModeling.Dock = DockStyle.Fill;
             _btnEnableModeling.Click += (s, e) => EnableModeling();
             _btnEnableModeling.Enabled = false;
             statusPanel.Controls.Add(_lblModelingStatus, 0, 0);
             statusPanel.Controls.Add(_btnEnableModeling, 1, 0);
-            _chkReuseLinks = new CheckBox { Text = "复用插件已有 Link 与选点，恢复成功后跳过第二步", Checked = true,
-                AutoSize = true, Dock = DockStyle.Top, Margin = new Padding(4, 8, 4, 4) };
-            statusPanel.Controls.Add(_chkReuseLinks, 0, 1);
-            statusPanel.SetColumnSpan(_chkReuseLinks, 2);
-            stack.Controls.Add(MkCard("建模状态检测", statusPanel), 0, 2);
-
-            scroll.Controls.Add(stack);
-            var p = new Panel { Dock = DockStyle.Fill };
-            p.Controls.Add(scroll);
-            return p;
+            _chkReuseLinks = new CheckBox { Text = "选取本体时恢复已有 Link 与选点", Checked = true,
+                AutoSize = false, Dock = DockStyle.Fill, Margin = Padding.Empty };
+            content.Controls.Add(statusPanel, 0, 1);
+            content.Controls.Add(_chkReuseLinks, 0, 2);
+            return MkCard("焊钳本体（组件根节点）", content);
         }
 
         // 更新建模状态显示
@@ -341,13 +345,13 @@ namespace TxTools.WeldGunDefiner.UI
             try { open = _model.TargetKinematics.IsOpenForKinematicsModeling; } catch { }
             if (open)
             {
-                _lblModelingStatus.Text = "[OK] 已开启运动学建模状态";
+                _lblModelingStatus.Text = "已开启建模状态";
                 _lblModelingStatus.ForeColor = Color.DarkGreen;
                 _btnEnableModeling.Enabled = false;
             }
             else
             {
-                _lblModelingStatus.Text = "[!] 未开启建模状态，请点击右侧按钮启用";
+                _lblModelingStatus.Text = "未开启建模状态";
                 _lblModelingStatus.ForeColor = Color.DarkOrange;
                 _btnEnableModeling.Enabled = true;
             }
@@ -376,17 +380,16 @@ namespace TxTools.WeldGunDefiner.UI
             var stack = MkStack(3);
 
             // 铰点使用单对象编辑框；Link 仍保留多对象列表。
-            var hingeLayout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3 };
-            hingeLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
+            var hingeLayout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, Margin = Padding.Empty };
+            hingeLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
             hingeLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            hingeLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
             int hrow = 0;
 
-            void AddHingeRow(string lbl, ref TxObjEditBoxCtrl grid, ref Label errLbl, string tag)
+            void AddHingeRow(string lbl, ref TxObjEditBoxCtrl grid, string tag)
             {
                 string t = tag;
-                hingeLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-                hingeLayout.Controls.Add(new Label { Text = lbl, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(0, 0, 6, 0) }, 0, hrow);
+                hingeLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, PickerRowHeight));
+                hingeLayout.Controls.Add(MakeLabel(lbl), 0, hrow);
                 // PickLevel.Entity：允许选子零件/Frame（修复子项无法选择的问题）
                 var g = NewSinglePicker(true);
                 grid = g;
@@ -401,22 +404,19 @@ namespace TxTools.WeldGunDefiner.UI
                 g.TypeInvalid += (sender, e) => { if (!_restoringSetup) setSource(null); };
                 BindHingePicker(g,
                     pos => { if (t == "O") { _model.WorldO = pos; _model.HasO = true; } else if (t == "A") { _model.WorldA = pos; _model.HasA = true; } else { _model.WorldC = pos; _model.HasC = true; } TryUpdateErrors(); },
-                    () => { if (t == "O") _model.HasO = false; else if (t == "A") { _model.HasA = false; _model.PlaneNormal = default(Vec3); } else _model.HasC = false; ClearErr(t == "O" ? _lblErrO : t == "A" ? _lblErrA : _lblErrC); },
+                    () => { if (t == "O") _model.HasO = false; else if (t == "A") { _model.HasA = false; _model.PlaneNormal = default(Vec3); } else _model.HasC = false; },
                     // A点专用：拾取时确定参考平面法向 N
                     t == "A" ? (Action<Vec3>)(n => {
                         _model.PlaneNormal = n;
                         TryUpdateErrors();
                     }) : null);
                 hingeLayout.Controls.Add(g, 1, hrow);
-                var el = new Label { Text = "--", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.Gray };
-                errLbl = el;
-                hingeLayout.Controls.Add(el, 2, hrow);
                 hrow++;
             }
 
-            AddHingeRow("O 动臂转轴:", ref _gridO, ref _lblErrO, "O");
-            AddHingeRow("A 活塞铰点:", ref _gridA, ref _lblErrA, "A");
-            AddHingeRow("C 连杆铰点:", ref _gridC, ref _lblErrC, "C");
+            AddHingeRow("O 动臂转轴:", ref _gridO, "O");
+            AddHingeRow("A 活塞铰点:", ref _gridA, "A");
+            AddHingeRow("C 连杆铰点:", ref _gridC, "C");
 
             var hintHinge = new Label { Text = "A点确定参考平面法向（Face法向或Frame的Z轴）；三点投影此平面强制共面", Dock = DockStyle.Top, AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(2, 4, 2, 2) };
             var hingeWrap = new Panel { Dock = DockStyle.Top, AutoSize = true };
@@ -425,15 +425,15 @@ namespace TxTools.WeldGunDefiner.UI
             stack.Controls.Add(MkCard("三铰点（连杆机构）", hingeWrap), 0, 0);
 
             // 电极帽使用单对象编辑框。
-            var miscLayout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
-            miscLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
+            var miscLayout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, Margin = Padding.Empty };
+            miscLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
             miscLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             int mrow = 0;
 
             void AddMiscRow(string lbl, ref TxObjEditBoxCtrl grid, Action<ITxObject> onInsert, Action onDelete)
             {
-                miscLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-                miscLayout.Controls.Add(new Label { Text = lbl, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(0, 0, 6, 0) }, 0, mrow);
+                miscLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, PickerRowHeight));
+                miscLayout.Controls.Add(MakeLabel(lbl), 0, mrow);
                 var g = NewSinglePicker();
                 grid = g;
                 ITxObject previous = null;
@@ -465,9 +465,10 @@ namespace TxTools.WeldGunDefiner.UI
             AddMiscRow("动电极帽:", ref _gridMovingTip, o => _model.ObjMovingTip = o, () => _model.ObjMovingTip = null);
 
             // 焊钳TCP：用 PDPS 坐标选择器 TxFrameEditBoxCtrl
-            miscLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-            miscLayout.Controls.Add(new Label { Text = "焊钳TCP:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(0, 0, 6, 0) }, 0, mrow);
-            _tcpEditBox = new TxFrameEditBoxCtrl { Dock = DockStyle.Fill };
+            miscLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, PickerRowHeight));
+            miscLayout.Controls.Add(MakeLabel("焊钳 TCP:"), 0, mrow);
+            _tcpEditBox = new TxFrameEditBoxCtrl();
+            StyleSinglePicker(_tcpEditBox);
             try { _tcpEditBox.ListenToPick = true; } catch { }
             PickFocus.Wire(_tcpEditBox);
             try { _tcpEditBox.PickLevel = TxPickLevel.Entity; } catch { }
@@ -514,26 +515,29 @@ namespace TxTools.WeldGunDefiner.UI
             catch { }
             miscLayout.Controls.Add(_tcpEditBox, 1, mrow);
             mrow++;
-            miscLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-            miscLayout.Controls.Add(MakeLabel("BASE（可选）:"), 0, mrow);
+            miscLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, PickerRowHeight));
+            miscLayout.Controls.Add(MakeLabel("BASE:"), 0, mrow);
             var baseRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
             baseRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            baseRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+            baseRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44));
             baseRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            _baseEditBox = new TxFrameEditBoxCtrl { Dock = DockStyle.Fill, ListenToPick = true, PickLevel = TxPickLevel.Entity,
+            _baseEditBox = new TxFrameEditBoxCtrl { ListenToPick = true, PickLevel = TxPickLevel.Entity,
                 EnableRelativeToWorkingFrameCoordinates = false };
+            StyleSinglePicker(_baseEditBox);
             PickFocus.Wire(_baseEditBox);
             _baseEditBox.ValidFrameSet += (s, e) => { _model.BaseLocation = _baseEditBox.GetLocation(); PsSdkHelper.RefreshView(); };
             _baseEditBox.InvalidFrameSet += (s, e) => { _model.BaseLocation = null; PsSdkHelper.RefreshView(); };
             _baseEditBox.Picked += (s, e) => PsSdkHelper.RefreshView();
             var clearBase = NewBtn("清空");
-            clearBase.Dock = DockStyle.Fill;
+            clearBase.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+            clearBase.Height = PickerHeight;
+            clearBase.Margin = new Padding(4, 4, 0, 4);
             clearBase.Click += (s, e) => { _baseEditBox.Text = string.Empty; _model.BaseLocation = null; PsSdkHelper.RefreshView(); };
             baseRow.Controls.Add(_baseEditBox, 0, 0);
             baseRow.Controls.Add(clearBase, 1, 0);
             miscLayout.Controls.Add(baseRow, 1, mrow++);
-            miscLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-            var baseHint = new Label { Text = "电极帽自动归入对应臂；BASE 留空使用焊钳自身坐标。", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.DimGray };
+            miscLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            var baseHint = new Label { Text = "电极帽自动归入对应臂。\nBASE 可选，留空使用焊钳自身坐标。", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.DimGray };
             miscLayout.Controls.Add(baseHint, 0, mrow++);
             miscLayout.SetColumnSpan(baseHint, 2);
             miscLayout.RowCount = mrow;
@@ -576,7 +580,19 @@ namespace TxTools.WeldGunDefiner.UI
                 // 焦点离开时做交叉校验（需求2）
                 try { g.Leave += (s, e) => OnLinkGridLeave(g); } catch { }
                 _linkGrids.Add(System.Tuple.Create(g, lst, ttl, col2));
-                var cell = MkFixedCard(title, 150, g);
+                // Keep room for the native header and at least five object rows.
+                g.Font = FormUiKit.BaseFont;
+                var cell = MkFixedCard(title, 164, g);
+                cell.MinimumSize = new Size(0, 164);
+                cell.ForeColor = Color.FromArgb(45, 45, 45);
+                if (cell is FormUiKit.ColoredGroupBox colored)
+                {
+                    colored.TitleColor = Color.FromArgb(45, 45, 45);
+                    Color[] headerColors = { Color.FromArgb(255, 239, 218), Color.FromArgb(234, 245, 224),
+                        Color.FromArgb(255, 248, 214), Color.FromArgb(228, 240, 255), Color.FromArgb(250, 229, 250) };
+                    colored.BackColor = headerColors[row * 2 + col];
+                    colored.BorderColor = Color.FromArgb(205, 210, 215);
+                }
                 cell.Margin = new Padding(2);
                 linkGrid.Controls.Add(cell, col, row);
             }
@@ -588,29 +604,30 @@ namespace TxTools.WeldGunDefiner.UI
             linkGrid.RowCount = 3;
             linkGrid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-            AddLinkCell("Fixed Link 枪体固定 (橙)", ref _gridFixedLink, _model.FixedLinkBodies, 0, 0, PsSdkHelper.ColorFixed);
-            AddLinkCell("Input Link 活塞缸体 (绿)", ref _gridInputLink, _model.InputLinkBodies, 1, 0, PsSdkHelper.ColorInput);
-            AddLinkCell("Coupler Link 活塞杆/连杆 (黄)", ref _gridCouplerLink, _model.CouplerLinkBodies, 0, 1, PsSdkHelper.ColorCoupler);
-            AddLinkCell("Output Link 动臂 (蓝)", ref _gridOutputLink, _model.OutputLinkBodies, 1, 1, PsSdkHelper.ColorOutput);
-            AddLinkCell("lnk2 静臂/磨量补偿 (品红)", ref _gridLnk2, _model.Lnk2Bodies, 0, 2, PsSdkHelper.ColorLnk2);
+            AddLinkCell("Fixed Link 固定枪体", ref _gridFixedLink, _model.FixedLinkBodies, 0, 0, PsSdkHelper.ColorFixed);
+            AddLinkCell("Input Link 活塞缸体", ref _gridInputLink, _model.InputLinkBodies, 1, 0, PsSdkHelper.ColorInput);
+            AddLinkCell("Coupler Link 活塞杆/连杆", ref _gridCouplerLink, _model.CouplerLinkBodies, 0, 1, PsSdkHelper.ColorCoupler);
+            AddLinkCell("Output Link 动臂", ref _gridOutputLink, _model.OutputLinkBodies, 1, 1, PsSdkHelper.ColorOutput);
+            AddLinkCell("lnk2 静臂/磨量补偿", ref _gridLnk2, _model.Lnk2Bodies, 0, 2, PsSdkHelper.ColorLnk2);
 
             stack.Controls.Add(MkCard("Link 几何体绑定（可多选，Component 级）", linkGrid), 0, 2);
 
             // 左侧选铰点/电极，右侧绑定 Link；列表内部滚动，整页保持一屏。
             var hingeCard = stack.GetControlFromPosition(0, 0);
             var electrodeCard = stack.GetControlFromPosition(0, 1);
-            var linkCard = stack.GetControlFromPosition(0, 2);
+            var oldLinkCard = stack.GetControlFromPosition(0, 2);
+            oldLinkCard.Controls.Remove(linkGrid);
+            Control linkCard = linkGrid;
             stack.Controls.Clear();
             stack.Dock = DockStyle.Fill;
             stack.AutoSize = false;
             stack.ColumnCount = 2;
-            stack.RowCount = 2;
+            stack.RowCount = 1;
             stack.ColumnStyles.Clear();
-            stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            stack.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 284));
+            stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             stack.RowStyles.Clear();
-            stack.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-            stack.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            stack.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             foreach (Control card in new[] { hingeCard, electrodeCard, linkCard })
             {
                 card.AutoSize = false;
@@ -619,24 +636,49 @@ namespace TxTools.WeldGunDefiner.UI
             }
             hingeWrap.AutoSize = hingeLayout.AutoSize = miscLayout.AutoSize = linkGrid.AutoSize = false;
             hingeLayout.Dock = miscLayout.Dock = linkGrid.Dock = DockStyle.Fill;
-            // 用独立表格行承载说明，避免 Fill 和 Bottom 共用区域。
+            // Measure the three picker rows independently of the hint and group title.
             hingeWrap.Controls.Clear();
-            var hingeContent = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+            var hingeContent = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+                ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
             hingeContent.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            hingeContent.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            hingeContent.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+            hingeContent.RowStyles.Add(new RowStyle(SizeType.Absolute, 3 * PickerRowHeight));
+            hingeContent.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
             hintHinge.AutoSize = false;
             hintHinge.Dock = DockStyle.Fill;
             hingeContent.Controls.Add(hingeLayout, 0, 0);
             hingeContent.Controls.Add(hintHinge, 0, 1);
-            hingeWrap.Controls.Add(hingeContent);
+            hintHinge.Margin = Padding.Empty;
+            hingeCard.Controls.Clear();
+            hingeWrap.Dispose();
+            hingeCard.AutoSize = true;
+            hingeCard.Dock = DockStyle.Top;
+            hingeCard.Controls.Add(hingeContent);
             linkGrid.RowStyles.Clear();
             for (int i = 0; i < 3; i++) linkGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / 3));
             foreach (Control cell in linkGrid.Controls) { cell.AutoSize = false; cell.Dock = DockStyle.Fill; }
-            stack.Controls.Add(hingeCard, 0, 0);
-            stack.Controls.Add(electrodeCard, 0, 1);
+            var leftFields = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3,
+                Margin = Padding.Empty };
+            leftFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            leftFields.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            leftFields.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            leftFields.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            var targetCard = BuildTargetSelection();
+            leftFields.Controls.Add(targetCard, 0, 0);
+            leftFields.Controls.Add(hingeCard, 0, 1);
+            leftFields.Controls.Add(electrodeCard, 0, 2);
+            stack.Controls.Add(leftFields, 0, 0);
             stack.Controls.Add(linkCard, 1, 0);
-            stack.SetRowSpan(linkCard, 2);
+            oldLinkCard.Dispose();
+            var selectionHint = new Label
+            {
+                Dock = DockStyle.Fill, AutoSize = false, Font = FormUiKit.BaseFont,
+                Text = "在场景中选择几何体\n支持多选与逐项移除\nLink 绑定随部件一起运动\n\n橙：固定枪体    绿：活塞缸体\n黄：活塞杆 / 连杆\n蓝：动臂    品红：静臂 / 磨量补偿",
+                ForeColor = Color.FromArgb(65, 65, 65), Padding = new Padding(4)
+            };
+            var hintCard = MkFixedCard("选择提示", 164, selectionHint);
+            hintCard.Dock = DockStyle.Fill;
+            hintCard.Margin = new Padding(2);
+            linkGrid.Controls.Add(hintCard, 1, 2);
             var guide = new Panel { Name = "SelectionGuide", Dock = DockStyle.Fill, BackColor = Color.White, Margin = new Padding(0, 0, 0, 6) };
             guide.Resize += (s, e) => guide.Invalidate();
             guide.Paint += (sender, e) =>
@@ -711,17 +753,39 @@ namespace TxTools.WeldGunDefiner.UI
             };
             // 示意图与输入区是不同表格行；小窗口允许整页滚动，不压缩选择框。
             stack.Name = "SelectionFields";
-            var page = new TableLayoutPanel { Name = "SelectionPage", Dock = DockStyle.Top, Height = 730,
-                ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
+            var page = new TableLayoutPanel { Name = "SelectionPage", Dock = DockStyle.Top, Height = 546,
+                ColumnCount = 1, RowCount = 3, Margin = Padding.Empty };
             page.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 230));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
             page.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            page.Controls.Add(guide, 0, 0);
-            page.Controls.Add(stack, 0, 1);
+            var toggleGuide = new Button { Text = "▶ 机构示意与选择说明", Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft, FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(245, 247, 249), ForeColor = Color.FromArgb(45, 45, 45),
+                Margin = new Padding(0, 0, 0, 4), UseVisualStyleBackColor = false };
+            toggleGuide.FlatAppearance.BorderColor = Color.FromArgb(205, 210, 215);
+            bool guideExpanded = false;
+            Action resizePage = () =>
+            {
+                float scale = FormUiKit.GetLayoutScale(this);
+                page.RowStyles[1].Height = guideExpanded ? (float)System.Math.Round(230 * scale) : 0;
+                page.Height = System.Math.Max((int)System.Math.Round((546 + (guideExpanded ? 230 : 0)) * scale),
+                    scroll.ClientSize.Height - scroll.Padding.Vertical);
+            };
+            guide.Visible = false;
+            toggleGuide.Click += (s, e) =>
+            {
+                guideExpanded = !guideExpanded;
+                guide.Visible = guideExpanded;
+                toggleGuide.Text = (guideExpanded ? "▼" : "▶") + " 机构示意与选择说明";
+                resizePage();
+            };
+            page.Controls.Add(toggleGuide, 0, 0);
+            page.Controls.Add(guide, 0, 1);
+            page.Controls.Add(stack, 0, 2);
             scroll.AutoScroll = true;
             scroll.Controls.Add(page);
-            scroll.Resize += (s, e) => page.Height = System.Math.Max(
-                (int)System.Math.Round(730 * FormUiKit.GetLayoutScale(this)), scroll.ClientSize.Height - scroll.Padding.Vertical);
+            scroll.Resize += (s, e) => resizePage();
             var p = new Panel { Dock = DockStyle.Fill };
             p.Controls.Add(scroll);
             return p;
@@ -785,7 +849,7 @@ namespace TxTools.WeldGunDefiner.UI
                 Dock = DockStyle.Fill,
                 ReadOnly = true,
                 BackColor = Theme.InputBg,
-                Font = new Font("Consolas", 8),
+                Font = FormUiKit.MonoFont,
                 Text = "（请先完成铰点选取，参数将自动填入）"
             };
             var coordinates = MkFixedCard("RPRR 向导坐标参考", 120, _txtCoordCard);
@@ -809,7 +873,7 @@ namespace TxTools.WeldGunDefiner.UI
         {
             var scroll = MkScroll();
             scroll.AutoScroll = true;
-            var stack = MkStack(3);
+            var stack = MkStack(4);
 
             // 关节命名（设备已在Step1选取）
             var nameLayout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
@@ -834,40 +898,64 @@ namespace TxTools.WeldGunDefiner.UI
             // 需求4：OPEN状态适配勾选
             _chkOpenAdapt = new CheckBox
             {
-                Text = "OPEN状态适配（焊钳模型为开口最大状态时勾选）",
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                Margin = new Padding(4, 6, 4, 2)
+                Text = "适配 OPEN 初始模型",
+                Dock = DockStyle.Fill,
+                AutoSize = false,
+                Font = FormUiKit.BoldFont,
+                Margin = Padding.Empty
             };
             _chkOpenAdapt.CheckedChanged += (s, e) => { _model.OpenStateAdapt = _chkOpenAdapt.Checked; };
-            var hintOpen = new Label
-            {
-                Text = "勾选后：先建主链→正向驱动活塞回闭合→定为0位→重写限位→再接驱动链。\n适用于厂家给的OPEN状态(滑块在最大值)模型。默认(不勾)适用CLOSE状态模型。",
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                ForeColor = Color.DimGray,
-                Margin = new Padding(20, 0, 4, 4)
-            };
             _chkOpenPositive = new CheckBox
             {
-                Text = "OPEN 使用正值（CLOSE=0，磨量补偿使用负值）",
-                Dock = DockStyle.Top, AutoSize = true, Margin = new Padding(4, 6, 4, 4)
+                Text = "OPEN 使用正值",
+                Dock = DockStyle.Fill, AutoSize = false,
+                Font = FormUiKit.BoldFont, Margin = Padding.Empty
             };
             _chkOpenPositive.CheckedChanged += (sender, e) =>
             {
                 _model.OpenPositive = _chkOpenPositive.Checked;
                 RefreshFormulaPreview();
             };
-            var nameWrap = new Panel { Dock = DockStyle.Top, AutoSize = true };
-            nameWrap.Controls.Add(hintOpen);
-            nameWrap.Controls.Add(_chkOpenPositive);
-            nameWrap.Controls.Add(_chkOpenAdapt);
-            nameWrap.Controls.Add(nameLayout);
-            stack.Controls.Add(MkCard("关节命名 & 状态适配", nameWrap), 0, 0);
+            stack.Controls.Add(MkCard("关节命名", nameLayout), 0, 0);
+
+            var options = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1,
+                Margin = Padding.Empty };
+            options.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            options.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            options.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            Control BuildOption(CheckBox check, string description)
+            {
+                var card = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2,
+                    Padding = new Padding(10, 2, 8, 6), Margin = new Padding(3),
+                    BorderStyle = BorderStyle.FixedSingle, Font = FormUiKit.BaseFont };
+                card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                card.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+                card.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+                var hint = new Label { Text = description, Dock = DockStyle.Fill,
+                    Margin = new Padding(18, 0, 0, 0), Font = FormUiKit.BaseFont,
+                    ForeColor = Color.FromArgb(75, 85, 95) };
+                void UpdateAppearance()
+                {
+                    card.BackColor = check.Checked ? Color.FromArgb(226, 240, 253) : Color.FromArgb(244, 247, 250);
+                    check.ForeColor = check.Checked ? Color.FromArgb(0, 85, 155) : Color.FromArgb(35, 50, 65);
+                }
+                check.CheckedChanged += (s, e) => UpdateAppearance();
+                card.Controls.Add(check, 0, 0);
+                card.Controls.Add(hint, 0, 1);
+                UpdateAppearance();
+                return card;
+            }
+            options.Controls.Add(BuildOption(_chkOpenAdapt,
+                "模型处于最大开口时启用。\n生成时先回到闭合状态，并设为零位。\n闭合状态模型请保持关闭。"), 0, 0);
+            options.Controls.Add(BuildOption(_chkOpenPositive,
+                "启用后：OPEN 使用正值，CLOSE = 0，\n磨量补偿使用负值。\n关闭时沿用默认方向。"), 1, 0);
+            var optionsCard = MkFixedCard("生成选项（生成前确认）", 132, options);
+            ((FormUiKit.ColoredGroupBox)optionsCard).TitleColor = Color.FromArgb(35, 65, 95);
+            stack.Controls.Add(optionsCard, 0, 1);
 
             // 公式预览
-            _txtFormula2 = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Theme.ReadOnlyBg, Font = new Font("Consolas", 8) };
-            _txtFormulaInput = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Theme.ReadOnlyBg, Font = new Font("Consolas", 8) };
+            _txtFormula2 = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Theme.ReadOnlyBg, Font = FormUiKit.MonoFont };
+            _txtFormulaInput = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Theme.ReadOnlyBg, Font = FormUiKit.MonoFont };
             var fmlLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
             fmlLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
             fmlLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -877,12 +965,21 @@ namespace TxTools.WeldGunDefiner.UI
             fmlLayout.Controls.Add(_txtFormula2, 1, 0);
             fmlLayout.Controls.Add(new Label { Text = "input_j1:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight }, 0, 1);
             fmlLayout.Controls.Add(_txtFormulaInput, 1, 1);
-            stack.Controls.Add(MkFixedCard("Joint Dependency 公式预览（可复制）", 110, fmlLayout), 0, 1);
+            stack.Controls.Add(MkFixedCard("Joint Dependency 公式预览（可复制）", 110, fmlLayout), 0, 2);
 
             // 结果
-            _txtResult = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Theme.InputBg };
+            _txtResult = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Theme.InputBg, Font = FormUiKit.BaseFont };
             var resultCard = MkFixedCard("生成结果", 100, _txtResult);
-            stack.Controls.Add(resultCard, 0, 2);
+            resultCard.Dock = DockStyle.Fill;
+            stack.Controls.Add(resultCard, 0, 3);
+            stack.Dock = DockStyle.Top;
+            stack.AutoSize = false;
+            stack.RowStyles[3].SizeType = SizeType.Percent;
+            stack.RowStyles[3].Height = 100;
+            Action resizeContent = () => stack.Height = System.Math.Max(
+                (int)System.Math.Round(490 * FormUiKit.GetLayoutScale(this)),
+                scroll.ClientSize.Height - scroll.Padding.Vertical);
+            scroll.Resize += (s, e) => resizeContent();
 
             scroll.Controls.Add(stack);
             var p = new Panel { Dock = DockStyle.Fill };
@@ -895,6 +992,8 @@ namespace TxTools.WeldGunDefiner.UI
         // ═════════════════════════════════════════════════════════════════
         private static GroupBox MkCard(string title, Control inner)
         {
+            // Prevent the group title's bold font from propagating into form fields.
+            if (!(inner is RichTextBox)) inner.Font = FormUiKit.BaseFont;
             inner.Dock = DockStyle.Top;
             var g = new FormUiKit.ColoredGroupBox
             {
@@ -914,6 +1013,7 @@ namespace TxTools.WeldGunDefiner.UI
         }
         private static GroupBox MkFixedCard(string title, int height, Control inner)
         {
+            if (!(inner is RichTextBox)) inner.Font = FormUiKit.BaseFont;
             inner.Dock = DockStyle.Fill;
             var g = new FormUiKit.ColoredGroupBox
             {
@@ -939,12 +1039,6 @@ namespace TxTools.WeldGunDefiner.UI
             t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             for (int i = 0; i < rows; i++) t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             return t;
-        }
-        private static TxObjGridCtrl MkGrid()
-        {
-            var g = new TxObjGridCtrl { Dock = DockStyle.Fill, EnableMultipleSelection = false };
-            WireGridPick(g);
-            return g;
         }
 
         /// <summary>从 grid 移除指定对象（用 DeleteRow，按行匹配）</summary>
@@ -1091,7 +1185,12 @@ namespace TxTools.WeldGunDefiner.UI
         {
             FormUiKit.GridPickFocus.Activate(g);
         }
-        private static Button NewBtn(string t) => FormUiKit.MkFuncButton(t, Theme.BtnSecondary);
+        private static Button NewBtn(string t)
+        {
+            var button = FormUiKit.MkFuncButton(t, Theme.BtnSecondary);
+            button.Font = FormUiKit.BaseFont;
+            return button;
+        }
         private static Label MakeLabel(string t) => new Label { Text = t, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(0, 0, 6, 0), Font = FormUiKit.BaseFont };
 
         // ═════════════════════════════════════════════════════════════════
@@ -1101,12 +1200,24 @@ namespace TxTools.WeldGunDefiner.UI
         {
             var picker = new TxObjEditBoxCtrl
             {
-                Anchor = AnchorStyles.Left | AnchorStyles.Right, Height = 26, ListenToPick = true,
+                ListenToPick = true,
                 PickLevel = TxPickLevel.Entity, PickOnly = true, PickAndClear = true,
                 ValidatorType = allowFace ? TxValidatorType.AnyLocatableObjectAndFace : TxValidatorType.AnyLocatableObject
             };
+            StyleSinglePicker(picker);
             PickFocus.Wire(picker);
             return picker;
+        }
+
+        private static void StyleSinglePicker(Control picker)
+        {
+            picker.Dock = DockStyle.None;
+            picker.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+            picker.Height = PickerHeight;
+            picker.Margin = new Padding(0, 4, 0, 4);
+            picker.Font = FormUiKit.BaseFont;
+            picker.BackColor = SystemColors.Window;
+            picker.ForeColor = SystemColors.WindowText;
         }
 
         private void BindHingePicker(TxObjEditBoxCtrl picker, Action<Vec3> onSet,
@@ -1143,25 +1254,8 @@ namespace TxTools.WeldGunDefiner.UI
 
         private void TryUpdateErrors()
         {
-            if (!_model.AllHingesReady) return;
-            string err;
-            if (_service.UpdateHingePoints(out err))
-            {
-                UpdateErrLabel(_lblErrO, _model.ErrO);
-                UpdateErrLabel(_lblErrA, _model.ErrA);
-                UpdateErrLabel(_lblErrC, _model.ErrC);
-            }
+            if (_model.AllHingesReady) _service.UpdateHingePoints(out string error);
         }
-
-        private void UpdateErrLabel(Label lbl, double err)
-        {
-            if (lbl == null) return;
-            if (err < 0) { lbl.Text = "自动 [OK]"; lbl.ForeColor = Color.DarkGreen; }
-            else if (err < 0.5) { lbl.Text = $"{err:F2}mm [OK]"; lbl.ForeColor = Color.DarkGreen; }
-            else if (err < 1.0) { lbl.Text = $"{err:F2}mm [!]"; lbl.ForeColor = Color.DarkOrange; }
-            else { lbl.Text = $"{err:F2}mm [X]"; lbl.ForeColor = Color.Red; }
-        }
-        private void ClearErr(Label lbl) { if (lbl == null) return; lbl.Text = "--"; lbl.ForeColor = Color.Gray; }
 
         // ═════════════════════════════════════════════════════════════════
         // 参数变更
@@ -1299,7 +1393,7 @@ namespace TxTools.WeldGunDefiner.UI
             {
                 if (!ReadParameters(out string parameterError)) { MessageBox.Show(parameterError, "参数无效"); return; }
                 if (!_model.AllHingesReady || _model.ObjStaticTip == null || _model.ObjMovingTip == null || _model.Plane == null)
-                { MessageBox.Show("选点或电极帽已失效，请返回第二步重新确认。", "输入不完整"); return; }
+                { MessageBox.Show("选点或电极帽已失效，请返回第一步重新确认。", "输入不完整"); return; }
                 if (!ReadOptionalBase(out string baseError))
                 {
                     MessageBox.Show(baseError, "BASE 坐标", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -1397,40 +1491,38 @@ namespace TxTools.WeldGunDefiner.UI
             foreach (Control child in parent.Controls) WireGenerationInvalidation(child);
         }
 
+        private void RestoreExistingSetup()
+        {
+            if (!_service.TryRestoreSetup(out string restoreStatus)) return;
+            _restoringSetup = true;
+            try
+            {
+                _gridO.Object = _model.HingeO; _gridA.Object = _model.HingeA; _gridC.Object = _model.HingeC;
+                _gridStaticTip.Object = _model.ObjStaticTip;
+                _gridMovingTip.Object = _model.ObjMovingTip;
+                _tcpEditBox.SetLocation(_model.TcpFrame.AbsoluteLocation);
+                _tcpPickedLocation = _model.TcpFrame.AbsoluteLocation;
+                if (_model.BaseLocation != null) _baseEditBox.SetLocation(_model.BaseLocation);
+                else _baseEditBox.Text = string.Empty;
+                _txtPistonStroke.Text = _model.PistonStroke.ToString();
+                _txtOpenGap.Text = _model.OpenGap.ToString();
+                _txtWear.Text = _model.WearAllowance.ToString();
+                _chkOpenAdapt.Checked = _model.OpenStateAdapt;
+                _chkOpenPositive.Checked = _model.OpenPositive;
+            }
+            finally { _restoringSetup = false; }
+            foreach (var entry in _linkGrids) ResetGridObjects(entry.Item1, new List<ITxObject>(entry.Item2));
+            _openGapUserEdited = true;
+            RefreshParameterDisplay();
+            RefreshAllLinkHighlights();
+        }
+
         private void GoNext()
         {
             if (!ValidateStep(out string err))
             { MessageBox.Show(err, "请完成当前步骤", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
 
-            if (_currentStep == 0 && _chkReuseLinks.Checked && _service.TryRestoreSetup(out string restoreStatus))
-            {
-                _restoringSetup = true;
-                try
-                {
-                    _gridO.Object = _model.HingeO; _gridA.Object = _model.HingeA; _gridC.Object = _model.HingeC;
-                    _gridStaticTip.Object = _model.ObjStaticTip;
-                    _gridMovingTip.Object = _model.ObjMovingTip;
-                    _tcpEditBox.SetLocation(_model.TcpFrame.AbsoluteLocation);
-                    _tcpPickedLocation = _model.TcpFrame.AbsoluteLocation;
-                    if (_model.BaseLocation != null) _baseEditBox.SetLocation(_model.BaseLocation);
-                    else _baseEditBox.Text = string.Empty;
-                    _txtPistonStroke.Text = _model.PistonStroke.ToString();
-                    _txtOpenGap.Text = _model.OpenGap.ToString();
-                    _txtWear.Text = _model.WearAllowance.ToString();
-                    _chkOpenAdapt.Checked = _model.OpenStateAdapt;
-                    _chkOpenPositive.Checked = _model.OpenPositive;
-                }
-                finally { _restoringSetup = false; }
-                foreach (var entry in _linkGrids) ResetGridObjects(entry.Item1, new List<ITxObject>(entry.Item2));
-                _openGapUserEdited = true;
-                RefreshParameterDisplay();
-                RefreshAllLinkHighlights();
-                _currentStep = 2;
-                UpdateStepUi();
-                return;
-            }
-
-            if (_currentStep == 1)
+            if (_currentStep == 0)
             {
                 _model.PistonStroke = 100; _model.OpenGap = 185; _model.WearAllowance = 10;
                 double v;
@@ -1442,10 +1534,9 @@ namespace TxTools.WeldGunDefiner.UI
                 { MessageBox.Show("机构参数计算失败:\n" + calcErr, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
                 RefreshParameterDisplay();
                 // 首次进入参数页：把计算的最大开口量自动填入开口量框
-                _openGapUserEdited = false;
                 SyncOpenGapFromCalc();
             }
-            if (_currentStep == 2) RefreshFormulaPreview();
+            if (_currentStep == 1) RefreshFormulaPreview();
 
             _currentStep = System.Math.Min(_currentStep + 1, _stepPanels.Length - 1);
             UpdateStepUi();
@@ -1478,9 +1569,9 @@ namespace TxTools.WeldGunDefiner.UI
                 _model.HingeO = _model.HingeA = _model.HingeC = null;
                 _model.Plane = null; _model.PlaneNormal = default(Vec3); _model.Mechanism = null; _model.Formulas = null;
                 _model.WorldGunTcp = default(Vec3); _model.TcpFrame = null; _model.BaseLocation = null; _tcpPickedLocation = null;
+                _openGapUserEdited = false;
                 foreach (var picker in new[] { _gridO, _gridA, _gridC, _gridStaticTip, _gridMovingTip }) picker.Object = null;
                 _tcpEditBox.Text = string.Empty; _baseEditBox.Text = string.Empty;
-                ClearErr(_lblErrO); ClearErr(_lblErrA); ClearErr(_lblErrC);
                 foreach (var text in new[] { _txtRAuto, _txtDAuto, _txtDAO, _txtr, _txtL, _txtAlpha }) text.Clear();
                 _txtCoordCard.Clear(); _txtFormula2.Clear(); _txtFormulaInput.Clear(); _txtResult.Clear();
                 _btnFinish.Enabled = false;
@@ -1491,18 +1582,14 @@ namespace TxTools.WeldGunDefiner.UI
         private bool ValidateStep(out string err)
         {
             err = null;
-            if (_currentStep >= 2 && (!ReadParameters(out err) || !ReadOptionalBase(out err))) return false;
+            if (_currentStep >= 1 && (!ReadParameters(out err) || !ReadOptionalBase(out err))) return false;
             if (_currentStep == 0)
             {
                 // Step0：必须选取焊枪本体且开启建模状态
                 if (_model.TargetKinematics == null) { err = "请先选取焊枪设备根节点"; return false; }
                 bool open = false;
                 try { open = _model.TargetKinematics.IsOpenForKinematicsModeling; } catch { }
-                if (!open) { err = "焊枪未开启运动学建模状态，请点击「启用建模状态」按钮"; return false; }
-                return true;
-            }
-            if (_currentStep == 1)
-            {
+                if (!open) { err = "焊枪未开启运动学建模状态，请点击「启用建模」按钮"; return false; }
                 if (!ReadOptionalBase(out err)) return false;
                 if (!_model.HasO) { err = "请设置 O 点坐标"; return false; }
                 if (!_model.HasA) { err = "请设置 A 点坐标（A点同时确定参考平面法向）"; return false; }
@@ -1547,38 +1634,43 @@ namespace TxTools.WeldGunDefiner.UI
         private void UpdateStepUi()
         {
             string[] titles = {
-                "Step 1/4  --  选取焊枪本体 & 建模检测",
-                "Step 2/4  --  铰点 & 电极 & Link 几何体",
-                "Step 3/4  --  确认机构参数",
-                "Step 4/4  --  生成运动学定义",
+                "Step 1/3  --  焊钳、铰点与 Link 绑定",
+                "Step 2/3  --  确认机构参数",
+                "Step 3/3  --  生成运动学定义",
             };
-            // 第三页及生成页禁止继续拾取；返回选择页时只恢复该页的拾取资格。
+            // 参数页及生成页禁止继续拾取；返回选择页时只恢复该页的拾取资格。
             for (int index = 0; index < _stepPanels.Length; index++)
-                SetStepPicking(_stepPanels[index], index != _currentStep || _currentStep >= 2);
+                SetStepPicking(_stepPanels[index], index != _currentStep || _currentStep >= 1);
             _lblStepTitle.Text = titles[_currentStep];
             for (int i = 0; i < _stepPanels.Length; i++) _stepPanels[i].Visible = i == _currentStep;
             _btnBack.Enabled = _currentStep > 0;
             _btnNext.Visible = _currentStep < _stepPanels.Length - 1;
             _btnGenerate.Visible = _currentStep == _stepPanels.Length - 1;
-            // 返回前置步骤后需重新生成；完成按钮始终显示。
+            _lblStepProgress.Text = "步骤 " + (_currentStep + 1) + " / 3";
+            _btnFinish.Visible = _currentStep == _stepPanels.Length - 1;
+            // 返回前置步骤后需重新生成。
             if (_currentStep < _stepPanels.Length - 1) _btnFinish.Enabled = false;
 
             foreach (Control c in _stepIndicator.Controls)
             {
                 if (c is Label lbl && lbl.Tag is int idx)
                 {
-                    if (idx == _currentStep) { lbl.BackColor = Theme.BtnPrimary; lbl.ForeColor = Theme.BtnFore; }
-                    else if (idx < _currentStep) { lbl.BackColor = Theme.RowOk; lbl.ForeColor = Color.DarkGreen; }
-                    else { lbl.BackColor = FormUiKit.CardBack; lbl.ForeColor = Theme.BtnFore; }
+                    string[] stepLabels = { "1. 选择与绑定", "2. 参数", "3. 生成" };
+                    lbl.Text = (idx < _currentStep ? "✓  " : "") + stepLabels[idx];
+                    lbl.Font = idx == _currentStep ? FormUiKit.BoldFont : FormUiKit.BaseFont;
+                    lbl.BackColor = idx == _currentStep ? Color.FromArgb(229, 241, 252) : Color.White;
+                    lbl.ForeColor = idx == _currentStep ? Color.FromArgb(0, 85, 155)
+                        : idx < _currentStep ? Color.FromArgb(60, 100, 65) : Color.FromArgb(105, 110, 115);
+                    lbl.Invalidate();
                 }
             }
             FitStepHeight();
-            if (_currentStep >= 2 && IsHandleCreated)
+            if (_currentStep >= 1 && IsHandleCreated)
                 BeginInvoke((Action)(() =>
                 {
-                    if (!IsDisposed && _currentStep >= 2 && _btnNext.Visible)
+                    if (!IsDisposed && _currentStep >= 1 && _btnNext.Visible)
                     { ActiveControl = _btnNext; _btnNext.Focus(); }
-                    else if (!IsDisposed && _currentStep >= 2 && _btnGenerate.Visible)
+                    else if (!IsDisposed && _currentStep >= 1 && _btnGenerate.Visible)
                     { ActiveControl = _btnGenerate; _btnGenerate.Focus(); }
                 }));
         }
@@ -1586,7 +1678,7 @@ namespace TxTools.WeldGunDefiner.UI
         private void FitStepHeight()
         {
             if (!_dpiApplied) return;
-            int[] designHeights = { 480, 890, 640, 640 };
+            int[] designHeights = { 680, 640, 640 };
             int target = (int)System.Math.Round(designHeights[_currentStep] * FormUiKit.GetLayoutScale(this));
             int available = Screen.FromControl(this).WorkingArea.Height - 16;
             Height = System.Math.Min(available, System.Math.Max(MinimumSize.Height, target));

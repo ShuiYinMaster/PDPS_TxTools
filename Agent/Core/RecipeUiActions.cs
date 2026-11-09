@@ -5,6 +5,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using Tecnomatix.Engineering;
+using Tecnomatix.Planning;
+using Tecnomatix.Engineering.Utilities;
+using Tecnomatix.Engineering.DataTypes;
 
 namespace TxTools.Agent.Core
 {
@@ -119,6 +122,61 @@ namespace TxTools.Agent.Core
             return type.Name.StartsWith("Tx", StringComparison.Ordinal) ? type.Name.Substring(2) : type.Name;
         }
 
+        // One reader per request: shared prototypes are read once and never cached across studies.
+        private sealed class ResourceTypes
+        {
+            private readonly Dictionary<string, TxTunePmDocumentPrototypeData> files = new Dictionary<string, TxTunePmDocumentPrototypeData>(StringComparer.OrdinalIgnoreCase);
+            private readonly Dictionary<string, string> labels = new Dictionary<string, string>(StringComparer.Ordinal);
+
+            public Dictionary<string, string> Read(ITxObject item)
+            {
+                var result = new Dictionary<string, string>(StringComparer.Ordinal);
+                result[item.GetType().FullName] = TypeLabel(item.GetType());
+                var model = item as ITxProcessModelObject;
+                if (model == null) return result;
+                ITxPlanningObject planning = null;
+                try { planning = model.PlanningRepresentation; } catch { }
+                if (planning == null) return result;
+                try { Add(result, "planning:", planning.PlanningType, "资源类型"); } catch { }
+                ITxPlanningPrototype prototype = planning as ITxPlanningPrototype;
+                try { prototype = (planning as ITxPlanningInstance)?.Prototype ?? prototype; } catch { }
+                if (prototype == null) return result;
+                try { Add(result, "prototype:", prototype.PlanningType, "原型类型"); } catch { }
+                try
+                {
+                    string path = prototype.FullPath;
+                    if (string.IsNullOrWhiteSpace(path)) return result;
+                    TxTunePmDocumentPrototypeData data;
+                    if (!files.TryGetValue(path, out data))
+                    {
+                        files[path] = null;
+                        data = new TxTunePmDocumentManager().LoadPrototypeDataFromDocument(path);
+                        files[path] = data;
+                    }
+                    if (data != null)
+                    {
+                        Add(result, "prototype:", data.Type, "原型类型");
+                        if (!string.IsNullOrWhiteSpace(data.Family)) result["family:" + data.Family] = "设备分类 · " + data.Family;
+                    }
+                }
+                catch { } // Local prototype data may be absent on connected platforms.
+                return result;
+            }
+
+            private void Add(Dictionary<string, string> result, string prefix, string type, string group)
+            {
+                if (string.IsNullOrWhiteSpace(type)) return;
+                string label;
+                if (!labels.TryGetValue(type, out label))
+                {
+                    label = type;
+                    try { label = TxApplication.ActiveDocument.PlatformGlobalServicesProvider.GetTypeMetaData(type)?.DisplayName ?? type; } catch { }
+                    labels[type] = label;
+                }
+                result[prefix + type] = group + " · " + label + (label == type ? "" : "（" + type + "）");
+            }
+        }
+
         public static JObject ObjectTypes(JObject request)
         {
             if (IsRunning) return Error("recipe.objectTypes.result", "配方正在执行，请完成后再刷新类型。");
@@ -130,7 +188,8 @@ namespace TxTools.Agent.Core
             try
             {
                 var expected = ExpectedType(parameter);
-                var types = SceneObjects().Where(item => expected == null || expected.IsInstanceOfType(item))
+                var objects = SceneObjects().Where(item => expected == null || expected.IsInstanceOfType(item)).ToList();
+                var types = objects
                     .Select(item => item.GetType()).GroupBy(type => type.FullName, StringComparer.Ordinal).Select(group => group.First()).OrderBy(TypeLabel, StringComparer.CurrentCulture).ThenBy(t => t.FullName, StringComparer.Ordinal);
                 var choices = new JArray(new JObject { ["label"] = "全部类型", ["value"] = "all" });
                 var rows = types.Select(type => new { Type = type, Label = TypeLabel(type) }).ToList();
@@ -142,6 +201,11 @@ namespace TxTools.Agent.Core
                     if (!labels.Add(label)) { label = row.Label + "（" + row.Type.FullName + "）"; labels.Add(label); }
                     choices.Add(new JObject { ["label"] = label, ["value"] = row.Type.FullName });
                 }
+                var reader = new ResourceTypes();
+                var detailed = objects
+                    .SelectMany(reader.Read).Where(pair => pair.Key.StartsWith("planning:", StringComparison.Ordinal) || pair.Key.StartsWith("prototype:", StringComparison.Ordinal) || pair.Key.StartsWith("family:", StringComparison.Ordinal))
+                    .GroupBy(pair => pair.Key, StringComparer.Ordinal).Select(group => group.First()).OrderBy(pair => pair.Value, StringComparer.CurrentCulture);
+                foreach (var pair in detailed) choices.Add(new JObject { ["label"] = pair.Value, ["value"] = pair.Key });
                 return new JObject { ["type"] = "recipe.objectTypes.result", ["ok"] = true, ["study"] = CurrentStudyKey(), ["objectTypes"] = choices };
             }
             catch (Exception ex) { return Error("recipe.objectTypes.result", "读取场景类型失败：" + ex.Message); }
@@ -167,12 +231,15 @@ namespace TxTools.Agent.Core
             {
                 Type expected = ExpectedType(parameter);
                 IEnumerable<ITxObject> candidates = search ? SceneObjects() : TxApplication.ActiveSelection.GetItems().Cast<ITxObject>();
-                // Match the exact scene class shown by the dropdown; base classes do not absorb other categories.
-                if (category != "all" && !candidates.Any(item => item != null && item.GetType().FullName == category && (expected == null || expected.IsInstanceOfType(item))))
+                var reader = new ResourceTypes();
+                var categories = candidates.Where(item => item != null && (expected == null || expected.IsInstanceOfType(item)))
+                    .Select(item => new { Item = item, Matches = category == "all" || item.GetType().FullName == category
+                        || ((category.StartsWith("planning:", StringComparison.Ordinal) || category.StartsWith("prototype:", StringComparison.Ordinal) || category.StartsWith("family:", StringComparison.Ordinal)) && reader.Read(item).ContainsKey(category)) }).ToList();
+                // Both selection and scene search use the same resource/prototype category keys.
+                if (category != "all" && !categories.Any(row => row.Matches))
                     return Error("recipe.pick.result", search ? "场景中已无此类型，请刷新类型。" : "当前选择中没有该类型，请重新选取。");
-                var selected = candidates.Where(item => item != null && (expected == null || expected.IsInstanceOfType(item))
-                    && (category == "all" || item.GetType().FullName == category)
-                    && (name.Length == 0 || (item.Name ?? "").IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0))
+                var selected = categories.Where(row => row.Matches).Select(row => row.Item).Where(item =>
+                    name.Length == 0 || (item.Name ?? "").IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
                     .GroupBy(item => Convert.ToString(item.Id), StringComparer.Ordinal).Select(g => g.First()).ToList();
                 if (selected.Count == 0) return Error("recipe.pick.result", search ? "没有找到符合条件的对象。" : "当前选择中没有符合条件的对象。");
                 if (parameter.Kind == "object" && selected.Count != 1) return Error("recipe.pick.result", "此参数只需要一个对象，请缩小条件或重新选择。");

@@ -12,6 +12,7 @@ namespace TxTools.WeldAnnotator
     {
         private TableLayoutPanel _workspace, _footer;
         private Label _emptyState;
+        private CheckBox _chkUseMfgName;
         private static readonly Color Accent = Color.FromArgb(0, 116, 120);
         private static readonly Color Surface = Color.FromArgb(246, 248, 250);
 
@@ -35,7 +36,7 @@ namespace TxTools.WeldAnnotator
                 Margin = new Padding(0, 0, 6, 0)
             };
             sidebar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            int[] heights = { 0, 24, 148, 6, 104, 170 };
+            int[] heights = { 0, 24, 148, 6, 104, 190 };
             for (int row = 0; row < heights.Length; row++)
                 sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, heights[row]));
             sidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -80,31 +81,36 @@ namespace TxTools.WeldAnnotator
             var naming = VerticalStack();
             _cmbLabelMode = new ComboBox
             {
-                DropDownStyle = ComboBoxStyle.DropDownList, Width = 174,
-                Margin = new Padding(0, 4, 0, 8)
+                DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill,
+                Margin = new Padding(3)
             };
-            _cmbLabelMode.Items.AddRange(new object[] { "按序号", "按焊点名", "前缀+序号", "序号+后缀", "序号+焊点名" });
+            _cmbLabelMode.Items.AddRange(new object[] { "序号", "焊点名", "序号+焊点名" });
             _cmbLabelMode.SelectedIndex = 0;
-            _cmbLabelMode.SelectedIndexChanged += (s, e) => UpdateLabelCardEnabled();
-            naming.Controls.Add(_cmbLabelMode);
+            _chkUseMfgName = SettingCheck("采用MFG名称");
+            _sharedToolTip.SetToolTip(_chkUseMfgName,
+                "替换标注中的焊点名；适用于“焊点名”和“序号+焊点名”。未取得 MFG 名称时使用焊点名。");
             var fields = new TableLayoutPanel
             {
-                Width = 174, Height = 58, ColumnCount = 2, RowCount = 2,
+                Width = 174, Height = 90, ColumnCount = 2, RowCount = 3,
                 Margin = Padding.Empty
             };
             fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44));
             fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            fields.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-            fields.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            fields.RowStyles.Add(new RowStyle(SizeType.Percent, 33.33f));
+            fields.RowStyles.Add(new RowStyle(SizeType.Percent, 33.33f));
+            fields.RowStyles.Add(new RowStyle(SizeType.Percent, 33.34f));
             _lblPrefix = new Label { Text = "前缀", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
             _lblSuffix = new Label { Text = "后缀", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
             _txtPrefix = new TextBox { Dock = DockStyle.Fill };
             _txtSuffix = new TextBox { Dock = DockStyle.Fill };
             fields.Controls.Add(_lblPrefix, 0, 0);
             fields.Controls.Add(_txtPrefix, 1, 0);
-            fields.Controls.Add(_lblSuffix, 0, 1);
-            fields.Controls.Add(_txtSuffix, 1, 1);
+            fields.Controls.Add(new Label { Text = "名称", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
+            fields.Controls.Add(_cmbLabelMode, 1, 1);
+            fields.Controls.Add(_lblSuffix, 0, 2);
+            fields.Controls.Add(_txtSuffix, 1, 2);
             naming.Controls.Add(fields);
+            naming.Controls.Add(_chkUseMfgName);
             _btnStyle = ActionButton("标注样式…", BtnStyle_Click);
             naming.Controls.Add(_btnStyle);
             var namingSection = SectionBox("标注命名");
@@ -190,11 +196,19 @@ namespace TxTools.WeldAnnotator
         private void UpdateLabelCardEnabled()
         {
             if (_cmbLabelMode == null) return;
-            var mode = (LabelNamingMode)_cmbLabelMode.SelectedIndex;
-            _lblPrefix.Enabled = _txtPrefix.Enabled = mode == LabelNamingMode.Prefix;
-            _lblSuffix.Enabled = _txtSuffix.Enabled = mode == LabelNamingMode.Suffix;
-            _sharedToolTip.SetToolTip(_txtPrefix, "选择“前缀+序号”后可填写。");
-            _sharedToolTip.SetToolTip(_txtSuffix, "选择“序号+后缀”后可填写。");
+            _lblPrefix.Enabled = _txtPrefix.Enabled = true;
+            _lblSuffix.Enabled = _txtSuffix.Enabled = true;
+            _sharedToolTip.SetToolTip(_txtPrefix, "可选，填写后添加到标注名称前；留空不添加。");
+            _sharedToolTip.SetToolTip(_txtSuffix, "可选，填写后添加到标注名称后；可与前缀同时使用。");
+        }
+
+        private LabelNamingMode SelectedLabelMode
+        {
+            get
+            {
+                return _cmbLabelMode.SelectedIndex == 2 ? LabelNamingMode.SeqAndName :
+                    _cmbLabelMode.SelectedIndex == 1 ? LabelNamingMode.PointName : LabelNamingMode.Sequence;
+            }
         }
 
         private void BuildMainArea()

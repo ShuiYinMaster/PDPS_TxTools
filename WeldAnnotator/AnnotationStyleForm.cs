@@ -27,6 +27,7 @@ namespace TxTools.WeldAnnotator
             Tuple.Create("三角形",   7),   // msoShapeIsoscelesTriangle
             Tuple.Create("菱形",     4),   // msoShapeDiamond
             Tuple.Create("圆角矩形", 5),   // msoShapeRoundedRectangle
+            Tuple.Create("六边形",  10),
             Tuple.Create("五角星",  12),   // msoShape5pointStar
         };
 
@@ -50,7 +51,10 @@ namespace TxTools.WeldAnnotator
                 BoxPadding     = src.BoxPadding,
                 OffsetX        = src.OffsetX,
                 OffsetY        = src.OffsetY,
-                CategoryShapes = catCopy
+                CategoryShapes = catCopy,
+                CategoryFilled = src.CategoryFilled == null
+                    ? new AnnotationStyle().CategoryFilled
+                    : new Dictionary<string, bool>(src.CategoryFilled)
             };
             Text               = "标注样式设置";
             FormBorderStyle    = FormBorderStyle.FixedDialog;
@@ -135,7 +139,7 @@ namespace TxTools.WeldAnnotator
                 b.FlatAppearance.BorderColor = FormUiKit.CardBorder;
                 b.Click += (s, e) =>
                 {
-                    using (var fd = new FontDialog { Font = init })
+                    using (var fd = new FontDialog { Font = Result.TextFont })
                         if (fd.ShowDialog() == DialogResult.OK)
                         { set(fd.Font); b.Text = $"{fd.Font.Name}, {fd.Font.SizeInPoints}pt"; }
                 };
@@ -183,10 +187,14 @@ namespace TxTools.WeldAnnotator
 
             Controls.Add(t);
 
-            var bp = new Panel { Dock = DockStyle.Bottom, Height = 42 };
+            var bp = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Bottom, Height = 42, Padding = new Padding(8, 4, 8, 4),
+                FlowDirection = FlowDirection.RightToLeft, WrapContents = false
+            };
             var ok = new FormUiKit.FlatColorButton
             {
-                Text = "确定", Width = 80, Height = 26, DialogResult = DialogResult.OK,
+                Text = "保存并应用", Width = 100, Height = 26,
                 Anchor = AnchorStyles.Right,
                 BgColor = Theme.BtnPrimary, ForeColor = Theme.BtnFore,
                 BorderColor = FormUiKit.Theme.BtnBorder, HoverColor = FormUiKit.Theme.BtnHover, FlatStyle = FlatStyle.Flat
@@ -198,17 +206,45 @@ namespace TxTools.WeldAnnotator
                 BgColor = Theme.BtnMuted, ForeColor = Theme.BtnFore,
                 BorderColor = FormUiKit.Theme.BtnBorder, HoverColor = FormUiKit.Theme.BtnHover, FlatStyle = FlatStyle.Flat
             };
-            bp.Resize += (s, e) =>
+            var reset = new FormUiKit.FlatColorButton
             {
-                can.Left = bp.ClientSize.Width - can.Width - 12;
-                can.Top  = 8;
-                ok.Left  = can.Left - ok.Width - 8;
-                ok.Top   = 8;
+                Text = "恢复默认", Width = 86, Height = 26,
+                BgColor = Theme.BtnMuted, ForeColor = Theme.BtnFore,
+                BorderColor = Theme.BtnBorder, HoverColor = Theme.BtnHover
             };
-            ok.Click  += (s, e) => Close();
+            reset.Click += (s, e) =>
+            {
+                Result = new AnnotationStyle();
+                SuspendLayout();
+                try
+                {
+                    var oldControls = new List<Control>();
+                    foreach (Control control in Controls) oldControls.Add(control);
+                    Controls.Clear();
+                    foreach (Control control in oldControls) control.Dispose();
+                    Build();
+                }
+                finally { ResumeLayout(true); }
+            };
+            ok.Click += (s, e) =>
+            {
+                try
+                {
+                    AnnotationStyleConfig.Save(Result);
+                    DialogResult = DialogResult.OK;
+                    Close();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, "无法保存标注样式配置：\n" + ex.Message +
+                        "\n\n配置路径：" + AnnotationStyleConfig.FilePath,
+                        "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            };
             can.Click += (s, e) => Close();
-            bp.Controls.Add(ok);
             bp.Controls.Add(can);
+            bp.Controls.Add(ok);
+            bp.Controls.Add(reset);
             Controls.Add(bp);
             AcceptButton = ok;
             CancelButton  = can;

@@ -415,14 +415,14 @@ namespace TxTools.AutoRecorder
             catch { return null; }
         }
 
-        public static bool SetCurrentCamera(TxGraphicViewer viewer, TxCamera camera)
+        public static bool SetCurrentCamera(TxGraphicViewer viewer, TxCamera camera, bool refresh = true)
         {
             if (viewer == null || camera == null) return false;
             try
             {
                 var d = (ITxGraphicDisplayer)viewer;
                 d.CurrentCamera = camera;
-                try { TxApplication.RefreshDisplay(); } catch { }
+                if (refresh) { try { TxApplication.RefreshDisplay(); } catch { } }
                 return true;
             }
             catch { }
@@ -430,7 +430,7 @@ namespace TxTools.AutoRecorder
             {
                 dynamic d = viewer;
                 d.CurrentCamera = camera;
-                try { TxApplication.RefreshDisplay(); } catch { }
+                if (refresh) { try { TxApplication.RefreshDisplay(); } catch { } }
                 return true;
             }
             catch { return false; }

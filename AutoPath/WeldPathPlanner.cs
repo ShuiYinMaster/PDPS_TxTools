@@ -124,9 +124,10 @@ namespace TxTools.AutoPathPlanner
         public bool GunAxisWriteEnabled = true;
         /// <summary>进/出枪点的目标开口 (mm) — 够越过翻边即可</summary>
         public double TargetGunOpening = 30.0;
+        public double WeldGunOpening = 0.0;
         /// <summary>过渡点按需最小开口搜索 (关闭则统一用 TransitGunOpening)</summary>
         public bool AdaptiveGunOpening = true;
-        /// <summary>过渡点开口 (AdaptiveGunOpening=false 时使用)</summary>
+        /// <summary>非自适应联合搜索开口上限，同时作为未指定开口过渡点的默认值。</summary>
         public double TransitGunOpening = 60.0;
 
         /// <summary>
@@ -252,6 +253,29 @@ namespace TxTools.AutoPathPlanner
                 point.Kind == PlanPointKind.Approach ? "进枪" : "出枪",
                 existing.Count == 0 ? "创建" : "更新", weld.Name, result.Name, result.Id));
             return result;
+        }
+
+        private Action PrepareWeldOpenings(IEnumerable<TxWeldLocationOperation> welds)
+        {
+            var originals=new List<Tuple<TxWeldLocationOperation,TxRobotExternalAxisData[],TxRobotExternalAxisData[]>>();
+            Action restore=()=> {
+                foreach(var old in originals)
+                { old.Item1.RobotExternalAxesData=old.Item2; old.Item1.RobotDepartureExternalAxesData=old.Item3; }
+            };
+            if(!GunAxisWriteEnabled)return restore;
+            try
+            {
+                foreach(var weld in welds)
+                {
+                    originals.Add(Tuple.Create(weld,weld.RobotExternalAxesData,weld.RobotDepartureExternalAxesData));
+                    if(!_gunAxis.WriteOpening(weld,WeldGunOpening,weld,true))
+                        throw new InvalidOperationException("焊点开口写入失败: "+weld.Name);
+                    _log(string.Format("  焊点开口已读回 {0}: 到达/离开 {1:F1}mm，轴值 {2:F1}",
+                        weld.Name,_gunAxis.ClampOpening(WeldGunOpening),_gunAxis.OpeningToJointValue(WeldGunOpening)));
+                }
+                return restore;
+            }
+            catch { restore();throw; }
         }
 
         private readonly Dictionary<string, PlanPoint> _writtenPointStates = new Dictionary<string, PlanPoint>();
@@ -586,15 +610,28 @@ namespace TxTools.AutoPathPlanner
             }
             report.WeldCount += weldLocs.Count;
             _log(string.Format("  焊点数: {0}", weldLocs.Count));
-            try { _world.PrepareConfigurations(weldLocs.Cast<ITxRoboticLocationOperation>()); }
+            Action restoreWeldOpenings=delegate{};
+            try
+            {
+                if (GunAxisWriteEnabled && GenerateApproachRetract &&
+                    _gunAxis.ClampOpening(TargetGunOpening) <= _gunAxis.ClampOpening(WeldGunOpening))
+                    throw new InvalidOperationException("进/出枪开口必须大于焊点开口（按实际枪行程比较）");
+                restoreWeldOpenings=PrepareWeldOpenings(weldLocs);
+                if(!_world.SetSearchOpening(WeldGunOpening))throw new InvalidOperationException("焊接开口摆位失败");
+                _world.PrepareConfigurations(weldLocs.Cast<ITxRoboticLocationOperation>());
+            }
             catch (Exception ex)
             {
+                restoreWeldOpenings();
                 report.FailedSegments++;
                 report.Warnings.Add("Config/完整位姿预检失败，跳过操作 " + opName + ": " + ex.Message);
                 _log("  [中止] " + report.Warnings.Last());
                 return;
             }
 
+
+            if (!_world.SetSearchOpening(GenerateApproachRetract || AdaptiveGunOpening ? TargetGunOpening : TransitGunOpening))
+                throw new InvalidOperationException("恢复进出枪搜索开口失败");
 
             // ---- 提取各焊点位姿 ----
             var weldPoints = new List<PlanPoint>();
@@ -642,9 +679,18 @@ namespace TxTools.AutoPathPlanner
             // 标定决定 Destination 用局部坐标还是世界坐标; 标定前摆位会全部失败,
             // 关节姿态读不出来, 焊序只能退回笛卡尔距离, 关节代价模型形同虚设。
             // (v6.0 就栽在这: 日志报 "0/25 个焊点关节姿态可读")
-            if (WeldOrderOptEnabled && weldPoints.Count > 4
-                && !OptimizeWeldOrder(weldPoints, weldObjs, report, op))
-                return;
+            if (WeldOrderOptEnabled && weldPoints.Count > 4)
+            {
+                if (!OptimizeWeldOrder(weldPoints, weldObjs, report, op)) return;
+                // Sequence costs must follow the final process order.
+                if (!_world.SetSearchOpening(WeldGunOpening))
+                    throw new InvalidOperationException("重排后焊接开口摆位失败");
+                _world.PrepareConfigurations(weldObjs.Cast<ITxRoboticLocationOperation>());
+                for (int i=0; i<weldPoints.Count; i++)
+                    weldPoints[i].JointPose=_world.ReadLocationJointPose(weldObjs[i]);
+                if (!_world.SetSearchOpening(GenerateApproachRetract || AdaptiveGunOpening ? TargetGunOpening : TransitGunOpening))
+                    throw new InvalidOperationException("重排后恢复进出枪开口失败");
+            }
 
             // ---- 自适应进出枪偏移解析 ----
             // 焊点坐标系Z轴方向在焊点间常不一致 (投影焊点一半朝内一半朝外),
@@ -689,7 +735,10 @@ namespace TxTools.AutoPathPlanner
                 ThrowIfCancelled();
                 var wp = weldPoints[si];
                 _world.SetOrientation(wp.AbsTransform, wp.RpyZyx);
-                CollisionWorld.PositionState stWeld = _world.ClassifyStrict(wp.Position);
+                _world.SetSearchOpening(WeldGunOpening);
+                CollisionWorld.PositionState stWeld = _world.WithAdjacentConfiguration(wp.JointPose,
+                    ()=>_world.ClassifyStrict(wp.Position));
+                _world.SetSearchOpening(GenerateApproachRetract || AdaptiveGunOpening ? TargetGunOpening : TransitGunOpening);
                 CollisionWorld.PositionState stOff = !GenerateApproachRetract
                     ? CollisionWorld.PositionState.Free
                     : (offsetFree[si]
@@ -743,17 +792,21 @@ namespace TxTools.AutoPathPlanner
                 for (int i = 0; i < weldPoints.Count; i++)
                 {
                     ThrowIfCancelled();
+                    TxPoseData offsetPose=null;
+                    if (offsetFree[i] && !_world.WithAdjacentConfiguration(weldPoints[i].JointPose,
+                        ()=>_world.TryCaptureJointPose(offsets[i],weldPoints[i].RpyZyx,out offsetPose)))
+                        throw new InvalidOperationException("进出枪点连续关节解不可用: "+weldPoints[i].Source+" / "+_world.LastPoseRejection);
                     var ap = new PlanPoint
                     {
                         Position = offsets[i], RpyZyx = weldPoints[i].RpyZyx,
                         Kind = PlanPointKind.Approach, Source = weldPoints[i].Source,
-                        Verified = offsetFree[i]
+                        JointPose = offsetPose, Verified = offsetFree[i]
                     };
                     var rp = new PlanPoint
                     {
                         Position = offsets[i], RpyZyx = weldPoints[i].RpyZyx,
                         Kind = PlanPointKind.Retract, Source = weldPoints[i].Source,
-                        Verified = offsetFree[i]
+                        JointPose = offsetPose, Verified = offsetFree[i]
                     };
                     approachVia[i] = EnsureProcessPoint(op, weldObjs[i], ap, report);
                     retractVia[i] = EnsureProcessPoint(op, weldObjs[i], rp, report);
@@ -1761,25 +1814,48 @@ namespace TxTools.AutoPathPlanner
                         MarkSegmentFailed(a, b, "机器人/外部轴联合端点与目标位姿不符: " + _world.LastPoseRejection, report);
                         return null;
                     }
-                    var planner = new JointRrtPlanner {
-                        Lower = space.Lower, Upper = space.Upper, Scale = space.Scale,
-                        IsStateFree = space.IsFree, IsMotionFree = space.IsMotionFree,
-                        ShouldAbort = _rrt.ShouldAbort, OnProgress = _rrt.OnProgress, MaxSeconds = JointSearchSeconds,
-                        MaxNodes = JointMaxNodes, MaxIterations = RrtMaxIterations, GlobalSamplingProbability = RrtGoalBias
-                    };
-                    _log("    关节空间搜索: 机器人+外部轴 " + space.Start.Length + " 维，节点/连边保存实际关节值");
-                    var path = planner.Plan(space.Start, space.Goal);
-                    ThrowIfCancelled();
-                    if (path != null)
+                    var caps = AdaptiveGunOpening && _gunAxis != null
+                        ? new[]{ TargetGunOpening, Math.Max(TargetGunOpening,60), Math.Max(TargetGunOpening,120), _gunAxis.MaxOpeningMagnitude }
+                            .Select(v=>_gunAxis.ClampOpening(v)).Distinct().OrderBy(v=>v).ToArray()
+                        : new[]{TransitGunOpening};
+                    var reasons=new List<string>();
+                    var parentAbort=_world.ShouldAbortMotion;
+                    for(int phase=0;phase<caps.Length;phase++)
                     {
-                        var points = new List<PlanPoint>();
-                        for (int i = 1; i < path.Count-1; i++)
-                            points.Add(space.Waypoint(path[i], a.Source + "→" + b.Source));
-                        report.RrtSuccesses++;
-                        _log("    关节路径通过: " + planner.NodeCount + " 个树节点，" + points.Count + " 个过渡点");
-                        return points;
+                        space.SetOpeningBand(caps[phase]);
+                        var phaseClock=System.Diagnostics.Stopwatch.StartNew();
+                        double seconds=caps.Length==1 ? JointSearchSeconds
+                            : JointSearchSeconds*(phase==0 ? 0.4 : 0.6/(caps.Length-1));
+                        _world.ShouldAbortMotion=()=> (parentAbort!=null&&parentAbort()) || phaseClock.Elapsed.TotalSeconds>=seconds;
+                        try
+                        {
+                            var planner = new JointRrtPlanner {
+                                Lower=space.Lower,Upper=space.Upper,Scale=space.Scale,
+                                IsStateFree=space.IsFree,IsMotionFree=space.IsMotionFree,
+                                ShouldAbort=_world.ShouldAbortMotion,OnProgress=_rrt.OnProgress,
+                                MaxSeconds=seconds,MaxNodes=JointMaxNodes,MaxIterations=RrtMaxIterations,
+                                GlobalSamplingProbability=RrtGoalBias,
+                                SeedStates=space.ReorientationSeeds()
+                            };
+                            _log(string.Format("    关节搜索阶段 {0}/{1}: 开口上限 {2:F1}mm，预算 {3:F1}s",
+                                phase+1,caps.Length,caps[phase],seconds));
+                            var path=planner.Plan(space.Start,space.Goal);
+                            ThrowIfCancelled();
+                            if(path!=null)
+                            {
+                                var points=new List<PlanPoint>();
+                                for(int i=1;i<path.Count-1;i++)points.Add(space.Waypoint(path[i],a.Source+"→"+b.Source));
+                                report.RrtSuccesses++;
+                                _log("    联合关节路径通过: "+points.Count+" 个过渡点，开口不超过本阶段限制");
+                                return points;
+                            }
+                            reasons.Add(planner.LastFailure);
+                        }
+                        finally { _world.ShouldAbortMotion=parentAbort; }
+                        if(parentAbort!=null&&parentAbort())break;
                     }
-                    _rrt.LastFailReason = planner.LastFailure;
+                    _rrt.LastFailReason=string.Join("; ",reasons)+" / "+space.DiagnosticSummary;
+
                 }
             }
             catch (OperationCanceledException) { throw; }
@@ -2590,6 +2666,14 @@ namespace TxTools.AutoPathPlanner
         /// 全方向全距离干涉则取当前策略的主方向最大距离强制生成, 返回 false。
         /// </summary>
         private bool GenerateOffsetPoint(PlanPoint weld, out Vec3 pos)
+        {
+            Vec3 result=new Vec3();
+            bool free=_world.WithAdjacentConfiguration(weld.JointPose,()=>GenerateOffsetPointCore(weld,out result));
+            pos=result;
+            return free;
+        }
+
+        private bool GenerateOffsetPointCore(PlanPoint weld, out Vec3 pos)
         {
             _world.SetOrientation(weld.AbsTransform, weld.RpyZyx);
 
