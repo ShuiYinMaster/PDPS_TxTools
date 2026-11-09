@@ -70,6 +70,7 @@ namespace TxTools.Agent.UI
         /// UI 线程收到 approvalResult 消息 → TrySetResult → 后台线程解除阻塞。
         /// </summary>
         private TaskCompletionSource<bool> _pendingApproval;
+        private string _pendingApprovalId;
         private readonly object _pendingApprovalLock = new object();
 
         /// <summary>
@@ -595,14 +596,14 @@ namespace TxTools.Agent.UI
                     case "userStop":
                         try { if (_cts != null) _cts.Cancel(); } catch { }
                         // 若此时正等待审批/askUser,视为取消解除阻塞,让 SendAsync 尽快返回
-                        ReleasePendingApproval(false);
+                        CancelPendingApproval();
                         ReleasePendingAskUser(null);
                         break;
 
                     case "approvalResult":
                         {
                             bool allow = msg["allow"] != null && (bool)msg["allow"];
-                            ReleasePendingApproval(allow);
+                            ReleasePendingApproval(allow, (string)msg["requestId"]);
                             break;
                         }
 
@@ -1980,7 +1981,7 @@ namespace TxTools.Agent.UI
             try { StopProcessSync(); } catch { }
             try { if (AskUserBridge.Handler == _askUserHandler) AskUserBridge.Handler = null; } catch { }
             try { ReleasePendingAskUser(null); } catch { }
-            try { ReleasePendingApproval(false); } catch { }
+            try { CancelPendingApproval(); } catch { }
             try { if (_cts != null) _cts.Cancel(); } catch { }
 
             try { FireExtractLessons(); } catch { }
@@ -2094,11 +2095,13 @@ namespace TxTools.Agent.UI
             };
             loop.ApprovalRequest = (tool, input) =>
             {
-                if (_sessionClosed) return false;
+                if (_sessionClosed) throw new OperationCanceledException();
                 TxTools.Agent.TxAgentCommand.SetPetState("waiting", "等待操作确认");
                 try { return AskApproval(tool, input); }
                 finally { if (!_sessionClosed) TxTools.Agent.TxAgentCommand.SetPetState("thinking"); }
             };
+            var harnessLoop = loop as TxTools.Agent.Harness.HarnessAgentLoop;
+            if (harnessLoop != null) harnessLoop.HostConfirmationRequest = AskHostConfirmation;
             loop.AskUserRequest = (question, kind, choices) =>
             {
                 if (_sessionClosed) return null;
@@ -2173,9 +2176,39 @@ namespace TxTools.Agent.UI
         //   (b) 已经在 UI 线程调用 (会死锁 —— UI 线程等自己发消息回自己)。
         // ─────────────────────────────────────────────────────
 
+        private void EnsureApprovalWindowVisible()
+        {
+            if (_sessionClosed || IsDisposed || Disposing) throw new InvalidOperationException("智能体窗口已关闭。");
+            Control host = Parent;
+            while (host != null && !(host is TxAgentDockViewer)) host = host.Parent;
+            if (host != null) TxApplication.ViewersManager.ShowViewer(TxAgentDockViewer.RegisteredName);
+            var form = FindForm();
+            if (form != null)
+            {
+                if (!form.Visible) form.Show();
+                if (form.WindowState == FormWindowState.Minimized) form.WindowState = FormWindowState.Normal;
+                form.BringToFront();
+                form.Activate();
+            }
+            Show();
+            BringToFront();
+            Focus();
+        }
+
+        private bool AskHostConfirmation(string title, string detail, bool destructive)
+        {
+            if (InvokeRequired)
+                return (bool)Invoke(new Func<bool>(() => AskHostConfirmation(title, detail, destructive)));
+            EnsureApprovalWindowVisible();
+            // 宿主确认保留原始原因，不受普通工具的自动批准模式影响。
+            return MessageBox.Show(this, detail, title, MessageBoxButtons.YesNo,
+                destructive ? MessageBoxIcon.Warning : MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+        }
+
         private bool AskApproval(ITxAgentTool tool, JObject input)
         {
-            if (_sessionClosed) return false;
+            if (_sessionClosed) throw new OperationCanceledException();
             bool isCode = input != null
                           && input["code"] != null
                           && input["code"].Type == JTokenType.String;
@@ -2206,13 +2239,15 @@ namespace TxTools.Agent.UI
         /// </summary>
         private bool AskApprovalHtml(ITxAgentTool tool, JObject input, bool isCode)
         {
-            var tcs = new TaskCompletionSource<bool>();
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var requestId = Guid.NewGuid().ToString("N");
             lock (_pendingApprovalLock)
             {
-                if (_sessionClosed) return false;
+                if (_sessionClosed) throw new OperationCanceledException();
                 // 如果之前有挂着的(异常情况),视为拒绝先释放,再上新的
-                if (_pendingApproval != null) _pendingApproval.TrySetResult(false);
+                if (_pendingApproval != null) throw new InvalidOperationException("已有待处理审批，不能覆盖该请求。");
                 _pendingApproval = tcs;
+                _pendingApprovalId = requestId;
             }
 
             try
@@ -2223,6 +2258,7 @@ namespace TxTools.Agent.UI
                     payload = new
                     {
                         type = "askApproval",
+                        requestId = requestId,
                         kind = "code",
                         tool = tool.Name,
                         code = (string)input["code"]
@@ -2233,36 +2269,70 @@ namespace TxTools.Agent.UI
                     payload = new
                     {
                         type = "askApproval",
+                        requestId = requestId,
                         kind = "generic",
                         tool = tool.Name,
                         description = tool.Description ?? "",
                         input = Compact(input)
                     };
                 }
-                PostJs(payload);
+                // 审批不能使用会静默吞掉投递失败的 PostJs，否则后台将永久等待。
+                Invoke(new Action(() =>
+                {
+                    if (tcs.Task.IsCompleted) return; // 停止可能早于 UI 投递，不能再弹出过期审批。
+                    EnsureApprovalWindowVisible();
+                    if (!_webViewReady || _webView == null || _webView.CoreWebView2 == null)
+                        throw new InvalidOperationException("审批 WebView 尚未就绪。");
+                    var json = JsonConvert.SerializeObject(payload);
+                    var script = "dispatchMessage(" + JsonConvert.SerializeObject(json)
+                        + "); document.getElementById('approval-modal').classList.contains('show');";
+                    DeliverApprovalAsync(script, tcs);
+                }));
 
                 // 同步阻塞等 JS 响应(见方法顶注释,安全前提: 我们不在 UI 线程)
-                return tcs.Task.Result;
-            }
-            catch
-            {
-                return false;
+                return tcs.Task.GetAwaiter().GetResult();
             }
             finally
             {
                 lock (_pendingApprovalLock)
                 {
-                    if (_pendingApproval == tcs) _pendingApproval = null;
+                    if (_pendingApproval == tcs)
+                    {
+                        _pendingApproval = null;
+                        _pendingApprovalId = null;
+                    }
                 }
             }
         }
 
-        /// <summary>解除当前挂起的审批(视为传入的 allow 结果)。多次调用幂等。</summary>
-        private void ReleasePendingApproval(bool allow)
+        private async void DeliverApprovalAsync(string script, TaskCompletionSource<bool> pending)
         {
-            TaskCompletionSource<bool> tcs;
-            lock (_pendingApprovalLock) { tcs = _pendingApproval; }
-            if (tcs != null) tcs.TrySetResult(allow);
+            try
+            {
+                var result = await _webView.CoreWebView2.ExecuteScriptAsync(script);
+                if (result != "true") throw new InvalidOperationException("审批页面未能显示确认框。");
+            }
+            catch (Exception ex) { pending.TrySetException(ex); }
+        }
+
+        /// <summary>解除当前挂起的审批(视为传入的 allow 结果)。多次调用幂等。</summary>
+        private void ReleasePendingApproval(bool allow, string requestId)
+        {
+            lock (_pendingApprovalLock)
+            {
+                if (_pendingApproval != null && requestId == _pendingApprovalId)
+                    _pendingApproval.TrySetResult(allow);
+            }
+        }
+
+        private void CancelPendingApproval()
+        {
+            lock (_pendingApprovalLock)
+            {
+                if (_pendingApproval == null) return;
+                PostJs(new { type = "cancelApproval", requestId = _pendingApprovalId });
+                _pendingApproval.TrySetCanceled();
+            }
         }
 
         // ─────────────────────────────────────────────────────
@@ -2381,9 +2451,11 @@ namespace TxTools.Agent.UI
         /// <summary>原生弹窗兜底 —— WebView 未就绪或已在 UI 线程时用。</summary>
         private bool AskApprovalNative(ITxAgentTool tool, JObject input, bool isCode)
         {
-            if (_sessionClosed) return false;
+            if (_sessionClosed) throw new OperationCanceledException();
             if (InvokeRequired)
                 return (bool)Invoke(new Func<bool>(() => AskApprovalNative(tool, input, isCode)));
+
+            EnsureApprovalWindowVisible();
 
             if (isCode)
                 return CodeApprovalDialog.Show(this, tool.Name, (string)input["code"]) == DialogResult.Yes;
@@ -2427,14 +2499,14 @@ namespace TxTools.Agent.UI
         //    { type:"deleteConv", id }
         //    { type:"uploadFile", filename, contentBase64 }
         //    { type:"removeAttachment", id }
-        //    { type:"approvalResult", allow }
+        //    { type:"approvalResult", requestId, allow }
         //    { type:"extractLessons" }
         //
         //  C# → JS (dispatchMessage(...)):
         //    { type:"modelList", items, current }
         //    { type:"keyReady" }
         //    { type:"askApiKey", reason }
-        //    { type:"askApproval", kind:"code"|"generic", tool, code?, description?, input? }
+        //    { type:"askApproval", requestId, kind:"code"|"generic", tool, code?, description?, input? }
         //    { type:"convList", items:[{id,title,updated}] }
         //    { type:"clear" }
         //    { type:"restore", messages:[...] }

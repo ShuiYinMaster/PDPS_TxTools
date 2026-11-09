@@ -56,7 +56,7 @@ namespace TxAgent.Core
 
         /// <summary>
         /// 请求用户确认。destructive=true 时 UI 应做更强提示。
-        /// 返回 false 表示用户否决，Core 会把否决结果回灌给模型。
+        /// 返回 false 表示用户否决；界面/路由故障应抛异常，不能冒充用户否决。
         /// </summary>
         bool Confirm(string title, string detail, bool destructive);
 

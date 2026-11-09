@@ -136,6 +136,13 @@ namespace TxTools.Agent.Harness
         private Func<ITxAgentTool, JObject, bool> _approvalRequest;
         private Func<string, string, string[], string> _askUserRequest;
 
+        /// <summary>宿主确认独立于工具审批，不需要通过工具名解析。</summary>
+        public Func<string, string, bool, bool> HostConfirmationRequest
+        {
+            get { return _host.HostConfirmRequest; }
+            set { _host.HostConfirmRequest = value; }
+        }
+
         public Func<ITxAgentTool, JObject, bool> ApprovalRequest
         {
             get { return _approvalRequest; }
@@ -877,12 +884,11 @@ namespace TxTools.Agent.Harness
 
         private bool InvokeApproval(string name, JObject input)
         {
-            if (_approvalRequest == null) return false;
+            if (_approvalRequest == null) throw new InvalidOperationException("工具审批回调未设置。");
             ITxAgentTool tool;
             if (!_tools.TryGet(name ?? string.Empty, out tool)) tool = null;
-            if (tool == null) return false; // 解析不出工具则拒绝,避免空引用
-            try { return _approvalRequest(tool, input ?? new JObject()); }
-            catch { return false; }
+            if (tool == null) throw new InvalidOperationException("无法解析待审批工具: " + name);
+            return _approvalRequest(tool, input ?? new JObject());
         }
 
         // ── 事件触发 ──

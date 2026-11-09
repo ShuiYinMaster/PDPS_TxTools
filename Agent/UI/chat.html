@@ -1760,6 +1760,10 @@ window.dispatchMessage = function (json) {
         case "attachmentInfo": onAttachmentInfo(msg); break;
         case "toolList":       onToolList(msg.items); break;
         case "askApproval":    onAskApproval(msg); break;
+        case "cancelApproval":
+            if (document.getElementById("approval-modal").dataset.requestId === msg.requestId)
+                dismissApprovalModal();
+            break;
         case "askUser":        onAskUser(msg); break;
         case "approvalMode":
             if (msg.value) setPermMode(msg.value, false);
@@ -3800,6 +3804,7 @@ document.addEventListener("keydown", function (e) {
 });
 
 function onAskApproval(msg) {
+    document.getElementById("approval-modal").dataset.requestId = msg.requestId;
     const body = document.getElementById("ap-body");
     const title = document.getElementById("ap-title");
     body.innerHTML = "";
@@ -4121,11 +4126,17 @@ function closeAskUserModal(answer) {
     });
 }
 
-function closeApprovalModal(allow) {
+function dismissApprovalModal() {
     document.getElementById("approval-modal").classList.remove("show");
     // 清空 body 释放 DOM(下次显示会重建)
     document.getElementById("ap-body").innerHTML = "";
-    postToHost({ type: "approvalResult", allow: !!allow });
+    delete document.getElementById("approval-modal").dataset.requestId;
+}
+
+function closeApprovalModal(allow) {
+    const requestId = document.getElementById("approval-modal").dataset.requestId;
+    dismissApprovalModal();
+    if (requestId) postToHost({ type: "approvalResult", requestId: requestId, allow: !!allow });
 }
 
 // ═════════════════════════════════════════════════════════════════

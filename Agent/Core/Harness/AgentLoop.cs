@@ -203,6 +203,7 @@ namespace TxAgent.Core
             _repetitionStrikes = 0;
             var failureCounter = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             RestorePoint restorePoint = null;
+            string writeBlockReason = null;
             string lastToolName = null;
             int consecSameTool = 0;
             // 相同参数跨轮重复调用的"连续"计数:换一个 dedupKey 就重置,
@@ -423,6 +424,13 @@ namespace TxAgent.Core
                         continue;
                     }
 
+                    // 拒绝/审批故障在本轮持续生效，不能因为 restorePoint 非空而绕过。
+                    if (tool.IsWrite && writeBlockReason != null)
+                    {
+                        session.Add(ChatMessage.CreateToolResult(call.Id, writeBlockReason));
+                        continue;
+                    }
+
                     // 首次写操作前建立回滚点
                     if (tool.IsWrite && _options.AutoRestorePoint && restorePoint == null)
                     {
@@ -435,16 +443,21 @@ namespace TxAgent.Core
 
                         if (!restorePoint.Created)
                         {
-                            bool goOn = _host.Confirm(
+                            string confirmationError;
+                            bool goOn = SafeConfirm(
                                 "无法建立回滚点",
                                 "原因：" + restorePoint.HowToRollback +
                                 "\n继续执行将无法自动回退，是否继续？",
-                                true);
+                                true, out confirmationError);
+                            ct.ThrowIfCancellationRequested();
 
                             if (!goOn)
                             {
-                                session.Add(ChatMessage.CreateToolResult(call.Id,
-                                    "用户拒绝在无回滚点的情况下执行写入操作。请停止修改，改为输出建议方案。"));
+                                writeBlockReason = confirmationError == null
+                                    ? "用户拒绝在无回滚点的情况下执行写入操作。请停止修改，改为输出建议方案。"
+                                    : "审批界面不可用，写入操作未执行；这不代表用户拒绝。原因：" + confirmationError
+                                      + "。请停止修改并向用户说明审批故障。";
+                                session.Add(ChatMessage.CreateToolResult(call.Id, writeBlockReason));
                                 continue;
                             }
                         }
@@ -452,15 +465,19 @@ namespace TxAgent.Core
 
                     if (tool.IsDestructive)
                     {
-                        bool ok = _host.Confirm(
+                        string confirmationError;
+                        bool ok = SafeConfirm(
                             "确认破坏性操作",
                             "工具：" + tool.Name + "\n参数：" + Truncate(call.ArgumentsJson, 800),
-                            true);
+                            true, out confirmationError);
+                        ct.ThrowIfCancellationRequested();
 
                         if (!ok)
                         {
                             session.Add(ChatMessage.CreateToolResult(call.Id,
-                                "用户否决了这次调用。请不要重复相同调用，改为说明意图或换一种非破坏性方式。"));
+                                confirmationError == null
+                                    ? "用户否决了这次调用。请不要重复相同调用，改为说明意图或换一种非破坏性方式。"
+                                    : "审批界面不可用，工具未执行；这不代表用户拒绝。原因：" + confirmationError));
                             continue;
                         }
                     }
@@ -642,6 +659,20 @@ namespace TxAgent.Core
                 return ToolResult.Fail("host",
                     "工具执行抛出异常：" + ex.GetType().Name + ": " + ex.Message +
                     "\n请检查参数是否符合 schema，或换一种实现方式重试。");
+            }
+        }
+
+        private bool SafeConfirm(string title, string detail, bool destructive, out string error)
+        {
+            error = null;
+            try { return _host.Confirm(title, detail, destructive); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                var cause = ex.GetBaseException();
+                error = cause.GetType().Name + ": " + cause.Message;
+                _host.Log("error", "审批失败 [" + title + "]: " + ex);
+                return false;
             }
         }
 

@@ -42,6 +42,9 @@ namespace TxTools.Agent.Harness
         /// </summary>
         public Func<string, JObject, bool> ConfirmRequest;
 
+        /// <summary>没有工具名的宿主确认（如保存失败），保留标题和完整原因。</summary>
+        public Func<string, string, bool, bool> HostConfirmRequest;
+
         /// <summary>变更类工具自动通过白名单(对应旧 AgentOptions.AutoApproveTools)。
         /// 仅作为 ConfirmRequest 未注入时的 fallback。</summary>
         public System.Collections.Generic.HashSet<string> AutoApproveTools { get; private set; }
@@ -158,7 +161,10 @@ namespace TxTools.Agent.Harness
 
             // 委托由 UI 层注入，它内部自己做 BeginInvoke + 在调用线程等待，
             // 这里【不要】再包一层 Invoke —— 那会把 UI 线程占住等自己，直接死锁。
-            if (ConfirmRequest != null)
+            // 回滚点确认没有“工具：”字段，不能送到工具注册表查询，否则会静默拒绝。
+            if (string.IsNullOrEmpty(name) && HostConfirmRequest != null)
+                return HostConfirmRequest(title, detail, destructive);
+            if (!string.IsNullOrEmpty(name) && ConfirmRequest != null)
                 return ConfirmRequest(name, input);
 
             // fallback: 原生弹窗。
@@ -171,13 +177,14 @@ namespace TxTools.Agent.Harness
             try
             {
                 return Invoke(() =>
-                    MessageBox.Show(msg, "操作确认", MessageBoxButtons.YesNo, MessageBoxIcon.Warning)
+                    MessageBox.Show(msg, title ?? "操作确认", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                        MessageBoxDefaultButton.Button2)
                     == DialogResult.Yes);
             }
             catch (Exception ex)
             {
-                Log("error", "确认弹窗失败，按拒绝处理: " + ex.Message);
-                return false;   // 弹不出来时宁可拒绝，不能默认放行变更操作
+                Log("error", "确认弹窗失败: " + ex.Message);
+                throw new InvalidOperationException("无法显示操作确认窗口。", ex);
             }
         }
 
