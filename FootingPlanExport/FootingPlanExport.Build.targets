@@ -1,0 +1,10 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <FootingPlanConverterDir Condition="'$(FootingPlanConverterDir)' == ''">$(TxToolsDependenciesRoot)footing-plan-export\converter\</FootingPlanConverterDir>
+  </PropertyGroup>
+  <Target Name="CopyFootingPlanConverter" AfterTargets="Build">
+    <Error Condition="!Exists('$(FootingPlanConverterDir)JtToDxf.exe')" Text="Missing footing-plan converter. Run FootingPlanExport/BuildConverter.ps1 first." />
+    <ItemGroup><FootingPlanRuntime Include="$(FootingPlanConverterDir)**\*" /></ItemGroup>
+    <Copy SourceFiles="@(FootingPlanRuntime)" DestinationFiles="@(FootingPlanRuntime->'$(TargetDir)FootingPlanExport\converter\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

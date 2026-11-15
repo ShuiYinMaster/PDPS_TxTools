@@ -1,0 +1,15 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Compile Include="CatiaPartTree\Core\CatiaImportSource.cs" />
+    <Compile Include="CatiaPartTree\Core\CatiaTessellation.cs" />
+    <Compile Include="CatiaPartTree\Core\CatiaLibraryDestination.cs" />
+    <Compile Include="CatiaPartTree\StructureSourceTree.cs" />
+    <Compile Include="CatiaPartTree\StructureTreeImages.cs" />
+    <Compile Include="CatiaPartTree\Ps\CatiaImportSession.cs" />
+    <Compile Include="CatiaPartTree\Conversion\Frame12.cs" />
+  </ItemGroup>
+  <Target Name="BuildCatiaConverter" AfterTargets="Build">
+    <MSBuild Projects="$(MSBuildProjectDirectory)\CatiaPartTree\Conversion\CatiaConverter.csproj" Targets="Build" Properties="Configuration=$(Configuration);Platform=AnyCPU" RemoveProperties="OutputPath;OutDir" />
+    <Copy SourceFiles="$(TxToolsBuildRoot)bin\CatiaConverter\$(Configuration)\TxTools.CatiaConverter.exe" DestinationFolder="$(TargetDir)CatiaPartTree" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

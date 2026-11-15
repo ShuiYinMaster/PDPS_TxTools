@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
@@ -14,6 +14,8 @@ namespace TxTools.AutoRecorder
         private readonly Queue<Destination> _destinations=new Queue<Destination>();
         private readonly System.Windows.Forms.Timer _timer;
         private readonly int _thread;
+        private readonly System.Windows.Forms.Control _dispatch=new System.Windows.Forms.Control();
+        private bool _playPending,_playQueued,_playExecuting;
         private readonly Stopwatch _clock=new Stopwatch();
         private TxSimulationPlayer _player;
         private TxGraphicViewer _viewer;
@@ -37,6 +39,7 @@ namespace TxTools.AutoRecorder
             _thread=Thread.CurrentThread.ManagedThreadId;
             _timer=new System.Windows.Forms.Timer {Interval=33};
             _timer.Tick+=Pump;
+            var handle=_dispatch.Handle;
         }
         private void RequireUi()
         {if(Thread.CurrentThread.ManagedThreadId!=_thread)throw new InvalidOperationException("预演控制必须在 PS 界面线程执行");}
@@ -54,9 +57,10 @@ namespace TxTools.AutoRecorder
                 // 不改 CurrentOperation，不修改全局播放选项，也不在停止时回建仿真。
                 var player=new TxSimulationPlayer();_player=player;
                 player.SetOperation((ITxOperation)operation);
+                player.TimeInterval=1.0/30;
                 _scheduler=schedule==null?null:new CameraShotScheduler(schedule.BuildShots());
                 _latestTime=_appliedTime=0;_location=0;_lastProgress=-100;_lastCamera=null;
-                _stopRequested=_pauseRequested=_ended=_started=false;Paused=false;
+                _stopRequested=_pauseRequested=_ended=_started=false;Paused=false;_stopMessage=null;
                 player.TimeIntervalReached+=TimeReached;
                 player.OperationReachedDestination+=LocationReached;
                 player.Ended+=Ended;
@@ -65,13 +69,36 @@ namespace TxTools.AutoRecorder
                 else if(focus)PsReader.ZoomToObjects(PsReader.CollectOperationObjects(operation));
                 ApplyCamera(_scheduler?.Tick(0));
                 lock(_gate){_destinations.Clear();_ended=false;_acceptEvents=true;}
-                _clock.Restart();_timer.Start();_started=true;player.Play();
+                _clock.Restart();_timer.Start();
+                StateChanged?.Invoke();Progress?.Invoke(0);
+                QueuePlay();
             }
             catch
             {
                 lock(_gate){_acceptEvents=false;_stopRequested=true;}
                 FinishStop(false);throw;
             }
+        }
+        // Play may run a native message loop before returning. Never invoke it inside Pump:
+        // that would keep the reentry guard set and suppress progress/Stop/Pause ticks.
+        private void QueuePlay()
+        {
+            _playPending=true;
+            if(_playQueued||_playExecuting||_disposed)return;
+            var player=_player;_playQueued=true;
+            _dispatch.BeginInvoke(new Action(()=>
+            {
+                _playQueued=false;
+                if(_disposed||!ReferenceEquals(player,_player)||Stopping||Paused||!_playPending)return;
+                _playPending=false;_playExecuting=true;_started=true;
+                try{player.Play();}
+                catch(Exception ex)
+                {
+                    if(ReferenceEquals(player,_player))
+                    {_stopMessage="预演启动失败："+ex.Message;lock(_gate){_acceptEvents=false;_stopRequested=true;}}
+                }
+                finally{_playExecuting=false;}
+            }));
         }
         private void TimeReached(object sender,TxSimulationPlayer_TimeIntervalReachedEventArgs args)
         {
@@ -113,9 +140,10 @@ namespace TxTools.AutoRecorder
                 if(pause&&!ended)
                 {
                     // 不持有事件锁调用 SDK，Pause/Play 可能同步或跨线程触发事件。
-                    if(Paused){Paused=false;_player.Play();}else{_player.Pause();Paused=true;}
+                    if(Paused){Paused=false;QueuePlay();}else{_player.Pause();Paused=true;}
                     StateChanged?.Invoke();
                 }
+                if(_playPending&&!Paused&&!ended)QueuePlay();
                 TxCamera camera=null;
                 foreach(var destination in destinations)
                 {
@@ -185,7 +213,7 @@ namespace TxTools.AutoRecorder
                 try{player.TimeIntervalReached-=TimeReached;player.OperationReachedDestination-=LocationReached;player.Ended-=Ended;}
                 catch(Exception ex){error+="；事件清理失败："+ex.Message;}
                 lock(_gate){_player=failed&&!_disposed?player:null;_destinations.Clear();_stopRequested=_pauseRequested=false;}
-                _scheduler=null;if(!failed)_started=false;Paused=false;_clock.Stop();
+                _playPending=false;_scheduler=null;if(!failed)_started=false;Paused=false;_clock.Stop();
             }
             // 故意不 Rewind / ResetToDefaultSetting / JumpSimulationToTime，避免同步重算和 SDK 重入。
             if(notify&&!_disposed)Finished?.Invoke(failed?"原生停止失败，可重试停止；编辑保持锁定"+error:(_stopMessage??"预演已结束")+error);
@@ -201,7 +229,7 @@ namespace TxTools.AutoRecorder
         {
             RequireUi();if(_disposed)return;_disposed=true;
             lock(_gate){_acceptEvents=false;_stopRequested=true;}
-            FinishStop(false);_timer.Dispose();
+            FinishStop(false);_timer.Dispose();_dispatch.Dispose();
         }
     }
 }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
@@ -12,6 +12,20 @@ namespace TxTools.AutoRecorder
     /// </summary>
     internal static class PsReader
     {
+        public static TxVector GetFocusPoint(ITxLocatableObject obj,bool geometryCenter)
+        {
+            if(obj==null||!obj.IsValid())throw new InvalidOperationException("焦点对象已失效，请重新拾取");
+            if(!geometryCenter)return CameraShot.Copy(obj.AbsoluteLocation.Translation);
+            var objects=new TxObjectList();objects.Add(obj);
+            var calculator=new TxBoundingBoxCalculator(objects){Orientation=new TxTransformation()};
+            var box=calculator.CalculateBoundingBox();
+            if(box.IsEmpty)throw new InvalidOperationException("对象没有可读取的几何，请更换对象或选择对象原点");
+            return new TxVector((box.Lower.X+box.Higher.X)/2,(box.Lower.Y+box.Higher.Y)/2,(box.Lower.Z+box.Higher.Z)/2);
+        }
+        public static TxVector ToLocalPoint(ITxLocatableObject obj,TxVector point)
+        {return (obj.AbsoluteLocation.Inverse*new TxTransformation(point,new TxVector(0,0,0))).Translation;}
+        public static TxVector ToWorldPoint(ITxLocatableObject obj,TxVector point)
+        {return (obj.AbsoluteLocation*new TxTransformation(point,new TxVector(0,0,0))).Translation;}
         // ============================================================
         // 1. 拿主视口
         // ============================================================

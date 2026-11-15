@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -45,7 +45,7 @@ namespace TxTools.AutoRecorder
         private CameraShotEditor _shotEditor;
         private SimulationPreview _fullPreview;
         private bool _closeAfterPreviewStop;
-        private Button _planButton;
+        private Label _planHint;
 
         private RecorderWorkspace _workspace;
         private Control _settingsTable;
@@ -314,7 +314,7 @@ namespace TxTools.AutoRecorder
             _btnToggleLog = new Button {Text="查看日志",AutoSize=true};
             var actions=new FlowLayoutPanel {AutoSize=true,FlowDirection=FlowDirection.RightToLeft,WrapContents=false,Padding=new Padding(4)};
             actions.Controls.Add(_btnClose);actions.Controls.Add(_btnCancel);actions.Controls.Add(_btnStart);actions.Controls.Add(_btnToggleLog);
-            _planButton=new Button {Text="检查配置",AutoSize=true};_planButton.Click+=(sender,args)=>ShowPlanReport();actions.Controls.Add(_planButton);
+            _planHint=new Label{AutoSize=false,Width=330,Height=28,AutoEllipsis=true,TextAlign=ContentAlignment.MiddleLeft,ForeColor=Color.FromArgb(0,106,115)};actions.Controls.Add(_planHint);
             _pnlLogContainer=new Panel {Height=0,Visible=false};
             _rtbLog=new RichTextBox {Dock=DockStyle.Fill,ReadOnly=true,BorderStyle=BorderStyle.FixedSingle,DetectUrls=false};
             _pnlLogContainer.Controls.Add(_rtbLog);
@@ -1536,16 +1536,6 @@ namespace TxTools.AutoRecorder
             }
             return messages;
         }
-        private void ShowPlanReport()
-        {
-            using(var dialog=new Form {Text="录制配置检查",ClientSize=new Size(620,380),StartPosition=FormStartPosition.CenterParent,Font=Font})
-            {
-                var root=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=1,RowCount=2,Padding=new Padding(8)};
-                root.RowStyles.Add(new RowStyle(SizeType.Percent,100));root.RowStyles.Add(new RowStyle(SizeType.Absolute,38));
-                root.Controls.Add(new TextBox {Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,Dock=DockStyle.Fill,Text=string.Join(Environment.NewLine,PlanMessages(false))},0,0);
-                var close=new Button {Text="返回配置",Dock=DockStyle.Right,Width=100};close.Click+=(sender,args)=>dialog.Close();root.Controls.Add(close,0,1);dialog.Controls.Add(root);dialog.ShowDialog(this);
-            }
-        }
         private void SaveCurrentPlan()
         {
             if(_kfEditingOp==null)return;
@@ -1583,9 +1573,9 @@ namespace TxTools.AutoRecorder
         }
         private void StartOperationPreview()
         {
-            if(_kfEditingOp==null)return;
+            if(_kfEditingOp==null||_fullPreview.Running)return;
             var schedule=GetOrCreateSchedule(_kfEditingOp);
-            if(!schedule.Quick&&ShotPlan.Issues(schedule,PsReader.GetOperationDuration(_kfEditingOp),PsReader.GetOperationLocations(_kfEditingOp).Count).Count>0){ShowPlanReport();return;}
+            if(!schedule.Quick&&ShotPlan.Issues(schedule,PsReader.GetOperationDuration(_kfEditingOp),PsReader.GetOperationLocations(_kfEditingOp).Count).Count>0){RefreshButtonState();return;}
             try{_shotEditor.Restore();_fullPreview.Start(_kfEditingOp,schedule.Quick?null:schedule,_chkFocus.Checked);RefreshButtonState();UpdateStatusLabel("整段操作预演中（不生成视频）","—");}
             catch(Exception ex){Beep(ex.Message);RefreshButtonState();}
         }
@@ -1596,7 +1586,7 @@ namespace TxTools.AutoRecorder
             try
             {
                 var errors=PlanMessages(true);
-                if(errors.Count>0){ShowPlanReport();return;}
+                if(errors.Count>0){RefreshButtonState();return;}
             }
             catch (Exception ex) { Beep(ex.Message); return; }
             var ops = GetSelectedOperations();
@@ -1922,7 +1912,7 @@ namespace TxTools.AutoRecorder
 
             var issues=isRunning?new List<string>():PlanMessages(true);
             _btnStart.Enabled = canStart&&issues.Count==0;
-            if(_planButton!=null){_planButton.Enabled=!isRunning&&GetGridCount()>0;_planButton.Text=isRunning?"配置已锁定":GetGridCount()==0?"配置检查：先选操作":issues.Count==0?"配置检查：就绪":"配置检查：待补 "+issues.Count;}
+            if(_planHint!=null){_planHint.Text=isRunning?"播放中 · 编辑已锁定":GetGridCount()==0?"① 在当前 PS 工程选取操作":string.IsNullOrWhiteSpace(_txtPath.Text)?"② 选择输出文件位置":issues.Count==0?"✓ 已就绪，可预演或录制":"● "+issues[0];_planHint.ForeColor=issues.Count==0&&!string.IsNullOrWhiteSpace(_txtPath.Text)?Color.FromArgb(0,106,115):Color.Firebrick;}
             if(_editingTitle!=null&&_kfEditingOp!=null&&!isRunning)
             {
                 var schedule=GetOrCreateSchedule(_kfEditingOp);
@@ -1937,6 +1927,7 @@ namespace TxTools.AutoRecorder
             _btnCancel.Enabled = isRunning&&!_fullPreview.Stopping;
 
             // 参数编辑在录制中禁用
+            _txtPath.BackColor=!isRunning&&string.IsNullOrWhiteSpace(_txtPath.Text)?Color.MistyRose:SystemColors.Window;
             _txtPath.Enabled = !isRunning;
             _btnBrowse.Enabled = !isRunning;
             _cmbCodec.Enabled = !isRunning;

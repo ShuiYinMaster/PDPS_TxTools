@@ -12,10 +12,10 @@ namespace TxTools.CrossEnvIO
         public override string Bitmap => "image.Small.CrossEnvIO.bmp";
         public override string LargeBitmap => "image.CrossEnvIO.png";
 
-        public override string Name { get { return ".跨环境IO→资源/零件/焊点"; } }
+        public override string Name { get { return ".跨环境IO→模型结构/焊点"; } }
         public override string Category { get { return "TxTools"; } }
-        public override string Tooltip { get { return "跨环境传输资源/零件/焊点（主控↔被控）"; } }
-        public override string Description { get { return "导出当前环境的资源结构、零件树、焊点到 TSV 文件，并在目标环境重建；含 cojt 库目录传输。"; } }
+        public override string Tooltip { get { return "跨工程传输模型结构与焊点，支持不同库目录布局"; } }
+        public override string Description { get { return "选择任务及接收位置，检查通过后确认执行；支持模型目录规则、离线包与任务查询。"; } }
 
         public override void Execute(object cmdParams)
         {

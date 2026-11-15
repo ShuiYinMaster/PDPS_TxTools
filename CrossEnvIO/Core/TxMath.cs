@@ -14,6 +14,8 @@
 // （与对话验证过的 CreateWeldLocationOperation 重建代码逐项一致）
 
 using System;
+using System.IO;
+using System.Linq;
 using Tecnomatix.Engineering;
 
 namespace TxTools.CrossEnvIO
@@ -22,6 +24,37 @@ namespace TxTools.CrossEnvIO
     {
         private const double Rad2Deg = 180.0 / Math.PI;
         private const double Deg2Rad = Math.PI / 180.0;
+
+        internal static double[] WorldValues(TxTransformation pose)=>new[] {
+            pose[0,0],pose[0,1],pose[0,2],pose.Translation.X,
+            pose[1,0],pose[1,1],pose[1,2],pose.Translation.Y,
+            pose[2,0],pose[2,1],pose[2,2],pose.Translation.Z };
+
+        internal static TxTransformation FromWorldValues(double[] values)
+        {
+            if(values==null||values.Length!=12||values.Any(v=>double.IsNaN(v)||double.IsInfinity(v)))
+                throw new InvalidDataException("完整世界位姿必须包含 12 个有效数值");
+            var pose=new TxTransformation();
+            for(int row=0;row<3;row++)for(int column=0;column<3;column++)pose[row,column]=values[row*4+column];
+            pose.Translation=new TxVector(values[3],values[7],values[11]);return pose;
+        }
+
+        // target * inverse(source) * world; native frame rotations are rigid.
+        internal static TxTransformation AlignWorldPose(TxTransformation world,TxTransformation source,TxTransformation target)
+        {
+            var a=WorldValues(source);var b=WorldValues(target);var w=WorldValues(world);
+            var rotation=new double[9];var result=new double[12];
+            for(int row=0;row<3;row++)for(int column=0;column<3;column++)
+                for(int k=0;k<3;k++)rotation[row*3+column]+=b[row*4+k]*a[column*4+k];
+            for(int row=0;row<3;row++)
+            {
+                for(int column=0;column<3;column++)for(int k=0;k<3;k++)
+                    result[row*4+column]+=rotation[row*3+k]*w[k*4+column];
+                result[row*4+3]=b[row*4+3];
+                for(int k=0;k<3;k++)result[row*4+3]+=rotation[row*3+k]*(w[k*4+3]-a[k*4+3]);
+            }
+            return FromWorldValues(result);
+        }
 
         /// <summary>从 4x4 行主序矩阵提取欧拉角（度，RPY_ZYX）。null/长度不足返回 0。</summary>
         public static void MatrixToEulerDeg(double[] m, out double rx, out double ry, out double rz)

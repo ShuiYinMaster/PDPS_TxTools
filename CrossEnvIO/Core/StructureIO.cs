@@ -6,7 +6,7 @@
 //   零件树  : 同上 + \tCOJT（组件库路径，导出时记录，重建时仅核对日志）
 // ParentPath = 该对象「从导出根算起的自身路径」（/ 分隔，根行 = 根名）。
 //
-// 重建流程（与对话验证流程一致）:
+// 重建流程:
 //   1. 按 ParentPath 深度排序（父先子后）
 //   2. 容器行（Type 含 Compound）→ 在父容器下按名字找/建 TxCompoundResource / TxCompoundPart
 //   3. 叶子行（TxComponent 等）→ 按名字全场景查找 → AddObject 移入父容器
@@ -26,6 +26,7 @@ namespace TxTools.CrossEnvIO
     {
         public int ExportRows, Rebuilt, Created, Moved, Skipped, Failed;
         public readonly List<string> Errors = new List<string>();
+        public readonly Dictionary<string, string> ObjectMap = new Dictionary<string, string>(StringComparer.Ordinal);
         public override string ToString()
             => $"重建 {Rebuilt}（新建 {Created} · 移动 {Moved}）· 跳过 {Skipped} · 失败 {Failed}";
     }
@@ -33,7 +34,7 @@ namespace TxTools.CrossEnvIO
     public static class StructureIO
     {
         private static void Nop(string s) { }
-        private const string Fmt = "0.###";
+        private const string Fmt = "R";
 
         // ════════════════════════════════════════════════════════════
         //  导出
@@ -52,7 +53,8 @@ namespace TxTools.CrossEnvIO
         /// 导出多个根（每个根遍历其复合资源子集）到同一 TSV。写入表头一次。
         /// </summary>
         public static int ExportStructureMulti(List<ITxObject> roots, string filePath,
-                                               bool includeCojt, Action<string> log)
+                                               bool includeCojt, Action<string> log,
+                                               Func<ITxObject, Dictionary<string, string>> classify = null)
         {
             log = log ?? Nop;
             if (roots == null || roots.Count == 0) { log("[导出] 未选择导出根"); return 0; }
@@ -60,15 +62,33 @@ namespace TxTools.CrossEnvIO
 
             var sb = new StringBuilder();
             sb.AppendLine(includeCojt
-                ? "Name\tType\tParentPath\tX\tY\tZ\tRX\tRY\tRZ\tCOJT\tSourceLibraryRoot"
+                ? "Name\tType\tParentPath\tX\tY\tZ\tRX\tRY\tRZ\tCOJT\tSourceLibraryRoot\tSourceObjectId\tTypeKeys\tSourceParentId\tSourceStudy\tSourceDocument\tSourceStudyId\tPrototypeData\tTargetName\tWorldTransform"
                 : "Name\tType\tParentPath\tX\tY\tZ\tRX\tRY\tRZ");
 
             int count = 0;
             // treeKind=ROOT：根自身，下钻时按子节点类型分流 RES/PART
-            foreach (var root in roots)
+            var uniqueRoots=roots.Where(r=>r!=null).GroupBy(r=>r.Id,StringComparer.Ordinal).Select(g=>g.First()).ToList();
+            var collisions=new HashSet<string>(uniqueRoots.GroupBy(r=>r.Name??r.GetType().Name,StringComparer.Ordinal).Where(g=>g.Count()>1).Select(g=>g.Key),StringComparer.Ordinal);
+            var usedNames=new HashSet<string>(uniqueRoots.Select(r=>r.Name??r.GetType().Name),StringComparer.Ordinal);
+            foreach (var root in uniqueRoots.OrderBy(r=>r.Id,StringComparer.Ordinal))
             {
-                if (root == null) continue;
-                WriteNode(sb, root, Uri.EscapeDataString(root.Name ?? root.GetType().Name), "ROOT", includeCojt, ref count, log);
+                string original=root.Name??root.GetType().Name,segment=Uri.EscapeDataString(original),targetName=null;
+                if(collisions.Contains(original))
+                {
+                    string hash=PackageFiles.HashBytes(Encoding.UTF8.GetBytes(TransferCapture.StudyId()+"\n"+root.Id));
+                    string context=SceneAccess.Parent(root)?.Name??"文档根";
+                    for(int length=8;length<=64;length*=2)
+                    {
+                        string candidate=original+" ["+context+" · "+hash.Substring(0,length)+"]";
+                        if(usedNames.Add(candidate)){targetName=candidate;break;}
+                    }
+                    if(targetName==null)throw new InvalidOperationException("无法为同名导出根生成独立目标名称："+original);
+                    // Braces are escaped in ordinary object names, so this namespace cannot
+                    // collide with a literal source name. No extra parent node is introduced.
+                    segment+="@{"+Uri.EscapeDataString(root.Id)+"}";
+                    log("[导出] 同名根独立重建："+context+" / "+original+" → "+targetName);
+                }
+                WriteNode(sb, root, segment, "ROOT", includeCojt, ref count, log, classify,"",targetName);
             }
             TransferFile.Write(filePath, sb.ToString());
             log("[导出] ✓ 已写入 " + count + " 行（" + roots.Count + " 个导出根）→ " + filePath);
@@ -113,7 +133,7 @@ namespace TxTools.CrossEnvIO
         /// </summary>
         private static void WriteNode(StringBuilder sb, ITxObject obj, string rawPath,
                                       string treeKind, bool includeCojt, ref int count,
-                                      Action<string> log)
+                                      Action<string> log, Func<ITxObject, Dictionary<string, string>> classify, string sourceParentId = "",string targetName=null)
         {
             // 排除制造特征（焊点 TxWeldPoint 等）：它们挂在 PhysicalRoot 下，不属于资源/零件
             // 结构，由 WeldPointIO 单独导出/重建。若不排除，会被误当成叶子导出，
@@ -132,10 +152,10 @@ namespace TxTools.CrossEnvIO
                 else if (kind == "PART") path = "P:" + rawPath;
 
                 double x, y, z, rx, ry, rz;
-                GetLocation(obj, out x, out y, out z, out rx, out ry, out rz);
+                var worldPose=GetLocation(obj, out x, out y, out z, out rx, out ry, out rz);
                 string cojt = "";
                 if (includeCojt) cojt = GetCojtPath(obj);
-                sb.Append(TransferFile.Field(obj.Name)).Append('\t')
+                sb.Append(TransferFile.Field(!includeCojt&&targetName!=null?targetName:obj.Name)).Append('\t')
                   .Append(obj.GetType().Name).Append('\t')
                   .Append(path).Append('\t')
                   .Append(x.ToString(Fmt, CultureInfo.InvariantCulture)).Append('\t')
@@ -144,7 +164,19 @@ namespace TxTools.CrossEnvIO
                   .Append(rx.ToString(Fmt, CultureInfo.InvariantCulture)).Append('\t')
                   .Append(ry.ToString(Fmt, CultureInfo.InvariantCulture)).Append('\t')
                   .Append(rz.ToString(Fmt, CultureInfo.InvariantCulture));
-                if (includeCojt) sb.Append('\t').Append(TransferFile.Field(cojt)).Append('\t').Append(TransferFile.Field(EnvLibrary.CurrentRoot()));
+                if (includeCojt)
+                {
+                    sb.Append('\t').Append(TransferFile.Field(cojt)).Append('\t').Append(TransferFile.Field(EnvLibrary.CurrentRoot()))
+                      .Append('\t').Append(obj.Id).Append('\t').Append(Newtonsoft.Json.JsonConvert.SerializeObject(
+                          classify == null ? new Dictionary<string, string> { [obj.GetType().FullName] = obj.GetType().Name } : classify(obj)))
+                      .Append('\t').Append(sourceParentId)
+                      .Append('\t').Append(TransferFile.Field(TxApplication.ActiveDocument.CurrentStudy.Name))
+                      .Append('\t').Append(TransferFile.Field(TxApplication.ActiveDocument.FinalDestination ?? ""))
+                      .Append('\t').Append(TransferCapture.StudyId())
+                      .Append('\t').Append(Newtonsoft.Json.JsonConvert.SerializeObject(DevicePrototypes.Capture(obj,cojt)))
+                      .Append('\t').Append(TransferFile.Field(targetName??""))
+                      .Append('\t').Append(Newtonsoft.Json.JsonConvert.SerializeObject(TxMath.WorldValues(worldPose)));
+                }
                 sb.AppendLine();
                 count++;
             }
@@ -160,14 +192,14 @@ namespace TxTools.CrossEnvIO
             try
             {
                 var children = new List<ITxObject>();
-                foreach (ITxObject c in (System.Collections.IEnumerable)coll)
+                foreach (ITxObject c in SceneAccess.Children(coll))
                     children.Add(c);
                 // 子级继承当前树类型（资源容器的子仍是资源树，零件容器的子仍是零件树）
                 string childKind = treeKind;
                 if (obj is TxCompoundResource) childKind = "RES";
                 else if (obj is TxCompoundPart) childKind = "PART";
                 foreach (var c in children)
-                    WriteNode(sb, c, rawPath + "/" + Uri.EscapeDataString(c.Name ?? ""), childKind, includeCojt, ref count, log);
+                    WriteNode(sb, c, rawPath + "/" + Uri.EscapeDataString(c.Name ?? ""), childKind, includeCojt, ref count, log, classify, obj.Id);
             }
             catch (Exception ex) { throw new InvalidOperationException("导出子树不完整: " + rawPath, ex); }
         }
@@ -184,22 +216,46 @@ namespace TxTools.CrossEnvIO
                                                        bool isResource, Action<string> log,
                                                        double originX = 0, double originY = 0,
                                                        double originZ = 0, string sourceLibraryRoot = null,
-                                                       IDictionary<string, string> cojtMap = null)
+                                                       IDictionary<string, string> cojtMap = null,
+                                                       bool includeAllTrees = false, ISet<string> skippedPackages = null,
+                                                       double[] sourceFrame=null,double[] targetFrame=null)
         {
             log = log ?? Nop;
             var rep = new StructureReport();
             if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
             { rep.Failed++; rep.Errors.Add("文件不存在: " + filePath); return rep; }
             if (targetRoot == null) { rep.Failed++; rep.Errors.Add("目标容器为空"); return rep; }
+            bool alignFrames=sourceFrame!=null||targetFrame!=null;
+            TxTransformation sourceReference=null,targetReference=null;
+            try
+            {
+                if(alignFrames)
+                {
+                    sourceReference=sourceFrame==null?new TxTransformation():TxMath.FromWorldValues(sourceFrame);
+                    targetReference=targetFrame==null?new TxTransformation():TxMath.FromWorldValues(targetFrame);
+                }
+            }
+            catch(Exception ex){rep.Failed++;rep.Errors.Add("双端参考坐标无效："+ex.Message);return rep;}
 
             List<string[]> rows;
-            try { rows = ReadRows(filePath, log); }
+            int targetNameIndex=-1,worldTransformIndex=-1;
+            try
+            {
+                rows = ReadRows(filePath, log);
+                string header=File.ReadLines(filePath,Encoding.UTF8).FirstOrDefault(line=>!string.IsNullOrWhiteSpace(line));
+                if(header!=null)
+                {
+                    var fields=header.TrimStart('\uFEFF').Split('\t');
+                    targetNameIndex=Array.IndexOf(fields,"TargetName");worldTransformIndex=Array.IndexOf(fields,"WorldTransform");
+                }
+            }
             catch (Exception ex) { rep.Failed++; rep.Errors.Add("读取失败: " + ex.Message); return rep; }
             if (rows.Count == 0) { log("[重建] 无数据行"); return rep; }
             var duplicatePaths = rows.GroupBy(row => row[2], StringComparer.Ordinal).Where(group => group.Count() > 1).ToList();
             if (duplicatePaths.Count > 0)
             { rep.Failed++; rep.Errors.Add("结构文件有重复对象路径: " + duplicatePaths[0].Key); return rep; }
             ComponentIO.ResetInsertedPaths();
+            LibraryPersistence.Reset();
 
             // 深度排序（父先子后），容器行优先于同深度叶子
             var ordered = rows
@@ -208,13 +264,18 @@ namespace TxTools.CrossEnvIO
                 .ThenBy(o => IsCompound(o.Row[1]) ? 0 : 1)
                 .ToList();
 
-            object um = OpenUndo(isResource ? "跨环境重建资源树" : "跨环境重建零件树", log);
+            object um = OpenUndo(includeAllTrees ? "跨环境重建模型结构" : isResource ? "跨环境重建资源树" : "跨环境重建零件树", log);
             using ((TxTools.Common.SceneUndoScope)um)
             try
             {
                 // 路径 -> 容器对象。key 用含 R:/P: 前缀的完整路径，
                 // 使资源树与零件树（PhysicalRoot 下可能同名容器）不互相覆盖。
                 var pathToObj = new Dictionary<string, ITxObject>(StringComparer.Ordinal);
+                var sourceIdToObj = new Dictionary<string, ITxObject>(StringComparer.Ordinal);
+                var assignedLeafIds=new HashSet<string>(StringComparer.Ordinal);
+                var packageTemplates=new Dictionary<string,ITxObject>(StringComparer.OrdinalIgnoreCase);
+                var placements=new List<Tuple<ITxObject,TxTransformation,string>>();
+                var skippedIds = new HashSet<string>(StringComparer.Ordinal);
                 pathToObj[targetRoot.Name ?? ""] = targetRoot;
 
                 foreach (var o in ordered)
@@ -222,29 +283,53 @@ namespace TxTools.CrossEnvIO
                     var r = o.Row;
                     if (r.Length < 9) { rep.Skipped++; continue; }
                     string ownPath = r[2];
+                    string desiredName=targetNameIndex>=0&&r.Length>targetNameIndex&&!string.IsNullOrWhiteSpace(r[targetNameIndex])?r[targetNameIndex]:r[0];
 
                     // 按目标树类型过滤：资源页(isResource)只建 R: 资源树，零件页只建 P: 零件树。
                     // 根行/无前缀行(如 VAN)两种模式都保留（根行随后跳过）。
-                    if (isResource && ownPath.StartsWith("P:", StringComparison.Ordinal))
+                    if (!includeAllTrees && isResource && ownPath.StartsWith("P:", StringComparison.Ordinal))
                     { rep.Skipped++; continue; }
-                    if (!isResource && ownPath.StartsWith("R:", StringComparison.Ordinal))
+                    if (!includeAllTrees && !isResource && ownPath.StartsWith("R:", StringComparison.Ordinal))
                     { rep.Skipped++; continue; }
+                    if (r.Length > 9 && !string.IsNullOrWhiteSpace(r[9]) && skippedPackages != null
+                        && skippedPackages.Contains(Path.GetFullPath(r[9])))
+                    { rep.Skipped++; if (r.Length > 11) skippedIds.Add(r[11]); log("[跳过] 已明确跳过组件包及其实例: " + ownPath); continue; }
+                    if (r.Length > 13 && skippedIds.Contains(r[13]))
+                    { rep.Skipped++; skippedIds.Add(r[11]); continue; }
 
                     string parentPath = GetParentPath(ownPath);
                     double x, y, z, rx, ry, rz;
                     if (!TryParseLoc(r, 3, out x, out y, out z, out rx, out ry, out rz))
                     { rep.Failed++; rep.Errors.Add("无效位姿: " + ownPath); continue; }
+                    TxTransformation pose;
+                    try
+                    {
+                        pose=ReadPose(r,worldTransformIndex);
+                        if(alignFrames)pose=TxMath.AlignWorldPose(pose,sourceReference,targetReference);
+                        else
+                        {
+                            var translation=pose.Translation;
+                            pose.Translation=new TxVector(translation.X-originX,translation.Y-originY,translation.Z-originZ);
+                        }
+                    }
+                    catch(Exception ex){rep.Failed++;rep.Errors.Add("读取完整位姿失败："+ownPath+" / "+ex.Message);continue;}
 
                     ITxObject parent;
                     // ── 父解析 ──
                     // parentPath 为空 → 导出树的根（导出根对象自己，如 R:ANV 或 VAN）。
-                    if (string.IsNullOrEmpty(parentPath))
+                    if (r.Length > 13 && !string.IsNullOrEmpty(r[13]))
+                    {
+                        if (!sourceIdToObj.TryGetValue(r[13], out parent))
+                        { rep.Failed++; rep.Errors.Add("源父对象尚未重建: " + ownPath); continue; }
+                    }
+                    else if (string.IsNullOrEmpty(parentPath))
                     {
                         if (r[1].IndexOf("PhysicalRoot", StringComparison.Ordinal) >= 0)
                         {
                             pathToObj[ownPath] = targetRoot;
                             pathToObj["R:" + StripTreePrefix(ownPath)] = targetRoot;
                             pathToObj["P:" + StripTreePrefix(ownPath)] = targetRoot;
+                            if (r.Length > 11) sourceIdToObj[r[11]] = targetRoot;
                             rep.Skipped++;
                             continue;
                         }
@@ -266,41 +351,75 @@ namespace TxTools.CrossEnvIO
                         if (IsCompound(r[1]))
                         {
                             var beforeIds = new HashSet<string>(DirectChildren(parent).Select(c => c.Id));
-                            var container = EnsureContainer(parent, r[0], r[1], log);
+                            var container = EnsureContainer(parent, desiredName, r[1], log);
                             if (container == null) { rep.Failed++; rep.Errors.Add("建容器失败: " + ownPath); continue; }
                             pathToObj[ownPath] = container;
-                            if (SetLocation(container, x - originX, y - originY, z - originZ, rx, ry, rz)) rep.Rebuilt++;
-                            else { rep.Failed++; rep.Errors.Add("设置容器位姿失败: " + ownPath); }
+                            if (r.Length > 11 && !string.IsNullOrEmpty(r[11])) rep.ObjectMap[r[11]] = container.Id;
+                            if (r.Length > 11) sourceIdToObj[r[11]] = container;
+                            placements.Add(Tuple.Create(container,pose,ownPath));
                             if (!beforeIds.Contains(container.Id)) rep.Created++;
                         }
                         else
                         {
                             // 叶子：① 父容器直接子同名 → 复用；② 场景其它位置同名 → 复制新实例（不移动原件，
                             // 避免重名资源场景只剩一份）；③ 都没有 → 用 COJT 列自动插入。
-                            var leaf = FindOrCloneLeaf(parent, r[0], r[1], ownPath,
+                            bool createdLeaf;
+                            var leaf = FindOrCloneLeaf(parent, desiredName, r[1], ownPath,
                                                        r.Length > 9 ? (r[9] ?? "").Trim() : "",
                                                        x, y, z, log,
-                                                       r.Length > 10 ? r[10] : sourceLibraryRoot, cojtMap);
+                                                       r.Length > 10 ? r[10] : sourceLibraryRoot, cojtMap, out createdLeaf,r[0],assignedLeafIds,packageTemplates);
                             if (leaf == null)
                             {
                                 rep.Failed++;
                                 rep.Errors.Add("组件缺失或身份有歧义: " + ownPath);
                                 log("[重建] ✗ 未找到叶子且复制/自动插入失败: " + ownPath
                                     + "（类型 " + r[1] + "）"
-                                    + "—— 需先在库浏览器拖入组件，或检查 cojt 是否已复制到对端库根");
+                                    + "—— 请检查 cojt 是否已复制到指定库内子文件夹，以及 SDK 插入详情");
                                 continue;
                             }
-                            if (MoveInto(parent, leaf)) rep.Moved++;
-                            else { rep.Failed++; rep.Errors.Add("移动叶子失败: " + ownPath); continue; }
-                            if (SetLocation(leaf, x - originX, y - originY, z - originZ, rx, ry, rz)) rep.Rebuilt++;
-                            else { rep.Failed++; rep.Errors.Add("设置叶子位姿失败: " + ownPath); }
+                            if (createdLeaf) rep.Created++;
+                            if(!assignedLeafIds.Add(leaf.Id))throw new InvalidOperationException("多个源对象意外复用了同一个接收实例，已停止该对象："+ownPath);
+                            if(r.Length>9&&!string.IsNullOrWhiteSpace(r[9]))
+                            {
+                                string expected=ResolveCojtPath(r[9],r.Length>10?r[10]:sourceLibraryRoot,cojtMap,log);
+                                try { LibraryPersistence.Ensure(leaf,expected,r[9],log); }
+                                catch(NativeLibraryException){throw;}
+                                catch(Exception ex){throw new NativeLibraryException("组件入库校验失败："+leaf.Name+" / "+ex.Message,ex);}
+                            }
+                            bool moved; string moveError;
+                            if (!MoveInto(parent, leaf, out moved, out moveError))
+                            { rep.Failed++; rep.Errors.Add("挂载叶子失败: " + ownPath + "；" + moveError); continue; }
+                            if (moved) rep.Moved++;
+                            placements.Add(Tuple.Create(leaf,pose,ownPath));
+                            if(r.Length>9&&!string.IsNullOrWhiteSpace(r[9]))
+                            {
+                                string expected=ResolveCojtPath(r[9],r.Length>10?r[10]:sourceLibraryRoot,cojtMap,log);
+                                string templateKey=expected+"|"+r[1];
+                                if(!packageTemplates.ContainsKey(templateKey))packageTemplates.Add(templateKey,leaf);
+                            }
+                            if (r.Length > 11 && !string.IsNullOrEmpty(r[11])) rep.ObjectMap[r[11]] = leaf.Id;
+                            if (r.Length > 11) sourceIdToObj[r[11]] = leaf;
                         }
                     }
                     catch (Exception ex)
                     {
                         rep.Failed++;
-                        rep.Errors.Add("[" + ownPath + "] " + ex.Message);
+                        rep.Errors.Add("[" + Uri.UnescapeDataString(ownPath) + "] " + ex.Message);
+                        if(ex is NativeLibraryException)
+                        {
+                            rep.Created+=((NativeLibraryException)ex).UncountedCreated;
+                            log("[引用] 已停止后续重建，请先核对接收端实例及其实际存储引用。");
+                            break;
+                        }
                     }
+                }
+                // Finish all insert/paste/reparent operations before placing anything.
+                // Parent-first world transforms prevent later parent moves or paste
+                // side effects from changing a previously positioned instance.
+                foreach(var placement in placements)
+                {
+                    if(SetLocation(placement.Item1,placement.Item2))rep.Rebuilt++;
+                    else{rep.Failed++;rep.Errors.Add("设置世界位姿失败："+placement.Item3);}
                 }
                 CommitUndo(um, log);
             }
@@ -373,8 +492,10 @@ namespace TxTools.CrossEnvIO
                                                  string ownPath, string cojtAbs,
                                                  double x, double y, double z,
                                                  Action<string> log, string sourceLibraryRoot,
-                                                 IDictionary<string, string> cojtMap)
+                                                 IDictionary<string, string> cojtMap, out bool created,string sourceName=null,ISet<string> assignedLeafIds=null,
+                                                 IDictionary<string,ITxObject> packageTemplates=null)
         {
+            created = false;
             string expectedPath = string.IsNullOrWhiteSpace(cojtAbs) ? null
                 : ResolveCojtPath(cojtAbs, sourceLibraryRoot, cojtMap, log);
             // 1) 父容器直接子 → 直接复用（已正确挂载）
@@ -386,19 +507,32 @@ namespace TxTools.CrossEnvIO
                 {
                     if (!string.Equals(c.GetType().Name, type, StringComparison.Ordinal)
                         || (!string.IsNullOrWhiteSpace(cojtAbs) && (expectedPath == null
-                            || !string.Equals(GetCojtPath(c), expectedPath, StringComparison.OrdinalIgnoreCase))))
+                            || LibraryPersistence.ReferenceIssue(c,expectedPath,TxApplication.SystemRootDirectory)!=null)))
                     { log("[重建] 同名直接子对象类型/组件路径不一致，已跳过: " + ownPath); return null; }
+                    if(assignedLeafIds!=null&&assignedLeafIds.Contains(c.Id))
+                    {
+                        var copy=ComponentIO.CloneResource(c,parent,name,log);
+                        if(copy==null)throw new InvalidOperationException("共用模型的独立实例复制失败："+name);
+                        created=true;return copy;
+                    }
                     log("[重建]   ✓ 父容器直接子找到: " + name + " (" + c.GetType().Name + ")");
                     return c;
                 }
             }
 
+            if(expectedPath!=null&&packageTemplates!=null&&packageTemplates.TryGetValue(expectedPath+"|"+type,out var template))
+            {
+                var copy=ComponentIO.CloneResource(template,parent,name,log);
+                if(copy==null)throw new NativeLibraryException("共用 cojt 的独立实例复制未完成："+name+"；已停止批次，未重复插入。",null);
+                created=true;log("[多实例] 复用本批次模板复制："+name+"；源模型："+Path.GetFileName(expectedPath));return copy;
+            }
+
             // 2) 全场景同名对象（在其它容器下）→ 复制新实例到目标容器，不移动原件
             var matches = TxApplication.ActiveDocument.PhysicalRoot
                 .GetAllDescendants(new TxTypeFilter(typeof(ITxObject))).Cast<ITxObject>()
-                .Where(c => c.Name == name && c.GetType().Name == type
+                .Where(c => c.Name == (sourceName??name) && c.GetType().Name == type
                     && (string.IsNullOrWhiteSpace(cojtAbs) || (expectedPath != null
-                        && string.Equals(GetCojtPath(c), expectedPath, StringComparison.OrdinalIgnoreCase))))
+                        && LibraryPersistence.ReferenceIssue(c,expectedPath,TxApplication.SystemRootDirectory)==null)))
                 .ToList();
             ITxObject scene = matches.Count == 1 ? matches[0] : null;
             if (matches.Count > 1 && string.IsNullOrWhiteSpace(cojtAbs))
@@ -419,6 +553,7 @@ namespace TxTools.CrossEnvIO
                     ITxObject clone = ComponentIO.CloneResource(scene, parent, name, log);
                     if (clone != null)
                     {
+                        created = true;
                         log("[重建]   ✓ 已复制新实例: " + name);
                         return clone;
                     }
@@ -430,8 +565,22 @@ namespace TxTools.CrossEnvIO
             // 3) 全场景都没有（或复制失败）→ COJT 列自动插入
             if (!string.IsNullOrWhiteSpace(cojtAbs))
             {
+                var reusable=LibraryPersistence.FindReusable(expectedPath,type);
+                if(reusable!=null)
+                {
+                    var clone=ComponentIO.CloneResource(reusable,parent,name,log);
+                    if(clone==null)throw new InvalidOperationException("复制已入库组件失败，未重复插入临时资源: "+name);
+                    created=true; return clone;
+                }
                 var inserted = TryAutoInsertLeaf(parent, name, type, expectedPath, x, y, z, log);
-                if (inserted != null) return inserted;
+                if (inserted != null)
+                {
+                    // Only the explicit disambiguation name is applied after insertion.
+                    // Ordinary source names never override the SDK's model-document name.
+                    if(sourceName!=null&&!string.Equals(name,sourceName,StringComparison.Ordinal))
+                    {inserted.Name=name;log("[重建] 同名导出根独立命名："+name);}
+                    created = true; return inserted;
+                }
             }
 
             log("[重建]   ✗ 全场景无同名对象: " + name + " —— 组件 cojt 可能未插入对端场景");
@@ -440,8 +589,7 @@ namespace TxTools.CrossEnvIO
 
         /// <summary>
         /// 叶子未找到时，用 COJT 列(组件磁盘物理路径)自动插入组件。
-        /// 流程：取 cojt 目录名 → 在对端库根(SystemRootDirectory)下递归找同名 cojt →
-        ///       ComponentIO.InsertCojt 插入(含全角路径 junction 绕路) → 返回插入后的组件。
+        /// 从已解析的最终库文件夹直接插入，保留 SDK 名称并核验正式引用。
         /// </summary>
         private static ITxObject TryAutoInsertLeaf(ITxObject parent, string name, string type,
                                                    string cojtAbs, double x, double y, double z,
@@ -452,19 +600,14 @@ namespace TxTools.CrossEnvIO
                 if (string.IsNullOrWhiteSpace(cojtAbs)) return null;
 
                 // 只对组件/资源类型尝试插入（容器已由 EnsureContainer 处理）
-                bool isInsertable = type.IndexOf("Component", StringComparison.Ordinal) >= 0
-                                    || type.IndexOf("Robot", StringComparison.Ordinal) >= 0
-                                    || type.IndexOf("Gun", StringComparison.Ordinal) >= 0
-                                    || type.IndexOf("Device", StringComparison.Ordinal) >= 0
-                                    || type.IndexOf("Equipment", StringComparison.Ordinal) >= 0
-                                    || type.IndexOf("Fixture", StringComparison.Ordinal) >= 0;
+                bool isInsertable = IsInsertable(type);
                 if (!isInsertable) return null;
 
                 // 1) 取 cojt 目录名
                 string cojtName = Path.GetFileName(cojtAbs.TrimEnd('\\', '/'));
                 if (string.IsNullOrWhiteSpace(cojtName)) return null;
 
-                // 2) 在对端库根下递归查找同名 cojt（跳过 junction 残留，选最深真实路径）
+                // 2) 使用计划中的精确接收位置，不猜测库根或其他同名版本。
                 string libRoot = null;
                 try { libRoot = TxApplication.SystemRootDirectory; } catch { }
                 if (string.IsNullOrWhiteSpace(libRoot)) return null;
@@ -476,25 +619,35 @@ namespace TxTools.CrossEnvIO
                 }
                 log("[重建]   → 定位对端 cojt: " + cojtLocal);
 
-                // 3) 插入组件（InsertCojt 内含全角路径 junction 绕路 + 改库路径）
+                // 3) 从最终库位置直接插入，不创建中转模型或改变库根。
                 string summary;
                 ITxObject inserted;
-                bool ok = ComponentIO.InsertCojt(cojtLocal, name, null, libRoot, x, y, z, log, out summary, out inserted);
+                bool ok = ComponentIO.InsertCojt(cojtLocal, string.Empty, null, libRoot, x, y, z, log, out summary, out inserted);
                 if (!ok)
                 {
-                    log("[重建]   ✗ 插入失败: " + name + " | " + summary);
-                    return null;
+                    if(inserted!=null)throw new NativeLibraryException("SDK 已创建实例，但直接插入后的校验未通过："+inserted.Name+"\n"+summary,null,1);
+                    throw new InvalidOperationException("SDK 插入失败: " + name + " / " + cojtLocal + "\n" + summary);
                 }
-                log("[重建]   ✓ 已自动插入组件: " + name);
+                if (inserted == null || inserted.GetType().Name != type)
+                { throw new NativeLibraryException("插入后的设备类型不符: " + name + "；源端=" + type + "；接收端=" + (inserted?.GetType().Name ?? "null")
+                    + "。请在接收端核对或撤销该实例；Planning 原型与 cojt 内部运动学定义需同时有效。\n" + summary,null,inserted==null?0:1); }
+                log("[重建]   ✓ 已自动插入组件（SDK 原名称）: " + inserted.Name+"；模型文件："+Path.GetFileName(cojtLocal));
 
                 // 4) 按名在场景找新组件
                 return inserted;
             }
+            catch (NativeLibraryException){throw;}
             catch (Exception ex)
             {
                 log("[重建]   ✗ 自动插入异常: " + ex.Message);
-                return null;
+                throw new InvalidOperationException("重建组件失败: " + name + "\n" + ex.Message, ex);
             }
+        }
+
+        internal static bool IsInsertable(string type)
+        {
+            var sdkType = typeof(ITxComponent).Assembly.GetType("Tecnomatix.Engineering." + type, false);
+            return sdkType != null && typeof(ITxComponent).IsAssignableFrom(sdkType);
         }
 
         private static string ResolveCojtPath(string source, string sourceRoot,
@@ -556,7 +709,7 @@ namespace TxTools.CrossEnvIO
             {
                 var coll = obj as ITxObjectCollection;
                 if (coll == null) return result;
-                foreach (ITxObject c in (System.Collections.IEnumerable)coll)
+                foreach (ITxObject c in SceneAccess.Children(coll))
                     if (c != null) result.Add(c);
             }
             catch { }
@@ -571,34 +724,42 @@ namespace TxTools.CrossEnvIO
 
         // ── 位姿 ──
 
-        private static void GetLocation(ITxObject obj, out double x, out double y, out double z,
+        private static TxTransformation GetLocation(ITxObject obj, out double x, out double y, out double z,
                                         out double rx, out double ry, out double rz)
         {
             x = y = z = rx = ry = rz = 0;
-            try
+            var loc=(obj as ITxLocatableObject)?.AbsoluteLocation;
+            if(loc==null)
             {
-                dynamic d = obj;
-                var loc = d.AbsoluteLocation as TxTransformation;
-                if (loc == null) return;
-                x = loc.Translation.X; y = loc.Translation.Y; z = loc.Translation.Z;
-                TxMath.MatrixToEulerDeg(TxMath.TxToArr(loc), out rx, out ry, out rz);
+                if(obj is TxPhysicalRoot)return new TxTransformation();
+                throw new InvalidOperationException("对象没有可读取的世界位姿："+obj.Name);
             }
-            catch { }
+            x = loc.Translation.X; y = loc.Translation.Y; z = loc.Translation.Z;
+            TxMath.MatrixToEulerDeg(TxMath.TxToArr(loc), out rx, out ry, out rz);
+            return loc;
         }
 
-        private static bool SetLocation(ITxObject obj, double x, double y, double z,
-                                        double rx, double ry, double rz)
+        internal static TxTransformation ReadPose(string[] row,int matrixIndex)
+        {
+            if(matrixIndex>=0&&matrixIndex<row.Length&&!string.IsNullOrWhiteSpace(row[matrixIndex]))
+                return TxMath.FromWorldValues(Newtonsoft.Json.JsonConvert.DeserializeObject<double[]>(row[matrixIndex]));
+            double x,y,z,rx,ry,rz;
+            if(!TryParseLoc(row,3,out x,out y,out z,out rx,out ry,out rz))throw new InvalidDataException("无效位姿");
+            return TxMath.BuildTransform(x,y,z,rx,ry,rz);
+        }
+
+        private static bool SetLocation(ITxObject obj, TxTransformation pose)
         {
             try
             {
-                dynamic d = obj;
-                d.AbsoluteLocation = TxMath.BuildTransform(x, y, z, rx, ry, rz);
+                if(!(obj is ITxLocatableObject locatable))return false;
+                locatable.AbsoluteLocation = pose;
                 return true;
             }
             catch { return false; }
         }
 
-        private static string GetCojtPath(ITxObject obj)
+        internal static string GetCojtPath(ITxObject obj)
         {
             try
             {
@@ -694,20 +855,27 @@ namespace TxTools.CrossEnvIO
 
         // ── 移动 ──
 
-        private static bool MoveInto(ITxObject parent, ITxObject child)
+        private static bool MoveInto(ITxObject parent, ITxObject child, out bool moved, out string error)
         {
-            try { dynamic d = parent; d.AddObject(child); return true; }
-            catch
+            moved = false; error = null;
+            try
             {
-                try
-                {
-                    dynamic d = parent;
-                    var l = new TxObjectList();
-                    l.Add(child);
-                    d.AddObjects(l);
-                    return true;
-                }
-                catch { return false; }
+                // InsertComponent 和复制可能已经把实例挂在正确位置；SDK 不保证允许重复 Add。
+                if (SceneAccess.Parent(child)?.Id == parent.Id) return true;
+                var collection = parent as ITxObjectCollection;
+                if (collection == null) throw new InvalidOperationException("目标不是 SDK 对象集合: " + parent.GetType().Name);
+                if (!collection.CanBeAdded(child)) throw new InvalidOperationException("SDK 不允许把此类型挂到目标容器: " + parent.Name);
+                collection.AddObject(child);
+                if (SceneAccess.Parent(child)?.Id != parent.Id)
+                    throw new InvalidOperationException("SDK 挂载后父集合与目标不一致");
+                moved = true; return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message + "；目标 " + parent.GetType().Name + " [" + parent.Id + "]";
+                try { var actual = SceneAccess.Parent(child); error += "；实际父集合 " + (actual == null ? "<无>" : actual.GetType().Name + " [" + actual.Id + "]"); }
+                catch { }
+                return false;
             }
         }
 

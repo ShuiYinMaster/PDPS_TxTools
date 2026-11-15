@@ -1,5 +1,11 @@
 [
   {
+    "file": "FootingPlanExport/FootingPlanExportCommand.cs",
+    "command": "FootingPlanExportCommand",
+    "small": "image.Small.FootingPlanExport.bmp",
+    "large": "image.FootingPlanExport.png"
+  },
+  {
     "file": "AutoRecorder/AutoRecorderCmd.cs",
     "command": "AutoRecorderCmd",
     "small": "image.Small.AutoRecorder.bmp",

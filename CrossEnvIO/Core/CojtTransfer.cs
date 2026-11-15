@@ -36,7 +36,8 @@ namespace TxTools.CrossEnvIO
         /// 把一个 .cojt 目录整体复制到目标父目录（保留目录名）。
         /// 栈式逐文件复制，避免 Directory.Copy 在 PS 沙箱内不可用的问题。
         /// </summary>
-        public static bool CopyCojtDirectory(string srcDir, string dstParentDir, Action<string> log, CopyResult record = null)
+        public static bool CopyCojtDirectory(string srcDir, string dstParentDir, Action<string> log, CopyResult record = null,
+            string targetName = null, Func<string, bool> validate = null, System.Threading.CancellationToken cancellation = default)
         {
             log = log ?? Nop;
             string ownedPath = null;
@@ -51,17 +52,21 @@ namespace TxTools.CrossEnvIO
                     || string.Equals(dstParentDir.TrimEnd('\\', '/'), srcDir, StringComparison.OrdinalIgnoreCase))
                     throw new IOException("不能把 cojt 复制到自身或其子目录");
                 Directory.CreateDirectory(dstParentDir);
-                string dstDir = Path.Combine(dstParentDir, Path.GetFileName(srcDir));
+                if (targetName != null && (Path.GetFileName(targetName) != targetName || targetName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0))
+                    throw new IOException("无效目标目录名");
+                string dstDir = Path.Combine(dstParentDir, targetName ?? Path.GetFileName(srcDir));
                 if (Directory.Exists(dstDir) || File.Exists(dstDir))
                     throw new IOException("目标已存在，未覆盖: " + dstDir);
                 // 用唯一暂存目录复制，Move 发布不会覆盖已有目标。
-                ownedPath = Path.Combine(dstParentDir, ".txtools-copy-" + Guid.NewGuid().ToString("N"));
+                do { ownedPath = Path.Combine(dstParentDir, ".txtools-copy-" + Guid.NewGuid().ToString("N").Substring(0, 16)); }
+                while (Directory.Exists(ownedPath) || File.Exists(ownedPath));
                 Directory.CreateDirectory(ownedPath);
                 if (record != null) record.Track(ownedPath);
                 var pending = new Stack<string>(); pending.Push(srcDir);
                 int count = 0;
                 while (pending.Count > 0)
                 {
+                    cancellation.ThrowIfCancellationRequested();
                     string current = pending.Pop();
                     if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
                         throw new IOException("不复制链接目录: " + current);
@@ -70,19 +75,24 @@ namespace TxTools.CrossEnvIO
                     Directory.CreateDirectory(destination);
                     foreach (string file in Directory.GetFiles(current))
                     {
+                        cancellation.ThrowIfCancellationRequested();
                         if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
                             throw new IOException("不复制链接文件: " + file);
                         File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), false);
                         count++;
+                        if (count % 100 == 0) log("[复制] 已复制 " + count + " 个文件: " + Path.GetFileName(srcDir));
                     }
                     foreach (string child in Directory.GetDirectories(current)) pending.Push(child);
                 }
+                if (validate != null && !validate(ownedPath)) throw new IOException("暂存内容与源快照不一致，未发布目标目录");
+                cancellation.ThrowIfCancellationRequested();
                 Directory.Move(ownedPath, dstDir);
                 if (record != null) record.RenameTracked(ownedPath, dstDir);
                 ownedPath = dstDir;
                 log("[复制] ✓ " + srcDir + " → " + dstDir + " (" + count + " 个文件)");
                 return true;
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 log("[复制] 异常: " + ex.Message);

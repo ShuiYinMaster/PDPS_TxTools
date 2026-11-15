@@ -298,7 +298,7 @@ function renderDetail(r,content){
    const choices=p.choices||[];const input=el(choices.length?'select':'input');input.id='param-'+p.name;label.htmlFor=input.id;input.disabled=state.busy;
    if(choices.length){const empty=el('option','','请选择…');empty.value='';input.append(empty);for(const c of choices){const option=el('option','',c.label);option.value=c.value;input.append(option);}input.value=args[p.name];input.onchange=()=>{args[p.name]=input.value;update();};}
    else if(p.kind==='bool'){input.type='checkbox';input.checked=['true','1','on'].includes(String(args[p.name]).toLowerCase());input.onchange=()=>{args[p.name]=String(input.checked);update();};}
-   else{input.type=p.kind==='color'?'color':p.kind==='number'?'number':'text';if(p.kind==='number')input.step='any';if(p.kind==='color'&&!/^#[0-9a-f]{6}$/i.test(String(args[p.name])))args[p.name]=p.def||'#4F83CC';input.value=args[p.name];input.oninput=input.onchange=()=>{args[p.name]=input.value;update();};}if(p.kind==="bool"&&!choices.length){field.className+=" check-row";field.append(input);}else field.append(input);
+   else{input.type=p.kind==='color'?'color':p.kind==='number'?'number':'text';if(p.kind==='number')input.step='any';if(p.kind==='color'&&!/^#[0-9a-f]{6}$/i.test(String(args[p.name])))args[p.name]=p.def||'#4F83CC';input.value=args[p.name];input.oninput=input.onchange=()=>{args[p.name]=input.value;update();};if(p.kind==="text"||p.kind==="number"){input.addEventListener("dragover",e=>{e.preventDefault();e.dataTransfer.dropEffect="copy";});input.addEventListener("drop",e=>{if(!e.dataTransfer||!e.dataTransfer.files||!e.dataTransfer.files.length)return;e.preventDefault();window.chrome.webview.postMessageWithAdditionalObjects({type:"recipe.drop",recipeId:r.id,param:p.name},e.dataTransfer.files);});}}if(p.kind==="bool"&&!choices.length){field.className+=" check-row";field.append(input);}else field.append(input);
    if(p.kind==='color'){
     input.className='color-picker';const hex=el('span','color-value',String(args[p.name]).toUpperCase());field.append(hex);const palette=el('div','palette');
     for(const color of ['#4F83CC','#E45B5B','#49A879','#F0BC4D','#AD73D4','#F28D4B','#FFFFFF','#333333']){const swatch=el('button','swatch');swatch.type='button';swatch.style.backgroundColor=color;swatch.title=color;swatch.setAttribute('aria-label','选择颜色 '+color);swatch.disabled=state.busy;swatch.onclick=()=>{input.value=color;input.oninput();};palette.append(swatch);}
@@ -322,7 +322,7 @@ window.chrome.webview.addEventListener('message',event=>{
  const msg=typeof event.data==='string'?JSON.parse(event.data):event.data;
  if(msg.type==='quick.targetChanged'){state.bindings={};state.study=null;notice('前台程序已变化，请切回目标软件并重新选取对象。');render();return;}
  if(msg.type==='recipe.studyChanged'){state.bindings={};state.study=msg.study;notice('研究已切换，请重新选取对象。');refresh();return;}
- if(msg.type==='quick.refresh'){refresh();return;}
+ if(msg.type==='quick.refresh'){refresh();return;}if(msg.type==='recipe.dropped'){if(msg.ok&&msg.path){const bag=state.args[msg.recipeId]||(state.args[msg.recipeId]={});bag[msg.param]=msg.path;render();}else notice('拖入的内容不是本地文件。');return;}
  const callback=pending.get(msg.seq);if(callback){pending.delete(msg.seq);callback(msg);}else if(msg.type==='recipe.list.result')applyList(msg);
  if(msg.type==='quick.error'){notice(msg.error);refresh();}
 });

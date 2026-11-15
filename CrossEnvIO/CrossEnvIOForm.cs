@@ -1,1097 +1,401 @@
-﻿// CrossEnvIOForm.cs  --  C# 8.0
-// 跨环境 I/O 主窗体：资源 / 零件 / 焊点 三个标签页 + 共享日志。
-// UI 全部走 TxTools.Common.FormUiKit（主题配色、DPI 缩放、布局助手）。
-
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
-using TxTools.Agent.Core;
 using TxTools.Common;
-using Theme = TxTools.Common.FormUiKit.Theme;
-using Button = System.Windows.Forms.Button;
-using Label = System.Windows.Forms.Label;
 
 namespace TxTools.CrossEnvIO
 {
-    public class CrossEnvIOForm : PickAwareTxForm
+    public partial class CrossEnvIOForm : PickAwareTxForm
     {
         internal static CrossEnvIOForm Instance;
-
-        private readonly SynchronizationContext _psCtx;
-        private RichTextBox _rtbLog;
-        private TabControl _tabs;
-        private Label _lblStatus;
-        private ProgressBar _progress;
-        private bool _busy;
-        private int _refreshGeneration;
-        private readonly Dictionary<int, string> _peerRoots = new Dictionary<int, string>();
-
-        // ── 资源/零件页（合并，模式切换共享一套控件）──
-        private TextBox _txtSrcLib;
-        private TextBox _txtDstLib;
-        private TextBox _txtFile;
-        private TxObjGridCtrl _gridRoot;
-        private Label _lblHint;
-        private Label _lblFile;
-        private RadioButton _rbRes;
-        private RadioButton _rbPart;
-        private bool _partMode;
-
-        // ════════════════════════════════════════════════════════════
-        //  焊点页
-        // ════════════════════════════════════════════════════════════
-
-        // ── 焊点页 ──
-        private TextBox _txtWeldFile;
-        private CheckBox _chkWeldProject;
-        private CheckBox _chkWeldBindOnly;
-        private TxObjGridCtrl _gridWeldSel;   // 焊点操作多选过滤
-
-        // ── 撤销用：记录上次复制的 cojt 目录（静态字段，跨实例共享）──
-        private static CopyResult _lastResCopy;
-        private static CopyResult _lastPartCopy;
-
-        // ── 重建原点（资源/零件共用，用于两个场景的世界坐标同步）──
-        private TxFrameEditBoxCtrl _frameOrigin;
-        private double _originX;
-        private double _originY;
-        private double _originZ;
-
-        // ── 对端实例选择（多实例可切换）──
-        private ComboBox _cmbPeer;
-        private readonly List<TxTools.Agent.Core.PsInstanceInfo> _peerList =
-            new List<TxTools.Agent.Core.PsInstanceInfo>();
-
-        private bool _scaled;
-        private readonly Size _designSize = new Size(760, 640);
-        private readonly Size _minSize = new Size(740, 600);
-
-        private static readonly string DefaultDir = TxToolsTemp.DirectoryFor("CrossEnvIO");
+        private readonly Size _design = new Size(900, 860);
+        private bool _scaled, _busy, _populating, _uncertain, _finishedJob, _jobSucceeded, _fitting, _logExpanded, _closeRequested;
+        private MeasuredColumn _main, _header, _storagePage, _problemPanel;
+        private TabControl _options;
+        private Form _settingsWindow;
+        private TableLayoutPanel _root;
+        private ComboBox _kind, _peers, _placement, _basis, _package, _conflict;
+        private CheckBox _whole, _copy, _bindOnly, _project,_includeWeldParts;
+        private TxObjGridCtrl _objects;
+        private TxFrameEditBoxCtrl _sourceOrigin,_origin;
+        private TextBox _destination, _singleDir, _fallback, _source, _targetName;
+        private Label _scope, _receiver, _storageNote, _status, _summary;
+        private TextBox _issueDetail;
+        private Panel _executionTop;
+        private MeasuredColumn _executionLead,_executionMessages;
+        private FlowLayoutPanel _executionFiles;
+        private FlowLayoutPanel _executionActions;
+        private FlowLayoutPanel _typeRules;
+        private ListBox _issues;
+        private RichTextBox _log;
+        private Button _next, _cancel, _settings, _query, _browse, _details, _bindingButton,_pickTargetFrame;
+        private readonly Dictionary<string, TextBox> _typeEditors = new Dictionary<string, TextBox>();
+        private readonly List<MeasuredColumn> _columns = new List<MeasuredColumn>();
+        private readonly System.Windows.Forms.Timer _pickTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+        private readonly System.Windows.Forms.Timer _discoverTimer = new System.Windows.Forms.Timer { Interval = 3000 };
+        private readonly System.Windows.Forms.Timer _contextTimer = new System.Windows.Forms.Timer { Interval = 250 };
+        private bool _capturePending,_receiverPending,_refreshingContext;
 
         public CrossEnvIOForm(SynchronizationContext psCtx)
         {
-            _psCtx = psCtx;
             SemiModal = false;
-            FormUiKit.InitStandardForm(this,
-                "跨环境互传 I/O（资源 / 零件 / 焊点）",
-                _designSize, _minSize, sizable: true);
+            FormUiKit.InitStandardForm(this, "跨环境传输 · 模型结构 / 焊点", _design, new Size(460, 700), sizable: true);
             BuildUi();
-            FormClosing += (s, e) =>
+            FormClosing += (s, e) => { if (_busy) { e.Cancel = true; _closeRequested=true; _cancellation?.Cancel(); _status.Text = "正在结束当前操作，完成后关闭窗口。"; } };
+            Activated+=(s,e)=> { if(_settingsWindow.Visible&&!_busy)ShowSettingsWindow(); };
+            LibraryPersistence.Reloading+=ClearScenePickersForReload;
+            Shown += (s, e) => { FitColumns(); RestorePending(); if (!_uncertain) RefreshPeers(); _discoverTimer.Start();_contextTimer.Start(); BeginInvoke(new Action(ExpandForContent)); };
+            DpiChanged += (s, e) => FitColumns();
+            _pickTimer.Tick += (s, e) => { if (!_busy && !_uncertain && _pickId != null) Run(ReadPick); };
+            _discoverTimer.Tick += (s, e) => { if (!_busy && !_uncertain) RefreshPeersCore(true); };
+            _contextTimer.Tick+=async(s,e)=>
             {
-                if (_busy) { e.Cancel = true; Log("[提示] 操作进行中，请等待结果后关闭窗口"); }
+                if(_busy||_uncertain||_populating||_refreshingContext)return;
+                ObserveSceneSelection();
+                if(!_capturePending&&!_receiverPending)return;
+                // Recognition is passive: never suspend the native picker, disable
+                // its parent controls or change the host selection while multi-picking.
+                _refreshingContext=true;UpdateActions();
+                try{await RefreshContext();}
+                catch(Exception ex){ShowFailure(ex);}
+                finally{_refreshingContext=false;if(!IsDisposed)UpdateActions();}
             };
-            Log("插件已启动。数据文件默认目录: " + DefaultDir);
-            Log("本环境库根自动识别: " + (EnvLibrary.CurrentRoot() ?? "<无>"));
-            DetectLibraryRoots();
-            Log("流程（双向）：任一端【导出】落盘 → 另一端【重建】。不区分主控/被控。");
+            FormClosed += (s, e) => { LibraryPersistence.Reloading-=ClearScenePickersForReload; _pickTimer.Dispose(); _discoverTimer.Dispose(); _contextTimer.Dispose(); _settingsWindow?.Dispose(); };
+            Log("选择任务和接收位置；检查不写入工程，通过后再确认执行。");
         }
-
-        public override void OnInitTxForm()
-        {
-            base.OnInitTxForm();
-            SemiModal = false;
-        }
-
+        public override void OnInitTxForm() { base.OnInitTxForm(); SemiModal = false; }
         protected override void OnLoad(EventArgs e)
-        {
-            base.OnLoad(e);
-            FormUiKit.ApplyDpiScaling(this, ref _scaled, _designSize);
-        }
-
-        /// <summary>用户在 PS 场景中拾取坐标系/对象作为重建原点，提取其平移 XYZ 作为偏移量。</summary>
-        private void OnOriginFrameSet(object sender, TxFrameEditBoxCtrl_ValidFrameSetEventArgs e)
-        {
-            try
-            {
-                TxTransformation loc = _frameOrigin.GetLocation();
-                if (loc != null)
-                {
-                    _originX = loc.Translation.X;
-                    _originY = loc.Translation.Y;
-                    _originZ = loc.Translation.Z;
-                    Log("[原点] 重建原点已设置: X=" + _originX + " Y=" + _originY + " Z=" + _originZ);
-                }
-            }
-            catch (Exception ex)
-            {
-                Log("[原点] 获取坐标失败: " + ex.Message);
-                _originX = 0; _originY = 0; _originZ = 0;
-            }
-        }
-
+        { base.OnLoad(e); FormUiKit.ApplyDpiScaling(this, ref _scaled, _design); FormBorderStyle=FormBorderStyle.Sizable;MaximizeBox=true;FitColumns(); }
         private void BuildUi()
         {
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-            MaximizeBox = false;
-            MinimizeBox = false;
-
-            var tab = new TabControl
+            _root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, Padding = new Padding(10), BackColor = Color.FromArgb(241,244,248) };
+            _root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
+            _root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            _root.RowStyles.Add(new RowStyle(SizeType.Percent,100));
+            _root.RowStyles.Add(new RowStyle(SizeType.Absolute,140));
+            _root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            _root.RowStyles.Add(new RowStyle(SizeType.Absolute,26));
+            _root.RowStyles.Add(new RowStyle(SizeType.Absolute,0));
+            _header = Column(false); _header.AutoSize = true; _header.Dock = DockStyle.Fill;
+            _main = Column(true); _main.Dock = DockStyle.Fill;
+            _root.Controls.Add(_header,0,0); _root.Controls.Add(_main,0,1);
+            BuildGuidedHeader();
+            BuildGuidedCards();
+            BuildOptions();
+            BuildExecution();
+            _status = Caption("尚未检查；确认执行时使用原生入库，不自动保存工程。");
+            _status.AutoSize=false;_status.AutoEllipsis=true;_status.Dock=DockStyle.Fill;_root.Controls.Add(_status,0,4);
+            _log = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.White, Font = new Font("Consolas",9), DetectUrls = false };
+            _root.Controls.Add(_log,0,5); PluginLog.Register(_log,false);
+            Controls.Add(_root); ClientSizeChanged += (s,e) => FitColumns();
+            _placement.SelectedIndex = (int)TransferPlacement.Automatic; UpdateDestination(); UpdateActions();
+        }
+        private void BuildOptions()
+        {
+            _settingsWindow = new Form { Text = "跨环境传输 · 高级规则", Tag=this, ShowInTaskbar = true, StartPosition = FormStartPosition.Manual,
+                Font = FormUiKit.BaseFont, ClientSize = new Size(540,700), MinimumSize = new Size(460,480), AutoScaleMode = AutoScaleMode.Dpi };
+            _settingsWindow.FormClosing += (s,e) => { if(e.CloseReason==CloseReason.UserClosing){ e.Cancel = true; _settingsWindow.Hide(); } };
+            _settingsWindow.ClientSizeChanged += (s,e) => FitColumns();
+            _options = new TabControl { Dock = DockStyle.Fill, Font = FormUiKit.BaseFont };
+            _storagePage = OptionPage("模型存放高级规则"); BuildStorage(_storagePage);
+            _bindOnly = new CheckBox { AutoSize = true, Text = "仅修改已有焊点的绑定", Font = Font };
+            _project = new CheckBox { AutoSize = true, Text = "绑定后投影到零件表面", Font = Font };
+            _includeWeldParts=new CheckBox { AutoSize=true,Text="同时传输本端绑定零件（先传零件，再恢复绑定）",Font=Font };
+            _includeWeldParts.CheckedChanged+=(s,e)=>
             {
-                Dock = DockStyle.Fill,
-                Font = FormUiKit.BaseFont,
-                Padding = new Point(6, 4),
-                DrawMode = TabDrawMode.OwnerDrawFixed,
-                ItemSize = new Size(100, 28),
-                Appearance = TabAppearance.Normal
+                if(_populating)return;
+                if(_sourceFromFile){if(_plan!=null)_plan.IncludeWeldParts=_includeWeldParts.Checked;InvalidatePlan();}
+                else SourceChanged();
+                UpdateKind();
             };
-            _tabs = tab;
-            tab.DrawItem += (s, e) =>
+            _bindOnly.CheckedChanged += (s,e) => InvalidatePlan(); _project.CheckedChanged += (s,e) => InvalidatePlan();
+            _weldSettings.Controls.Add(Caption("焊点绑定选项",true));_weldSettings.Controls.Add(_includeWeldParts);_weldSettings.Controls.Add(_bindOnly);_weldSettings.Controls.Add(_project);
+            _weldSettings.Controls.Add(Caption("默认允许无绑定零件传输，缺失绑定只记日志；投影或仅修改绑定需要有效的接收零件。携带零件离线传输请使用离线包。"));
+            _settingsWindow.Controls.Add(_options);
+        }
+        private void BuildExecution()
+        {
+            _problemPanel = Column(true); _problemPanel.AutoSize = false; _problemPanel.Dock = DockStyle.Fill;
+            _problemPanel.Padding = new Padding(10); _problemPanel.BackColor = Color.White; _problemPanel.BorderStyle = BorderStyle.FixedSingle;
+            _executionTop=new Panel();_problemPanel.Controls.Add(_executionTop);
+            _executionLead=Column(false);_executionMessages=Column(false);_executionTop.Controls.Add(_executionLead);_executionTop.Controls.Add(_executionMessages);
+            _executionLead.Controls.Add(Caption("3  检查与执行",true));
+            _summary = Caption("尚未检查；检查通过后确认执行。"); _executionLead.Controls.Add(_summary);
+            _issues = new ListBox { Font = Font, Height = 56,MinimumSize=new Size(0,56), DrawMode = DrawMode.OwnerDrawVariable, IntegralHeight = false, Visible = false };
+            _issues.MeasureItem += (s,e) => { if(e.Index>=0)e.ItemHeight=Font.Height+8; };
+            _issues.DrawItem += (s,e) => { if(e.Index<0)return; e.DrawBackground(); TextRenderer.DrawText(e.Graphics,Convert.ToString(_issues.Items[e.Index]).Split('\n')[0].TrimEnd('\r'),Font,
+                new Rectangle(e.Bounds.X+3,e.Bounds.Y+3,e.Bounds.Width-6,e.Bounds.Height-6),e.ForeColor,TextFormatFlags.SingleLine|TextFormatFlags.EndEllipsis); e.DrawFocusRectangle(); };
+            _executionMessages.Controls.Add(_issues);
+            _issueDetail=new TextBox { Multiline=true,ReadOnly=true,WordWrap=true,ScrollBars=ScrollBars.Vertical,
+                Height=64,Font=FormUiKit.BaseFont,BackColor=Color.FromArgb(255,248,243),Visible=false,Margin=new Padding(0,4,0,4) };
+            _executionMessages.Controls.Add(_issueDetail);
+            PluginUiPolicy.AllowListScrolling(_issueDetail);
+            _issues.SelectedIndexChanged+=(s,e)=>
             {
-                var tc = (TabControl)s;
-                bool selected = (e.Index == tc.SelectedIndex);
-                // 选中：深色标题背景 + 白色文字；未选中：浅灰背景 + 深色文字
-                Color bgColor = selected ? FormUiKit.TitleBack : Theme.BtnMuted;
-                Color foreColor = selected ? Theme.HeaderFore : Color.Black;
-                using (var brush = new SolidBrush(bgColor))
-                    e.Graphics.FillRectangle(brush, e.Bounds);
-                using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                    TextRenderer.DrawText(e.Graphics, tc.TabPages[e.Index].Text, tc.Font, e.Bounds, foreColor, bgColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding);
+                _issueDetail.Text=Convert.ToString(_issues.SelectedItem).Replace("\r\n","\n").Replace("\r","\n").Replace("\n",Environment.NewLine);
+                _issueDetail.Visible=_issues.SelectedItem!=null;UpdateActions();FitColumns();
             };
-            tab.TabPages.Add(BuildTransferTab());
-            tab.TabPages.Add(BuildWeldTab());
-
-            var logBox = BuildLogBox();
-
-            var root = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 1,
-                RowCount = 3,
-                Margin = new Padding(6, 4, 6, 4),
-                BackColor = FormUiKit.CardBack
-            };
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 80));
-            root.Controls.Add(tab, 0, 0);
-            var activity = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
-            activity.Controls.Add(_progress);
-            activity.Controls.Add(_lblStatus);
-            root.Controls.Add(activity, 0, 1);
-            root.Controls.Add(logBox, 0, 2);
-            PluginLog.Register(logBox);
-
-            Controls.Add(root);
+            var fixes = Row(); fixes.Tag = "fixes";
+            _bindingButton=Btn(fixes,"为选中焊点指定零件…",()=>Run(BindIssue),180); _executionMessages.Controls.Add(fixes);
+            var actions = Row();_executionActions=actions;actions.Dock=DockStyle.Fill;actions.Padding=new Padding(2,4,2,2);
+            _next = FormUiKit.MkBtn("检查重建条件",Color.FromArgb(0,111,134),180,34);
+            _next.MinimumSize = new Size(180,34); _next.ForeColor = Color.White;
+            _next.Click += (s,e) => { if (_uncertain) Run(QueryJob,true); else Run(Transfer); }; actions.Controls.Add(_next);
+            _cancel = Btn(actions,"取消复制",()=>_cancellation?.Cancel(),96);
+            _query = Btn(actions,"查询结果",()=>Run(QueryJob,true),96); _query.Visible = false;
+            _root.Controls.Add(actions,0,3);
+            _executionFiles=Row();
+            Btn(_executionFiles,"导出 TSV…",()=>Run(()=>ExportData(false)),106);
+            Btn(_executionFiles,"导出离线包…",()=>Run(()=>ExportData(true)),120);
+            Btn(_executionFiles,"传输明细",()=>Run(()=>{EnsureCaptured();SyncPlan();PreviewPlan();return System.Threading.Tasks.Task.CompletedTask;}),100);
+            Btn(_executionFiles,"清理未用文件",()=>Run(CleanupFiles),128);
+            _details=Btn(_executionFiles,"详细日志",ToggleLog,96);_executionMessages.Controls.Add(_executionFiles);
+            _root.Controls.Add(_problemPanel,0,2);
+        }
+        private MeasuredColumn Column(bool scroll = true)
+        {
+            var c = new MeasuredColumn { AutoScroll = scroll, Margin = Padding.Empty };
+            c.ClientSizeChanged += (s,e)=> { if (IsHandleCreated) FitColumns(); }; _columns.Add(c); return c;
+        }
+        private MeasuredColumn OptionPage(string title)
+        {
+            var tab = new TabPage(title) { Padding = new Padding(8), BackColor = Color.White };
+            var c = Column(); c.Dock = DockStyle.Fill; tab.Controls.Add(c); _options.TabPages.Add(tab); return c;
+        }
+        private static Label Caption(string text, bool emphasis = false) => new Label { AutoSize = true, Text = text, Font = emphasis ? new Font(FormUiKit.BaseFont,FontStyle.Bold) : FormUiKit.BaseFont, Margin = new Padding(0,5,0,5) };
+        private sealed class ActionRow : FlowLayoutPanel, IManagedFlowRow { }
+        private static FlowLayoutPanel Row() => new ActionRow { AutoSize = true, WrapContents = true, Margin = new Padding(0,3,0,5) };
+        private static Button Btn(Control host,string text,Action action,int width = 112)
+        {
+            var b = FormUiKit.MkBtn(text,Color.White,width,32);
+            b.BackColor = Color.White; b.ForeColor = Color.FromArgb(35,55,70);
+            b.Click += (s,e)=> { try { action(); } catch(Exception ex) { var form=host.FindForm() as CrossEnvIOForm ?? host.FindForm()?.Tag as CrossEnvIOForm; form?.ShowFailure(ex); } };
+            host.Controls.Add(b); return b;
+        }
+        private static ComboBox Choice(params string[] items)
+        {
+            var c = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Font = FormUiKit.BaseFont, Margin = new Padding(0,3,0,5) };
+            c.Items.AddRange(items); if(items.Length>0)c.SelectedIndex=0; return c;
+        }
+        private TextBox Field(Control host,string caption,Action<string> changed = null)
+        {
+            host.Controls.Add(Caption(caption)); var t=new TextBox { Font=FormUiKit.BaseFont, Margin=new Padding(0,0,0,4) };
+            if(changed!=null)t.TextChanged+=(s,e)=> { if(!_populating) { changed(t.Text); InvalidatePlan(); UpdateDestination(); } };
+            host.Controls.Add(t); return t;
+        }
+        private void BuildStorage(MeasuredColumn page)
+        {
+            _advancedStorageToggle=new CheckBox { Text="高级规则",AutoSize=true,Checked=true,Visible=false,Font=FormUiKit.BaseFont };
+            page.Controls.Add(_advancedStorageToggle);
+            _storageAdvanced=Column(false);_storageAdvanced.AutoSize=true;page.Controls.Add(_storageAdvanced);
+            BuildStorageAdvanced(_storageAdvanced);_storageAdvanced.Visible=true;
+            _advancedStorageToggle.CheckedChanged+=(s,e)=> { _storageAdvanced.Visible=_advancedStorageToggle.Checked;FitColumns(); };
+        }
+        private void BuildStorageAdvanced(MeasuredColumn page)
+        {
+            page.Controls.Add(Caption("分配目标库中的存放位置", true));
+            _storageNote = Caption("自动关联源目录与接收库目录；拖放分配优先。"); page.Controls.Add(_storageNote);
+            _copy = new CheckBox { AutoSize = true, Checked = true, Text = "复制模型文件（关闭则仅使用已有目标模型）", Font = FormUiKit.BaseFont };
+            _copy.CheckedChanged += (s, e) => InvalidatePlan(); page.Controls.Add(_copy);
+            _placement = Choice("按实际类型分配", "统一存放目录", "逐个组件包指定", "保持源库相对目录", "自动关联源目录与类型"); page.Controls.Add(_placement);
+            _placement.SelectedIndexChanged += (s, e) => { if (!_populating && _plan != null) _plan.Placement = (TransferPlacement)_placement.SelectedIndex; InvalidatePlan(); BuildTypeRules(); UpdateDestination(); };
+            // The main page is the single editor for the uniform directory.
+            _singleDir = new TextBox { Text="导入" };
+            _basis = Choice("SDK 实际对象类型", "Planning 类型", "Prototype 类型", "Family"); page.Controls.Add(_basis);
+            _basis.SelectedIndexChanged += (s, e) => { if (!_populating && _plan != null) _plan.Classification = new[] { "sdk", "planning", "prototype", "family" }[_basis.SelectedIndex]; InvalidatePlan(); BuildTypeRules(); };
+            _typeRules = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Margin = Padding.Empty }; page.Controls.Add(_typeRules);
+            _fallback = Field(page, "未分配类型的兜底目录（留空即阻止执行）", v => { if (_plan != null) _plan.DefaultDirectory = v; });
+            var fallbackBrowse = Row(); Btn(fallbackBrowse, "选择兜底目录…", () => PickFolder(v => _fallback.Text = v), 144); page.Controls.Add(fallbackBrowse);
+            var scheme = Row(); Btn(scheme, "保存目录方案", SaveRules, 124); Btn(scheme, "加载目录方案", LoadRules, 124); page.Controls.Add(scheme);
+            page.Controls.Add(Caption("逐项覆盖 / 处理同名冲突", true));
+            _package = Choice(); _package.SelectedIndexChanged += (s, e) => ShowPackage(); page.Controls.Add(_package);
+            _source = Field(page, "源模型实际位置（可重新定位，原始关联保持不变）"); _source.ReadOnly = true;
+            var relocate = Row(); Btn(relocate, "重新定位源 cojt…", ()=>Run(RelocateSource), 152); page.Controls.Add(relocate);
+            page.Controls.Add(Caption("单个模型的存放位置统一在主页面拖放分配。"));
+            _targetName = Field(page, "目标 cojt 名称（保留 .cojt，可用于消除同名冲突）", v => { if (CurrentPackage != null) CurrentPackage.TargetName = v; });
+            _conflict = Choice("同名内容不同则阻止", "使用指定新名称", "人工核验后复用目标", "跳过此模型及其对应实例"); page.Controls.Add(_conflict);
+            _conflict.SelectedIndexChanged += (s, e) => { if (!_populating && CurrentPackage != null) { CurrentPackage.Conflict = (TransferConflict)_conflict.SelectedIndex; CurrentPackage.TargetHash = null; InvalidatePlan(); } };
+            var verify = Row(); Btn(verify, "查看并核验复用目标…", () => Run(VerifyReuse), 180); page.Controls.Add(verify);
+            page.Controls.Add(Caption("同一 cojt 的多个实例共用一次复制。多类型命中不同目录时，请逐项覆盖；没有默认覆盖已有文件。"));
         }
 
-// ════════════════════════════════════════════════════════════
-        //  资源/零件页（合并：模式切换共享导出根/库根/文件/动作）
-        // ════════════════════════════════════════════════════════════
 
-        private TabPage BuildTransferTab()
+
+        private void UpdateKind() => UpdateGuidedState();
+        private void UpdateDestination()
         {
-            var page = new TabPage("资源 / 零件");
-            FlowLayoutPanel content;
-            var card = FormUiKit.MkCard("资源 / 零件跨环境传输", 500, 800, out content);
-            card.Dock = DockStyle.Fill;   // 关键：卡片填满标签页，消除右侧空白
-            content.AutoScroll = false;
-
-            // 模式切换（资源 / 零件）
-            var rowMode = FormUiKit.MkRowFlow();
-            _rbRes = FormUiKit.MkRadio("资源", true);
-            _rbPart = FormUiKit.MkRadio("零件", false);
-            _rbRes.CheckedChanged += (s, e) => { if (_rbRes.Checked) ApplyMode(false); };
-            _rbPart.CheckedChanged += (s, e) => { if (_rbPart.Checked) ApplyMode(true); };
-            rowMode.Controls.Add(_rbRes);
-            rowMode.Controls.Add(_rbPart);
-            content.Controls.Add(rowMode);
-
-            _lblHint = FormUiKit.MkLabel("导出根：多选资源/零件；选择为空时导出整个场景树。", false);
-            content.Controls.Add(_lblHint);
-
-            // 导出根多选拾取（带边框）
-            var gridPanel = new Panel
-            {
-                Dock = DockStyle.Top,
-                Height = 80,
-                Margin = new Padding(0, 0, 0, 2),
-                BackColor = SystemColors.Window,
-                Padding = new Padding(1),
-                BorderStyle = BorderStyle.FixedSingle,
-            };
-            _gridRoot = new TxObjGridCtrl
-            {
-                Dock = DockStyle.Fill,
-                Font = FormUiKit.BaseFont,
-                ListenToPick = true,
-                EnableMultipleSelection = true,
-                EnableRecurringObjects = false,
-            };
-            FormUiKit.GridPickFocus.Wire(_gridRoot);
-            gridPanel.Controls.Add(_gridRoot);
-            content.Controls.Add(gridPanel);
-            FormUiKit.FillWidthInFlow(content, gridPanel);
-
-            // 重建原点（PS 原生坐标选择框）
-            var originHint = FormUiKit.MkLabel("重建原点（XYZ 偏移）", false);
-            content.Controls.Add(originHint);
-            var rowOrigin = FormUiKit.MkRowFlow();
-            _frameOrigin = new TxFrameEditBoxCtrl
-            {
-                Width = 190,
-                Height = 22,
-                Font = FormUiKit.BaseFont,
-                ListenToPick = true,
-                Margin = new Padding(0, 0, 4, 0)
-            };
-            PickFocus.Wire(_frameOrigin);
-            try { _frameOrigin.PickLevel = TxPickLevel.Entity; } catch { }
-            _frameOrigin.ValidFrameSet += OnOriginFrameSet;
-            _frameOrigin.InvalidFrameSet += (s, e) => { _originX = 0; _originY = 0; _originZ = 0; };
-            rowOrigin.Controls.Add(_frameOrigin);
-            var btnResetOrigin = FormUiKit.MkBtn("重置坐标", Theme.BtnSecondary, 60, 26);
-            btnResetOrigin.Click += (s, e) =>
-            {
-                try
-                {
-                    _frameOrigin.SetLocation(new TxTransformation());
-                    _originX = 0; _originY = 0; _originZ = 0;
-                    Log("[原点] 已重置为世界原点");
-                }
-                catch (Exception ex) { Log("[原点] 重置失败，保留原偏移: " + ex.Message); }
-            };
-            rowOrigin.Controls.Add(btnResetOrigin);
-            content.Controls.Add(rowOrigin);
-            FormUiKit.FillWidthInFlow(content, rowOrigin);
-
-            // 工具行：清空选择 + 识别库根
-            var rowTools = FormUiKit.MkRowFlow();
-            var btnClear = FormUiKit.MkBtn("清空选择", Theme.BtnSecondary, 90, 26);
-            btnClear.Click += (s, e) => { try { _gridRoot.Objects = new TxObjectList(); } catch { } };
-            rowTools.Controls.Add(btnClear);
-            var btnDetect = FormUiKit.MkBtn("识别库根", Theme.BtnSecondary, 90, 26);
-            btnDetect.Click += (s, e) => DetectLibraryRoots();
-            rowTools.Controls.Add(btnDetect);
-            content.Controls.Add(rowTools);
-
-            // 对端实例选择（多实例可切换）
-            var rowPeer = FormUiKit.MkRowFlow();
-            rowPeer.Controls.Add(FormUiKit.MkFieldLabel("对端实例:"));
-            _cmbPeer = FormUiKit.MkComboBox(180, false);
-            _cmbPeer.DropDownStyle = ComboBoxStyle.DropDownList;
-            _cmbPeer.SelectedIndexChanged += (s, e) => OnPeerChanged();
-            rowPeer.Controls.Add(_cmbPeer);
-            var btnRefreshPeer = FormUiKit.MkBtn("刷新", Theme.BtnSecondary, 60, 26);
-            btnRefreshPeer.Click += (s, e) => RefreshPeerList();
-            rowPeer.Controls.Add(btnRefreshPeer);
-            content.Controls.Add(rowPeer);
-            FormUiKit.FillWidthInFlow(content, rowPeer);
-
-            // 本端库根 / 对端库根 / 结构文件
-            var rowSrc = FormUiKit.MkRowFlow();
-            rowSrc.Controls.Add(FormUiKit.MkFieldLabel("本端库根:"));
-            rowSrc.Controls.Add(_txtSrcLib = FormUiKit.MkTextBox("", 330));
-            content.Controls.Add(rowSrc);
-            FormUiKit.FillWidthInFlow(content, rowSrc);
-
-            var rowDst = FormUiKit.MkRowFlow();
-            rowDst.Controls.Add(FormUiKit.MkFieldLabel("对端库根:"));
-            rowDst.Controls.Add(_txtDstLib = FormUiKit.MkTextBox("", 330));
-            content.Controls.Add(rowDst);
-            FormUiKit.FillWidthInFlow(content, rowDst);
-
-            _lblFile = FormUiKit.MkFieldLabel("结构文件:");
-            _txtFile = FormUiKit.MkTextBox(Path.Combine(DefaultDir, "structure.txt"), 330);
-            var rowFile = FormUiKit.MkRowFlow();
-            rowFile.Controls.Add(_lblFile);
-            rowFile.Controls.Add(_txtFile);
-            content.Controls.Add(rowFile);
-            FormUiKit.FillWidthInFlow(content, rowFile);
-
-            var rowBrowse = FormUiKit.MkRowFlow();
-            rowBrowse.Controls.Add(MkBrowseBtn("浏览本端", "FolderPicker", () => _txtSrcLib));
-            rowBrowse.Controls.Add(MkBrowseBtn("浏览对端", "FolderPicker", () => _txtDstLib));
-            rowBrowse.Controls.Add(MkBrowseBtn("打开结构文件", "FilePicker", () => _txtFile));
-            content.Controls.Add(rowBrowse);
-            var rowSaveFile = FormUiKit.MkRowFlow();
-            rowSaveFile.Controls.Add(MkBrowseBtn("设置导出路径", "SaveFilePicker", () => _txtFile));
-            content.Controls.Add(rowSaveFile);
-
-            // 操作按钮：3×2 铺满宽度
-            //   导出本端结构 / 复制cojt到对端 / 在本端重建对端结构
-            //   在对端重建本端结构 / 一键复制cojt并重建 / 撤销复制
-            var tblActions = new TableLayoutPanel
-            {
-                ColumnCount = 3,
-                RowCount = 2,
-                AutoSize = false,
-                Dock = DockStyle.Top,
-                Width = 440,
-                Height = 64,
-                Margin = new Padding(0, 4, 0, 0)
-            };
-            tblActions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-            tblActions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-            for (int c = 0; c < 3; c++)
-                tblActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
-
-            tblActions.Controls.Add(FormUiKit.MkBtn("导出本端结构", Theme.BtnPrimary, 140, 32), 0, 0);
-            tblActions.Controls[0].Click += (s, e) => RunExport();
-            tblActions.Controls.Add(FormUiKit.MkBtn("复制cojt到对端", Theme.BtnSecondary, 140, 32), 1, 0);
-            tblActions.Controls[1].Click += (s, e) => RunCopyCojts();
-            tblActions.Controls.Add(FormUiKit.MkBtn("在本端重建", Theme.BtnPrimary, 140, 32), 2, 0);
-            tblActions.Controls[2].Click += (s, e) => RunRebuild();
-            tblActions.Controls.Add(FormUiKit.MkBtn("在对端重建", Theme.BtnPrimary, 140, 32), 0, 1);
-            tblActions.Controls[3].Click += (s, e) => RunRebuildRemote();
-            tblActions.Controls.Add(FormUiKit.MkBtn("一键复制并重建", Theme.BtnPrimary, 140, 32), 1, 1);
-            tblActions.Controls[4].Click += (s, e) => RunPushToPeer();
-            tblActions.Controls.Add(FormUiKit.MkBtn("撤销复制", Theme.BtnDanger, 140, 32), 2, 1);
-            tblActions.Controls[5].Click += (s, e) => RunUndoCopy();
-            content.Controls.Add(tblActions);
-            FormUiKit.FillWidthInFlow(content, tblActions);
-
-            var tip = FormUiKit.MkLabel("提示：复制cojt后需刷新对端库浏览器；推送会同时在对端重建。", false);
-            FormUiKit.WrapLabelInFlow(content, tip);
-            content.Controls.Add(tip);
-
-            // 左侧选取对象/原点，右侧设置对端/路径；底部保持同一组执行操作。
-            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3,
-                Padding = new Padding(8, 6, 8, 4), Margin = Padding.Empty };
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            var selection = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6,
-                Margin = new Padding(0, 0, 12, 0) };
-            for (int i = 0; i < 6; i++) selection.RowStyles.Add(new RowStyle(i == 2 ? SizeType.Percent : SizeType.AutoSize, i == 2 ? 100 : 0));
-            selection.Controls.Add(rowMode, 0, 0);
-            selection.Controls.Add(_lblHint, 0, 1);
-            gridPanel.Dock = DockStyle.Fill;
-            selection.Controls.Add(gridPanel, 0, 2);
-            selection.Controls.Add(originHint, 0, 3);
-            selection.Controls.Add(rowOrigin, 0, 4);
-            selection.Controls.Add(rowTools, 0, 5);
-            _lblHint.AutoSize = true;
-            selection.SizeChanged += (s, e) => _lblHint.MaximumSize = new Size(Math.Max(20, selection.ClientSize.Width - 8), 0);
-
-            var paths = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, RowCount = 5, Margin = Padding.Empty };
-            paths.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            for (int i = 0; i < 5; i++) paths.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            paths.Controls.Add(rowPeer, 0, 0);
-            TableLayoutPanel PathRow(Control label, TextBox input, Control browse)
-            {
-                var row = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = browse == null ? 2 : 3,
-                    RowCount = 1, Margin = new Padding(0, 2, 0, 2) };
-                row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 66));
-                row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-                if (browse != null) row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-                label.Anchor = AnchorStyles.Left;
-                input.Width = 120;
-                input.Dock = DockStyle.Fill;
-                row.Controls.Add(label, 0, 0);
-                row.Controls.Add(input, 1, 0);
-                if (browse != null) row.Controls.Add(browse, 2, 0);
-                return row;
-            }
-            var browseSource = rowBrowse.Controls[0];
-            var browseTarget = rowBrowse.Controls[1];
-            var browseFile = rowBrowse.Controls[2];
-            browseSource.Text = browseTarget.Text = "浏览";
-            paths.Controls.Add(PathRow(rowSrc.Controls[0], _txtSrcLib, browseSource), 0, 1);
-            paths.Controls.Add(PathRow(rowDst.Controls[0], _txtDstLib, browseTarget), 0, 2);
-            paths.Controls.Add(PathRow(_lblFile, _txtFile, null), 0, 3);
-            var fileActions = FormUiKit.MkRowFlow();
-            fileActions.Controls.Add(browseFile);
-            fileActions.Controls.Add(rowSaveFile.Controls[0]);
-            paths.Controls.Add(fileActions, 0, 4);
-            rowOrigin.Dock = rowTools.Dock = rowPeer.Dock = fileActions.Dock = DockStyle.Top;
-            layout.Controls.Add(selection, 0, 0);
-            layout.Controls.Add(paths, 1, 0);
-            tblActions.Dock = DockStyle.Fill;
-            layout.Controls.Add(tblActions, 0, 1);
-            layout.SetColumnSpan(tblActions, 2);
-            layout.Controls.Add(tip, 0, 2);
-            layout.SetColumnSpan(tip, 2);
-            layout.SizeChanged += (s, e) => tip.MaximumSize = new Size(Math.Max(20, layout.ClientSize.Width - 20), 0);
-            card.Controls.Remove(content);
-            card.Controls.Add(layout);
-            card.Controls.SetChildIndex(layout, 0);
-            content.Dispose();
-
-            page.Controls.Add(card);
-            return page;
+            if (_destination == null || _singleDir == null) return;
+            bool old = _populating; _populating = true;
+            try { bool simple = _placement.SelectedIndex == 1;
+                int assigned=_sourceDirty?0:_plan?.Packages.Count(p=>!string.IsNullOrWhiteSpace(p.OverrideDirectory))??0;
+                _destination.ReadOnly = !simple||assigned>0;
+                _destination.Text = assigned>0?"已手动分配 "+assigned+" 个模型；见上方列表":simple ? _singleDir.Text : new[] { "按类型分配（高级规则）","","逐个模型指定","保持源库相对目录","自动匹配源目录 / 文件夹名称 / 类型" }[Math.Max(0,_placement.SelectedIndex)]; }
+            finally { _populating=old; }
+            UpdateGuidedState();
         }
-
-        /// <summary>资源/零件模式切换：更新提示文字、文件行标签与默认文件名。</summary>
-        private void ApplyMode(bool part)
+        private void ToggleLog()
         {
-            _partMode = part;
-            if (_lblHint != null)
-                _lblHint.Text = part
-                    ? "零件树导出含COJT列；选择为空时导出整个场景树。"
-                    : "导出根：多选资源/零件；选择为空时导出整个场景树。";
-            if (_lblFile != null)
-                _lblFile.Text = part ? "零件树文件:" : "结构文件:";
-            if (_txtFile != null)
-            {
-                string cur = GetText(_txtFile);
-                string otherDefault = part
-                    ? Path.Combine(DefaultDir, "structure.txt")
-                    : Path.Combine(DefaultDir, "part_hierarchy.txt");
-                if (string.Equals(cur, otherDefault, StringComparison.OrdinalIgnoreCase))
-                    _txtFile.Text = part
-                        ? Path.Combine(DefaultDir, "part_hierarchy.txt")
-                        : Path.Combine(DefaultDir, "structure.txt");
-            }
+            _logExpanded=!_logExpanded;PluginLog.SetVisible(_log,_logExpanded);_root.RowStyles[5].Height=_logExpanded?100*DeviceDpi/96f:0;
+            FitColumns();if(_logExpanded)ExpandForContent();
         }
-
-        // ════════════════════════════════════════════════════════════
-        //  焊点页
-        // ════════════════════════════════════════════════════════════
-
-        private TabPage BuildWeldTab()
+        private void ShowProblems()
         {
-            var page = new TabPage("焊点");
-            FlowLayoutPanel content;
-            var card = FormUiKit.MkCard("焊点跨环境传输", 500, 380, out content);
-            card.Dock = DockStyle.Fill;   // 填满标签页，消除右侧空白
-            content.AutoScroll = false;
-
-            content.Controls.Add(FormUiKit.MkLabel("导出选中的焊点操作；重建按ParentOpPath建操作树并创建焊点。", false));
-
-            // 焊点操作多选（带边框）
-            content.Controls.Add(FormUiKit.MkLabel("焊点操作（可多选，不选则导出全部）：", false));
-            var gridPanel = new Panel
-            {
-                Dock = DockStyle.Top,
-                Height = 80,
-                Margin = new Padding(0, 0, 0, 2),
-                BackColor = SystemColors.Window,
-                Padding = new Padding(1),
-                BorderStyle = BorderStyle.FixedSingle,
-            };
-            _gridWeldSel = new TxObjGridCtrl
-            {
-                Dock = DockStyle.Fill,
-                Font = FormUiKit.BaseFont,
-                ListenToPick = true,
-                EnableMultipleSelection = true,
-                EnableRecurringObjects = false,
-            };
-            FormUiKit.GridPickFocus.Wire(_gridWeldSel);
-            gridPanel.Controls.Add(_gridWeldSel);
-            content.Controls.Add(gridPanel);
-            FormUiKit.FillWidthInFlow(content, gridPanel);
-            var rowClearWeld = FormUiKit.MkRowFlow();
-            var btnClearWeld = FormUiKit.MkBtn("清空选择", Theme.BtnSecondary, 90, 26);
-            btnClearWeld.Click += (s, e) => { try { _gridWeldSel.Objects = new TxObjectList(); } catch { } };
-            rowClearWeld.Controls.Add(btnClearWeld);
-            content.Controls.Add(rowClearWeld);
-
-            var rowWeldFile = FormUiKit.MkRowFlow();
-            rowWeldFile.Controls.Add(FormUiKit.MkFieldLabel("焊点文件:"));
-            rowWeldFile.Controls.Add(_txtWeldFile = FormUiKit.MkTextBox(Path.Combine(DefaultDir, "weldpoints.txt"), 330));
-            content.Controls.Add(rowWeldFile);
-            FormUiKit.FillWidthInFlow(content, rowWeldFile);
-
-            var rowBrowse = FormUiKit.MkRowFlow();
-            rowBrowse.Controls.Add(MkBrowseBtn("打开焊点文件", "FilePicker", () => _txtWeldFile));
-            rowBrowse.Controls.Add(MkBrowseBtn("设置导出路径", "SaveFilePicker", () => _txtWeldFile));
-            content.Controls.Add(rowBrowse);
-
-            _chkWeldProject = FormUiKit.MkCheckBox("重建后投影到零件表面", false);
-            _chkWeldBindOnly = FormUiKit.MkCheckBox("仅绑定已有焊点（不新建）", false);
-            var rowOpts = FormUiKit.MkRowFlow();
-            rowOpts.Controls.Add(_chkWeldProject);
-            rowOpts.Controls.Add(_chkWeldBindOnly);
-            content.Controls.Add(rowOpts);
-
-            // 操作按钮（一行铺满，宽度充裕）
-            var tblActions = new TableLayoutPanel
-            {
-                ColumnCount = 3,
-                RowCount = 1,
-                AutoSize = false,
-                Dock = DockStyle.Top,
-                Width = 440,
-                Height = 40,
-                Margin = new Padding(0, 4, 0, 0)
-            };
-            tblActions.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            tblActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
-            tblActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
-            tblActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
-
-            tblActions.Controls.Add(FormUiKit.MkBtn("导出本端焊点", Theme.BtnPrimary, 140, 32), 0, 0);
-            tblActions.Controls[0].Click += (s, e) => RunExportWeld();
-            tblActions.Controls.Add(FormUiKit.MkBtn("在本端重建焊点", Theme.BtnPrimary, 140, 32), 1, 0);
-            tblActions.Controls[1].Click += (s, e) => RunRebuildWeld();
-            tblActions.Controls.Add(FormUiKit.MkBtn("在对端重建焊点", Theme.BtnPrimary, 140, 32), 2, 0);
-            tblActions.Controls[2].Click += (s, e) => RunPushWeldToPeer();
-            content.Controls.Add(tblActions);
-            FormUiKit.FillWidthInFlow(content, tblActions);
-
-            page.Controls.Add(card);
-            return page;
+            _issues.Visible=_issues.Items.Count>1;
+            if(_issues.Items.Count>0)_issues.SelectedIndex=0;
+            else{_issueDetail.Text="";_issueDetail.Visible=false;}
+            UpdateGuidedState();FitColumns();ExpandForContent();
         }
-
-        // ════════════════════════════════════════════════════════════
-        //  日志
-        // ════════════════════════════════════════════════════════════
-
-        private Control BuildLogBox()
+        private void ShowFailure(Exception error)
         {
-            var panel = new Panel
-            {
-                Dock = DockStyle.Fill,
-                BackColor = FormUiKit.CardBack,
-                Padding = new Padding(6, 0, 6, 4)
-            };
-            _rtbLog = new RichTextBox
-            {
-                Dock = DockStyle.Fill,
-                ReadOnly = true,
-                BackColor = Theme.LogBg,
-                ForeColor = Theme.LogText,
-                Font = new Font("Consolas", 9F),
-                WordWrap = false,
-                BorderStyle = BorderStyle.FixedSingle
-            };
-            panel.Controls.Add(_rtbLog);
-            _progress = new ProgressBar { Dock = DockStyle.Top, Height = 6,
-                Style = ProgressBarStyle.Marquee, Visible = false };
-            _lblStatus = new Label { Dock = DockStyle.Top, Height = 22, Text = "就绪",
-                Font = FormUiKit.BaseFont, ForeColor = Theme.LogText };
-            panel.Controls.Add(_progress);
-            panel.Controls.Add(_lblStatus);
-            return panel;
+            _settingsWindow?.Hide();
+            _status.Text=_uncertain?"结果待确认":"操作未完成"; _issues.Items.Clear(); _issues.Items.Add(error.Message);
+            _summary.Text=_uncertain ? "请查询原任务。" : "请查看右侧原因，处理后重新检查。";
+            if(_sourceDirty)_sourceCaptureError=error.Message;
+            RefreshStorageSources();
+            ShowProblems(); Log(error.ToString());
         }
-
-        // ════════════════════════════════════════════════════════════
-        //  动作
-        // ════════════════════════════════════════════════════════════
-
-        /// <summary>
-        /// 自动识别本端 + 对端库根：
-        ///   本端 = TxApplication.SystemRootDirectory（PS 主线程直接读）；
-        ///   对端 = 后台线程枚举其它 PDPS 实例（PsRpc fast-ping 取 systemRoot），取第一个存在的。
-        /// 后台线程避免 UI 因远程超时卡住。
-        /// </summary>
-        private void DetectLibraryRoots()
+        private void FitColumns()
         {
-            int generation = ++_refreshGeneration;
-            string current = null;
-            try { current = EnvLibrary.CurrentRoot(); }
-            catch { }
-
-            if (!string.IsNullOrEmpty(current))
-            {
-                SetText(_txtSrcLib, current);
-                Log("[库根] 本端: " + current);
-            }
-            else
-            {
-                Log("[库根] 本端识别失败（SystemRootDirectory 为空）");
-            }
-
-            // 后台枚举对端（管道 IO，不在 PS 主线程跑，避免卡 UI）
-            System.Threading.ThreadPool.QueueUserWorkItem(delegate
-            {
-                try
-                {
-                    var envs = EnvLibrary.ListEnvironments(MarshalLog, current);
-                    MarshalLog("[库根] 检测到 " + envs.Count + " 个环境:");
-                    foreach (var e in envs)
-                        MarshalLog("[库根]   " + (e.IsSelf ? "本端" : "对端") + " " + e.Name
-                            + (string.IsNullOrEmpty(e.SystemRoot) ? "  <无库根>" : "  " + e.SystemRoot));
-
-                    // 填充对端实例下拉框（多实例可切换）
-                    MarshalRefreshPeer(envs, generation);
-                }
-                catch (Exception ex)
-                {
-                    MarshalLog("[库根] 识别异常: " + ex.Message);
-                }
-            });
-        }
-
-        /// <summary>后台线程把对端实例列表刷新进下拉框（封送回 UI 线程）。</summary>
-        private void MarshalRefreshPeer(List<EnvInfo> envs, int generation)
-        {
+            if(_fitting||IsDisposed||Disposing)return; _fitting=true;
             try
             {
-                if (IsDisposed) return;
-                Action apply = () =>
+                foreach(var frame in new[]{_pickFrame,_sourceOriginFrame,_originFrame})((CrossEnvNativeFrame)frame).RefreshMetrics(DeviceDpi);
+                FitGuidedCards();
+                FitExecution();
+                // Measure nested columns from their children. Native controls and wrapped button
+                // rows are often taller than FlowLayoutPanel's cached preferred height.
+                for(int pass=0;pass<2;pass++)
                 {
-                    if (!IsDisposed && !_busy && generation == _refreshGeneration) PopulatePeerCombo(envs);
-                };
-                if (InvokeRequired) BeginInvoke(apply); else apply();
+                    FitColumn(_header); FitColumn(_sourceCard); FitColumn(_targetCard); FitColumn(_problemPanel);
+                    foreach(TabPage page in _options.TabPages)FitColumn((MeasuredColumn)page.Controls[0]);
+                }
+                FitGuidedCards();
+                FitExecution();FitColumn(_problemPanel);
             }
-            catch { }
+            finally { _fitting=false; }
         }
-
-        /// <summary>把对端实例填充进下拉框，保留当前选中。</summary>
-        private void PopulatePeerCombo(List<EnvInfo> envs)
+        private void FitColumn(ScrollableControl column)
         {
-            try
+            bool fitHeight=column!=_main
+                &&(column==_header||column.Parent is MeasuredColumn||column.Parent is FlowLayoutPanel);
+            if(fitHeight)column.AutoSize=false;
+            int width=Math.Max(140,column.ClientSize.Width-column.Padding.Horizontal),height=column.Padding.Vertical;
+            foreach(Control child in column.Controls)
             {
-                if (_cmbPeer == null) return;
-                int keepPid = SelectedPeerPid();
-                _peerList.Clear();
-                _peerRoots.Clear();
-                _cmbPeer.Items.Clear();
-                foreach (var e in envs)
+                if(!child.Visible)continue;
+                int available=Math.Max(120,width-child.Margin.Horizontal);
+                child.MaximumSize=new Size(available,child is CrossEnvNativeFrame?child.MaximumSize.Height:0); child.Width=available;
+                if(child is Label label)
                 {
-                    if (e == null || e.IsSelf) continue;
-                    var info = new TxTools.Agent.Core.PsInstanceInfo
+                    if(label.AutoSize)label.Height=label.GetPreferredSize(new Size(available,0)).Height;
+                }
+                else if(child is MeasuredColumn measured)FitColumn(measured);
+                else if(child is FlowLayoutPanel flow)
+                {
+                    if(flow.FlowDirection==FlowDirection.TopDown)FitColumn(flow);
+                    else
                     {
-                        Pid = e.Pid,
-                        Name = e.Name,
-                        Study = e.Study
-                    };
-                    _peerList.Add(info);
-                    _peerRoots[e.Pid] = e.SystemRoot;
-                    _cmbPeer.Items.Add(e.Name + "  [" + (e.Study ?? "无工程") + "] [pid " + e.Pid + "]");
-                }
-                if (_cmbPeer.Items.Count > 0)
-                {
-                    int sel = -1;
-                    for (int i = 0; i < _peerList.Count; i++)
-                        if (_peerList[i].Pid == keepPid) { sel = i; break; }
-                    _cmbPeer.SelectedIndex = sel >= 0 ? sel : (keepPid == 0 ? 0 : -1);
-                    if (_cmbPeer.SelectedIndex < 0)
-                    { _txtDstLib.Text = ""; Log("[对端] 原目标已失效，请重新选择实例"); }
-                }
-                else
-                {
-                    _txtDstLib.Text = "";
-                    Log("[对端] 没有可用的对端实例");
-                }
-            }
-            catch (Exception ex) { Log("[对端] 填充实例失败: " + ex.Message); }
-        }
-
-        /// <summary>手动刷新对端实例列表（独立线程，避免卡 UI）。</summary>
-        private void RefreshPeerList()
-        {
-            int generation = ++_refreshGeneration;
-            string current = EnvLibrary.CurrentRoot();
-            Log("[对端] 刷新实例列表…");
-            System.Threading.ThreadPool.QueueUserWorkItem(delegate
-            {
-                try
-                {
-                    var envs = EnvLibrary.ListEnvironments(MarshalLog, current);
-                    MarshalRefreshPeer(envs, generation);
-                }
-                catch (Exception ex) { MarshalLog("[对端] 刷新异常: " + ex.Message); }
-            });
-        }
-
-        private void OnPeerChanged()
-        {
-            try
-            {
-                var peer = SelectedPeer();
-                if (peer == null) return;
-                string root;
-                _txtDstLib.Text = _peerRoots.TryGetValue(peer.Pid, out root) ? root ?? "" : "";
-                Log("[对端] 已切换对端实例: " + peer.Name + " [pid " + peer.Pid + "]");
-            }
-            catch (Exception ex) { Log("[对端] 切换异常: " + ex.Message); }
-        }
-
-        /// <summary>当前下拉框选中的对端实例（无则返回 null）。</summary>
-        private TxTools.Agent.Core.PsInstanceInfo SelectedPeer()
-        {
-            try
-            {
-                int i = _cmbPeer != null ? _cmbPeer.SelectedIndex : -1;
-                if (i >= 0 && i < _peerList.Count) return _peerList[i];
-            }
-            catch { }
-            return null;
-        }
-
-        private int SelectedPeerPid()
-        {
-            var p = SelectedPeer();
-            return p != null ? p.Pid : 0;
-        }
-
-        private void MarshalLog(string msg)
-        {
-            if (IsDisposed) return;
-            try
-            {
-                if (InvokeRequired) BeginInvoke(new Action<string>(Log), msg);
-                else Log(msg);
-            }
-            catch { }
-        }
-
-        private static void MarshalText(TextBox tb, string text)
-        {
-            try
-            {
-                if (tb == null || tb.IsDisposed) return;
-                if (tb.InvokeRequired) tb.BeginInvoke(new Action(() => tb.Text = text ?? ""));
-                else tb.Text = text ?? "";
-            }
-            catch { }
-        }
-
-        private static void SetText(TextBox tb, string text)
-        {
-            try { if (tb != null) tb.Text = text ?? ""; } catch { }
-        }
-
-        /// <summary>从多选框取选中对象；为空则返回 PhysicalRoot（导出全树）。</summary>
-        private List<ITxObject> GetGridRoots(TxObjGridCtrl grid, ITxObject fallback)
-        {
-            var list = new List<ITxObject>();
-            if (grid == null) { if (fallback != null) list.Add(fallback); return list; }
-            try
-            {
-                int n = grid.Count;
-                for (int i = 0; i < n; i++)
-                {
-                    var o = grid.GetObject(i);
-                    if (o == null) throw new InvalidOperationException("选择对象已失效，请重新拾取");
-                    list.Add(o);
-                }
-            }
-            catch (Exception ex) { throw new InvalidOperationException("无法读取导出范围: " + ex.Message, ex); }
-            if (list.Count == 0 && fallback != null) list.Add(fallback);
-            return list;
-        }
-
-        private string ModeName() => _partMode ? "零件树" : "资源结构";
-
-        private async void RunOperation(string title, Func<System.Threading.Tasks.Task> operation)
-        {
-            if (_busy) { Log("[提示] 上一次操作尚未结束"); return; }
-            _busy = true;
-            _tabs.Enabled = false;
-            _lblStatus.Text = title + "…";
-            _progress.Visible = true;
-            try
-            {
-                await System.Threading.Tasks.Task.Yield();
-                await operation(); _lblStatus.Text = title + "结束，详见日志";
-            }
-            catch (Exception ex) { _lblStatus.Text = title + "失败"; Log("[错误] " + ex.Message); }
-            finally
-            {
-                _busy = false;
-                if (!IsDisposed) { _tabs.Enabled = true; _progress.Visible = false; }
-            }
-        }
-
-        private static System.Threading.Tasks.Task Finished() => System.Threading.Tasks.Task.CompletedTask;
-
-        private void EnsureDocument(TxDocument document)
-        {
-            if (!Equals(document, TxApplication.ActiveDocument))
-                throw new InvalidOperationException("本端工程已切换，操作已中止");
-        }
-
-        private int ExportStructureFile(string file)
-        {
-            var doc = TxApplication.ActiveDocument;
-            if (doc == null) throw new InvalidOperationException("无活动文档");
-            var roots = GetGridRoots(_gridRoot, doc.PhysicalRoot);
-            if (roots.Any(r => !(r is TxPhysicalRoot) && !(r is TxCompoundResource) && !(r is TxCompoundPart)
-                && !(r is ITxComponent)))
-                throw new InvalidOperationException("导出选择包含非资源/零件对象，请检查选择列表");
-            // 同时选中父、子时只遍历父，避免重复数据行。
-            var descendants = new HashSet<string>();
-            foreach (var root in roots)
-            {
-                var collection = root as ITxObjectCollection;
-                if (collection == null) continue;
-                foreach (ITxObject child in collection.GetAllDescendants(new TxTypeFilter(typeof(ITxObject))))
-                    descendants.Add(child.Id);
-            }
-            roots = roots.Where(r => !descendants.Contains(r.Id)).GroupBy(r => r.Id).Select(g => g.First()).ToList();
-            Log("=== 导出" + ModeName() + " === 范围: " +
-                string.Join("、", roots.Select(SafeName)));
-            int count = StructureIO.ExportStructureMulti(roots, file, true, Log);
-            if (count == 0) throw new InvalidOperationException("未导出有效结构，已中止后续操作");
-            return count;
-        }
-
-        private int ExportWeldFile(string file)
-        {
-            if (TxApplication.ActiveDocument == null) throw new InvalidOperationException("无活动文档");
-            HashSet<string> ids = null;
-            if (_gridWeldSel.Count > 0)
-            {
-                ids = new HashSet<string>();
-                for (int i = 0; i < _gridWeldSel.Count; i++)
-                {
-                    var obj = _gridWeldSel.GetObject(i);
-                    if (!(obj is TxWeldLocationOperation))
-                        throw new InvalidOperationException("请选择焊点操作；列表包含其他类型的对象");
-                    ids.Add(obj.Id);
-                }
-            }
-            Log("=== 导出焊点 === " + (ids == null ? "范围: 全部焊点操作" : "范围: " + ids.Count + " 个指定对象"));
-            int count = WeldPointIO.ExportWeldPoints(file, Log, ids);
-            if (count == 0) throw new InvalidOperationException("未导出有效焊点，已中止后续操作");
-            return count;
-        }
-
-        private void RunExport() => RunOperation("导出结构", () =>
-        {
-            ExportStructureFile(GetText(_txtFile)); return Finished();
-        });
-
-        private void RunExportWeld() => RunOperation("导出焊点", () =>
-        {
-            ExportWeldFile(GetText(_txtWeldFile)); return Finished();
-        });
-
-        private async System.Threading.Tasks.Task<CopyResult> CopyCojts(
-            string file, string source, string destination, bool part, int targetPid)
-        {
-            var paths = StructureIO.ReadCojtList(file, Log);
-            if (paths.Count == 0) { Log("[复制] 数据中没有 cojt，无需复制"); return null; }
-            var result = await System.Threading.Tasks.Task.Run(() =>
-                CojtTransfer.CopyCojtList(paths, source, destination, MarshalLog));
-            result.TargetPids.Add(targetPid);
-            var previous = part ? _lastPartCopy : _lastResCopy;
-            if (previous != null) result.Merge(previous);
-            if (part) _lastPartCopy = result; else _lastResCopy = result;
-            Log("[复制结果] " + result);
-            if (result.Fail > 0) throw new IOException("部分 cojt 复制失败，已停止重建");
-            return result;
-        }
-
-        private void RunCopyCojts() => RunOperation("复制 cojt", async () =>
-        {
-            var peer = FindPeerInstance();
-            var doc = TxApplication.ActiveDocument;
-            var state = await InspectPeer(peer);
-            EnsureDocument(doc);
-            string destination = ValidatePeerRoot(state, GetText(_txtDstLib));
-            await CopyCojts(GetText(_txtFile), GetText(_txtSrcLib), destination, _partMode, peer.Pid);
-        });
-
-        private void RunRebuild() => RunOperation("本端重建结构", () =>
-        {
-            var doc = TxApplication.ActiveDocument;
-            if (doc == null) throw new InvalidOperationException("无活动文档");
-            var copy = _partMode ? _lastPartCopy : _lastResCopy;
-            if (copy != null) copy.SceneMayReferenceFiles = true;
-            var rep = StructureIO.RebuildStructure(GetText(_txtFile), doc.PhysicalRoot, !_partMode, Log,
-                _originX, _originY, _originZ);
-            foreach (var error in rep.Errors) Log("[警告] " + error);
-            Log("[结果] " + rep);
-            Log("[Undo] 在当前 PS 工程按 Ctrl+Z 可撤销本批次；未自动保存/重载。");
-            TryRefresh();
-            if (rep.Failed > 0 || rep.Errors.Count > 0) throw new InvalidOperationException("重建未完整成功，请检查日志");
-            return Finished();
-        });
-
-        private void RunRebuildWeld() => RunOperation("本端重建焊点", () =>
-        {
-            var rep = WeldPointIO.RebuildWeldPoints(GetText(_txtWeldFile),
-                _chkWeldProject.Checked, _chkWeldBindOnly.Checked, Log);
-            foreach (var error in rep.Errors) Log("[警告] " + error);
-            Log("[结果] " + rep); TryRefresh();
-            if (rep.Failed > 0 || rep.Errors.Count > 0) throw new InvalidOperationException("焊点重建未完整成功，请检查日志");
-            return Finished();
-        });
-
-        private void RunUndoCopy() => RunOperation("清理复制文件", async () =>
-        {
-            var result = _partMode ? _lastPartCopy : _lastResCopy;
-            if (result == null || result.CopiedDirs.Count == 0) { Log("[清理] 无复制记录"); return; }
-            if (result.SceneMayReferenceFiles) { result.Undo(Log); return; }
-            if (result.TargetPids.Count == 0) throw new InvalidOperationException("复制记录缺少目标实例信息，已保留文件");
-            var doc = TxApplication.ActiveDocument;
-            var removable = new HashSet<string>(result.CopiedDirs, StringComparer.OrdinalIgnoreCase);
-            foreach (int pid in result.TargetPids)
-            {
-                var peer = TxTools.Agent.Core.PsInstanceRegistry.Live().FirstOrDefault(p => p.Pid == pid && !p.IsSelf);
-                if (peer == null) throw new InvalidOperationException("复制目标实例已不可用，无法核验其工程引用，已保留文件");
-                var state = await InspectPeer(peer, new Newtonsoft.Json.Linq.JArray(result.CopiedDirs));
-                var references = state["references"] as Newtonsoft.Json.Linq.JObject;
-                foreach (var directory in result.CopiedDirs)
-                    if (references == null || references[directory]?.Type != Newtonsoft.Json.Linq.JTokenType.Boolean
-                        || (bool)references[directory]) removable.Remove(directory);
-            }
-            EnsureDocument(doc);
-            // 只在两端都明确证明未引用时清理；清单摘要仍由 CopyResult 再校验。
-            result.Undo(Log, directory =>
-                removable.Contains(directory) && !ComponentIO.IsPathReferencedByScene(directory));
-        });
-
-        private void RunPushToPeer() => PushToPeer(_partMode ? "part" : "resource", true);
-        private void RunRebuildRemote() => PushToPeer(_partMode ? "part" : "resource", false);
-        private void RunPushWeldToPeer() => PushToPeer("weld", false);
-
-        private void PushToPeer(string kind, bool copyCojts) => RunOperation("推送并对端重建", async () =>
-        {
-            var doc = TxApplication.ActiveDocument;
-            if (doc == null) throw new InvalidOperationException("无活动文档");
-            var peer = FindPeerInstance();
-            var state = await InspectPeer(peer);
-            EnsureDocument(doc);
-            string destination = ValidatePeerRoot(state, GetText(_txtDstLib));
-            string source = EnvLibrary.CurrentRoot();
-            string configuredSource = GetText(_txtSrcLib);
-            if (kind != "weld" && !SamePath(source, configuredSource))
-                throw new InvalidOperationException("本端库根与活动工程不一致，请重新识别库根");
-
-            // 每次调用使用独立快照，原导出文件即使存在也不会被用作失败后的替代数据。
-            string configuredFile = kind == "weld" ? GetText(_txtWeldFile) : GetText(_txtFile);
-            string file = TransferFile.SnapshotPath(configuredFile);
-            if (kind == "weld") ExportWeldFile(file); else ExportStructureFile(file);
-            CopyResult copied = null;
-            if (copyCojts)
-            {
-                copied = await CopyCojts(file, source, destination, kind == "part", peer.Pid);
-            }
-            EnsureDocument(doc);
-            var input = new Newtonsoft.Json.Linq.JObject
-            {
-                ["kind"] = kind, ["file"] = file, ["source_library_root"] = source,
-                ["expected_study"] = (string)state["study"],
-                ["expected_document"] = (string)state["document"],
-                ["expected_library_root"] = destination,
-                ["origin_x"] = _originX, ["origin_y"] = _originY, ["origin_z"] = _originZ
-            };
-            if (copied != null) input["cojt_map"] = Newtonsoft.Json.Linq.JObject.FromObject(copied.TargetPaths);
-            if (kind == "weld")
-            {
-                input["project"] = _chkWeldProject.Checked;
-                input["bind_only"] = _chkWeldBindOnly.Checked;
-            }
-            else
-            {
-                // 调用可能超时或部分失败，依赖保护必须在发出 RPC 前设置。
-                if (_lastResCopy != null) _lastResCopy.SceneMayReferenceFiles = true;
-                if (_lastPartCopy != null) _lastPartCopy.SceneMayReferenceFiles = true;
-            }
-            Log("[远程] " + peer.Name + " [pid " + peer.Pid + "] 工程=" + state["study"] +
-                " 库根=" + destination + "\n[快照] " + file);
-            var response = await System.Threading.Tasks.Task.Run(() =>
-                TxTools.Agent.Core.PsRpcClient.Invoke(peer, "crossenv_rebuild", input));
-            if (!response.Ok) throw new IOException("远程调用失败或结果未知，请先核对对端工程: " + response.Error);
-            string output = response.Output ?? "";
-            Log("[远程结果] " + output);
-            if (output.StartsWith("Error:", StringComparison.Ordinal))
-                throw new InvalidOperationException("对端重建未完整成功，详见结果日志");
-        });
-
-        private async System.Threading.Tasks.Task<Newtonsoft.Json.Linq.JObject> InspectPeer(
-            TxTools.Agent.Core.PsInstanceInfo peer, Newtonsoft.Json.Linq.JArray directories = null)
-        {
-            var input = new Newtonsoft.Json.Linq.JObject();
-            if (directories != null) input["directories"] = directories;
-            var response = await System.Threading.Tasks.Task.Run(() =>
-                TxTools.Agent.Core.PsRpcClient.Invoke(peer, "crossenv_inspect", input));
-            if (!response.Ok || string.IsNullOrEmpty(response.Output) || response.Output.StartsWith("Error:", StringComparison.Ordinal))
-                throw new IOException("对端预检失败，请确认对端已加载新版插件: " + (response.Error ?? response.Output));
-            return Newtonsoft.Json.Linq.JObject.Parse(response.Output);
-        }
-
-        private static bool SamePath(string left, string right)
-        {
-            if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return false;
-            return string.Equals(Path.GetFullPath(left).TrimEnd('\\', '/'),
-                Path.GetFullPath(right).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
-        }
-
-        private string ValidatePeerRoot(Newtonsoft.Json.Linq.JObject state, string configured)
-        {
-            string actual = (string)state["systemRoot"];
-            if (string.IsNullOrWhiteSpace(actual) || !Directory.Exists(actual))
-                throw new IOException("对端库根无效: " + actual);
-            if (!SamePath(actual, configured))
-                throw new InvalidOperationException("对端库根与所选实例不一致，请刷新实例列表后重试。实际库根: " + actual);
-            return actual;
-        }
-
-        private TxTools.Agent.Core.PsInstanceInfo FindPeerInstance()
-        {
-            var selected = SelectedPeer();
-            if (selected == null) throw new InvalidOperationException("请先选择目标实例");
-            var live = TxTools.Agent.Core.PsInstanceRegistry.Live().FirstOrDefault(p => !p.IsSelf && p.Pid == selected.Pid);
-            if (live == null) throw new InvalidOperationException("选中的实例已失效，请刷新后重新选择");
-            return live;
-        }
-
-        private Button MkBrowseBtn(string text, string kind, Func<TextBox> get)
-        {
-            var b = FormUiKit.MkBtn(text, Theme.BtnSecondary, 130, 26);
-            b.Click += (s, e) =>
-            {
-                var tb = get();
-                string v = Browse(kind, GetText(tb));
-                if (v != null) tb.Text = v;
-            };
-            return b;
-        }
-
-        private static string Browse(string kind, string initial)
-        {
-            try
-            {
-                if (kind == "FolderPicker")
-                {
-                    using (var dlg = new FolderBrowserDialog())
-                    {
-                        if (!string.IsNullOrWhiteSpace(initial) && Directory.Exists(initial))
-                            dlg.SelectedPath = initial;
-                        return dlg.ShowDialog() == DialogResult.OK ? dlg.SelectedPath : null;
+                        flow.AutoSize=false;
+                        flow.Height=flow.GetPreferredSize(new Size(available,0)).Height;
+                        flow.PerformLayout();
+                        flow.Height=Math.Max(flow.Height,flow.Controls.Cast<Control>().Where(c=>c.Visible).Select(c=>c.Bottom+c.Margin.Bottom).DefaultIfEmpty(0).Max()+flow.Padding.Bottom);
                     }
                 }
-                if (kind == "SaveFilePicker")
-                {
-                    using (var dlg = new SaveFileDialog { Filter = "TSV 数据文件 (*.txt;*.tsv)|*.txt;*.tsv|所有文件 (*.*)|*.*",
-                        DefaultExt = "txt", FileName = Path.GetFileName(initial ?? "") })
-                    {
-                        if (!string.IsNullOrWhiteSpace(initial)) dlg.InitialDirectory = Path.GetDirectoryName(initial);
-                        return dlg.ShowDialog() == DialogResult.OK ? dlg.FileName : null;
-                    }
-                }
-                using (var dlg = new OpenFileDialog { Filter = "TSV 数据文件 (*.txt;*.tsv)|*.txt;*.tsv|所有文件 (*.*)|*.*" })
-                {
-                    if (!string.IsNullOrWhiteSpace(initial)) dlg.InitialDirectory = Path.GetDirectoryName(initial);
-                    return dlg.ShowDialog() == DialogResult.OK ? dlg.FileName : null;
-                }
+                height+=child.Height+child.Margin.Vertical;
             }
-            catch { return null; }
+            if(fitHeight)
+            { column.MinimumSize=new Size(0,height); column.Height=height; }
+            if(column.AutoScroll)column.AutoScrollMinSize=new Size(0,height);
+            column.PerformLayout();
         }
-
-        private static string GetText(TextBox tb)
+        private void UpdateActions() => UpdateGuidedState();
+        private void FitExecution()
         {
-            try { return tb == null ? "" : (tb.Text ?? "").Trim(); }
-            catch { return ""; }
-        }
-
-        private static string SafeName(ITxObject o)
-        {
-            try { return o.Name; } catch { return "?"; }
-        }
-
-        private static void TryRefresh()
-        {
-            try { TxApplication.RefreshDisplay(); } catch { }
-        }
-
-        public void Log(string msg)
-        {
-            if (_rtbLog == null || IsDisposed) return;
-            if (InvokeRequired)
+            if(_executionTop==null)return;
+            int width=Math.Max(240,_problemPanel.ClientSize.Width-_problemPanel.Padding.Horizontal);
+            _executionTop.Width=width;bool parallel=width>=ScaleUi(650);int gap=ScaleUi(10),left=parallel?Math.Max(240,(int)(width*.32)):width;
+            SetCardWidth(_executionLead,left);SetCardWidth(_executionMessages,parallel?width-left-gap:width);
+            if(_issueDetail.Visible)
             {
-                try { BeginInvoke(new Action<string>(Log), msg); } catch { }
-                return;
+                int detailWidth=Math.Max(160,_executionMessages.Width-24);
+                int textHeight=TextRenderer.MeasureText(_issueDetail.Text,Font,new Size(detailWidth,0),TextFormatFlags.WordBreak).Height;
+                _issueDetail.Height=Math.Max(ScaleUi(52),Math.Min(ScaleUi(132),textHeight+12));
             }
-            string line = "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + msg + "\n";
-            _rtbLog.AppendText(line);
-            _rtbLog.SelectionStart = _rtbLog.TextLength;
-            _rtbLog.ScrollToCaret();
+            FitColumn(_executionLead);FitColumn(_executionMessages);
+            _executionLead.Height=_executionLead.GetPreferredSize(Size.Empty).Height;_executionMessages.Height=_executionMessages.GetPreferredSize(Size.Empty).Height;
+            _executionLead.Location=Point.Empty;_executionMessages.Location=parallel?new Point(left+gap,0):new Point(0,_executionLead.Height+4);
+            _executionTop.Height=parallel?Math.Max(_executionLead.Height,_executionMessages.Height):_executionLead.Height+_executionMessages.Height+4;
+            // The action row has its own reserved bottom row and is never part of
+            // the scrollable message area. Shrink messages before hiding actions.
+            int actionHeight=_executionActions.GetPreferredSize(new Size(Math.Max(240,_root.ClientSize.Width-_root.Padding.Horizontal),0)).Height;
+            int fixedHeight=_header.Height+actionHeight+ScaleUi(26)+(int)_root.RowStyles[5].Height+_root.Padding.Vertical;
+            int messageBudget=Math.Max(ScaleUi(60),Math.Min(ScaleUi(220),(_root.ClientSize.Height-fixedHeight)/3));
+            _root.RowStyles[2].Height=Math.Min(_executionTop.Height+_problemPanel.Padding.Vertical+4,messageBudget);
+            _root.RowStyles[4].Height=ScaleUi(26);
+            _problemPanel.MinimumSize=Size.Empty;
+            _problemPanel.AutoScrollMinSize=new Size(0,_executionTop.Height+_problemPanel.Padding.Vertical);
+        }
+        private IWin32Window DialogOwner
+        {
+            get
+            {
+                Form owner=_settingsWindow.Visible&&!_settingsWindow.IsDisposed?_settingsWindow:this;
+                if(owner.WindowState==FormWindowState.Minimized)owner.WindowState=FormWindowState.Normal;
+                owner.BringToFront();owner.Activate();return owner;
+            }
+        }
+        private void ShowSettingsWindow()
+        {
+            if(!_settingsWindow.Visible)
+            {
+                var work=Screen.FromControl(this).WorkingArea;
+                _settingsWindow.Location=new Point(Math.Max(work.Left,Math.Min(work.Right-_settingsWindow.Width,Right+8)),Math.Max(work.Top,Math.Min(work.Bottom-_settingsWindow.Height,Top+30)));
+                _settingsWindow.Show();
+            }
+            if(_settingsWindow.WindowState==FormWindowState.Minimized)_settingsWindow.WindowState=FormWindowState.Normal;
+            _settingsWindow.BringToFront();_settingsWindow.Activate();
+        }
+        private void ClearScenePickersForReload()
+        {
+            bool old=_populating;_populating=true;
+            try{_objects.Objects=new TxObjectList();_whole.Checked=false;_sourceOrigin.SetLocation(new TxTransformation());_origin.SetLocation(new TxTransformation());_sourceDirty=!_sourceFromFile;}
+            finally{_populating=old;}
+        }
+
+        private sealed class MeasuredColumn : Panel
+        {
+            private bool _arranging;
+            public override Size GetPreferredSize(Size proposedSize)
+            {
+                int width=0,height=Padding.Vertical;
+                foreach(Control child in Controls)
+                    if(child.Visible) { width=Math.Max(width,child.Width+child.Margin.Horizontal); height+=child.Height+child.Margin.Vertical; }
+                return new Size(Parent is TableLayoutPanel?0:width+Padding.Horizontal,height);
+            }
+            protected override void OnLayout(LayoutEventArgs e)
+            {
+                if(_arranging)return;
+                _arranging=true;
+                try
+                {
+                    base.OnLayout(e);
+                    int top=Padding.Top+AutoScrollPosition.Y;
+                    foreach(Control child in Controls)
+                    {
+                        if(!child.Visible)continue;
+                        top+=child.Margin.Top;
+                        child.Location=new Point(Padding.Left+child.Margin.Left+AutoScrollPosition.X,top);
+                        top+=child.Height+child.Margin.Bottom;
+                    }
+                    if(AutoScroll)AdjustFormScrollbars(true);
+                }
+                finally { _arranging=false; }
+            }
         }
     }
 }

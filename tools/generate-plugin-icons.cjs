@@ -12,6 +12,7 @@ const cube = (x,y,s=9,fill='#bdc7cd') => `<path d="M${x} ${y+3}l${s/2} -3 ${s/2}
 const folder = (x,y,w=15,h=12) => `<path d="M${x} ${y+2}v${h}h${w}V${y+4}h${-w/2}l-2 -2z" fill="#c9d1d5" stroke="#596b76" stroke-width="1.2"/>${line(`M${x+1} ${y+6}h${w-2}`, '#f8fbfc', 1)}`;
 const arrow = (d, color='#20a7ba') => line(d,color,2.2);
 const art = {
+  FootingPlanExport: `${rect(3,3,21,25,'#edf2f3')}${rect(7,8,13,13,'#bdc7cd')}${dot(9.5,10.5,1.5,'#f8fbfc')}${dot(17.5,10.5,1.5,'#f8fbfc')}${dot(9.5,18.5,1.5,'#f8fbfc')}${dot(17.5,18.5,1.5,'#f8fbfc')}${line('M6 23v3m15 -3v3M6 24.5h15','#82949c',1)}${arrow('M20 25h10m-4 -4 4 4 -4 4')}`,
   AutoPath: `${rect(3,25,11,4)}${line('M8 25V19L17 13 11 7','#74858e',5)}${dot(8,20,2.4,'#d2d9dd')}${dot(17,13,2.4,'#d2d9dd')}${line('M11 7l5 -3 3 3','#596b76',3)}${line('M17 24c0 -11 9 1 11 -10','#79b93e',1.8)}${arrow('M25 15l3 -3 1 4')}`,
   CrossEnvIO: `${folder(2,3,13,10)}${folder(17,17,13,10)}${arrow('M17 8h11m-4 -3 4 3 -4 3')}${arrow('M15 24H4m4 -3 -4 3 4 3','#79b93e')}`,
   ExportByColor: `${cube(2,4,11,'#8dbbd1')}${cube(13,2,11,'#8fc66a')}${cube(5,15,11,'#d8a366')}${arrow('M19 23h10m-4 -4 4 4 -4 4')}`,
@@ -49,9 +50,12 @@ async function writeSmall(input, name) {
   fs.writeFileSync(path.join(imageDir,'Small',name+'.bmp'),bmp);
 }
 async function main() {
+  const only = process.argv[2];
+  if (only && !art[only] && !existing[only]) throw new Error('Unknown icon: '+only);
   fs.mkdirSync(path.join(imageDir,'Small'),{recursive:true});
   fs.mkdirSync(path.join(imageDir,'Svg'),{recursive:true});
   for (const [name,body] of Object.entries(art)) {
+    if (only && name !== only) continue;
     const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">${body}</svg>`;
     fs.writeFileSync(path.join(imageDir,'Svg',name+'.svg'),svg+'\n');
     for (const size of [16,32]) {
@@ -61,9 +65,11 @@ async function main() {
     await writeSmall(Buffer.from(svg), name);
   }
   for (const [name,file] of Object.entries(existing)) {
+    if (only && name !== only) continue;
     await sharp(path.join(root,file)).resize(16,16,{kernel:'lanczos3'}).png().toFile(path.join(imageDir,'Small',name+'.png'));
     await writeSmall(path.join(root,file), name);
   }
+  if (only) { console.log(`Generated ${only} (32/16 px PNG and 16 px BMP).`); return; }
   const names=Object.keys(art);
   const cells=[];
   for (let i=0;i<names.length;i++) {

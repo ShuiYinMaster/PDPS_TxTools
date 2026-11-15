@@ -15,6 +15,7 @@ using System.Text;
 using System.Globalization;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Newtonsoft.Json.Linq;
 using Tecnomatix.Engineering;
 using TxTools.Agent.Core;
@@ -157,7 +158,8 @@ namespace TxTools.CrossEnvIO
         public override string Description => "读取当前实例的工程、库根以及指定目录的场景引用。";
         public override bool IsReadOnly => true;
         public override JObject InputSchema => JObject.Parse(@"{
-            'type':'object','properties':{'directories':{'type':'array','items':{'type':'string'}}}}");
+            'type':'object','properties':{'directories':{'type':'array','items':{'type':'string'}},
+            'library_relative':{'type':'string'},'recursive_folders':{'type':'boolean'},'expected_study_id':{'type':'string'},'expected_library_root':{'type':'string'}}}");
         public override string Execute(JObject input)
         {
             var doc = TxApplication.ActiveDocument;
@@ -167,9 +169,41 @@ namespace TxTools.CrossEnvIO
             if (directories != null)
                 foreach (var directory in directories)
                     references[(string)directory] = ComponentIO.IsPathReferencedByScene((string)directory);
-            return new JObject { ["study"] = doc.CurrentStudy.Name,
-                ["document"] = doc.FinalDestination ?? "", ["systemRoot"] = TxApplication.SystemRootDirectory,
-                ["references"] = references }.ToString(Newtonsoft.Json.Formatting.None);
+            var description = TransferRuntime.Describe();
+            if(input["library_relative"]!=null)
+            {
+                try
+                {
+                    string root=(string)description["systemRoot"];
+                    if((string)input["expected_study_id"]!=(string)description["study_id"]||!TransferPaths.Same(root,(string)input["expected_library_root"]))
+                        throw new InvalidOperationException("接收工程或库根已变化，请重新确认接收端。");
+                    string folder=TransferPaths.Destination(root,(string)input["library_relative"]);
+                    TransferPaths.CheckParents(folder);
+                    var folders=new JArray();var warnings=new JArray();var pending=new Stack<string>();pending.Push(folder);
+                    bool recursive=(bool?)input["recursive_folders"]==true;
+                    while(pending.Count>0&&folders.Count<5000)
+                    {
+                        string current=pending.Pop();string[] children;
+                        try{children=Directory.GetDirectories(current);}catch(Exception ex){warnings.Add(current+"："+ex.Message);continue;}
+                        foreach(string directory in children.OrderBy(p=>p,StringComparer.CurrentCultureIgnoreCase))
+                        {
+                            var attributes=File.GetAttributes(directory);
+                            if((attributes&(FileAttributes.ReparsePoint|FileAttributes.Hidden|FileAttributes.System))!=0||directory.EndsWith(".cojt",StringComparison.OrdinalIgnoreCase))continue;
+                            string relative=CojtTransfer.RelativeToRoot(directory,root);
+                            folders.Add(new JObject { ["name"]=Path.GetFileName(directory),["relative"]=relative });
+                            if(recursive&&relative.Count(c=>c=='\\'||c=='/')<31)pending.Push(directory);
+                            if(folders.Count>=5000)break;
+                        }
+                        if(!recursive)break;
+                    }
+                    if(pending.Count>0)warnings.Add("目录超过读取上限；未显示的目录可在高级规则中明确指定。");
+                    description["folders"]=folders;
+                    description["folder_warnings"]=warnings;
+                }
+                catch(Exception ex){description["ok"]=false;description["error"]=ex.Message;}
+            }
+            description["references"] = references;
+            return description.ToHostJson(Newtonsoft.Json.Formatting.None);
         }
     }
 }

@@ -1,0 +1,15 @@
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\build\Workspace.props" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <AssemblyName>TxTools.CatiaConverter</AssemblyName><PlatformTarget>x64</PlatformTarget>
+    <OutputPath>$(TxToolsBuildRoot)bin\CatiaConverter\$(Configuration)\</OutputPath>
+    <LangVersion>7.3</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System"/><Reference Include="System.Core"/>
+    <Compile Include="Worker.cs"/><Compile Include="Frame12.cs"/>
+    <Compile Include="NativeCadReader.cs"/><Compile Include="MeshScene.cs"/><Compile Include="MeshSimplify.cs"/><Compile Include="Jt8Writer.cs"/>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>
+</Project>

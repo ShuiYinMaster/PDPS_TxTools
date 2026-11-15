@@ -12,6 +12,8 @@ namespace TxTools.Common
     {
         Size DesignButtonSize { get; }
     }
+    /// <summary>A row whose parent owns wrapping and height after measuring its buttons.</summary>
+    public interface IManagedFlowRow { }
     /// <summary>96-DPI design dimensions, scaled once by FormUiKit.</summary>
     public static class PluginUiPolicy
     {
@@ -105,7 +107,7 @@ namespace TxTools.Common
                             (int)Math.Round(ButtonHeight * scale));
                     }
             var flow = root as FlowLayoutPanel;
-            if (flow != null && flow.FlowDirection == FlowDirection.LeftToRight && flow.Parent != null
+            if (flow != null && !(flow is IManagedFlowRow) && flow.FlowDirection == FlowDirection.LeftToRight && flow.Parent != null
                 && !(flow.Parent is FlowLayoutPanel parentFlow && parentFlow.FlowDirection == FlowDirection.LeftToRight))
                 FitFlowRow(flow, flow.Parent);
             foreach (Control child in root.Controls.Cast<Control>().ToArray()) Prepare(child, scale);

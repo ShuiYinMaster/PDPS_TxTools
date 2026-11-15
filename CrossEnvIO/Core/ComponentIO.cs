@@ -1,21 +1,5 @@
 ﻿// ComponentIO.cs  --  C# 8.0
-// 组件/cojt 插入场景 + 复制粘贴补件。
-//
-// 【插入分流 —— 基于 2026-08-18 TxAgent 5 组对照实测（2402/Offline）】
-//   ① 库内(SystemRootDirectory内) + 纯ASCII路径 + 无原型 → 成功（直插，最简单）
-//   ② 库外 + 纯ASCII + 无原型 → TxNotImplementedException
-//   ③ 库内 + 纯ASCII + 有原型 → 成功
-//   ④ 库外 + 纯ASCII + 有原型 → 成功（原型解决"库外"问题）
-//   ⑤ 中文/全角路径 + 有原型 → TxUnknownErrorException（绝对红线，有无原型都失败）
-//
-// 所以 InsertCojt 的策略：
-//   · 库目录全 ASCII → 直接 InsertComponent，无需原型/临时路径
-//   · 库目录含中文/乱码 → 用 junction(mklink /J) 把中文库目录映射成纯 ASCII 链接路径，
-//     在链接路径上直插。cojt 物理留在库内，不复制、不迁回、不产生库外垃圾、无 jt 锁定残留。
-//     （junction 比复制到临时路径干净；库外 + 原型方案既不必要也易残留锁定 jt 文件。）
-//
-// 复制粘贴补件（copy_robot_to_target 同款）:
-//   Edit.Copy → 选中目标 → Edit.Paste（新实例到根级）→ AddObject 挂载 → 删 Manipulator
+// 从最终库位置插入；已验证 AppFunc 版本的中文路径使用调用范围内的兼容处理。
 
 using System;
 using System.Collections.Generic;
@@ -70,17 +54,10 @@ namespace TxTools.CrossEnvIO
         }
 
         // ════════════════════════════════════════════════════════════
-        //  插入 cojt 到场景 + 迁库
+        //  从最终接收库文件夹插入 cojt
         // ════════════════════════════════════════════════════════════
 
-        /// <summary>
-        /// 把磁盘 cojt 插入场景。prototypeFrom 用场景里一个同型号组件名（仅库外直插时可能需要）。
-        ///
-        /// 分流：
-        ///   · cojt 路径全 ASCII → 直插（无原型；库外才需原型）
-        ///   · cojt 路径含中文/乱码 → junction(mklink /J) 建 ASCII 链接路径后直插，
-        ///     cojt 物理留在库内，不复制、不迁回、无垃圾残留。
-        /// </summary>
+        /// <summary>从最终库位置插入模型，保留 SDK 名称；中文路径仅使用已验证的兼容配置。</summary>
         public static bool InsertCojt(string cojtPath, string finalName, string prototypeFrom,
                                       string libraryDir, double x, double y, double z,
                                       Action<string> log, out string resultSummary)
@@ -94,6 +71,15 @@ namespace TxTools.CrossEnvIO
                                       string libraryDir, double x, double y, double z,
                                       Action<string> log, out string resultSummary, out ITxObject insertedObject)
         {
+            return InsertCojt(cojtPath, finalName, prototypeFrom, libraryDir, x, y, z, log, out resultSummary, out insertedObject, false);
+        }
+
+        // allowRoot: 允许 COJT 直接放在库根（配方快速验证用），默认沿用"必须放在库内子文件夹"的规则。
+        public static bool InsertCojt(string cojtPath, string finalName, string prototypeFrom,
+                                      string libraryDir, double x, double y, double z,
+                                      Action<string> log, out string resultSummary, out ITxObject insertedObject,
+                                      bool allowRoot)
+        {
             insertedObject = null;
             using (var undoScope = TxTools.Common.SceneUndoScope.Begin("插入 cojt 组件"))
             {
@@ -105,74 +91,37 @@ namespace TxTools.CrossEnvIO
                 if (doc == null) { sb.AppendLine("Error: 无活动文档"); resultSummary = sb.ToString(); return false; }
                 var root = doc.PhysicalRoot;
                 if (root == null) { sb.AppendLine("Error: 无 PhysicalRoot"); resultSummary = sb.ToString(); return false; }
+                try { cojtPath=NormalizeStoragePath(cojtPath); }
+                catch(Exception ex) { resultSummary="无法解析组件真实路径: "+ex.Message; return false; }
                 if (string.IsNullOrWhiteSpace(cojtPath) || !Directory.Exists(cojtPath))
                 { sb.AppendLine("Error: cojt 目录不存在: " + cojtPath); resultSummary = sb.ToString(); return false; }
 
-                bool pathPureAscii = IsPureAsciiPath(cojtPath);
-                bool insideSystemRoot = IsInsideSystemRoot(cojtPath);
-
+                ITxObject candidate=null;
                 try
                 {
-                    // —— 分支 A：全 ASCII 路径（对话实测 ①③④：直插即可，无需临时路径/迁回）——
-                    if (pathPureAscii)
+                    string libraryRoot=TxApplication.SystemRootDirectory;
+                    bool ok=LibraryInsertion.AtDestination(cojtPath,libraryRoot,
+                        sdkPath=>DirectInsert(root,sdkPath,cojtPath,prototypeFrom,x,y,z,true,sb,out candidate),
+                        message=>sb.AppendLine(message),allowRoot);
+                    insertedObject=candidate;
+                    if(ok)
                     {
-                        sb.AppendLine("路径为纯 ASCII，走【直接插入】路径");
-                        var ok = DirectInsert(root, cojtPath, finalName, prototypeFrom,
-                                              x, y, z, insideSystemRoot, sb, out insertedObject);
-                        if (ok) RecordInsertedPath(cojtPath);
-                        resultSummary = sb.ToString();
-                        return ok;
+                        // The compatibility scope is already closed before final
+                        // reference verification, hierarchy updates or scene refresh.
+                        LibraryPersistence.Ensure(candidate,cojtPath,cojtPath,message=>sb.AppendLine(message));
+                        RecordInsertedPath(cojtPath);
                     }
-
-                    // —— 分支 B：路径含中文/全角/乱码（绝对红线）——
-                    // 用户实测方案：无 prototype 插入要求资源在库范围内，而 SystemRootDirectory 可修改。
-                    // ① 建 ASCII junction 指向含全角的真实路径（逐段映射成纯 ASCII 链接路径）
-                    // ② 临时把 SystemRootDirectory 切到 junction 所在路径 → 资源"在库内"
-                    // ③ 无原型直插 ④ 恢复真实库路径 ⑤ 刷新资源路径
-                    sb.AppendLine("路径含中文/全角/乱码，走【junction + 临时改库路径】绕路");
-                    string asciiPath = EnsureAsciiLink(cojtPath, sb);
-                    if (string.IsNullOrEmpty(asciiPath))
-                    {
-                        sb.AppendLine("Error: 无法建立 ASCII 链接路径，插入中止。");
-                        resultSummary = sb.ToString();
-                        return false;
-                    }
-                    sb.AppendLine("ASCII 链接路径: " + asciiPath);
-
-                    string originalRoot = null;
-                    try { originalRoot = TxApplication.SystemRootDirectory; } catch { }
-                    if (string.IsNullOrEmpty(originalRoot))
-                        throw new InvalidOperationException("原库根为空，无法安全执行临时切换");
-                    // junction 位置 = ascii 路径的父目录，临时设为库路径，让资源"在库内"
-                    string asciiRoot = Path.GetDirectoryName(asciiPath);
-                    bool ok2 = false;
-                    try
-                    {
-                        if (!string.IsNullOrEmpty(asciiRoot))
-                        {
-                            TxApplication.SystemRootDirectory = asciiRoot;
-                            sb.AppendLine("临时库路径: " + asciiRoot + "（原: " + originalRoot + "）");
-                        }
-                        ok2 = DirectInsert(root, asciiPath, finalName, prototypeFrom,
-                                           x, y, z, insideSystemRoot: true, sb, out insertedObject);
-                    }
-                    finally
-                    {
-                        if (!string.IsNullOrEmpty(originalRoot))
-                        {
-                            TxApplication.SystemRootDirectory = originalRoot;
-                            sb.AppendLine("已恢复库路径: " + originalRoot);
-                        }
-                    }
-
-                    // 注意：不在单个插入后保存/改psz/重载（每插一个保存很慢很卡）。
-                    // 由批量入口(CrossEnvRebuildTool)在全部插入完成后统一：保存 → 改 psz → 重载。
-                    if (ok2) RecordInsertedPath(cojtPath);
                     resultSummary = sb.ToString();
-                    return ok2;
+                    return ok;
+                }
+                catch (AppFuncCompatibilityException ex)
+                {
+                    insertedObject=candidate;
+                    throw new NativeLibraryException("中文路径兼容插入未完成："+ex.Message+"\n模型路径："+cojtPath,ex,candidate==null?0:1);
                 }
                 catch (Exception ex)
                 {
+                    insertedObject=candidate;
                     sb.AppendLine("Error: " + ex.GetType().Name + ": " + ex.Message);
                     resultSummary = sb.ToString();
                     return false;
@@ -186,7 +135,7 @@ namespace TxTools.CrossEnvIO
         /// 统一逻辑：先尝试无原型；失败则从 cojt TuneData 的 ExternalID 从库注册表取原型重试。
         /// 资源与零件用同一套插入逻辑。
         /// </summary>
-        private static bool DirectInsert(TxPhysicalRoot root, string cojtPath, string finalName,
+        private static bool DirectInsert(TxPhysicalRoot root, string cojtPath, string documentPath,
                                          string prototypeFrom, double x, double y, double z,
                                          bool insideSystemRoot, StringBuilder sb, out ITxObject insertedObject)
         {
@@ -194,7 +143,9 @@ namespace TxTools.CrossEnvIO
             try
             {
                 // 尝试 1：无原型（库内实测可成功；库外若给了原型来源则带）
-                var data = new TxInsertComponentCreationData(finalName, cojtPath);
+                // An empty SDK name preserves the name embedded in the model document.
+                // Scene display names and cojt filenames are independent identities.
+                var data = new TxInsertComponentCreationData(string.Empty, cojtPath);
                 if (!insideSystemRoot)
                 {
                     var proto = ResolvePrototype(prototypeFrom, sb);
@@ -204,12 +155,15 @@ namespace TxTools.CrossEnvIO
                 loc.Translation = new TxVector(x, y, z);
                 data.AbsoluteLocation = loc;
 
+                var beforeIds=new HashSet<string>(root.GetAllDescendants(new TxTypeFilter(typeof(ITxObject))).Cast<ITxObject>().Select(obj=>obj.Id));
                 ITxComponent comp;
                 try { comp = root.InsertComponent(data); }
                 catch (Exception ex)
                 {
                     // 尝试 2：失败 → 从 cojt TuneData 的 ExternalID 取库注册原型，带原型重试
-                    var proto = ResolvePrototypeFromTuneData(cojtPath, sb);
+                    if(root.GetAllDescendants(new TxTypeFilter(typeof(ITxObject))).Cast<ITxObject>().Any(obj=>!beforeIds.Contains(obj.Id)))
+                    {sb.AppendLine("SDK 插入抛出异常但场景已有新增对象，已停止重试；请核对该实例。原因："+ex.Message);return false;}
+                    var proto = ResolvePrototypeFromTuneData(documentPath, sb);
                     if (proto == null)
                     {
                         sb.AppendLine("直插失败: " + ex.GetType().Name + ": " + ex.Message
@@ -217,7 +171,7 @@ namespace TxTools.CrossEnvIO
                         return false;
                     }
                     sb.AppendLine("直插无原型失败，改用 TuneData 库注册原型重试");
-                    var data2 = new TxInsertComponentCreationData(finalName, cojtPath);
+                    var data2 = new TxInsertComponentCreationData(string.Empty, cojtPath);
                     data2.Prototype = proto;
                     data2.AbsoluteLocation = loc;
                     try { comp = root.InsertComponent(data2); }
@@ -249,15 +203,9 @@ namespace TxTools.CrossEnvIO
         {
             try
             {
-                string tunePath = Path.Combine(cojtPath, "TuneData.xml");
-                if (!File.Exists(tunePath)) return null;
-                string content = File.ReadAllText(tunePath);
-                string open = "<ExternalID>";
-                string close = "</ExternalID>";
-                int i = content.IndexOf(open, StringComparison.Ordinal);
-                int j = content.IndexOf(close, i + open.Length, StringComparison.Ordinal);
-                if (i < 0 || j < 0) return null;
-                string extId = content.Substring(i + open.Length, j - (i + open.Length)).Trim();
+                // A TuneData file can contain several projects. Read only the active project's entry.
+                string extId = new Tecnomatix.Engineering.Utilities.TxTunePmDocumentManager()
+                    .LoadPrototypeDataFromDocument(cojtPath)?.ExternalId;
                 if (string.IsNullOrWhiteSpace(extId)) return null;
 
                 var osp = new TxOfflineGlobalServicesProvider();
@@ -277,95 +225,14 @@ namespace TxTools.CrossEnvIO
             }
         }
 
-        /// <summary>
-        /// 建立 ASCII 链接路径：用【单个 junction】把含全角字符的 cojt 父目录映射成
-        /// ASCII 链接，cojt 目录名(通常 ASCII)直接挂在链接下，得到纯 ASCII 完整路径。
-        ///
-        /// 原理（用户实测）：
-        ///   · 无 prototype 插入要求资源在库范围内(SystemRootDirectory内)，且路径纯 ASCII。
-        ///   · SystemRootDirectory 可修改 → 把库路径临时切成 junction 位置，
-        ///     资源就"在库内"且路径 ASCII，无原型即可直插。
-        ///
-        /// junction 位置按 cojt 目录名唯一化（`<盘>:\CN_ASCII\Link_<名>`），
-        /// 避免批量插入不同 cojt 时复用旧 junction 指向错误目录。
-        /// </summary>
-        private static string EnsureAsciiLink(string cojtPath, StringBuilder log)
-        {
-            try
-            {
-                string full = Path.GetFullPath(cojtPath).TrimEnd('\\', '/');
-                string mirror = TxTools.Agent.Core.TxToolsTemp.DirectoryFor("CrossEnvIO", "Links");
-                // 直接映射整个 cojt，包括中文 cojt 目录名；完整路径散列区分同名版本。
-                string linkName = CojtTransfer.LinkNameForPath(full);
-                string link = Path.Combine(mirror, linkName);
-
-                // 已存在 junction 但指向不同目标 → 删除重建
-                if (Directory.Exists(link) && !JunctionPointsTo(link, full))
-                {
-                    // 不重定向已有链接，旧工程可能仍在使用它。
-                    throw new IOException("链接已存在且目标不一致，已停止插入: " + link);
-                }
-                if (!Directory.Exists(link))
-                {
-                    if (!CreateJunction(link, full))
-                    {
-                        log.AppendLine("建 junction 失败: " + link + " -> " + full);
-                        return null;
-                    }
-                }
-
-                string asciiPath = link;
-                if (!JunctionPointsTo(link, full))
-                {
-                    log.AppendLine("链接真实目标校验失败: " + link);
-                    return null;
-                }
-                log.AppendLine("ASCII 链接就绪: " + asciiPath + "  →  " + full);
-                return asciiPath;
-            }
-            catch (Exception ex)
-            {
-                log.AppendLine("EnsureAsciiLink 异常: " + ex.Message);
-                return null;
-            }
-        }
-
-
-        /// <summary>判断 junction 是否指向指定目标（读 PrintName 目标）。</summary>
-        private static bool JunctionPointsTo(string linkPath, string targetPath)
-            => DirectoryLinks.PointsTo(linkPath, targetPath);
 
         internal static string NormalizeStoragePath(string path)
         {
-            if (string.IsNullOrWhiteSpace(path)) return "";
-            string full = Path.GetFullPath(path);
-            if (Directory.Exists(full))
-            {
-                full = DirectoryLinks.Resolve(full);
-            }
-            return full.TrimEnd('\\', '/');
+            return StoragePaths.Normalize(path,TxApplication.SystemRootDirectory,SnapshotInsertedPaths(),
+                Path.Combine(TxTools.Agent.Core.TxToolsTemp.RootPath,"CrossEnvIO","Links"));
         }
 
 
-        /// <summary>mklink /J 建目录联接（无需管理员）。link 与 target 都必须是目录。</summary>
-        private static bool CreateJunction(string linkPath, string targetPath)
-        {
-            try
-            {
-                if (Directory.Exists(linkPath)) return true;
-                var psi = new System.Diagnostics.ProcessStartInfo();
-                psi.FileName = "cmd.exe";
-                psi.Arguments = "/c mklink /J \"" + linkPath + "\" \"" + targetPath + "\"";
-                psi.UseShellExecute = false;
-                psi.CreateNoWindow = true;
-                psi.RedirectStandardOutput = true;
-                var proc = System.Diagnostics.Process.Start(psi);
-                if (proc == null) return false;
-                proc.WaitForExit(8000);
-                return Directory.Exists(linkPath);
-            }
-            catch { return false; }
-        }
 
         /// <summary>
         /// 全部插入完成后，通过「保存 psz → 修改 psz 里的资源路径 → 重载」统一修正
@@ -379,75 +246,17 @@ namespace TxTools.CrossEnvIO
         /// </summary>
         public static bool FixPszAfterInsert(Action<string> log)
         {
-            if (TxTools.Common.SceneUndoScope.HasActiveTransaction)
+            try { SavePatchReload(SnapshotInsertedPaths(),log); return true; }
+            catch(Exception ex) { (log??Nop)(ex.ToString()); return false; }
+        }
+        internal static PszSaveReloadResult SavePatchReload(IEnumerable<string> paths,Action<string> log,Action<string> beforeReload=null)
+        {
+            if(TxTools.Common.SceneUndoScope.HasActiveTransaction)
                 throw new InvalidOperationException("场景事务尚未结束，不能保存/重载工程。");
-            log = log ?? Nop;
-            try
-            {
-                var doc = TxApplication.ActiveDocument;
-                if (doc == null) return false;
-
-                // ① 当前 psz 路径
-                string pszPath = null;
-                try { pszPath = doc.FinalDestination; } catch { }
-                if (string.IsNullOrWhiteSpace(pszPath) || !File.Exists(pszPath))
-                {
-                    log("[修路径] 无法确定当前 psz 路径(FinalDestination=" + (pszPath ?? "null") + ")，跳过");
-                    return false;
-                }
-                string libRoot = null;
-                try { libRoot = TxApplication.SystemRootDirectory; } catch { }
-
-                // ② 保存
-                try
-                {
-                    var provider = doc.PlatformGlobalServicesProvider;
-                    if (provider == null) { log("[修路径] 无 PlatformGlobalServicesProvider"); return false; }
-                    if (File.Exists(pszPath))
-                        File.Copy(pszPath, pszPath + ".before-rebuild-" + Guid.NewGuid().ToString("N") + ".bak", false);
-                    log("[修路径] 保存/重载会写磁盘并影响撤销历史，原工程已备份（如存在）。");
-                    provider.SaveDataToFile(pszPath);
-                    log("[修路径] ✓ 已保存工程 → " + pszPath);
-                }
-                catch (Exception ex)
-                {
-                    log("[修路径] 保存失败: " + ex.Message);
-                    return false;
-                }
-
-                // ③ 改 psz 路径（修复所有错误路径）
-                int n = 0;
-                try
-                {
-                    n = PszPathFixer.FixPszPaths(pszPath, libRoot, log, SnapshotInsertedPaths());
-                    if (n < 0) { log("[修路径] 修补失败，未重载工程"); return false; }
-                }
-                catch (Exception ex)
-                {
-                    log("[修路径] 改 psz 异常，未重载: " + ex.Message);
-                    return false;
-                }
-
-                // ④ 重载刷新资源树
-                try
-                {
-                    var provider = doc.PlatformGlobalServicesProvider;
-                    if (provider == null) return false;
-                    provider.LoadDataFromFile(pszPath);
-                    log("[修路径] ✓ 已重载刷新资源树（修复 " + n + " 条路径）");
-                    return true;
-                }
-                catch (Exception ex)
-                {
-                    log("[修路径] 重载失败，请检查工程: " + ex.Message);
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                log("[修路径] 异常: " + ex.Message);
-                return false;
-            }
+            var doc=TxApplication.ActiveDocument??throw new InvalidOperationException("没有活动工程");
+            var provider=doc.PlatformGlobalServicesProvider??throw new InvalidOperationException("没有工程保存/重载服务");
+            string file=doc.FinalDestination,root=TxApplication.SystemRootDirectory;
+            return PszSaveReload.Run(file,root,paths,()=>provider.SaveDataToFile(file),()=>provider.LoadDataFromFile(file),log,beforeReload);
         }
 
         private static ITxPlanningObject ResolvePrototype(string sourceName, StringBuilder log)
@@ -503,9 +312,12 @@ namespace TxTools.CrossEnvIO
             var cm = TxApplication.CommandsManager;
             var previousSelection = sel.GetItems();
             var root = TxApplication.ActiveDocument.PhysicalRoot;
-            var beforeIds = new HashSet<string>();
-            foreach (ITxObject obj in root.GetAllDescendants(new TxTypeFilter(typeof(ITxObject))))
-                beforeIds.Add(obj.Id);
+            // Paste can use the selected container or the physical root. Snapshot
+            // these two direct child sets instead of scanning the entire scene per copy.
+            Func<List<ITxObject>> candidatesInPasteScope=()=>SceneAccess.Children(targetContainer)
+                .Concat(targetContainer.Id==root.Id?Enumerable.Empty<ITxObject>():SceneAccess.Children(root))
+                .Where(obj=>obj!=null&&obj.GetType()==srcObj.GetType()).GroupBy(obj=>obj.Id).Select(g=>g.First()).ToList();
+            var beforeIds = new HashSet<string>(candidatesInPasteScope().Select(obj=>obj.Id));
             try
             {
                 var items = new TxObjectList();
@@ -523,29 +335,23 @@ namespace TxTools.CrossEnvIO
 
                 // 找新实例：目标容器直接子里新增的那个
                 ITxObject newObj = null;
-                var candidates = new List<ITxObject>();
-                foreach (ITxObject c in root.GetAllDescendants(new TxTypeFilter(typeof(ITxObject))))
-                {
-                    if (c == null) continue;
-                    try
-                    {
-                        if (!beforeIds.Contains(c.Id) && c.GetType() == srcObj.GetType())
-                            candidates.Add(c);
-                    }
-                    catch { }
-                }
+                var candidates = candidatesInPasteScope().Where(c=>!beforeIds.Contains(c.Id)).ToList();
                 // 只接受一个新增、同类型、与源同名或带 PS 自动后缀的实例。
                 newObj = CopyIdentity.FindNew(srcObj, beforeIds, candidates,
                     obj => obj.Id, obj => obj.Name, obj => obj.GetType());
                 if (newObj == null)
                 {
-                    log("[复制] 无法唯一识别新增实例，已停止，请 Ctrl+Z 撤销本批次");
-                    return null;
+                    throw new NativeLibraryException("复制粘贴后无法唯一识别新增实例，已停止；请核对或撤销本批次。",null,candidates.Count);
                 }
                 if (!DirectChildIds(targetContainer).Contains(newObj.Id))
                 {
-                    try { dynamic container = targetContainer; container.AddObject(newObj); }
-                    catch (Exception ex) { log("[复制] 新实例挂载失败: " + ex.Message); return null; }
+                    try
+                    {
+                        var container=targetContainer as ITxObjectCollection;
+                        if(container==null||!container.CanBeAdded(newObj))throw new InvalidOperationException("目标不支持挂载此组件");
+                        container.AddObject(newObj);
+                    }
+                    catch (Exception ex) { throw new NativeLibraryException("复制已生成实例，但挂载失败："+newObj.Name+" / "+ex.Message,ex,1); }
                 }
 
                 // 重命名
@@ -553,11 +359,17 @@ namespace TxTools.CrossEnvIO
                     && !string.Equals(newObj.Name, finalName, StringComparison.Ordinal))
                 {
                     try { ((ITxObject)newObj).Name = finalName; }
-                    catch (Exception ex) { log("[复制] 重命名失败: " + ex.Message); return null; }
+                    catch (Exception ex) { throw new NativeLibraryException("复制已生成实例，但命名失败："+newObj.Name+" / "+ex.Message,ex,1); }
                 }
 
                 log("[复制] ✓ " + srcObj.Name + " → " + targetContainer.Name + " (新Id=" + newObj.Id + ")");
                 return newObj;
+            }
+            catch(NativeLibraryException){throw;}
+            catch(Exception ex)
+            {
+                int added=candidatesInPasteScope().Count(obj=>!beforeIds.Contains(obj.Id));
+                throw new NativeLibraryException("复制粘贴未完成，已停止后续实例；新增组件 "+added+" 个。原因："+ex.Message,ex,added);
             }
             finally { try { sel.Clear(); sel.SetItems(previousSelection); } catch { } }
         }
@@ -565,7 +377,7 @@ namespace TxTools.CrossEnvIO
         private static HashSet<string> DirectChildIds(ITxObject container)
         {
             var result = new HashSet<string>();
-            foreach (ITxObject obj in (System.Collections.IEnumerable)container)
+            foreach (ITxObject obj in SceneAccess.Children(container))
                 if (obj != null) result.Add(obj.Id);
             return result;
         }
@@ -651,43 +463,13 @@ namespace TxTools.CrossEnvIO
             {
                 var coll = obj as ITxObjectCollection;
                 if (coll == null) return result;
-                foreach (ITxObject c in (System.Collections.IEnumerable)coll)
+                foreach (ITxObject c in SceneAccess.Children(coll))
                     if (c != null) result.Add(c);
             }
             catch { }
             return result;
         }
 
-        private static bool IsAscii(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return true;
-            foreach (var c in s) if (c > 127) return false;
-            return true;
-        }
-
-        /// <summary>路径是否每段都全 ASCII（无中文/全角/乱码）。这是能否直插的关键判据。</summary>
-        private static bool IsPureAsciiPath(string path)
-        {
-            if (string.IsNullOrWhiteSpace(path)) return false;
-            // 逐字符检查整个路径字符串（含分隔符、盘符、扩展名）
-            foreach (var c in path)
-                if (c > 127) return false;
-            return true;
-        }
-
-        /// <summary>cojt 是否位于 SystemRootDirectory（库）范围内。</summary>
-        private static bool IsInsideSystemRoot(string cojtPath)
-        {
-            try
-            {
-                var sysRoot = TxApplication.SystemRootDirectory;
-                if (string.IsNullOrWhiteSpace(sysRoot) || string.IsNullOrWhiteSpace(cojtPath))
-                    return false;
-                return cojtPath.StartsWith(sysRoot.TrimEnd('\\', '/'),
-                    StringComparison.OrdinalIgnoreCase);
-            }
-            catch { return false; }
-        }
 
         private static string SafeName(ITxObject obj)
         {

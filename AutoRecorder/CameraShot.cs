@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Drawing;
@@ -6,7 +6,7 @@ using Tecnomatix.Engineering;
 
 namespace TxTools.AutoRecorder
 {
-    public enum ShotKind { Fixed, Orbit, Dolly, Move }
+    public enum ShotKind { Fixed, Orbit, Dolly, Move, Follow }
     public enum ShotTrigger { Time, Location, Previous }
 
     public sealed class CameraShot
@@ -21,6 +21,8 @@ namespace TxTools.AutoRecorder
         public int LocationIndex = 1;
         public double Duration = 3;
         public bool Smooth = true;
+        public bool InheritStart,GeometryCenter;
+        public TxVector FocusLocal;
         public TxCamera From, To;
         public Image FromThumbnail, ToThumbnail;
         public string FocusLabel;
@@ -37,12 +39,13 @@ namespace TxTools.AutoRecorder
         {
             var copy=(CameraShot)MemberwiseClone();
             copy.Id=Guid.NewGuid();copy.From=Snapshot(From);copy.To=Snapshot(To);
-            copy.Focus=Focus==null?null:Copy(Focus);
+            copy.Focus=Focus==null?null:Copy(Focus);copy.FocusLocal=FocusLocal==null?null:Copy(FocusLocal);
             copy.FromThumbnail=FromThumbnail==null?null:(Image)FromThumbnail.Clone();
             copy.ToThumbnail=ToThumbnail==null?null:(Image)ToThumbnail.Clone();
-            if(clearObjectBinding&&FocusSource>0){copy.FocusObject=null;copy.Focus=null;}
+            if(clearObjectBinding&&(FocusSource>0||Kind==ShotKind.Follow)){copy.FocusObject=null;copy.Focus=null;copy.FocusLocal=null;}
             return copy;
         }
+        internal CameraShot RuntimeCopy(){var copy=(CameraShot)MemberwiseClone();copy.FromThumbnail=copy.ToThumbnail=null;return copy;}
         public void DisposeThumbnails()
         {FromThumbnail?.Dispose();ToThumbnail?.Dispose();FromThumbnail=ToThumbnail=null;}
         public void InitializeOrbit()
@@ -54,6 +57,23 @@ namespace TxTools.AutoRecorder
             Height=Axis==0?v.X:Axis==1?v.Y:v.Z;
             StartAngle=Math.Atan2(y,x)*180/Math.PI;
             OrbitInitialized=true;
+        }
+        public void CaptureFocus()
+        {
+            Focus=null;FocusLocal=null;
+            if(FocusObject==null||!FocusObject.IsValid())throw new InvalidOperationException("请先选取焦点对象");
+            Focus=PsReader.GetFocusPoint(FocusObject,GeometryCenter);
+            FocusLocal=GeometryCenter?PsReader.ToLocalPoint(FocusObject,Focus):null;
+        }
+        private TxVector CurrentFocus()
+        {return (Follow||Kind==ShotKind.Follow)&&FocusObject!=null?(GeometryCenter&&FocusLocal!=null?PsReader.ToWorldPoint(FocusObject,FocusLocal):FocusObject.AbsoluteLocation.Translation):Focus;}
+        internal TxCamera Overlay(TxCamera camera,double progress)
+        {
+            double t=Math.Max(0,Math.Min(1,progress));if(Smooth)t=t*t*(3-2*t);
+            var focus=CurrentFocus();var offset=Sub(camera.Position,focus);var up=Copy(camera.UpVector);
+            if(Kind==ShotKind.Orbit){offset=Rotate(offset,Axis,Angle*Math.PI/180*t);up=Rotate(up,Axis,Angle*Math.PI/180*t);}
+            else {double start=Length(Sub(From.Position,Focus??focus));if(start<1e-8)throw new InvalidOperationException("相机不能与焦点重合");double ratio=1+(EndDistance/start-1)*t;offset=new TxVector(offset.X*ratio,offset.Y*ratio,offset.Z*ratio);}
+            var result=new TxCamera(Copy(focus),new TxVector(focus.X+offset.X,focus.Y+offset.Y,focus.Z+offset.Z),up);ValidateCamera(result);return result;
         }
         public override string ToString()
         {
@@ -88,6 +108,15 @@ namespace TxTools.AutoRecorder
             ValidateCamera(From);if(To!=null)ValidateCamera(To);
             double t=Math.Max(0,Math.Min(1,progress)); if(Smooth) t=t*t*(3-2*t);
             if(Kind==ShotKind.Fixed) return Snapshot(From);
+            if(Kind==ShotKind.Follow)
+            {
+                if(FocusObject==null||!FocusObject.IsValid()||Focus==null)
+                    throw new InvalidOperationException(Name+"：请重新选择跟随资源并记录起点");
+                var delta=Sub(CurrentFocus(),Focus);
+                var position=new TxVector(From.Position.X+delta.X,From.Position.Y+delta.Y,From.Position.Z+delta.Z);
+                var target=new TxVector(From.ReferencePoint.X+delta.X,From.ReferencePoint.Y+delta.Y,From.ReferencePoint.Z+delta.Z);
+                var camera=new TxCamera(target,position,Copy(From.UpVector));ValidateCamera(camera);return camera;
+            }
             if(Kind==ShotKind.Move)
             {
                 if(To==null) throw new InvalidOperationException(Name+"：请记录结束视角");
@@ -99,7 +128,7 @@ namespace TxTools.AutoRecorder
                 return new TxCamera(target,p,Unit(Cross(Unit(right),forward)));
             }
             if(FocusSource>0 && (FocusObject==null || !FocusObject.IsValid())) throw new InvalidOperationException(Name+"：焦点对象已失效");
-            var focus=Follow && FocusObject!=null ? FocusObject.AbsoluteLocation.Translation : Focus;
+            var focus=CurrentFocus();
             if(focus==null) throw new InvalidOperationException(Name+"：请选择焦点");
             var offset=Sub(From.Position,Focus ?? focus);
             if(Length(offset)<1e-6) throw new InvalidOperationException("相机不能与焦点重合");
@@ -135,52 +164,76 @@ namespace TxTools.AutoRecorder
         }
     }
 
-    /// <summary>每次播放创建独立调度器；列表顺序定义事件同刻触发的优先级。</summary>
+    /// <summary>按运动通道合成相机；继承起点在实际触发时求值。</summary>
     internal sealed class CameraShotScheduler
     {
+        private sealed class Layer {public CameraShot Shot;public double Start;public bool Overlay;public TxCamera Held;}
         private readonly IList<CameraShot> _shots;
-        private readonly HashSet<Guid> _fired = new HashSet<Guid>();
-        private readonly Dictionary<Guid,double> _ends = new Dictionary<Guid,double>();
-        private CameraShot _active;
-        private double _start, _last = -1;
-        public CameraShotScheduler(IList<CameraShot> shots) { _shots=shots.Where(s=>s.Enabled).ToList(); }
+        private readonly List<Layer> _layers=new List<Layer>();
+        private readonly HashSet<Guid> _fired=new HashSet<Guid>();
+        private readonly Dictionary<Guid,double> _ends=new Dictionary<Guid,double>();
+        private double _last=-1;
+        internal CameraShot LastShot {get{return _layers.Count==0?null:_layers[_layers.Count-1].Shot;}}
+        public CameraShotScheduler(IList<CameraShot> shots){_shots=shots.Where(s=>s.Enabled).ToList();}
         public static void Validate(IList<CameraShot> shots)
         {
-            shots=shots.Where(s=>s.Enabled).ToList();
-            foreach(var s in shots)
+            foreach(var source in shots.Where(s=>s.Enabled))
             {
-                if(s.Duration<=0 || s.Start<0 || s.LocationIndex<1) throw new InvalidOperationException(s.Name+"：时间或 Location 序号无效");
-                s.Evaluate(0); s.Evaluate(0.5); s.Evaluate(1);
+                if(source.Duration<=0||source.Start<0||source.LocationIndex<1)throw new InvalidOperationException(source.Name+"：时间或 Location 序号无效");
+                var shot=ShotPlan.Prepare(source,shots);shot.Evaluate(0);shot.Evaluate(.5);shot.Evaluate(1);
             }
-            var timed=ShotPlan.Ranges(shots).Where(r=>r.Start.HasValue).OrderBy(r=>r.Start.Value).ToList();
-            for(int i=1;i<timed.Count;i++) if(timed[i].Start.Value<timed[i-1].Start.Value+timed[i-1].Shot.Duration-1e-8)
-                throw new InvalidOperationException("时间镜头重叠："+timed[i-1].Shot.Name+" / "+timed[i].Shot.Name);
+            var conflicts=ShotPlan.Conflicts(shots);if(conflicts.Count>0)throw new InvalidOperationException(conflicts[0]);
         }
-        public TxCamera Tick(double time, int location=0)
+        public TxCamera Tick(double time,int location=0)
         {
-            if(time<_last) { _fired.Clear(); _ends.Clear(); _active=null; }
-            _last=time;
-            TxCamera result=null;
-            if(_active!=null) result=_active.Evaluate((time-_start)/_active.Duration);
+            if(time<_last){_layers.Clear();_fired.Clear();_ends.Clear();}_last=time;
             for(int pass=0;pass<_shots.Count;pass++)
             {
-                CameraShot s=null; double begin=double.MaxValue;
+                CameraShot source=null;double begin=double.MaxValue;
                 for(int i=0;i<_shots.Count;i++)
                 {
-                    var candidate=_shots[i]; if(_fired.Contains(candidate.Id))continue;
-                    double at=candidate.Start;
-                    bool due=candidate.Trigger==ShotTrigger.Time && time>=at;
-                    if(candidate.Trigger==ShotTrigger.Location) {at=time;due=location>0&&location==candidate.LocationIndex;}
-                    if(candidate.Trigger==ShotTrigger.Previous&&i>0)due=_ends.TryGetValue(_shots[i-1].Id,out at)&&time>=at;
-                    if(candidate.Trigger==ShotTrigger.Previous&&i==0){at=0;due=time>=0;}
-                    if(due && (at<begin||(at==begin&&candidate.IsLegacy&&s!=null&&!s.IsLegacy))){s=candidate;begin=at;}
+                    var s=_shots[i];if(_fired.Contains(s.Id))continue;double at=s.Start;
+                    bool due=s.Trigger==ShotTrigger.Time&&time>=at;
+                    if(s.Trigger==ShotTrigger.Location){at=time;due=location>0&&location==s.LocationIndex;}
+                    if(s.Trigger==ShotTrigger.Previous)due=i==0?(at=0)<=time:_ends.TryGetValue(_shots[i-1].Id,out at)&&time>=at;
+                    if(due&&(at<begin||(at==begin&&s.IsLegacy&&source!=null&&!source.IsLegacy))){source=s;begin=at;}
                 }
-                if(s==null)break;
-                if(_active!=null && _ends[_active.Id]>begin) _ends[_active.Id]=begin;
-                _fired.Add(s.Id); _ends[s.Id]=begin+s.Duration; _active=s; _start=begin;
-                result=s.Evaluate((time-begin)/s.Duration);
+                if(source==null)break;
+                var active=_layers.Where(l=>l.Start+l.Shot.Duration>begin+1e-8).ToList();
+                var baseline=EvaluateLayers(begin);
+                var shot=source.RuntimeCopy();
+                bool overlay=active.Count>0&&!source.IsLegacy&&!active.All(l=>l.Shot.IsLegacy);
+                if(source.IsLegacy||active.Any(l=>l.Shot.IsLegacy))
+                {foreach(var l in active){l.Shot.Duration=Math.Max(.000001,begin-l.Start);_ends[l.Shot.Id]=begin;}overlay=false;}
+                if(source.InheritStart||overlay)
+                {
+                    if(baseline==null)throw new InvalidOperationException(source.Name+"：没有可继承的前段视角");
+                    shot.From=CameraShot.Snapshot(baseline);shot.OrbitInitialized=false;
+                    ShotPlan.InheritFocus(shot,LastShot,baseline);
+                    if(shot.Kind==ShotKind.Follow||(shot.Follow&&shot.FocusObject!=null))shot.CaptureFocus();
+                }
+                if(overlay)
+                    foreach(var layer in active)
+                        if(!ShotPlan.CanCompose(layer.Shot,shot))throw new InvalidOperationException(layer.Shot.Name+" / "+shot.Name+"：运动通道冲突，不能同时控制相机");
+                shot.Evaluate(0);
+                _layers.Add(new Layer{Shot=shot,Start=begin,Overlay=overlay});_fired.Add(source.Id);_ends[source.Id]=begin+source.Duration;
             }
-            return result;
+            return EvaluateLayers(time);
+        }
+        private TxCamera EvaluateLayers(double time)
+        {
+            TxCamera camera=null;
+            foreach(var layer in _layers)
+            {
+                if(time<layer.Start)continue;double progress=(time-layer.Start)/layer.Shot.Duration;
+                if(layer.Overlay)camera=layer.Shot.Overlay(camera,progress);
+                else
+                {
+                    camera=layer.Held==null?layer.Shot.Evaluate(progress):CameraShot.Snapshot(layer.Held);
+                    if(progress>=1&&layer.Held==null)layer.Held=CameraShot.Snapshot(camera);
+                }
+            }
+            return camera;
         }
     }
 }

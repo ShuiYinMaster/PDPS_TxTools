@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
@@ -315,6 +315,7 @@
     <Compile Include="Agent\Core\KeyStore.cs" />
     <Compile Include="Agent\Core\LlmModels.cs" />
     <Compile Include="Agent\Core\PsContext.cs" />
+    <Compile Include="Agent\Core\RecipeCatiaBridge.cs" />
     <Compile Include="Agent\Core\RecipeRunner.cs" />
     <Compile Include="Agent\Core\RecipeStore.cs" />
     <Compile Include="Agent\Core\RecipeTool.cs" />
@@ -612,6 +613,27 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="CrossEnvIO\Core\CojtTransfer.cs" />
+    <Compile Include="CrossEnvIO\Core\TransferPlan.cs" />
+    <Compile Include="CrossEnvIO\Core\SceneAccess.cs" />
+    <Compile Include="CrossEnvIO\Core\StoragePaths.cs" />
+    <Compile Include="CrossEnvIO\Core\LibraryPersistence.cs" />
+    <Compile Include="CrossEnvIO\Core\LibraryInsertion.cs" />
+    <Compile Include="CrossEnvIO\Core\AppFuncCompatibility.cs" />
+    <Compile Include="CrossEnvIO\Core\AppFuncProcessImage.cs" />
+    <Compile Include="CrossEnvIO\Core\PszSaveReload.cs" />
+    <Compile Include="CrossEnvIO\Core\CrossEnvJson.cs" />
+    <Compile Include="CrossEnvIO\Core\TransferResponses.cs" />
+    <Compile Include="CrossEnvIO\CrossEnvIOWorkflow.cs" />
+    <Compile Include="CrossEnvIO\CrossEnvGuidedUi.cs" />
+    <Compile Include="CrossEnvIO\CrossEnvStorageUi.cs" />
+    <Compile Include="CrossEnvIO\CrossEnvNativeFrame.cs" />
+    <Compile Include="CrossEnvIO\Core\TransferJobs.cs" />
+    <Compile Include="CrossEnvIO\Core\TransferRuntime.cs" />
+    <Compile Include="CrossEnvIO\Core\TransferBundle.cs" />
+    <Compile Include="CrossEnvIO\CrossEnvPickForm.cs" />
+    <Compile Include="CrossEnvIO\Core\TransferCapture.cs" />
+    <Compile Include="CrossEnvIO\Core\PackageFiles.cs" />
+    <Compile Include="SRC\SceneObjectTypes.cs" />
     <Compile Include="CrossEnvIO\Core\CopyIdentity.cs" />
     <Compile Include="CrossEnvIO\Core\DirectoryLinks.cs" />
     <Compile Include="CrossEnvIO\Core\TransferFile.cs" />
@@ -621,6 +643,8 @@
     <Compile Include="CrossEnvIO\Core\StructureIO.cs" />
     <Compile Include="CrossEnvIO\Core\WeldPointIO.cs" />
     <Compile Include="CrossEnvIO\Core\ComponentIO.cs" />
+    <Compile Include="CrossEnvIO\Core\DevicePrototypeData.cs" />
+    <Compile Include="CrossEnvIO\Core\DevicePrototypes.cs" />
     <Compile Include="CrossEnvIO\Core\TxMath.cs" />
     <Compile Include="CrossEnvIO\CrossEnvIOForm.cs">
       <SubType>Form</SubType>
@@ -1524,6 +1548,7 @@
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="image\Small\*.bmp" />
+    <EmbeddedResource Include="image\FootingPlanExport.png" />
     <EmbeddedResource Include="image\AutoPath.png" />
     <EmbeddedResource Include="image\CrossEnvIO.png" />
     <EmbeddedResource Include="image\ExportByColor.png" />
@@ -1580,4 +1605,15 @@
       <LogicalName>TxTools.ExportByColor.Vendor.EarCut.LICENSE</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="FootingPlanExport\FootingPlanExportCommand.cs" />
+    <Compile Include="FootingPlanExport\FootingPlanExportForm.cs" />
+    <Compile Include="FootingPlanExport\PsSectionService.cs" />
+    <Compile Include="FootingPlanExport\SaveComponentDialog.cs" />
+    <Compile Include="FootingPlanExport\CacheSession.cs" />
+    <Compile Include="FootingPlanExport\ConverterRunner.cs" />
+  </ItemGroup>
+  <Import Project="FootingPlanExport\FootingPlanExport.Build.targets" />
+  <Import Project="CatiaPartTree\CatiaPartTree.Build.targets" />
 </Project>

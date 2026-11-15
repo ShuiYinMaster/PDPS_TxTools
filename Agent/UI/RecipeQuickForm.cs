@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
@@ -152,6 +152,8 @@ namespace TxTools.Agent.UI
                 if (IsDisposed) return;
                 await _web.EnsureCoreWebView2Async(env);
                 if (IsDisposed) return;
+                try { _web.AllowExternalDrop = true; }
+                catch (InvalidOperationException) { }
                 _web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 _web.CoreWebView2.NewWindowRequested += (s, e) => e.Handled = true;
                 _web.CoreWebView2.WebMessageReceived += (s, e) =>
@@ -159,7 +161,17 @@ namespace TxTools.Agent.UI
                     JObject msg;
                     try { msg = JObject.Parse(e.WebMessageAsJson); }
                     catch { return; }
-                    HandleMessage(msg);
+                    string[] dropped = null;
+                    try
+                    {
+                        if (e.AdditionalObjects != null && e.AdditionalObjects.Count > 0)
+                        {
+                            var paths = e.AdditionalObjects.OfType<CoreWebView2File>().Select(f => f.Path).Where(x => !string.IsNullOrEmpty(x)).ToArray();
+                            if (paths.Length > 0) dropped = paths;
+                        }
+                    }
+                    catch (InvalidOperationException) { }
+                    HandleMessage(msg, dropped);
                 };
                 _web.CoreWebView2.NavigationStarting += (s, e) =>
                 {
@@ -182,7 +194,7 @@ namespace TxTools.Agent.UI
             catch (Exception ex) { _loading.Text = "快捷配方界面加载失败：\n" + ex.Message; }
         }
 
-        private void HandleMessage(JObject msg)
+        private void HandleMessage(JObject msg, string[] dropped = null)
         {
             int seq = (int?)msg["seq"] ?? 0;
             try
@@ -210,6 +222,18 @@ namespace TxTools.Agent.UI
                         SendList(seq);
                         break;
                     case "recipe.list": SendList(seq); break;
+                    case "recipe.drop":
+                        // The page cannot read local paths; the host supplies them from the
+                        // dropped CoreWebView2File objects.
+                        Send(seq, new JObject
+                        {
+                            ["type"] = "recipe.dropped",
+                            ["ok"] = dropped != null && dropped.Length > 0,
+                            ["path"] = dropped != null && dropped.Length > 0 ? dropped[0] : null,
+                            ["recipeId"] = (string)msg["recipeId"],
+                            ["param"] = (string)msg["param"]
+                        });
+                        break;
                     case "recipe.objectTypes": Send(seq, Visible ? RecipeUiActions.ObjectTypes(msg) : RecipeUiActions.Error("recipe.objectTypes.result", "请先打开快捷配方。")); break;
                     case "recipe.pickSelection": Send(seq, RecipeUiActions.PickSelection(msg)); break;
                     case "recipe.favorite":

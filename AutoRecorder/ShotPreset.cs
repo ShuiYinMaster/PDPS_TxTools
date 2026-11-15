@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -29,19 +29,19 @@ namespace TxTools.AutoRecorder
         public string Name,FocusLabel,FromImage,ToImage;
         public ShotKind Kind;
         public ShotTrigger Trigger;
-        public bool Enabled,Smooth,Follow,OrbitInitialized;
+        public bool Enabled,Smooth,Follow,OrbitInitialized,InheritStart,GeometryCenter;
         public double Start,Duration,Angle,Radius,Height,StartAngle,EndDistance;
         public int LocationIndex,FocusSource,Axis;
-        public VectorData Focus;
+        public VectorData Focus,FocusLocal;
         public CameraData From,To;
         public static ShotData FromShot(CameraShot s)
-        {return new ShotData {Name=s.Name,Kind=s.Kind,Trigger=s.Trigger,Enabled=s.Enabled,Smooth=s.Smooth,Follow=s.Follow,OrbitInitialized=s.OrbitInitialized,Start=s.Start,Duration=s.Duration,Angle=s.Angle,Radius=s.Radius,Height=s.Height,StartAngle=s.StartAngle,EndDistance=s.EndDistance,LocationIndex=s.LocationIndex,FocusSource=s.FocusSource,Axis=s.Axis,FocusLabel=s.FocusLabel,Focus=VectorData.From(s.Focus),From=CameraData.From(s.From),To=CameraData.From(s.To),FromImage=Encode(s.FromThumbnail),ToImage=Encode(s.ToThumbnail)};}
+        {return new ShotData {Name=s.Name,InheritStart=s.InheritStart,GeometryCenter=s.GeometryCenter,FocusLocal=VectorData.From(s.FocusLocal),Kind=s.Kind,Trigger=s.Trigger,Enabled=s.Enabled,Smooth=s.Smooth,Follow=s.Follow,OrbitInitialized=s.OrbitInitialized,Start=s.Start,Duration=s.Duration,Angle=s.Angle,Radius=s.Radius,Height=s.Height,StartAngle=s.StartAngle,EndDistance=s.EndDistance,LocationIndex=s.LocationIndex,FocusSource=s.FocusSource,Axis=s.Axis,FocusLabel=s.FocusLabel,Focus=VectorData.From(s.Focus),From=CameraData.From(s.From),To=CameraData.From(s.To),FromImage=Encode(s.FromThumbnail),ToImage=Encode(s.ToThumbnail)};}
         public CameraShot ToShot()
         {
-            if(Axis<0||Axis>2||FocusSource<0||FocusSource>2||Duration<=0||Duration>100000||Start<0||Start>100000||LocationIndex<1||LocationIndex>100000||Math.Abs(Angle)>36000||Radius<0||Radius>10000000||Math.Abs(Height)>10000000||Math.Abs(StartAngle)>36000||EndDistance<=0||EndDistance>10000000)
+            if(!Enum.IsDefined(typeof(ShotKind),Kind)||!Enum.IsDefined(typeof(ShotTrigger),Trigger)||Axis<0||Axis>2||FocusSource<0||FocusSource>2||Duration<=0||Duration>100000||Start<0||Start>100000||LocationIndex<1||LocationIndex>100000||Math.Abs(Angle)>36000||Radius<0||Radius>10000000||Math.Abs(Height)>10000000||Math.Abs(StartAngle)>36000||EndDistance<=0||EndDistance>10000000)
                 throw new InvalidDataException("镜头参数超出允许范围");
             foreach(double v in new[]{Start,Duration,Angle,Radius,Height,StartAngle,EndDistance})if(double.IsNaN(v)||double.IsInfinity(v))throw new InvalidDataException("镜头包含无效数值");
-            return new CameraShot {Name=Name??"镜头",Kind=Kind,Trigger=Trigger,Enabled=Enabled,Smooth=Smooth,Follow=Follow,OrbitInitialized=OrbitInitialized,Start=Start,Duration=Duration,Angle=Angle,Radius=Radius,Height=Height,StartAngle=StartAngle,EndDistance=EndDistance,LocationIndex=LocationIndex,FocusSource=FocusSource,Axis=Axis,FocusLabel=FocusLabel,Focus=Focus?.ToVector(),From=From?.ToCamera(),To=To?.ToCamera(),FromThumbnail=Decode(FromImage),ToThumbnail=Decode(ToImage)};
+            return new CameraShot {Name=Name??"镜头",InheritStart=InheritStart,GeometryCenter=GeometryCenter,FocusLocal=FocusLocal?.ToVector(),Kind=Kind,Trigger=Trigger,Enabled=Enabled,Smooth=Smooth,Follow=Follow,OrbitInitialized=OrbitInitialized,Start=Start,Duration=Duration,Angle=Angle,Radius=Radius,Height=Height,StartAngle=StartAngle,EndDistance=EndDistance,LocationIndex=LocationIndex,FocusSource=FocusSource,Axis=Axis,FocusLabel=FocusLabel,Focus=Focus?.ToVector(),From=From?.ToCamera(),To=To?.ToCamera(),FromThumbnail=Decode(FromImage),ToThumbnail=Decode(ToImage)};
         }
         private static string Encode(Image image)
         {if(image==null)return null;using(var stream=new MemoryStream()){image.Save(stream,ImageFormat.Png);return Convert.ToBase64String(stream.ToArray());}}

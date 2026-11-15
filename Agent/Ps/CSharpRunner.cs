@@ -22,6 +22,39 @@ namespace TxTools.Agent.Ps
 {
     public static class CSharpRunner
     {
+        // 动态编译的程序集从内存加载，依赖按 AppBase 探测；插件目录不在其中，
+        // 因此 TxTools / Newtonsoft 这类"已经加载过"的依赖要在这里补回绑定。
+        static CSharpRunner()
+        {
+            AppDomain.CurrentDomain.AssemblyResolve += ResolveLoaded;
+        }
+
+        private static Assembly ResolveLoaded(object sender, ResolveEventArgs args)
+        {
+            try
+            {
+                var requested = new AssemblyName(args.Name).Name;
+                foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    if (assembly == null || assembly.IsDynamic) continue;
+                    string name;
+                    try { name = assembly.GetName().Name; } catch { continue; }
+                    if (string.Equals(name, requested, StringComparison.OrdinalIgnoreCase)) return assembly;
+                }
+                // 兜底：插件目录里的依赖尚未加载时，从插件目录直接取。
+                string folder;
+                try { folder = System.IO.Path.GetDirectoryName(typeof(CSharpRunner).Assembly.Location); }
+                catch { folder = null; }
+                if (!string.IsNullOrEmpty(folder))
+                {
+                    string candidate = System.IO.Path.Combine(folder, requested + ".dll");
+                    if (System.IO.File.Exists(candidate)) return Assembly.LoadFrom(candidate);
+                }
+            }
+            catch { }
+            return null;
+        }
+
         /// <summary>编译用户代码(纯 CPU，不碰 PS，可在后台线程跑)。成功返回程序集，失败返回 null 并给出 error。</summary>
         public static Assembly Compile(string userCode, out string error)
         {
@@ -144,6 +177,7 @@ namespace TxTools.Agent.Ps
             add(typeof(Uri).Assembly);                 // System
             add(typeof(Enumerable).Assembly);          // System.Core
             add(typeof(TxApplication).Assembly);       // Tecnomatix.Engineering
+            add(typeof(CSharpRunner).Assembly);        // TxTools：配方可用公开桥接（如 RecipeCatiaBridge）
 
             // 所有已加载的 Tecnomatix.* 与 Newtonsoft.Json
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())

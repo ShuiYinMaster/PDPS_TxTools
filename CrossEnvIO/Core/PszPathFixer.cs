@@ -16,6 +16,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
@@ -42,7 +43,7 @@ namespace TxTools.CrossEnvIO
         /// 重载后链接到错误的资源（目录树名对、3D 显示成别的资源）。
         /// </summary>
         public static int FixPszPaths(string pszPath, string libRoot, Action<string> log,
-                                      IEnumerable<string> knownRealPaths = null)
+                                      IEnumerable<string> knownRealPaths = null, string originalFormatFile = null, bool exactOnly = false)
         {
             log = log ?? (s => { });
             if (string.IsNullOrWhiteSpace(pszPath) || !File.Exists(pszPath))
@@ -82,6 +83,20 @@ namespace TxTools.CrossEnvIO
                 return -1;
             }
             if (string.IsNullOrEmpty(content)) { log("[Psz] 内容为空"); return -1; }
+            bool formatChanged=false;
+            string originalContent=null;
+            if(originalFormatFile!=null)
+            {
+                try
+                {
+                    var original=ReadState(originalFormatFile);
+                    originalContent=original.Content;
+                    formatChanged=stateEncoding.CodePage!=original.Encoding.CodePage||!statePreamble.SequenceEqual(original.Preamble);
+                    stateEncoding=original.Encoding; statePreamble=original.Preamble;
+                }
+                catch(Exception ex){log("[Psz] 无法读取保存前的编码: "+ex.Message);return -1;}
+            }
+            var known=knownRealPaths?.Select(Path.GetFullPath).ToArray();
 
             // 扫描所有 fileName，构建 组件cojt名 → 真实相对路径 映射
             var nameToRealPath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -108,8 +123,18 @@ namespace TxTools.CrossEnvIO
                 if (string.IsNullOrWhiteSpace(cojtName)
                     || !cojtName.EndsWith(".cojt", StringComparison.OrdinalIgnoreCase)) continue;
 
-                string realRel = FindKnownRealRel(libRoot, cojtName, knownRealPaths);
-                if (string.IsNullOrEmpty(realRel))
+                string realRel = null;
+                try
+                {
+                    string actual=StoragePaths.Normalize(path,libRoot,known,
+                        Path.Combine(TxTools.Agent.Core.TxToolsTemp.RootPath,"CrossEnvIO","Links"));
+                    if(exactOnly&&Directory.Exists(actual)&&!(known?.Any(p=>TransferPaths.Same(p,actual))??false))continue;
+                    if(Directory.Exists(actual)&&(!exactOnly||known!=null&&known.Any(p=>TransferPaths.Same(p,actual))))realRel=CojtTransfer.RelativeToRoot(actual,libRoot);
+                }
+                catch(Exception ex) { log("[Psz] 真实路径解析失败: "+path+" / "+ex.Message); }
+                if(string.IsNullOrEmpty(realRel))realRel = FindKnownRealRel(libRoot, cojtName, known);
+                if(exactOnly&&string.IsNullOrEmpty(realRel))continue;
+                if (string.IsNullOrEmpty(realRel)&&!exactOnly)
                     realRel = FindRealRelPath(libRoot, cojtName, log);
                 if (string.IsNullOrEmpty(realRel)) continue;
 
@@ -131,8 +156,16 @@ namespace TxTools.CrossEnvIO
             // 根因（2026-08-18 实测）：Sensor&Light 中的 & 在 XML 里是非法 token，
             // PS 用严格解析器，一个良构错误就导致整包无法打开。
             newContent = EscapeXmlInFileNameElements(newContent, log);
+            if(originalContent!=null)
+            {
+                var originalDeclaration=Regex.Match(originalContent,@"<\?xml\b[^?]*\?>",RegexOptions.IgnoreCase);
+                var originalName=Regex.Match(originalDeclaration.Value,"encoding\\s*=\\s*['\"](?<name>[^'\"]+)['\"]",RegexOptions.IgnoreCase);
+                string name=originalName.Success?originalName.Groups["name"].Value:stateEncoding.WebName;
+                newContent=Regex.Replace(newContent,@"<\?xml\b[^?]*\?>",m=>Regex.Replace(m.Value,
+                    "(?<prefix>encoding\\s*=\\s*['\"])[^'\"]+(?<quote>['\"])",v=>v.Groups["prefix"].Value+name+v.Groups["quote"].Value,RegexOptions.IgnoreCase),RegexOptions.IgnoreCase);
+            }
 
-            if (string.Equals(newContent, content, StringComparison.Ordinal))
+            if (string.Equals(newContent, content, StringComparison.Ordinal)&&!formatChanged)
             { log("[Psz] 替换后无变化"); return 0; }
 
             // 必须在删除 ZIP 条目前先完成编码。若新路径含有当前编码不能表示的字符，
@@ -182,6 +215,40 @@ namespace TxTools.CrossEnvIO
                 return -1;
             }
             finally { try { if (File.Exists(staging)) File.Delete(staging); } catch { } }
+        }
+
+        internal sealed class StateXml
+        {
+            internal string Content;
+            internal Encoding Encoding;
+            internal byte[] Preamble;
+        }
+        internal static StateXml ReadState(string file)
+        {
+            using(var zip=ZipFile.OpenRead(file))
+            {
+                var entry=zip.GetEntry(StateFile)??throw new InvalidDataException("PSZ 缺少 "+StateFile);
+                var result=new StateXml();
+                if(!TryDecodeStateXml(ReadEntryBytes(entry),out result.Content,out result.Encoding,out result.Preamble))
+                    throw new InvalidDataException("无法识别 PSZ 状态 XML 的原编码");
+                return result;
+            }
+        }
+        internal static void VerifyReferences(string file,string root,IEnumerable<string> expected)
+        {
+            var remaining=new HashSet<string>(expected.Select(Path.GetFullPath),StringComparer.OrdinalIgnoreCase);
+            var state=ReadState(file);
+            using(var reader=XmlReader.Create(new StringReader(state.Content),new XmlReaderSettings{DtdProcessing=DtdProcessing.Prohibit,XmlResolver=null}))
+                while(reader.Read())
+                {
+                    if(reader.NodeType!=XmlNodeType.Element||reader.LocalName!="fileName")continue;
+                    string path=reader.ReadString().Replace('/','\\');
+                    if(!path.EndsWith(".cojt",StringComparison.OrdinalIgnoreCase))continue;
+                    string actual=path.StartsWith("#\\",StringComparison.Ordinal)?Path.Combine(root,path.Substring(2))
+                        :Path.IsPathRooted(path)?path:Path.Combine(root,path);
+                    if(CojtTransfer.RelativeToRoot(actual,root)!=null&&Directory.Exists(actual))remaining.Remove(Path.GetFullPath(actual));
+                }
+            if(remaining.Count>0)throw new InvalidDataException("保存的 PSZ 尚未包含正确模型引用: "+string.Join("; ",remaining));
         }
 
         /// <summary>
@@ -378,7 +445,7 @@ namespace TxTools.CrossEnvIO
                 string rel = path.TrimStart('#').TrimStart('\\', '/').Replace('/', '\\');
                 if (string.IsNullOrEmpty(rel)) return false;
                 string full = Path.Combine(libRoot.TrimEnd('\\', '/'), rel);
-                return Directory.Exists(full);
+                return CojtTransfer.RelativeToRoot(full,libRoot)!=null&&Directory.Exists(full);
             }
             catch { return false; }
         }
@@ -449,11 +516,12 @@ namespace TxTools.CrossEnvIO
             try
             {
                 if (string.IsNullOrEmpty(libRoot) || knownRealPaths == null) return null;
-                string rootNorm = libRoot.TrimEnd('\\', '/');
+                string rootNorm = Path.GetFullPath(libRoot).TrimEnd('\\', '/');
                 string best = null;
-                foreach (var abs in knownRealPaths)
+                foreach (var candidate in knownRealPaths)
                 {
-                    if (string.IsNullOrWhiteSpace(abs)) continue;
+                    if (string.IsNullOrWhiteSpace(candidate)) continue;
+                    string abs = Path.GetFullPath(candidate);
                     string name = Path.GetFileName(abs.TrimEnd('\\', '/'));
                     if (!string.Equals(name, cojtName, StringComparison.OrdinalIgnoreCase)
                         && !string.Equals(CojtTransfer.LinkNameForPath(abs), cojtName, StringComparison.OrdinalIgnoreCase)) continue;
