@@ -2,7 +2,14 @@
 
 本文件记录 TxTools 主分支的主要功能、兼容性和文档变化。日期以中国标准时间为准。
 
-## 未发行 — 2026-11-15
+## 3.0.3 — 2026-11-15
+
+### 安装部署
+
+- 完整离线包包含最新编译的 26 个命令、622 个部署文件及配套运行依赖。
+- Process Simulate 部署完整 TxTools（含 TxAgent）；Process Designer 仅部署 TxAgent。
+- 下载 `TxToolsInstaller.zip`，完整解压后运行 `TxToolsInstaller.exe`，保留同目录 `offline` 文件夹。
+- 提供 SHA-256 校验文件，可在部署前验证下载包完整性。
 
 ### 跨环境模型与焊点传输
 
