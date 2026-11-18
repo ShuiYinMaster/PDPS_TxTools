@@ -1,32 +1,21 @@
 ﻿// SpotWriter.cs  —  C# 7.3
-// 写入层。A 走原地更新；B/C 走 Paste 路线（对齐第三方“为每条参考轨迹建对应新轨迹”）。
-//
-// B/C 流程（每条参考轨迹）：
-//   1. parent.Paste(参考轨迹) → _Mapped 副本（via/焊点/机器人工具绑定自动带）
-//   2. 改名 + 复读结构，按 index 把参考焊点位对到 _Mapped 焊点位
-//   3. 有匹配的焊点位 → 写成待分配焊点的位置（+ 可选复制 ref[镜像]姿态、轨迹参数）
-//                       → 可选“挪”：删除待分配轨迹里被用掉的焊点
-//   4. via（C 模式）按对称中心镜像位置
-//   5. 解绑零件分身（文档：新轨迹不带分身，需用户自绑——此处尽力，失败仅提示）
-//   全程包在一个 Undo 事务里，失败回滚。
-//
-// runtime 待验证点（首次运行看日志）：Paste 行为、GetParent、Delete、Undo 事务方法名。
+// A 原地更新制造焊点。B/C 复制参考轨迹，替换其中的焊接位置操作。
 
 using TxTools.ExportGun;
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Linq;
 using Tecnomatix.Engineering;
-using TxTools.WeldSpotAllocator;
 
 namespace TxTools.WeldSpotAllocator
 {
     public sealed class WriteReport
     {
-        public int Updated, Created, ViasMirrored, Consumed, Failed;
-        public readonly System.Collections.Generic.List<string> Errors = new System.Collections.Generic.List<string>();
+        public int Updated, Created, ViasMirrored, Consumed, Copied, RotationsCopied, ParameterLocationsCopied, Failed;
+        public readonly List<string> Errors = new List<string>();
         public override string ToString()
-            => $"更新 {Updated} · 挪入新轨迹 {Consumed} · 删参考占位 {Created} · 镜像via {ViasMirrored} · 失败 {Failed}";
+            => $"更新 {Updated} · 挪入新轨迹 {Consumed} · 复制到新轨迹 {Copied} · 删参考占位 {Created} · 姿态 {RotationsCopied} · 参数 {ParameterLocationsCopied} · 镜像过渡点 {ViasMirrored} · 失败 {Failed}";
     }
 
     public static class SpotWriter
@@ -34,8 +23,14 @@ namespace TxTools.WeldSpotAllocator
         public static WriteReport ApplyPlan(AllocPlan plan, bool aPosOnly, Action<string> log)
         {
             log = log ?? (s => { });
+            if (plan.WriteBlockers.Count > 0)
+            {
+                var report = new WriteReport();
+                foreach (var blocker in plan.WriteBlockers) Fail(report, blocker);
+                return report;
+            }
             return plan.Mode == AllocMode.UpdatePosition ? ApplyUpdate(plan, aPosOnly, log)
-                                                         : ApplyAssignByMove(plan, log);
+                                                         : ApplyAssignment(plan, log);
         }
 
         // ════════════════════════════════════════════════════════════
@@ -68,198 +63,225 @@ namespace TxTools.WeldSpotAllocator
             return rep;
         }
 
-        // ════════════════════════════════════════════════════════════
-        //  B / C  Paste 路线
-        // ════════════════════════════════════════════════════════════
-        // ════════════════════════════════════════════════════════════
-        //  B / C  移动路线：Paste 参考轨迹拿结构 → 把待分配焊点 location 移入 _Mapped → 删参考占位
-        //    待分配焊点 MFG 全程被引用，不会变灰；参考 MFG 因原轨迹仍引用也不灰。
-        // ════════════════════════════════════════════════════════════
-        private static WriteReport ApplyAssignByMove(AllocPlan plan, Action<string> log)
+        private static WriteReport ApplyAssignment(AllocPlan plan, Action<string> log)
         {
             var rep = new WriteReport();
-            object um = OpenUndo("焊点分配", log);
-            using ((TxTools.Common.SceneUndoScope)um)
-            try
+            using (TxTools.Common.SceneUndoScope.Begin("焊点分配"))
             {
-                foreach (var om in plan.OpMatches)
+                foreach (var operation in plan.OpMatches)
                 {
-                    if (om.Matches.Count == 0) { log($"[Writer] [{om.RefOp.Name}] 无匹配，跳过"); continue; }
-                    ITxObject refOp = om.RefOp.Raw;
-                    ITxObject parent = GetParent(refOp, log);
-                    if (parent == null) { Fail(rep, $"[{om.RefOp.Name}] 取不到父节点，无法 Paste"); continue; }
-
-                    // 1) 复制参考轨迹结构（via / 参数 / 顺序 / 参考焊点占位）
-                    ITxObject mapped = PasteInto(parent, refOp, log);
-                    if (mapped == null) { Fail(rep, $"[{om.RefOp.Name}] Paste 失败"); continue; }
-                    SetName(mapped, om.RefOp.Name + "_Mapped");
-
-                    var md = SpotReader.ReadOneWeldOp(mapped, log);   // _Mapped 里参考焊点副本(占位)
-                    int n = md.Spots.Count;                           // 遍历全部占位，逐个清掉
-                    for (int i = 0; i < n; i++)
-                    {
-                        var placeholder = md.Spots[i];                // 参考占位副本(用完必删)
-                        var refSpot = i < om.RefOp.Spots.Count ? om.RefOp.Spots[i] : null;
-                        var match = refSpot == null ? null : om.Matches.FirstOrDefault(x => ReferenceEquals(x.Ref, refSpot));
-
-                        try
-                        {
-                            if (match != null)
-                            {
-                                ITxObject tgtLoc = match.Target.LocOp ?? match.Target.Raw;  // 待分配焊点 location
-                                ITxObject anchor = placeholder.LocOp;                       // 移到占位之后
-
-                                // 把待分配焊点 location 移入 _Mapped（= 树里拖动），紧跟占位之后
-                                if (MoveLocationInto(mapped, tgtLoc, anchor, log))
-                                {
-                                    rep.Consumed++;
-                                    // 可选：姿态借参考（保持待分配焊点自身位置）
-                                    if (plan.CopyRotation)
-                                    {
-                                        var wp = match.Target.Raw as TxWeldPoint;
-                                        if (wp != null) wp.AbsoluteLocation = PsReader.ArrToTxPublic(ComposeAssignMatrix(plan, match));
-                                    }
-                                    // 可选：复制轨迹参数到移入的 location
-                                    if (plan.CopyParams) CopyTrajectoryParams(refSpot.LocOp, tgtLoc, log);
-                                }
-                                else Fail(rep, $"[{match.Target?.Name}] 移入 _Mapped 失败");
-                            }
-
-                            // 关键：参考占位副本一律删除（匹配与否、移入成败都删），_Mapped 绝不残留参考焊点。
-                            // 参考 MFG 因原参考轨迹仍引用，不会变灰。
-                            if (DeleteObject(placeholder.LocOp ?? placeholder.Raw, log)) rep.Created++;
-                        }
-                        catch (Exception ex) { Fail(rep, $"[{refSpot?.Name ?? placeholder.Name}] {ex.Message}"); }
-                    }
-
-                    if (plan.Mode == AllocMode.Symmetric)
-                        MirrorViasInPlace(md, om.RefOp, plan.Flip, rep, log);
-
-                    UnbindAppearance(mapped, log);
+                    if (operation.Matches.Count == 0) continue;
+                    try { MapOperation(operation, plan, rep, log); }
+                    catch (Exception ex) { Fail(rep, $"[{operation.RefOp.Name}] {ex.Message}"); }
                 }
-                CommitUndo(um, log);
             }
-            catch (Exception ex) { AbortUndo(um, log); Fail(rep, "事务异常：" + ex.Message); }
             log("[Writer] " + rep);
             return rep;
         }
 
-        // B/C 焊点最终位姿：位置恒用 target；姿态按选项（C 用 ref 镜像姿态）
-        private static double[] ComposeAssignMatrix(AllocPlan plan, SpotMatch mt)
+        private static void MapOperation(OpMatch operation, AllocPlan plan, WriteReport rep, Action<string> log)
         {
-            if (!plan.CopyRotation) return mt.Target.Matrix;
-            double[] rotSrc = mt.RefMirror ?? mt.Ref.Matrix;   // RefMirror 已含 局部对齐/镜像
-            return MergeRotKeepPos(rotSrc, mt.Target.Position);
+            var source = operation.RefOp.Raw;
+            var parent = source.Collection ?? throw new InvalidOperationException("参考轨迹没有父集合。");
+            var mapped = (ITxOrderedObjectCollection)PasteCopy(parent, source, out var copies);
+            var placeholders = new List<TxWeldLocationOperation>();
+            var matches = new Dictionary<string, SpotMatch>();
+            try
+            {
+                var name = plan.GetMappedName(operation.RefOp);
+                mapped.Name = name;
+                if (!string.Equals(mapped.Name, name, StringComparison.Ordinal))
+                    throw new InvalidOperationException($"Process Simulate 未接受新轨迹名称「{name}」。");
+                for (int i = 0; i < mapped.Count; i++)
+                    if (mapped.GetChildAt(i) is TxWeldLocationOperation location)
+                        placeholders.Add(location);
+                foreach (var match in operation.Matches)
+                {
+                    if (!(copies[match.Ref.LocOp] is TxWeldLocationOperation placeholder) ||
+                        !placeholders.Contains(placeholder))
+                        throw new InvalidOperationException($"无法定位参考点位 {match.Ref.Name} 的副本。");
+                    matches.Add(placeholder.Id, match);
+                }
+            }
+            catch
+            {
+                mapped.Delete();
+                throw;
+            }
+
+            foreach (var placeholder in placeholders)
+            {
+                var name = placeholder.Name;
+                try
+                {
+                    if (matches.TryGetValue(placeholder.Id, out var match))
+                        AssignLocation(mapped, placeholder, match, plan, rep);
+                }
+                catch (Exception ex) { Fail(rep, $"[{name}] 分配点位失败：{ex.Message}"); }
+
+                try
+                {
+                    placeholder.Delete();
+                    rep.Created++;
+                }
+                catch (Exception ex) { Fail(rep, $"[{name}] 删除参考占位失败：{ex.Message}"); }
+            }
+
+            if (plan.Mode == AllocMode.Symmetric && plan.CopyVias)
+                MirrorViasInPlace(mapped, operation, copies, plan, rep);
+
+            UnbindAppearance(mapped, log);
         }
 
-        // _Mapped 里的 via 关于对称中心镜像（C）。via 自身常无分身，借本轨迹焊点的对称中心。
-        private static void MirrorViasInPlace(OpData mapped, OpData refOp, FlipAxis flip, WriteReport rep, Action<string> log)
+        private static void AssignLocation(ITxOrderedObjectCollection mapped, TxWeldLocationOperation placeholder,
+            SpotMatch match, AllocPlan plan, WriteReport rep)
         {
-            double[] center = refOp.Spots.FirstOrDefault(s => s.SymCenter != null)?.SymCenter;
-            if (center == null) { log($"[Writer] [{mapped.Name}] 无对称中心，via 不镜像"); return; }
-            foreach (var via in mapped.Vias)
+            var target = (TxWeldLocationOperation)match.Target.LocOp;
+            var destination = target;
+            double[] pose = null;
+            if (plan.CopyRotation)
+            {
+                var rotation = match.RotationInTargetWorld ??
+                    throw new InvalidOperationException("缺少预览计算的目标世界姿态，请重新预览。");
+                var translation = target.AbsoluteLocation.Translation;
+                pose = MergeRotKeepPos(rotation, new[] { translation.X, translation.Y, translation.Z });
+            }
+
+            TxRoboticParam[] parameters = null;
+            double? duration = null;
+            if (plan.CopyParams)
+            {
+                var source = (ITxRoboticOperation)match.Ref.LocOp;
+                parameters = source.Parameters.Cast<TxRoboticParam>().ToArray();
+                if (source.CanChangeDuration()) duration = source.Duration;
+            }
+
+            if (plan.ConsumeTargets)
+            {
+                mapped.AddObjectAfter(target, placeholder);
+                rep.Consumed++;
+            }
+            else
+            {
+                destination = (TxWeldLocationOperation)PasteCopy(mapped, target, out _);
+                try { mapped.MoveChildAfter(destination, placeholder); }
+                catch
+                {
+                    destination.Delete();
+                    throw;
+                }
+                rep.Copied++;
+            }
+
+            if (parameters != null) CopyTrajectoryParams(parameters, duration, destination, rep);
+
+            if (pose != null)
             {
                 try
                 {
-                    double[] m = SymmetryMath.MirrorWorld(via.Matrix, center, flip);
-                    dynamic d = via.Raw; d.AbsoluteLocation = PsReader.ArrToTxPublic(m);
+                    WriteLocationPose(destination, pose);
+                    rep.RotationsCopied++;
+                }
+                catch (Exception ex) { Fail(rep, $"[{match.Target.Name}] 复制旋转姿态失败：{ex.Message}"); }
+            }
+        }
+
+        private static void WriteLocationPose(ITxLocatableObject destination, double[] pose)
+        {
+            destination.AbsoluteLocation = PsReader.ArrToTxPublic(pose);
+            var actual = destination.AbsoluteLocation;
+            if (!MatricesAgree(actual, pose))
+                throw new InvalidOperationException("轨迹点位的读回位姿与写入值不一致。");
+        }
+
+        private static bool MatricesAgree(TxTransformation actual, double[] expected)
+        {
+            if (actual == null) return false;
+            for (int i = 0; i < 12; i++)
+                if (!(Math.Abs(actual[i / 4, i % 4] - expected[i]) <= 1e-6)) return false;
+            return true;
+        }
+
+        private static void MirrorViasInPlace(ITxOrderedObjectCollection mapped, OpMatch operation,
+            Hashtable copies, AllocPlan plan, WriteReport rep)
+        {
+            var reference = operation.RefOp;
+            if (reference.Vias.Count == 0) return;
+            var center = operation.ViaReferenceFrame;
+            if (center == null || (plan.DiffFrame && operation.ViaTargetFrame == null))
+            {
+                Fail(rep, $"[{reference.Name}] 焊点缺少一致的坐标基准，无法镜像过渡点。");
+                return;
+            }
+            foreach (var via in reference.Vias)
+            {
+                try
+                {
+                    if (!(copies[via.Raw] is TxRoboticViaLocationOperation copy) || !mapped.Equals(copy.Collection))
+                        throw new InvalidOperationException("无法定位过渡点副本。");
+                    var pose = SymmetryMath.ResolveWritePose(via.Matrix, center, operation.ViaTargetFrame,
+                        plan.Mode, plan.DiffFrame, plan.Flip);
+                    WriteLocationPose(copy, pose);
                     rep.ViasMirrored++;
                 }
-                catch (Exception ex) { log("[Writer] via 镜像失败：" + ex.Message); }
+                catch (Exception ex) { Fail(rep, $"[{via.Name}] 镜像过渡点失败：{ex.Message}"); }
             }
         }
 
-        // ── 轨迹参数复制（ref → mapped 焊点位）─────────────────────────────
-        private static void CopyTrajectoryParams(ITxObject refLoc, ITxObject mapLoc, Action<string> log)
+        private static void CopyTrajectoryParams(IEnumerable<TxRoboticParam> parameters, double? duration,
+            ITxRoboticOperation destination, WriteReport rep)
         {
-            if (refLoc == null || mapLoc == null) return;
-            try
+            int previousFailures = rep.Failed;
+            foreach (var parameter in parameters)
             {
-                dynamic rd = refLoc, md = mapLoc;
-                ArrayList ps = rd.Parameters as ArrayList;   // ITxRoboticOperation.Parameters
-                if (ps == null) return;
-                foreach (var p in ps) { try { md.SetParameter(p); } catch { } }
-                // 备选（更稳，需 ControllerName）：TxOlpRoboticParametersManager.CopyValue(name, refLoc, mapLoc)
+                try
+                {
+                    destination.SetParameter(parameter);
+                    if (!ParametersAgree(parameter, destination.GetParameter(parameter.Type)))
+                        throw new InvalidOperationException("读回值与参考参数不一致。");
+                }
+                catch (Exception ex) { Fail(rep, $"[{destination.Name}] 复制轨迹参数 {parameter?.Type} 失败：{ex.Message}"); }
             }
-            catch (Exception ex) { log("[Writer] 复制轨迹参数失败：" + ex.Message); }
-        }
-
-        // ── Paste / 树操作 ─────────────────────────────────────────────────
-        private static readonly TxTypeFilter AnyFilter = new TxTypeFilter(typeof(ITxObject));
-
-        private static ITxObject GetParent(ITxObject o, Action<string> log)
-        {
-            try { dynamic d = o; var p = d.Parent as ITxObject; if (p != null) return p; } catch { }
-            try { dynamic d = o; var p = d.ParentOperation as ITxObject; if (p != null) return p; } catch { }
-            // 扫描操作树找“谁的直接子里有 o”，只用已验证的 GetDirectDescendants
-            try
+            if (duration.HasValue)
             {
-                var root = TxApplication.ActiveDocument.OperationRoot as ITxObject;
-                var found = ScanForParent(root, o, 0);
-                if (found != null) return found;
+                try
+                {
+                    if (destination.Duration != duration.Value) destination.Duration = duration.Value;
+                    if (!(Math.Abs(destination.Duration - duration.Value) <= 1e-6))
+                        throw new InvalidOperationException("读回持续时间与参考值不一致。");
+                }
+                catch (Exception ex) { Fail(rep, $"[{destination.Name}] 复制持续时间失败：{ex.Message}"); }
             }
-            catch (Exception ex) { log("[Writer] 扫描父节点异常：" + ex.Message); }
-            return null;
+            if (rep.Failed == previousFailures) rep.ParameterLocationsCopied++;
         }
 
-        private static ITxObject ScanForParent(ITxObject node, ITxObject target, int depth)
+        private static bool ParametersAgree(TxRoboticParam expected, TxRoboticParam actual)
         {
-            if (node == null || depth > 30) return null;
-            var coll = node as ITxObjectCollection;
-            if (coll == null) return null;
-            TxObjectList direct;
-            try { direct = coll.GetDirectDescendants(AnyFilter); } catch { return null; }
-            if (direct == null) return null;
-            foreach (ITxObject k in direct) if (IsSame(k, target)) return node;
-            foreach (ITxObject k in direct) { var p = ScanForParent(k, target, depth + 1); if (p != null) return p; }
-            return null;
-        }
-
-        private static bool IsSame(ITxObject a, ITxObject b)
-        {
-            if (ReferenceEquals(a, b)) return true;
-            try { if (a.Equals(b)) return true; } catch { }
-            return false;
-        }
-
-        // 把一条 location 移入目标操作 mapped，紧跟 after 之后（= 树里拖动跨操作）。
-        // 多候选，首次运行看 [Move] 日志确认哪个命中后即可固化。
-        private static bool MoveLocationInto(ITxObject mapped, ITxObject loc, ITxObject after, Action<string> log)
-        {
-            try { dynamic d = mapped; d.AddObjectAfter(loc, after); log("[Move] AddObjectAfter ✓"); return true; } catch (Exception e) { log("[Move] AddObjectAfter×：" + e.Message); }
-            try { dynamic d = mapped; d.MoveObjectAfter(loc, after); log("[Move] MoveObjectAfter ✓"); return true; } catch (Exception e) { log("[Move] MoveObjectAfter×：" + e.Message); }
-            try { dynamic d = mapped; d.AddObject(loc); try { d.MoveChildAfter(loc, after); } catch { } log("[Move] AddObject(+MoveChildAfter) ✓"); return true; } catch (Exception e) { log("[Move] AddObject×：" + e.Message); }
-            try { dynamic d = mapped; var l = new TxObjectList(); l.Add(loc); d.AddObjects(l); log("[Move] AddObjects ✓"); return true; } catch (Exception e) { log("[Move] AddObjects×：" + e.Message); }
-            return false;
-        }
-
-        private static ITxObject PasteInto(ITxObject parent, ITxObject op, Action<string> log)
-        {
-            try
+            if (actual == null || actual.GetType() != expected.GetType()) return false;
+            switch (expected)
             {
-                var list = new TxObjectList(); list.Add(op);
-                dynamic p = parent;
-                var res = p.Paste(list) as TxObjectList;
-                if (res != null && res.Count > 0) return res[0] as ITxObject;
-                log("[Writer] Paste 返回空");
+                case TxRoboticBoolParam value: return value.Value == ((TxRoboticBoolParam)actual).Value;
+                case TxRoboticIntParam value: return value.Value == ((TxRoboticIntParam)actual).Value;
+                case TxRoboticDoubleParam value: return value.Value.Equals(((TxRoboticDoubleParam)actual).Value);
+                case TxRoboticStringParam value: return value.Value == ((TxRoboticStringParam)actual).Value;
+                case TxRoboticXmlParam value: return value.Value?.OuterXml == ((TxRoboticXmlParam)actual).Value?.OuterXml;
+                case TxRoboticTxObjectParam value: return value.Value?.Id == ((TxRoboticTxObjectParam)actual).Value?.Id;
+                case TxRoboticTransformationParam value:
+                    return value.Value == null ? ((TxRoboticTransformationParam)actual).Value == null
+                        : MatricesAgree(((TxRoboticTransformationParam)actual).Value, PsReader.TxToArr(value.Value));
+                default: return actual.Type == expected.Type;
             }
-            catch (Exception ex) { log("[Writer] Paste 异常：" + ex.Message); }
-            return null;
         }
 
-        private static void SetName(ITxObject o, string name)
+        private static ITxObject PasteCopy(ITxObjectCollection parent, ITxObject source, out Hashtable copies)
         {
-            try { dynamic d = o; d.Name = name; } catch { }
-        }
-
-        private static bool DeleteObject(ITxObject o, Action<string> log)
-        {
-            if (o == null) return false;
-            try { dynamic d = o; d.Delete(); return true; } catch { }
-            try { dynamic d = o; d.delete(); return true; } catch { }
-            try { dynamic d = o; d.Remove(); return true; } catch { }
-            log("[Writer] 删除待分配焊点失败（无 Delete/Remove）");
-            return false;
+            var origins = new TxObjectList { source };
+            if (!parent.CanPasteList(origins))
+                throw new InvalidOperationException($"目标集合无法复制 {source.Name}。");
+            parent.Paste(origins, out copies);
+            if (!(copies[source] is ITxObject copy) || copy.Id == source.Id || !parent.Equals(copy.Collection))
+                throw new InvalidOperationException($"SDK 未返回 {source.Name} 的副本。");
+            return copy;
         }
 
         // 解绑零件分身：API 不确定，尽力尝试，失败仅提示（文档允许用户手动绑）
@@ -267,7 +289,7 @@ namespace TxTools.WeldSpotAllocator
         {
             try { dynamic d = mapped; d.ClearPartAppearances(); return; } catch { }
             try { dynamic d = mapped; d.DetachAll(); return; } catch { }
-            log("[Writer] 提示：_Mapped 轨迹未自动解绑零件分身，请按需手动绑定。");
+            log($"[Writer] 提示：[{mapped.Name}] 未自动解绑零件分身，请按需手动绑定。");
         }
 
         // ── Undo 事务（经核验的公共场景分组）──────────────────────────────────

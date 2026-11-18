@@ -14,6 +14,30 @@ namespace TxTools.CatiaPartTree.Conversion
         const double SourceShadeCos = 0.5; // 60 degrees, only for the validated dense field
         sealed class Edge { public double Cost; public int A, B, VersionA, VersionB; public double[] Placement; }
 
+        // 诊断计数与累计耗时（毫秒）。字段只有静态累加，开销可忽略；结果由 Profile()
+        // 输出到转换日志，用于定位大型零件的耗时构成。
+        internal static long Attempts, Accepted, RShared, RCrease, RTopology, RPlanar, RPlacement, RLighting, RCoverage;
+        internal static long TSetup, TTopology, TPlanar, TSample, TPlacement, TLighting, TCoverage, TOutput;
+        internal static long Pushes, Pops, TCost, THeapPush, THeapPop, TAccept, TSweep;
+        static long Now() { return System.Diagnostics.Stopwatch.GetTimestamp(); }
+        // 单次操作常在亚毫秒级，按整数毫秒累积会把它们全部截断为 0，
+        // 因此计数器保存原始 tick，输出时才换算。
+        static long Millis(long from, long to) { return to - from; }
+        static string Ms(long ticks)
+        {
+            return ((double)ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency).ToString("F0");
+        }
+        public static string Profile()
+        {
+            return "attempts=" + Attempts + " accepted=" + Accepted + " pushes=" + Pushes + " pops=" + Pops +
+                " reject[shared=" + RShared + " crease=" + RCrease + " topo=" + RTopology + " planar=" + RPlanar +
+                " place=" + RPlacement + " light=" + RLighting + " cover=" + RCoverage + "]" +
+                " ms[setup=" + Ms(TSetup) + " sweep=" + Ms(TSweep) + " cost=" + Ms(TCost) + " heappush=" + Ms(THeapPush) +
+                " heappop=" + Ms(THeapPop) + " accept=" + Ms(TAccept) + " topo=" + Ms(TTopology) + " planar=" + Ms(TPlanar) +
+                " sample=" + Ms(TSample) + " place=" + Ms(TPlacement) + " light=" + Ms(TLighting) + " cover=" + Ms(TCoverage) +
+                " output=" + Ms(TOutput) + "]";
+        }
+
         sealed class EdgeHeap
         {
             private readonly List<Edge> _items = new List<Edge>();
@@ -63,13 +87,253 @@ namespace TxTools.CatiaPartTree.Conversion
         // contractions within geometric and shading error limits instead.
         public static MeshShape Optimize(MeshShape mesh)
         {
-            return RestoreSourceNormals(mesh, SimplifyCore(mesh, 4, 75.0, true));
+            return Optimize(mesh, 0.5);
+        }
+
+        // Millimetres against the original mesh. Shading accuracy is independent
+        // of this viewing tolerance; keep the full normal-field checks.
+        public static MeshShape Optimize(MeshShape mesh, double maxDeviation)
+        {
+            long start = Now();
+            var reduced = SimplifyCore(mesh, 4, 75.0, true, maxDeviation);
+            long collapsed = Now();
+            var holes = SimplifyCircularWalls(reduced, Math.Min(0.1, maxDeviation * 0.2));
+            long rimmed = Now();
+            var result = RestoreSourceNormals(mesh, holes, maxDeviation);
+            Console.WriteLine("optimize triangles=" + mesh.triangles.Length + " -> " + reduced.triangles.Length +
+                " -> " + holes.triangles.Length + " -> " + result.triangles.Length +
+                " ms[collapse=" + Ms(Millis(start, collapsed)) + " holes=" + Ms(Millis(collapsed, rimmed)) +
+                " normals=" + Ms(Millis(rimmed, Now())) + "]");
+            return result;
+        }
+
+        sealed class CircularRim
+        {
+            internal int[] Vertices;
+            internal double[] Center, Axis;
+            internal double Radius;
+        }
+
+        // Only paired, inward cylindrical walls with planar adjoining caps qualify.
+        // Collapse matching edges on both rims as one transaction; all other sharp
+        // contours remain fixed by the general simplifier. No vertex is projected
+        // to a fitted circle: the retained coordinates are original coordinates.
+        internal static MeshShape SimplifyCircularWalls(MeshShape mesh, double chordTolerance)
+        {
+            if (mesh == null || chordTolerance <= 0) return mesh;
+            double[][] p; int[][] faces; BuildTopology(mesh, out p, out faces);
+            var incident = p.Select(_ => new List<int>()).ToArray();
+            var edges = new Dictionary<long, List<int>>(MeshEdgeComparer.Instance);
+            var normals = faces.Select(t => NormalAt(p, t, -1, null)).ToArray();
+            for (int f = 0; f < faces.Length; f++)
+            {
+                foreach (int v in faces[f]) incident[v].Add(f);
+                for (int k = 0; k < 3; k++)
+                {
+                    long key = EdgeKey(faces[f][k], faces[f][(k + 1) % 3]); List<int> list;
+                    if (!edges.TryGetValue(key, out list)) edges.Add(key, list = new List<int>(2));
+                    list.Add(f);
+                }
+            }
+            var sharp = p.Select(_ => new List<int>()).ToArray();
+            foreach (var e in edges)
+            {
+                if (e.Value.Count != 2 || normals[e.Value[0]] == null || normals[e.Value[1]] == null
+                    || Dot(normals[e.Value[0]], normals[e.Value[1]]) >= 0.7071067811865476) continue;
+                int a = (int)(e.Key >> 32), b = (int)(e.Key & 0xffffffff);
+                sharp[a].Add(b); sharp[b].Add(a);
+            }
+            var visited = new bool[p.Length]; var rims = new List<CircularRim>();
+            for (int start = 0; start < p.Length; start++)
+            {
+                if (visited[start] || sharp[start].Count != 2) continue;
+                var loop = new List<int>(); int previous = -1, current = start;
+                while (!visited[current] && sharp[current].Count == 2)
+                {
+                    visited[current] = true; loop.Add(current);
+                    int next = sharp[current][0] == previous ? sharp[current][1] : sharp[current][0];
+                    previous = current; current = next;
+                }
+                if (current != start || loop.Count < 24) continue;
+                var rim = FitCircularRim(p, loop.ToArray());
+                if (rim != null) rims.Add(rim);
+            }
+            if (rims.Count < 2) return mesh;
+            var alive = Enumerable.Repeat(true, faces.Length).ToArray();
+            var use = edges.ToDictionary(e => e.Key, e => e.Value.Count, MeshEdgeComparer.Instance);
+            var keys = new Dictionary<FaceKey, int>();
+            for (int f = 0; f < faces.Length; f++)
+            {
+                var t = faces[f]; var key = new FaceKey(t[0], t[1], t[2]);
+                if (keys.ContainsKey(key)) return mesh;
+                keys.Add(key, f);
+            }
+            var originalFaces = faces.Select(t => (int[])t.Clone()).ToArray();
+            var usedRims = new HashSet<int>(); bool changed = false;
+            for (int i = 0; i < rims.Count; i++) for (int j = i + 1; j < rims.Count && !usedRims.Contains(i); j++)
+            {
+                if (usedRims.Contains(j)) continue;
+                var a = rims[i]; var b = rims[j]; int n = a.Vertices.Length;
+                if (b.Vertices.Length != n || Math.Abs(a.Radius - b.Radius) > 0.01 || Math.Abs(Dot(a.Axis, b.Axis)) < 0.99999) continue;
+                var shift = new[] { b.Center[0] - a.Center[0], b.Center[1] - a.Center[1], b.Center[2] - a.Center[2] };
+                double depth = Dot(shift, a.Axis);
+                if (Math.Abs(depth) < 0.02 || Math.Abs(depth) > a.Radius * 2 || Dot(shift, shift) - depth * depth > 0.0001) continue;
+                var mate = new int[n]; var matched = new HashSet<int>(); bool valid = true;
+                for (int k = 0; k < n; k++)
+                {
+                    var expected = p[a.Vertices[k]].Zip(shift, (x, y) => x + y).ToArray();
+                    int v = b.Vertices.OrderBy(x => Squared(p[x], expected)).First();
+                    if (Squared(p[v], expected) > 0.0001 || !matched.Add(v)) { valid = false; break; }
+                    mate[k] = v;
+                }
+                if (!valid) continue;
+                var both = new HashSet<int>(a.Vertices.Concat(mate));
+                var affected = new HashSet<int>(both.SelectMany(v => incident[v])); int walls = 0;
+                byte[] color = null;
+                foreach (int f in affected)
+                {
+                    if (!alive[f]) { valid = false; break; }
+                    var t = faces[f]; var rgb = mesh.rgb[f];
+                    if (color == null) color = rgb;
+                    if (!color.SequenceEqual(rgb)) { valid = false; break; }
+                    if (t.All(v => both.Contains(v)))
+                    {
+                        walls++;
+                        var radial = new[] { t.Average(v => p[v][0]) - a.Center[0], t.Average(v => p[v][1]) - a.Center[1], t.Average(v => p[v][2]) - a.Center[2] };
+                        double along = Dot(radial, a.Axis);
+                        for (int axis = 0; axis < 3; axis++) radial[axis] -= along * a.Axis[axis];
+                        if (normals[f] == null || Dot(normals[f], radial) > -a.Radius * 0.9) { valid = false; break; }
+                    }
+                    else
+                    {
+                        var rim = t.Any(v => Array.IndexOf(a.Vertices, v) >= 0) ? a : b;
+                        if (t.Any(v => Math.Abs((p[v][0] - rim.Center[0]) * rim.Axis[0] + (p[v][1] - rim.Center[1]) * rim.Axis[1] + (p[v][2] - rim.Center[2]) * rim.Axis[2]) > 0.01)) { valid = false; break; }
+                    }
+                }
+                if (!valid || walls != 2 * n) continue;
+                double angleLimit = 2 * Math.Acos(Math.Max(-1, 1 - chordTolerance / a.Radius));
+                int target = Math.Max(12, (int)Math.Ceiling(2 * Math.PI / angleLimit));
+                if (target >= n) continue;
+                var keep = new HashSet<int>(Enumerable.Range(0, target).Select(k => k * n / target));
+                var removed = new bool[n];
+                for (int k = 0; k < n; k++)
+                {
+                    if (keep.Contains(k)) continue;
+                    int left = (k + n - 1) % n, right = (k + 1) % n;
+                    while (removed[left]) left = (left + n - 1) % n;
+                    while (removed[right]) right = (right + 1) % n;
+                    // Bound each resulting chord against every intervening source
+                    // sample, rather than accumulating per-collapse tolerances.
+                    bool fits = true;
+                    for (int s = (left + 1) % n; s != right; s = (s + 1) % n)
+                        if (CircularSegmentDistance(p[a.Vertices[s]], p[a.Vertices[left]], p[a.Vertices[right]]) > chordTolerance * chordTolerance) { fits = false; break; }
+                    if (!fits) continue;
+                    foreach (int to in new[] { left, right })
+                    {
+                        if (!CollapseCircularPair(p, faces, incident, alive, use, keys, a.Vertices[k], a.Vertices[to], mate[k], mate[to])) continue;
+                        removed[k] = true; changed = true; break;
+                    }
+                }
+                usedRims.Add(i); usedRims.Add(j);
+            }
+            if (!changed) return mesh;
+            var candidates = p.Select(_ => new HashSet<int>()).ToArray();
+            for (int f = 0; f < originalFaces.Length; f++) for (int k = 0; k < 3; k++) candidates[originalFaces[f][k]].Add(mesh.triangles[f][k]);
+            var output = new List<int[]>(); var colors = new List<byte[]>();
+            for (int f = 0; f < faces.Length; f++)
+            {
+                if (!alive[f]) continue;
+                var t = new int[3];
+                for (int k = 0; k < 3; k++)
+                {
+                    int old = mesh.triangles[f][k], v = faces[f][k];
+                    var reference = mesh.normals == null ? null : mesh.normals[old];
+                    t[k] = v == originalFaces[f][k] ? old : candidates[v].OrderByDescending(c => reference == null || mesh.normals[c] == null ? 0 : Dot(reference, mesh.normals[c])).First();
+                }
+                output.Add(t); colors.Add(mesh.rgb[f]);
+            }
+            var result = new MeshShape { name = mesh.name, instanceId = mesh.instanceId, sourceFile = mesh.sourceFile, sourceSha256 = mesh.sourceSha256,
+                vertices = mesh.vertices, normals = mesh.normals, nativeNormalBindings = mesh.nativeNormalBindings, triangles = output.ToArray(), rgb = colors.ToArray() };
+            result.Validate(); return result;
+        }
+
+        static double CircularSegmentDistance(double[] p, double[] a, double[] b)
+        {
+            var d = b.Zip(a, (x, y) => x - y).ToArray(); var v = p.Zip(a, (x, y) => x - y).ToArray();
+            double t = Math.Max(0, Math.Min(1, Dot(v, d) / Dot(d, d)));
+            return Squared(p, a.Zip(d, (x, y) => x + t * y).ToArray());
+        }
+        static CircularRim FitCircularRim(double[][] p, int[] ids)
+        {
+            var origin = p[ids[0]]; var far = p[ids.OrderByDescending(v => Squared(p[v], origin)).First()];
+            var x = far.Zip(origin, (a, b) => a - b).ToArray(); double length = Math.Sqrt(Dot(x, x));
+            if (length < 0.1) return null;
+            x = x.Select(v => v / length).ToArray();
+            var third = p[ids.OrderByDescending(v => { var d = p[v].Zip(origin, (a, b) => a - b).ToArray(); return Dot(d, d) - Math.Pow(Dot(d, x), 2); }).First()];
+            var y = third.Zip(origin, (a, b) => a - b).ToArray(); double projection = Dot(y, x);
+            for (int k = 0; k < 3; k++) y[k] -= projection * x[k];
+            double height = Math.Sqrt(Dot(y, y)); if (height < 0.01) return null;
+            y = y.Select(v => v / height).ToArray();
+            var axis = new[] { x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0] };
+            double cx = length / 2, cy = (projection * projection + height * height - length * projection) / (2 * height);
+            var center = Enumerable.Range(0, 3).Select(k => origin[k] + cx * x[k] + cy * y[k]).ToArray();
+            double radius = Math.Sqrt(cx * cx + cy * cy), turn = 0;
+            for (int k = 0; k < ids.Length; k++)
+            {
+                var d = p[ids[k]].Zip(center, (a, b) => a - b).ToArray();
+                if (Math.Abs(Dot(d, axis)) > 0.01 || Math.Abs(Math.Sqrt(Dot(d, d)) - radius) > 0.01) return null;
+                var e = p[ids[(k + 1) % ids.Length]].Zip(center, (a, b) => a - b).ToArray();
+                double da = Math.Atan2(Dot(e, y), Dot(e, x)) - Math.Atan2(Dot(d, y), Dot(d, x));
+                while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+                if (Math.Abs(da) < 1e-8 || Math.Abs(da) > Math.PI / 3) return null;
+                if (turn != 0 && Math.Sign(turn) != Math.Sign(da)) return null;
+                turn += da;
+            }
+            return Math.Abs(Math.Abs(turn) - 2 * Math.PI) < 1e-5 ? new CircularRim { Vertices = ids, Center = center, Axis = axis, Radius = radius } : null;
+        }
+
+        static bool CollapseCircularPair(double[][] p, int[][] faces, List<int>[] incident, bool[] alive,
+            Dictionary<long, int> use, Dictionary<FaceKey, int> keys, int a, int b, int c, int d)
+        {
+            var affected = new HashSet<int>(new[] { a, b, c, d }.SelectMany(v => incident[v]).Where(f => alive[f]));
+            var proposed = new Dictionary<int, int[]>(); var unique = new HashSet<FaceKey>();
+            var changes = new Dictionary<long, int>(MeshEdgeComparer.Instance); int removed = 0;
+            foreach (int f in affected)
+            {
+                var old = faces[f]; ChangeEdges(changes, old[0], old[1], old[2], -1);
+                var t = old.Select(v => v == a ? b : v == c ? d : v).ToArray();
+                if (t.Distinct().Count() < 3) { removed++; proposed[f] = null; continue; }
+                var before = NormalAt(p, old, -1, null); var after = NormalAt(p, t, -1, null);
+                if (before == null || after == null || Dot(before, after) < SmoothCos) return false;
+                var key = new FaceKey(t[0], t[1], t[2]); int existing;
+                if (!unique.Add(key) || (keys.TryGetValue(key, out existing) && !affected.Contains(existing))) return false;
+                proposed[f] = t; ChangeEdges(changes, t[0], t[1], t[2], 1);
+            }
+            if (removed != 4) return false;
+            foreach (var e in changes)
+            {
+                int before; use.TryGetValue(e.Key, out before); int after = before + e.Value;
+                if (after < 0 || after > 2 || (after == 1 && before != 1) || (before == 1 && after != 1)) return false;
+            }
+            foreach (int f in affected)
+            {
+                var old = faces[f]; keys.Remove(new FaceKey(old[0], old[1], old[2]));
+                foreach (int v in old) incident[v].Remove(f);
+            }
+            foreach (var e in proposed)
+            {
+                if (e.Value == null) { alive[e.Key] = false; continue; }
+                faces[e.Key] = e.Value; keys.Add(new FaceKey(e.Value[0], e.Value[1], e.Value[2]), e.Key);
+                foreach (int v in e.Value) incident[v].Add(e.Key);
+            }
+            foreach (var e in changes) { int before; use.TryGetValue(e.Key, out before); if (before + e.Value == 0) use.Remove(e.Key); else use[e.Key] = before + e.Value; }
+            return true;
         }
 
         // Preserve the decoded CAD normal field after geometry optimization.
         // A reconstructed fan is only a fallback: one unreliable neighboring
         // sliver must not replace every valid analytic corner around a vertex.
-        public static MeshShape RestoreSourceNormals(MeshShape source, MeshShape target)
+        public static MeshShape RestoreSourceNormals(MeshShape source, MeshShape target, double maxDeviation = 0.5)
         {
             if (!source.nativeNormalBindings || source.normals == null || source.normals.Length != source.vertices.Length) return target;
             double[][] p; int[][] face; BuildTopology(source, out p, out face);
@@ -96,7 +360,7 @@ namespace TxTools.CatiaPartTree.Conversion
                     var previous = target.normals == null ? direction : target.normals[target.triangles[f][k]] ?? direction;
                     if (!surface.Sample(output[vertex], previous, out n, out point)
                         || Dot(n, direction) < SourceShadeCos
-                        || output[vertex].Zip(point, (a, b) => (a - b) * (a - b)).Sum() > 0.0025) n = previous;
+                        || Squared(output[vertex], point) > maxDeviation * maxDeviation) n = previous;
                     var key = Tuple.Create(vertex, n[0], n[1], n[2]); int index;
                     if (!lookup.TryGetValue(key, out index))
                     { index = vertices.Count; lookup.Add(key, index); vertices.Add(output[vertex]); normals.Add(n); }
@@ -107,10 +371,11 @@ namespace TxTools.CatiaPartTree.Conversion
                 vertices = vertices.ToArray(), triangles = result, normals = normals.ToArray(), rgb = target.rgb };
         }
 
-        static MeshShape SimplifyCore(MeshShape mesh, int targetTriangles, double creaseDegrees, bool quality)
+        static MeshShape SimplifyCore(MeshShape mesh, int targetTriangles, double creaseDegrees, bool quality, double maxDeviation = 0.5)
         {
             if (mesh == null || targetTriangles <= 0 || mesh.triangles.Length <= targetTriangles) return mesh;
 
+            long setupStart = Now();
             double[][] position; int[][] face;
             BuildTopology(mesh, out position, out face);
             var alive = Enumerable.Repeat(true, face.Length).ToArray();
@@ -128,7 +393,7 @@ namespace TxTools.CatiaPartTree.Conversion
             double density = Math.Max(64, targetTriangles);
             // Bound displacement against the full source, not the preceding
             // collapse. The floor accounts for float32 output coordinates.
-            double distance = quality ? Math.Max(0.01, Math.Min(0.05, Math.Sqrt(spanSquared) * 0.00005)) : Math.Sqrt(spanSquared) / density;
+            double distance = quality ? maxDeviation : Math.Sqrt(spanSquared) / density;
             double sourceDistanceSquared = Math.Max(distance * distance, magnitudeSquared * 5.684341886080802e-14);
             double lightingCos = quality ? 0.9998476951563913 : 0.9781476007338057; // 1 / 12 degrees
             var supports = quality ? position.Select(p => new List<double[]> { p }).ToArray() : null;
@@ -170,7 +435,7 @@ namespace TxTools.CatiaPartTree.Conversion
             for (int f = 0; f < face.Length; f++) for (int k = 0; k < 3; k++) incident[face[f][k]].Add(f);
 
             // Freeze open boundary vertices: hole rims and sheet edges must not move.
-            var use = new Dictionary<long, int>(face.Length * 2);
+            var use = new Dictionary<long, int>(face.Length * 2, MeshEdgeComparer.Instance);
             for (int f = 0; f < face.Length; f++)
             {
                 for (int k = 0; k < 3; k++)
@@ -187,6 +452,37 @@ namespace TxTools.CatiaPartTree.Conversion
                 rim[(int)(pair.Key >> 32)] = true;
                 rim[(int)(pair.Key & 0xFFFFFFFF)] = true;
             }
+            // Face colors are piecewise constant, not interpolated attributes.
+            // Freeze material junctions so contractions cannot move a color seam
+            // or erase a small colored patch even on a geometrically flat surface.
+            for (int vertex = 0; vertex < count; vertex++)
+            {
+                if (incident[vertex].Count < 2) continue;
+                var color = mesh.rgb[incident[vertex][0]];
+                foreach (int f in incident[vertex])
+                {
+                    var other = mesh.rgb[f];
+                    if (color[0] == other[0] && color[1] == other[1] && color[2] == other[2]) continue;
+                    rim[vertex] = true; break;
+                }
+            }
+            // A closed sheet-metal rim is not an open boundary. Its two sharp
+            // contour chains must remain fixed independently: a generic surface
+            // distance budget can otherwise pull them into mismatched chords,
+            // producing visible wedges on the narrow thickness face.
+            foreach (var pair in use)
+            {
+                if (pair.Value != 2) continue;
+                int a = (int)(pair.Key >> 32), b = (int)(pair.Key & 0xffffffff);
+                double[] first = null;
+                foreach (int f in incident[a])
+                {
+                    if (Array.IndexOf(face[f], b) < 0 || sourceNormal[f] == null) continue;
+                    if (first == null) { first = sourceNormal[f]; continue; }
+                    if (Dot(first, sourceNormal[f]) < SmoothCos) rim[a] = rim[b] = true;
+                    break;
+                }
+            }
             AddFeatureQuadrics(quadric, position, face, incident, use, sourceNormal, errorOrigin);
             // Keep the dense source's smooth normal field. Reconstructing it from
             // coarse chord triangles alone gives rounded bosses a polygonal light
@@ -201,17 +497,27 @@ namespace TxTools.CatiaPartTree.Conversion
             var version = new int[count];
             var scratch = new double[10];
             var heap = new EdgeHeap();
+            var queued = new Dictionary<long, Edge>(MeshEdgeComparer.Instance);
             Action<int, int> push = (u, v) =>
             {
+                if (rim[u] || rim[v]) return;
                 int a = u < v ? u : v, b = u < v ? v : u;
+                long key = EdgeKey(a, b); Edge previous;
+                if (queued.TryGetValue(key, out previous) && previous.VersionA == version[a] && previous.VersionB == version[b]) return;
+                Pushes++;
+                long pushStart = Now();
                 double[] placement;
                 double cost = EdgeCost(quadric, position, scratch, a, b, rim, errorOrigin, out placement);
-                heap.Push(new Edge { Cost = cost, A = a, B = b, VersionA = version[a], VersionB = version[b], Placement = placement });
+                TCost += Millis(pushStart, Now());
+                var edge = new Edge { Cost = cost, A = a, B = b, VersionA = version[a], VersionB = version[b], Placement = placement };
+                queued[key] = edge;
+                pushStart = Now(); heap.Push(edge); THeapPush += Millis(pushStart, Now());
             };
             for (int f = 0; f < face.Length; f++)
             {
                 push(face[f][0], face[f][1]); push(face[f][1], face[f][2]); push(face[f][2], face[f][0]);
             }
+            TSetup += Millis(setupStart, Now());
 
             double creaseCos = Math.Cos(Math.Max(5.0, Math.Min(80.0, creaseDegrees)) * Math.PI / 180.0);
             const double FoldCos = 0.7071067811865476;     // 45 degrees: reject folding
@@ -233,10 +539,16 @@ namespace TxTools.CatiaPartTree.Conversion
                     }
                     if (heap.Count == 0) break;
                 }
+                long popStart = Now();
                 var edge = heap.Pop();
+                THeapPop += Millis(popStart, Now()); Pops++;
                 int u = edge.A, v = edge.B;
+                long pendingKey = EdgeKey(u, v); Edge pending;
+                if (queued.TryGetValue(pendingKey, out pending) && object.ReferenceEquals(pending, edge)) queued.Remove(pendingKey);
                 if (edge.VersionA != version[u] || edge.VersionB != version[v]) continue;   // stale entry
 
+                Attempts++;
+                long gateStart = Now();
                 var shared = new List<int>(2);
                 foreach (int f in incident[u])
                 {
@@ -244,38 +556,56 @@ namespace TxTools.CatiaPartTree.Conversion
                     int[] t = face[f];
                     if (t[0] == v || t[1] == v || t[2] == v) shared.Add(f);
                 }
-                if (shared.Count != 2 || rim[u] || rim[v]) continue;
+                if (shared.Count != 2 || rim[u] || rim[v]) { RShared++; continue; }
                 double dihedral = 1.0;
                 double[] referenceNormal;
                 {
                     var n0 = NormalAt(position, face[shared[0]], -1, null);
                     var n1 = NormalAt(position, face[shared[1]], -1, null);
-                    if (n0 == null || n1 == null) continue;
+                    if (n0 == null || n1 == null) { RCrease++; continue; }
                     dihedral = n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2];
-                    if (dihedral < creaseCos) continue;                                       // hard edge
+                    if (dihedral < creaseCos) { RCrease++; continue; }                        // hard edge
                     referenceNormal = Unit(n0[0] + n1[0], n0[1] + n1[1], n0[2] + n1[2]);
                 }
+                TSweep += Millis(gateStart, Now());
                 Dictionary<long, int> edgeChanges;
-                if (!TopologyAllows(face, alive, incident, use, u, v, shared, out edgeChanges)) continue;
+                long gate = Now();
+                bool topologyOk = TopologyAllows(face, alive, incident, use, u, v, shared, out edgeChanges);
+                TTopology += Millis(gate, Now());
+                if (!topologyOk) { RTopology++; continue; }
 
+                gate = Now();
                 var choice = planar.Choose(position, face, incident, alive, u, v, edge.Placement);
-                if (choice == null) continue;
+                TPlanar += Millis(gate, Now());
+                if (choice == null) { RPlanar++; continue; }
                 var originalPlacement = choice.Point; var placement = originalPlacement;
-                double[] sampledNormal, projected;
-                if (choice.Project && referenceNormal != null && sourceSurface.SampleVertex(placement, referenceNormal, u, out sampledNormal, out projected)
-                    && Squared(projected, placement) <= Squared(position[u], position[v]) * 0.0625)
+                double[] sampledNormal = null, projected = null;
+                gate = Now();
+                bool projectedOk = choice.Project && referenceNormal != null && sourceSurface.SampleVertex(placement, referenceNormal, u, out sampledNormal, out projected);
+                TSample += Millis(gate, Now());
+                if (projectedOk && projected != null && Squared(projected, placement) <= Squared(position[u], position[v]) * 0.0625)
                     placement = projected;
                 // Surface projection is bounded by one quarter of this edge and
                 // has the same fold/normal checks as its segment-constrained seed.
                 // Fall back to that seed when projection would damage a neighbor.
+                gate = Now();
                 bool ok = PlacementAllows(position, face, alive, incident, sourceNormal, u, v, shared, placement, FoldCos, sourceCos);
                 if (!ok && !object.ReferenceEquals(placement, originalPlacement))
                 { placement = originalPlacement; ok = PlacementAllows(position, face, alive, incident, sourceNormal, u, v, shared, placement, FoldCos, sourceCos); }
-                if (!ok) continue;
+                TPlacement += Millis(gate, Now());
+                if (!ok) { RPlacement++; continue; }
                 Dictionary<int, double[]> lightingChanges;
-                if (!LightingAllows(position, face, alive, incident, sourceNormal, lightingCorners, planar, sourceSurface,
-                    u, v, shared, placement, sourceDistanceSquared, lightingCos, quality, out lightingChanges)) continue;
-                if (supports != null && !CoverageAllows(position, face, alive, incident, supports, u, v, shared, placement, sourceDistanceSquared)) continue;
+                gate = Now();
+                bool lightingOk = LightingAllows(position, face, alive, incident, sourceNormal, lightingCorners, planar, sourceSurface,
+                    u, v, shared, placement, sourceDistanceSquared, lightingCos, quality, out lightingChanges);
+                TLighting += Millis(gate, Now());
+                if (!lightingOk) { RLighting++; continue; }
+                gate = Now();
+                bool coverageOk = supports == null || CoverageAllows(position, face, alive, incident, supports, u, v, shared, placement, sourceDistanceSquared);
+                TCoverage += Millis(gate, Now());
+                if (!coverageOk) { RCoverage++; continue; }
+                Accepted++;
+                long acceptStart = Now();
 
                 foreach (var change in lightingChanges) lightingCorners[change.Key] = change.Value;
                 if (supports != null) { supports[u].AddRange(supports[v]); supports[v].Clear(); }
@@ -306,7 +636,9 @@ namespace TxTools.CatiaPartTree.Conversion
                     int[] t = face[f];
                     push(t[0], t[1]); push(t[1], t[2]); push(t[2], t[0]);
                 }
+                TAccept += Millis(acceptStart, Now());
             }
+            long outputStart = Now();
             var unitNormals = new double[face.Length][];
             // Shade the geometry that JT actually stores. Float32 rounding can
             // rotate a very thin face enough to invalidate a cache corner normal.
@@ -355,6 +687,7 @@ namespace TxTools.CatiaPartTree.Conversion
                 normals = normals.ToArray()
             };
             result.Validate();
+            TOutput += Millis(outputStart, Now());
             return result;
         }
 
@@ -415,6 +748,9 @@ namespace TxTools.CatiaPartTree.Conversion
             {
                 if (!alive[f] || shared.Contains(f) || planar.FaceNormal(f) != null) continue;
                 var t = face[f]; var points = new double[3][]; var normals = new double[3][]; bool sampled = true;
+                // An unchanged surviving triangle keeps its stored normal field.
+                int moved = Array.IndexOf(t, v) >= 0 ? v : u;
+                if (Squared(p[moved], placement) == 0) continue;
                 for (int k = 0; k < 3; k++)
                 {
                     int i = t[k]; var point = i == u || i == v ? placement : p[i];
@@ -599,7 +935,7 @@ namespace TxTools.CatiaPartTree.Conversion
             readonly List<Plane> planes = new List<Plane>();
             readonly int[] region;
             readonly double[][] sourcePoints;
-            readonly Dictionary<long, int[]> boundaryPaths = new Dictionary<long, int[]>();
+            readonly Dictionary<long, int[]> boundaryPaths = new Dictionary<long, int[]>(MeshEdgeComparer.Instance);
             readonly double tolerance, boundaryTolerance;
             internal PlanarRegions(double[][] p, int[][] face, List<int>[] incident, double[][] normals, double[][] corners, MeshShape mesh)
             {
@@ -709,7 +1045,7 @@ namespace TxTools.CatiaPartTree.Conversion
                     planes.Add(new Plane { Normal = (double[])planeNormal.Clone(), Point = (double[])planePoint.Clone() });
                     foreach (int f in members) region[f] = id;
                 }
-                var first = new Dictionary<long, int>();
+                var first = new Dictionary<long, int>(MeshEdgeComparer.Instance);
                 for (int f = 0; f < face.Length; f++) for (int k = 0; k < 3; k++)
                 {
                     int a = face[f][k], b = face[f][(k + 1) % 3], previous; long key = EdgeKey(a, b);
@@ -823,7 +1159,7 @@ namespace TxTools.CatiaPartTree.Conversion
                     var merged = path.Concat(keepU ? right : left).Distinct().ToArray();
                     var point = keepU ? p[u] : p[v]; var end = keepU ? p[wv] : p[wu];
                     if (merged.Any(i => SegmentDistance(sourcePoints[i], point, end) > boundaryTolerance * boundaryTolerance)) return null;
-                    var choice = new Choice { Point = point, Remove = new List<long> { uv, vw }, Add = new Dictionary<long, int[]>() };
+                    var choice = new Choice { Point = point, Remove = new List<long> { uv, vw }, Add = new Dictionary<long, int[]>(MeshEdgeComparer.Instance) };
                     if (keepU) choice.Add.Add(EdgeKey(u, wv), merged);
                     else { choice.Remove.Add(uw); choice.Add.Add(uw, merged); choice.Add.Add(EdgeKey(u, wv), right); }
                     return choice;
@@ -831,7 +1167,7 @@ namespace TxTools.CatiaPartTree.Conversion
                 if (bu) return new Choice { Point = p[u] };
                 if (bv)
                 {
-                    var choice = new Choice { Point = p[v], Remove = new List<long>(), Add = new Dictionary<long, int[]>() };
+                    var choice = new Choice { Point = p[v], Remove = new List<long>(), Add = new Dictionary<long, int[]>(MeshEdgeComparer.Instance) };
                     foreach (int w in Neighbors(v, face, incident, alive))
                     {
                         long key = EdgeKey(v, w); int[] path;
@@ -868,6 +1204,8 @@ namespace TxTools.CatiaPartTree.Conversion
             readonly double[][] centers;
             readonly int[] vertexComponent, faceComponent;
             readonly Node root;
+            readonly double[] faceBounds;
+            int hint = -1;
             internal SourceSurface(MeshShape value, double[][] faces, double[][] corners)
                 : this(value, faces, corners, value.triangles, value.vertices.Length) { }
             internal SourceSurface(MeshShape value, double[][] faces, double[][] corners, int[][] topology, int count)
@@ -878,6 +1216,13 @@ namespace TxTools.CatiaPartTree.Conversion
                 foreach (var t in topology) { vertexComponent[Root(t[1])] = Root(t[0]); vertexComponent[Root(t[2])] = Root(t[0]); }
                 for (int i = 0; i < count; i++) vertexComponent[i] = Root(i);
                 faceComponent = topology.Select(t => vertexComponent[t[0]]).ToArray();
+                faceBounds = new double[mesh.triangles.Length * 6];
+                for (int f = 0; f < mesh.triangles.Length; f++) for (int k = 0; k < 3; k++)
+                {
+                    var t = mesh.triangles[f]; double a = mesh.vertices[t[0]][k], b = mesh.vertices[t[1]][k], c = mesh.vertices[t[2]][k];
+                    faceBounds[f * 6 + k] = Math.Min(a, Math.Min(b, c));
+                    faceBounds[f * 6 + 3 + k] = Math.Max(a, Math.Max(b, c));
+                }
                 order = Enumerable.Range(0, mesh.triangles.Length).ToArray();
                 centers = new double[3][];
                 for (int k = 0; k < 3; k++)
@@ -921,6 +1266,9 @@ namespace TxTools.CatiaPartTree.Conversion
             bool SampleComponent(double[] p, double[] direction, int component, out double[] normal, out double[] point)
             {
                 double distance = double.PositiveInfinity; normal = null; point = null;
+                // This exact prior result only supplies an initial upper bound;
+                // the full BVH still resolves the nearest point and hard-edge ties.
+                if (hint >= 0) SampleFace(hint, p, direction, component, false, ref distance, ref normal, ref point);
                 Search(root, p, direction, component, false, ref distance, ref normal, ref point);
                 if (normal != null && Dot(normal, direction) >= SourceShadeCos) return true;
                 // A normal filter must never make the query jump to a farther
@@ -942,21 +1290,29 @@ namespace TxTools.CatiaPartTree.Conversion
                     return;
                 }
                 for (int i = node.Start; i < node.Start + node.Count; i++)
+                    SampleFace(order[i], p, direction, component, compatibleOnly, ref distance, ref normal, ref point);
+            }
+            void SampleFace(int f, double[] p, double[] direction, int component, bool compatibleOnly, ref double distance, ref double[] normal, ref double[] point)
+            {
+                if (faceNormals[f] == null || (component >= 0 && faceComponent[f] != component)) return;
+                double boundsDistance = 0;
+                for (int k = 0; k < 3; k++)
                 {
-                    int f = order[i];
-                    if (faceNormals[f] == null || (component >= 0 && faceComponent[f] != component)) continue;
-                    double v, w; double candidate = Closest(mesh.triangles[f], p, out v, out w);
-                    if (candidate > distance) continue;
-                    var a = cornerNormals[f * 3]; var b = cornerNormals[f * 3 + 1]; var c = cornerNormals[f * 3 + 2];
-                    var n = Unit((1 - v - w) * a[0] + v * b[0] + w * c[0],
-                        (1 - v - w) * a[1] + v * b[1] + w * c[1], (1 - v - w) * a[2] + v * b[2] + w * c[2]);
-                    if (n == null || (compatibleOnly && Dot(n, direction) < SourceShadeCos)) continue;
-                    if (candidate == distance && normal != null && Dot(n, direction) <= Dot(normal, direction)) continue;
-                    distance = candidate; normal = n;
-                    var t = mesh.triangles[f]; var pa = mesh.vertices[t[0]]; var pb = mesh.vertices[t[1]]; var pc = mesh.vertices[t[2]];
-                    point = new[] { (1 - v - w) * pa[0] + v * pb[0] + w * pc[0],
-                        (1 - v - w) * pa[1] + v * pb[1] + w * pc[1], (1 - v - w) * pa[2] + v * pb[2] + w * pc[2] };
+                    double lo = faceBounds[f * 6 + k], hi = faceBounds[f * 6 + 3 + k];
+                    double d = p[k] < lo ? lo - p[k] : p[k] > hi ? p[k] - hi : 0; boundsDistance += d * d;
                 }
+                if (boundsDistance > distance) return;
+                double v, w; double candidate = Closest(mesh.triangles[f], p, out v, out w);
+                if (candidate > distance) return;
+                var a = cornerNormals[f * 3]; var b = cornerNormals[f * 3 + 1]; var c = cornerNormals[f * 3 + 2];
+                var n = Unit((1 - v - w) * a[0] + v * b[0] + w * c[0],
+                    (1 - v - w) * a[1] + v * b[1] + w * c[1], (1 - v - w) * a[2] + v * b[2] + w * c[2]);
+                if (n == null || (compatibleOnly && Dot(n, direction) < SourceShadeCos)) return;
+                if (candidate == distance && normal != null && Dot(n, direction) <= Dot(normal, direction)) return;
+                distance = candidate; normal = n; hint = f;
+                var t = mesh.triangles[f]; var pa = mesh.vertices[t[0]]; var pb = mesh.vertices[t[1]]; var pc = mesh.vertices[t[2]];
+                point = new[] { (1 - v - w) * pa[0] + v * pb[0] + w * pc[0],
+                    (1 - v - w) * pa[1] + v * pb[1] + w * pc[1], (1 - v - w) * pa[2] + v * pb[2] + w * pc[2] };
             }
             double Closest(int[] triangle, double[] p, out double v, out double w)
             {
@@ -1013,7 +1369,7 @@ namespace TxTools.CatiaPartTree.Conversion
         static bool TopologyAllows(int[][] faces, bool[] alive, List<int>[] incident, Dictionary<long, int> use,
             int u, int v, List<int> shared, out Dictionary<long, int> changes)
         {
-            changes = new Dictionary<long, int>();
+            changes = new Dictionary<long, int>(MeshEdgeComparer.Instance);
             var affected = new HashSet<int>(incident[u]); affected.UnionWith(incident[v]);
             var surviving = new HashSet<FaceKey>();
             foreach (int f in affected)

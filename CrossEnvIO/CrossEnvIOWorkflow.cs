@@ -77,7 +77,7 @@ namespace TxTools.CrossEnvIO
             _submittedFingerprint=null;
             if (_plan != null) { _plan.PreparedStamp = null; _plan.TargetSceneStamp = null; _plan.JobId = Guid.NewGuid().ToString("N"); }
             if (!_busy && _summary != null) _summary.Text = "尚未检查；配置变化后需要重新检查。";
-            if (_status != null && !_busy) _status.Text = "配置已变化，请检查重建条件。";
+            if (_status != null && !_busy) _status.Text = "";
             RefreshStorageSources();
             UpdateDestination();
             UpdateActions();
@@ -89,7 +89,7 @@ namespace TxTools.CrossEnvIO
             _sourceDirty = true; _sourceFromFile = false; InvalidatePlan();
             if (_scope != null) _scope.Text = _whole.Checked ? "传输整个场景。" : _objects.Count > 0
                 ? "已选择 " + _objects.Count + " 个对象。" : "在场景中选取要传输的对象。";
-            if (_issues != null && !_uncertain){_issues.Items.Clear();_issues.Visible=false;_issueDetail.Visible=false;}
+            if (_issues != null && !_uncertain){_issues.Items.Clear();_issues.Visible=false;_issueDetail.Visible=false;UpdateActions();}
             _capturePending=true;_contextTimer.Stop();_contextTimer.Start();
         }
         private List<ITxObject> ReadSceneSelection()
@@ -219,6 +219,8 @@ namespace TxTools.CrossEnvIO
         private void EnsureCaptured(bool refresh = false)
         {
             _capturePending=false;
+            if (_task.SelectedIndex==1 && !_sourceFromFile)
+                throw new InvalidOperationException("请先打开需要重建的数据文件。");
             if (_plan != null && !_sourceDirty && (!refresh || _sourceFromFile)) return;
             var objects = ReadSceneSelection();
             var file = Path.Combine(_session, Guid.NewGuid().ToString("N") + ".tsv");
@@ -296,6 +298,7 @@ namespace TxTools.CrossEnvIO
                 if (TransferPaths.Same(output, _plan.DataFile)) throw new IOException("导出位置不能覆盖当前数据快照");
                 if (bundle) await Task.Run(() => TransferBundle.Export(_plan, output, Log));
                 else await Task.Run(() => TransferFile.Write(output, File.ReadAllText(_plan.DataFile, Encoding.UTF8)));
+                _status.Text = "已导出 · " + Path.GetFileName(output);
                 Log("已导出：" + output);
             }
         }
@@ -380,7 +383,7 @@ namespace TxTools.CrossEnvIO
             _receiverPending=false;
             _receiver.Text = "接收工程：" + (string)description["study"];
             _storageNote.Text = _kind.SelectedIndex == 1 ? "焊点不需要复制模型文件。" : "接收库根：" + (string)description["systemRoot"];
-            _status.Text = "接收工程已读取，可以检查重建条件。";
+            _status.Text = "";
             InvalidatePlan(); if (_plan != null && !_sourceDirty) SyncPlan();
             Log("接收工程：" + (string)description["study"] + "；SDK："+(string)description["sdk_runtime"]+"；Json.NET：" + (string)description["json_runtime"]
                 +(_kind.SelectedIndex==0?"；模型流程：原路径插入 v6；中文兼容配置："+(string)description["unicode_insert_profile"]:""));
@@ -590,10 +593,10 @@ namespace TxTools.CrossEnvIO
             else
             {
                 _summary.Text="检查未通过 · "+_issues.Items.Count+" 个问题\n尚未复制或修改场景。";
-                _status.Text="检查未通过 · "+_issues.Items.Count+" 个问题";ShowProblems();
+                _status.Text="";ShowProblems();
                 foreach(var issue in _issues.Items)Log(Convert.ToString(issue));
             }
-            Log(_status.Text + "；" + fileReport);
+            Log((_issues.Items.Count>0 ? _summary.Text : _status.Text) + "；" + fileReport);
         }
         private bool UsesNamedRoots()
         {
@@ -620,10 +623,11 @@ namespace TxTools.CrossEnvIO
         {
             if (purpose == "binding") { EnsureCaptured(); SyncPlan(); }
             if (_description == null) await ConfirmReceiver();
-            _pickId = Guid.NewGuid().ToString("N"); _pickPurpose = purpose; _pickRow = row;
-            _pickReceiverScope=ReceiverScope(_confirmedPid,_description);
-            await Call("crossenv_pick_request", new JObject { ["id"] = _pickId, ["purpose"] = purpose, ["row_key"] = row,
+            string id = Guid.NewGuid().ToString("N");
+            string scope = ReceiverScope(_confirmedPid,_description);
+            await Call("crossenv_pick_request", new JObject { ["id"] = id, ["purpose"] = purpose, ["row_key"] = row,
                 ["message"] = purpose == "frame" ? "在此接收工程中使用原生坐标框选取目标参考坐标，再确认返回。" : "请为该焊点多选绑定零件：" + row }, false);
+            _pickId=id; _pickPurpose=purpose; _pickRow=row; _pickReceiverScope=scope;
             _pickTimer.Start(); _status.Text = "请在接收工程中确认选取，结果会自动带回。"; Log(_status.Text);
         }
         private async Task ReadPick()

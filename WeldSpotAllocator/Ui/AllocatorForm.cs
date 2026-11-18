@@ -7,11 +7,13 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
 using TxTools.Common;
+using TxTools.ExportGun;
 
 using Button = System.Windows.Forms.Button;
 using Label = System.Windows.Forms.Label;
@@ -49,9 +51,12 @@ namespace TxTools.WeldSpotAllocator
         private Button _btnPreview, _btnApply;
         private Label _lblRef, _lblTarget, _lblHint;
         private CheckBox _chkByDist, _chkByName, _chkRot, _chkVias, _chkParams, _chkConsume, _chkCountStrict, _chkPosOnly, _chkDiffFrame;
+        private CheckBox _chkTargetWorld;
+        private TxFrameEditBoxCtrl _referenceFramePicker, _targetFramePicker;
+        private Control _frameOptions, _targetFrameField;
         private Button _btnExport;
         private NumericUpDown _numTol;
-        private TextBox _txtPrefix;
+        private TextBox _txtPrefix, _txtMappedSuffix;
         private DataGridView _grid;
         private TextBox _log;
         private Control _logRegion;
@@ -88,6 +93,13 @@ namespace TxTools.WeldSpotAllocator
             try { SemiModal = false; } catch { }
 
             BuildUi();
+            _txtMappedSuffix.Text = AllocPlan.DefaultMappedSuffix;
+            _txtMappedSuffix.TextChanged += (s, e) =>
+            {
+                if (_plan == null || !_btnApply.Enabled) return;
+                _plan.MappedSuffix = ReadMappedSuffix();
+                FillGrid(_plan);
+            };
         }
 
         // PS host 早期钩子（早于 WinForms Load）：UI 已在构造函数建好，此处只做网格初始化。
@@ -106,8 +118,8 @@ namespace TxTools.WeldSpotAllocator
             _inited = true;
             try
             {
-                _refHost.Init(_refHostPanel, IsWeldOp, DropLog, () => { _lblRef.Text = RefText(); }, Log);
-                _tgtHost.Init(_tgtHostPanel, IsWeldOp, DropLog, () => { _lblTarget.Text = TgtText(); }, Log);
+                _refHost.Init(_refHostPanel, IsWeldOp, DropLog, () => { _lblRef.Text = RefText(); InvalidatePreview(); }, Log);
+                _tgtHost.Init(_tgtHostPanel, IsWeldOp, DropLog, () => { _lblTarget.Text = TgtText(); InvalidatePreview(); }, Log);
             }
             catch (Exception ex) { Log("网格初始化异常：" + ex.Message); }
         }
@@ -287,24 +299,87 @@ namespace TxTools.WeldSpotAllocator
             flow.Controls.Add(LabeledPair("剥前缀(名)", _txtPrefix));
             flow.Controls.Add(_chkDiffFrame);
             AddBreak(flow);
+            _frameOptions = BuildFrameOptions();
+            flow.Controls.Add(_frameOptions);
+            flow.SetFlowBreak(_frameOptions, true);
 
             _chkRot = NewChk("复制旋转姿态");
+            _chkRot.Checked = true;
             _cboFlip = FormUiKit.MkComboBox(70);
             _cboFlip.Items.AddRange(new object[] { "None", "X", "Y", "Z" }); _cboFlip.SelectedIndex = 0;
             _chkVias = NewChk("镜像过渡点(C)");
             _chkParams = NewChk("复制轨迹参数");
+            _chkParams.Checked = true;
             _chkConsume = NewChk("挪动焊点(移入新轨迹,不复制)"); _chkConsume.Checked = true;
             _chkCountStrict = NewChk("操作数量严格(A)"); _chkCountStrict.Checked = true;
             _chkPosOnly = NewChk("仅更新位置(A)");
+            _txtMappedSuffix = FormUiKit.MkTextBox("", 110);
+            foreach (var option in new[] { _chkByDist, _chkByName, _chkRot, _chkParams, _chkVias, _chkConsume,
+                                           _chkDiffFrame, _chkCountStrict, _chkPosOnly })
+            {
+                option.CheckedChanged += (s, e) =>
+                {
+                    SyncMatchOptions();
+                    InvalidatePreview();
+                };
+            }
+            _numTol.ValueChanged += (s, e) => InvalidatePreview();
+            _txtPrefix.TextChanged += (s, e) => InvalidatePreview();
+            _cboFlip.SelectedIndexChanged += (s, e) => InvalidatePreview();
             flow.Controls.Add(_chkRot);
             flow.Controls.Add(LabeledPair("镜像翻轴(X前后/Y左右/Z上下)", _cboFlip));
             flow.Controls.Add(_chkVias);
             flow.Controls.Add(_chkParams);
             AddBreak(flow);
             flow.Controls.Add(_chkConsume);
+            flow.Controls.Add(LabeledPair("新轨迹后缀", _txtMappedSuffix));
             flow.Controls.Add(_chkCountStrict);
             flow.Controls.Add(_chkPosOnly);
             return MkCard("匹配条件 + 分配后处理", flow);
+        }
+
+        private Control BuildFrameOptions()
+        {
+            var row = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+            _referenceFramePicker = CreateFramePicker("参考车件坐标");
+            _targetFramePicker = CreateFramePicker("目标车件坐标");
+            _targetFrameField = LabeledPair("目标车件坐标", _targetFramePicker);
+            _chkTargetWorld = NewChk("目标使用世界坐标");
+            _chkTargetWorld.CheckedChanged += (s, e) =>
+            {
+                SyncMatchOptions();
+                InvalidatePreview();
+            };
+            row.Controls.Add(LabeledPair("参考车件坐标", _referenceFramePicker));
+            row.Controls.Add(_targetFrameField);
+            row.Controls.Add(_chkTargetWorld);
+            return row;
+        }
+
+        private TxFrameEditBoxCtrl CreateFramePicker(string label)
+        {
+            var picker = new TxFrameEditBoxCtrl { Width = 150, Height = 28, Font = Font, AccessibleName = label };
+            picker.Load += (s, e) => picker.EnableRelativeToWorkingFrameCoordinates = false;
+            picker.ValidFrameSet += (s, e) => InvalidatePreview();
+            picker.InvalidFrameSet += (s, e) => InvalidatePreview();
+            PickFocus.Wire(picker);
+            return picker;
+        }
+
+        private static double[] ReadFrameOverride(TxFrameEditBoxCtrl picker)
+        {
+            var location = picker.GetLocation();
+            if (location == null && string.IsNullOrWhiteSpace(picker.Text)) return null;
+            if (location == null || !location.IsLocationTransformation)
+                throw new InvalidOperationException($"请在当前工程重新选取{picker.AccessibleName}，或清空拾取框以自动识别。");
+            return PsReader.TxToArr(location);
+        }
+
+        private void ClearFrameOverrides()
+        {
+            if (_referenceFramePicker.IsHandleCreated) _referenceFramePicker.Text = "";
+            if (_targetFramePicker.IsHandleCreated) _targetFramePicker.Text = "";
+            _chkTargetWorld.Checked = false;
         }
 
         private Control BuildActionRow()
@@ -315,7 +390,7 @@ namespace TxTools.WeldSpotAllocator
             _btnExport = NewBtn("导出Excel", Theme.BtnExport); _btnExport.Click += (s, e) => DoExport();
             var bSwap = NewBtn("交换参考/目标", Theme.BtnMuted); bSwap.Click += (s, e) => DoSwap();
             var bClearAll = NewBtn("清空列表", Theme.BtnMuted);
-            bClearAll.Click += (s, e) => { _refHost.Clear(); _tgtHost.Clear(); _lblRef.Text = RefText(); _lblTarget.Text = TgtText(); _grid.Rows.Clear(); _btnApply.Enabled = false; };
+            bClearAll.Click += (s, e) => { _refHost.Clear(); _tgtHost.Clear(); ClearFrameOverrides(); _lblRef.Text = RefText(); _lblTarget.Text = TgtText(); InvalidatePreview(); };
             flow.Controls.Add(_btnPreview); flow.Controls.Add(_btnApply); flow.Controls.Add(_btnExport); flow.Controls.Add(bSwap); flow.Controls.Add(bClearAll);
             _btnToggleLog = NewBtn("日志", Theme.BtnMuted);
             _btnToggleLog.Click += (s, e) =>
@@ -368,24 +443,47 @@ namespace TxTools.WeldSpotAllocator
         private AllocMode Mode => _rbB.Checked ? AllocMode.NewSpot : (_rbC.Checked ? AllocMode.Symmetric : AllocMode.UpdatePosition);
         private string RefText() => $"参考操作 {_refHost.Count} 条";
         private string TgtText() => $"目标操作 {_tgtHost.Count} 条";
+        private string ReadMappedSuffix() => string.IsNullOrWhiteSpace(_txtMappedSuffix.Text)
+            ? AllocPlan.DefaultMappedSuffix : _txtMappedSuffix.Text.Trim();
 
         private void SyncModeUi()
         {
             bool assign = Mode != AllocMode.UpdatePosition;
             bool sym = Mode == AllocMode.Symmetric;
-            switch (Mode)
-            {
-                case AllocMode.UpdatePosition:
-                    _lblHint.Text = "①旧版焊接操作 ②新版焊接操作。把旧版焊点更新到新版坐标，分配不变。"; break;
-                case AllocMode.NewSpot:
-                    _lblHint.Text = "①已分配参考操作 ②待分配焊点清单(操作)。参考在工位、新点在导入原点对不上时，勾「不同车件参考系」(目标车身须在世界原点)。"; break;
-                case AllocMode.Symmetric:
-                    _lblHint.Text = "①左侧参考操作 ②右侧待分配焊点清单(操作)。参考镜像后匹配，via 镜像复制到 _Mapped。"; break;
-            }
             _chkRot.Enabled = assign; _chkParams.Enabled = assign; _chkConsume.Enabled = assign; _chkDiffFrame.Enabled = assign;
-            _chkVias.Enabled = sym; _cboFlip.Enabled = sym;
+            _txtMappedSuffix.Enabled = assign;
+            _chkVias.Enabled = sym;
             _chkCountStrict.Enabled = !assign; _chkPosOnly.Enabled = !assign;
+            SyncMatchOptions();
+            InvalidatePreview();
+        }
+
+        private void SyncMatchOptions()
+        {
+            _txtPrefix.Enabled = _chkByName.Checked;
+            _numTol.Enabled = _chkByDist.Checked || !_chkByName.Checked;
+            _cboFlip.Enabled = Mode == AllocMode.Symmetric && (_chkRot.Checked || _chkVias.Checked);
+            bool differentFrames = Mode != AllocMode.UpdatePosition && _chkDiffFrame.Checked;
+            bool showFrames = differentFrames || Mode == AllocMode.Symmetric;
+            _frameOptions.Visible = showFrames;
+            _targetFrameField.Visible = differentFrames;
+            _chkTargetWorld.Visible = differentFrames;
+            _targetFramePicker.Enabled = differentFrames && !_chkTargetWorld.Checked;
+            if (differentFrames)
+                _lblHint.Text = "在当前工程分别选取参考和目标车件坐标后预览。坐标拾取框留空时，从各侧焊点自动识别。";
+            else if (Mode == AllocMode.Symmetric)
+                _lblHint.Text = "选对侧待分配操作，并在当前工程确认参考车件坐标后预览。对称面为参考车件的局部 XZ 平面。";
+            else if (Mode == AllocMode.NewSpot)
+                _lblHint.Text = "选参考操作和待分配操作后预览。两侧车件位置或轴向不同时，启用「不同车件参考系」。";
+            else
+                _lblHint.Text = "选旧版和新版焊接操作后预览。将旧版焊点更新到新版坐标，保留分配。";
+        }
+
+        private void InvalidatePreview()
+        {
+            _plan = null;
             _btnApply.Enabled = false;
+            _grid.Rows.Clear();
         }
 
         // ── 数据 ──────────────────────────────────────────────────────────
@@ -410,32 +508,47 @@ namespace TxTools.WeldSpotAllocator
 
         private void DoPreview()
         {
+            InvalidatePreview();
             try
             {
                 _lblRef.Text = RefText(); _lblTarget.Text = TgtText();
                 _refOps = ReadHost(_refHost);
                 _targetOps = ReadHost(_tgtHost);
 
+                var mode = Mode;
                 var cfg = new MatchSettings
                 {
                     ByDistance = _chkByDist.Checked,
                     ByName = _chkByName.Checked,
                     MaxDistMm = (double)_numTol.Value,
                     CountStrict = _chkCountStrict.Checked,
-                    DiffFrame = _chkDiffFrame.Checked,
+                    DiffFrame = mode != AllocMode.UpdatePosition && _chkDiffFrame.Checked,
                     Names = new NameOptions { StripPrefix = string.IsNullOrWhiteSpace(_txtPrefix.Text) ? null : _txtPrefix.Text.Trim() }
                 };
+                if (cfg.DiffFrame || mode == AllocMode.Symmetric)
+                    cfg.ReferenceFrame = ReadFrameOverride(_referenceFramePicker);
+                if (cfg.DiffFrame)
+                {
+                    cfg.TargetFrame = _chkTargetWorld.Checked ? PsReader.TxToArr(new TxTransformation())
+                        : ReadFrameOverride(_targetFramePicker);
+                    if (_chkTargetWorld.Checked) cfg.TargetFrameSource = "世界坐标";
+                }
                 if (!cfg.ByDistance && !cfg.ByName) { Log("⚠ 未勾任何匹配条件，按仅距离处理"); cfg.ByDistance = true; }
 
-                _plan = SpotMatchEngine.Build(Mode, _refOps, _targetOps, cfg, (FlipAxis)_cboFlip.SelectedIndex,
+                _plan = SpotMatchEngine.Build(mode, _refOps, _targetOps, cfg, (FlipAxis)_cboFlip.SelectedIndex,
                     _chkVias.Checked, _chkRot.Checked, _chkParams.Checked, _chkConsume.Checked, Log);
+                _plan.MappedSuffix = ReadMappedSuffix();
 
                 FillGrid(_plan);
                 foreach (var w in _plan.Warnings) Log("⚠ " + w);
                 _btnApply.Enabled = _plan.TotalMatches > 0;
                 Log($"预览：匹配 {_plan.TotalMatches} 点，警告 {_plan.Warnings.Count} 条");
             }
-            catch (Exception ex) { Log("预览异常：" + ex.Message); }
+            catch (Exception ex)
+            {
+                Log("预览异常：" + ex.Message);
+                MessageBox.Show(ex.Message, "无法预览", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         private void FillGrid(AllocPlan plan)
@@ -443,21 +556,41 @@ namespace TxTools.WeldSpotAllocator
             _grid.Rows.Clear();
             foreach (var om in plan.OpMatches)
             {
-                string opName = plan.Mode == AllocMode.UpdatePosition ? (om.TargetOp?.Name ?? om.RefOp?.Name) : (om.RefOp?.Name + "_Mapped");
+                string opName = plan.Mode == AllocMode.UpdatePosition ? (om.TargetOp?.Name ?? om.RefOp?.Name) : plan.GetMappedName(om.RefOp);
                 foreach (var mt in om.Matches)
-                    _grid.Rows.Add(opName, mt.Ref?.Name, mt.Target?.Name, mt.By + (mt.Mirrored ? "·变换" : ""), mt.Dist.ToString("F1"));
+                {
+                    string basis = mt.By == MatchBy.Name ? "名称" : mt.By == MatchBy.NameAndPosition ? "名称 + 距离" : "距离";
+                    if (mt.Mirrored) basis += plan.DiffFrame ? " · 局部坐标" : " · 镜像";
+                    if (double.IsNaN(mt.Dist)) basis += " · 无可比距离";
+                    if (plan.CopyRotation && mt.RotationInTargetWorld == null) basis += " · 姿态待补全";
+                    int index = _grid.Rows.Add(opName, mt.Ref?.Name, mt.Target?.Name, basis,
+                        double.IsNaN(mt.Dist) ? "—" : mt.Dist.ToString("F1"));
+                    if (mt.FrameDetails != null) _grid.Rows[index].Cells[3].ToolTipText = mt.FrameDetails;
+                }
             }
         }
 
         private void DoApply()
         {
-            if (_plan == null) { Log("请先预览"); return; }
-            var r = MessageBox.Show($"将写入 {_plan.TotalMatches} 处更改（{Mode}）。\nB/C 会 Paste 出 _Mapped 新轨迹；可用 PS 撤销回退。继续？",
+            var plan = _plan;
+            if (plan == null || !_btnApply.Enabled) { Log("请先预览"); return; }
+            if (plan.WriteBlockers.Count > 0)
+            {
+                string details = string.Join("\n", plan.WriteBlockers.Take(5));
+                if (plan.WriteBlockers.Count > 5) details += $"\n共 {plan.WriteBlockers.Count} 项，完整明细见日志。";
+                MessageBox.Show(details + "\n请补齐所需车件坐标或检查点位姿态后，重新预览。", "暂不能执行写入",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            string assignment = plan.Mode == AllocMode.UpdatePosition ? "" :
+                $"\n新轨迹后缀为「{plan.MappedSuffix}」，将{(plan.ConsumeTargets ? "移动" : "复制")}匹配的目标点位。";
+            var r = MessageBox.Show($"将写入 {plan.TotalMatches} 处更改（{plan.Mode}）。{assignment}\n可用 PS 撤销回退。继续？",
                 "确认执行", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
-            if (r != DialogResult.OK) return;
+            if (r != DialogResult.OK || !ReferenceEquals(_plan, plan)) return;
+            _btnApply.Enabled = false;
             try
             {
-                var rep = SpotWriter.ApplyPlan(_plan, _chkPosOnly.Checked, Log);
+                var rep = SpotWriter.ApplyPlan(plan, _chkPosOnly.Checked, Log);
                 foreach (var e in rep.Errors) Log("✗ " + e);
                 Log("完成：" + rep);
                 MessageBox.Show(rep.ToString(), "执行完成", MessageBoxButtons.OK, rep.Failed > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
@@ -472,8 +605,9 @@ namespace TxTools.WeldSpotAllocator
             _refHost.Clear(); _tgtHost.Clear();
             foreach (var o in b) _refHost.Append(o);
             foreach (var o in a) _tgtHost.Append(o);
+            ClearFrameOverrides();
             _lblRef.Text = RefText(); _lblTarget.Text = TgtText();
-            _grid.Rows.Clear(); _btnApply.Enabled = false;
+            InvalidatePreview();
             Log($"已交换参考/目标：参考 {_refHost.Count} 条 ↔ 目标 {_tgtHost.Count} 条");
         }
 

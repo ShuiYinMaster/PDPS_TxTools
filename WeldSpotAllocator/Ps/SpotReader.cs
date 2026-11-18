@@ -2,15 +2,12 @@
 // 从操作树读取焊接操作 → 有序焊点/过渡点，持有底层 TxWeldPoint / via 引用（写入层需要）。
 // 复用 PsReader 的静态工具：TxToArr / GetAppearancesFromWeldPoint。
 //
-// 枚举策略：选中对象中递归找出 TxWeldOperation（含复合操作下层），
-//   对每条 weldOp 用 GetDirectDescendants 取其直接子操作，按出现顺序分流：
-//     · 类型名含 "WeldLocation" → TxWeldLocationOperation，.WeldPoint 得 TxWeldPoint
-//     · 类型名含 "Via"          → TxRoboticViaLocationOperation（过渡点）
-//   ⚠ 若 GetDirectDescendants 不保证轨迹顺序，改用 GetChildAt(i) 逐序号遍历（见 EnumChildrenOrdered）。
+// 通过 SDK 有序集合读取焊接位置操作和过渡点。
 
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using Tecnomatix.Engineering;
 using TxTools.ExportGun;
 
@@ -26,43 +23,34 @@ namespace TxTools.WeldSpotAllocator
             var od = new OpData { Name = SafeName(weldOp), Raw = weldOp };
             foreach (ITxObject child in EnumChildrenOrdered(weldOp))
             {
-                string tn = child.GetType().Name;
                 try
                 {
-                    if (tn.Contains("WeldLocation"))           // TxWeldLocationOperation
+                    if (child is TxWeldLocationOperation weld)
                     {
-                        dynamic d = child;
-                        TxWeldPoint wp = null;
-                        try { wp = d.WeldPoint as TxWeldPoint; } catch { }
+                        var wp = weld.WeldPoint;
                         if (wp == null) continue;
-                        var sd = MakeWeldSpot(wp, child);
+                        var sd = MakeWeldSpot(wp, weld);
                         od.Spots.Add(sd); od.Ordered.Add(sd);
                     }
-                    else if (tn.Contains("Via"))               // TxRoboticViaLocationOperation
+                    else if (child is TxRoboticViaLocationOperation via)
                     {
-                        var sd = MakeViaSpot(child);
+                        var sd = MakeViaSpot(via);
                         if (sd != null) { od.Vias.Add(sd); od.Ordered.Add(sd); }
                     }
                 }
-                catch (Exception ex) { log($"[Reader] [{od.Name}] 子项[{tn}] 解析异常：{ex.Message}"); }
+                catch (Exception ex) { log($"[Reader] [{od.Name}] 子项[{child.GetType().Name}] 解析异常：{ex.Message}"); }
             }
             return od;
         }
 
-        // 优先按序号遍历以保证轨迹顺序；失败回退 GetDirectDescendants
+        // 有序集合使用 SDK 的索引顺序。
         private static IEnumerable<ITxObject> EnumChildrenOrdered(ITxObject weldOp)
         {
-            // 尝试 GetChildCount + GetChildAt(i)
-            int count = -1;
-            try { dynamic d = weldOp; count = (int)d.GetChildCount(); } catch { count = -1; }
-            if (count >= 0)
+            if (weldOp is ITxOrderedObjectCollection ordered)
             {
+                int count = ordered.Count;
                 for (int i = 0; i < count; i++)
-                {
-                    ITxObject c = null;
-                    try { dynamic d = weldOp; c = d.GetChildAt(i) as ITxObject; } catch { }
-                    if (c != null) yield return c;
-                }
+                    yield return ordered.GetChildAt(i);
                 yield break;
             }
             var kids = DirectKids(weldOp);
@@ -70,27 +58,31 @@ namespace TxTools.WeldSpotAllocator
         }
 
         // ── 构造 SpotData ───────────────────────────────────────────────────
-        private static SpotData MakeWeldSpot(TxWeldPoint wp, ITxObject locOp)
+        private static SpotData MakeWeldSpot(TxWeldPoint wp, TxWeldLocationOperation locOp)
         {
-            TxTransformation tx = SafeTx(() => wp.AbsoluteLocation);
-            double[] m = PsReader.TxToArr(tx);
+            var tx = wp.AbsoluteLocation;
+            if (tx == null) throw new InvalidOperationException("无法读取制造焊点的位姿。");
+            var m = PsReader.TxToArr(tx);
+            var trajectory = SafeTx(() => locOp.AbsoluteLocation);
+            var frame = ReadSymCenter(wp, locOp, out var frameSource);
             var sd = new SpotData
             {
-                Name = SafeName(wp),
+                Name = wp.Name,
                 Kind = PointType.WeldPoint,
                 Matrix = m,
+                TrajectoryMatrix = trajectory == null ? null : PsReader.TxToArr(trajectory),
                 Position = new[] { m[3], m[7], m[11] },
-                SymCenter = ReadSymCenter(wp, locOp),
+                SymCenter = frame,
+                ReferenceFrameSource = frameSource,
                 Raw = wp,
                 LocOp = locOp
             };
             return sd;
         }
 
-        private static SpotData MakeViaSpot(ITxObject via)
+        private static SpotData MakeViaSpot(TxRoboticViaLocationOperation via)
         {
-            TxTransformation tx = null;
-            try { dynamic d = via; tx = d.AbsoluteLocation as TxTransformation; } catch { }
+            var tx = via.AbsoluteLocation;
             if (tx == null) return null;
             double[] m = PsReader.TxToArr(tx);
             return new SpotData
@@ -105,32 +97,41 @@ namespace TxTools.WeldSpotAllocator
         }
 
         // ── 小工具 ──────────────────────────────────────────────────────────
-        private static double[] ReadSymCenter(TxWeldPoint wp, ITxObject locOp)
+        private static double[] ReadSymCenter(TxWeldPoint wp, TxWeldLocationOperation locOp, out string source)
         {
-            // 首选：焊点位 Attach/绑定的分身车件原点（文档所述对称中心默认值）
-            if (locOp != null)
-            {
-                try
-                {
-                    dynamic d = locOp;
-                    var parent = d.AttachmentParent as ITxObject;
-                    if (parent != null)
-                    {
-                        TxTransformation tx = null;
-                        try { dynamic pd = parent; tx = pd.AbsoluteLocation as TxTransformation; } catch { }
-                        if (tx != null) return PsReader.TxToArr(tx);
-                    }
-                }
-                catch { }
-            }
-            // 回退：焊点绑定零件的外观矩阵
+            var frame = ReadAttachmentFrame(locOp, "轨迹点位", out source);
+            if (frame != null) return frame;
+
             try
             {
-                var apps = PsReader.GetAppearancesFromWeldPoint(wp);
-                if (apps != null && apps.Count > 0 && apps[0].Matrix != null) return apps[0].Matrix;
+                var candidates = wp.AssignedParts?.OfType<ITxLocatableObject>()
+                    .Select(part => new { Part = part, Pose = SafeTx(() => part.AbsoluteLocation) })
+                    .Where(part => part.Pose != null).ToList();
+                if (candidates != null && candidates.Count > 0)
+                {
+                    frame = SymmetryMath.SharedFrame(candidates.Select(part => PsReader.TxToArr(part.Pose)));
+                    source = frame == null ? "制造焊点关联零件的坐标基准不一致"
+                        : $"制造焊点关联零件「{SafeName(candidates[0].Part)}」";
+                    return frame;
+                }
             }
             catch { }
-            return null;
+
+            return ReadAttachmentFrame(wp, "制造焊点", out source);
+        }
+
+        private static double[] ReadAttachmentFrame(ITxLocatableObject point, string pointKind, out string source)
+        {
+            source = "未找到参考坐标基准";
+            try
+            {
+                var parent = point.AttachmentParent;
+                var pose = parent?.AbsoluteLocation;
+                if (pose == null) return null;
+                source = $"{pointKind}附着父对象「{SafeName(parent)}」";
+                return PsReader.TxToArr(pose);
+            }
+            catch { return null; }
         }
 
         private static TxObjectList DirectKids(ITxObject node)

@@ -413,10 +413,18 @@
     <Compile Include="AutoRecorder\ViewSchedule.cs" />
     <Compile Include="AutoRecorder\ShotPreset.cs" />
     <Compile Include="AutoRecorder\SimulationPreview.cs" />
-    <Compile Include="AutoRecorder\CameraShotEditor.cs" />
-    <Compile Include="AutoRecorder\TransportIconButton.cs" />
-    <Compile Include="AutoRecorder\RecorderWorkspace.cs" />
-    <Compile Include="AutoRecorder\RecordingSettingsDialog.cs" />
+    <Compile Include="AutoRecorder\CameraShotEditor.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Include="AutoRecorder\TransportIconButton.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="AutoRecorder\RecorderWorkspace.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Include="AutoRecorder\RecordingSettingsDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="LibPathSync\LibPathTargets.cs" />
     <Compile Include="LibPathSync\SyncLibPathCommand.cs" />
     <Compile Include="LibPathSync\SyncToSelectedComponentCommand.cs" />
@@ -590,12 +598,18 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="WeldPointMatrix\PointService.cs" />
-    <Compile Include="WeldPointMatrix\WeldPointMatrixForm.Playback.cs" />
-    <Compile Include="WeldPointMatrix\WeldPointMatrixForm.Interlock.cs" />
+    <Compile Include="WeldPointMatrix\WeldPointMatrixForm.Playback.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="WeldPointMatrix\WeldPointMatrixForm.Interlock.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="WeldPointMatrix\SequencePlaybackScope.cs" />
     <Compile Include="WeldPointMatrix\SequenceEditorSession.cs" />
     <Compile Include="WeldPointMatrix\NativeLocationCommands.cs" />
-    <Compile Include="WeldPointMatrix\PointMatrixGrid.cs" />
+    <Compile Include="WeldPointMatrix\PointMatrixGrid.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="SRC\TreeWorkflow.cs" />
     <Compile Include="SRC\TreeWorkflowUi.cs" />
     <Compile Include="WeldSpotGrouper\Core\SequencePlan.cs" />
@@ -603,10 +617,21 @@
     <Compile Include="WeldSpotGrouper\Ps\GroupWriter.cs" />
     <Compile Include="WeldSpotGrouper\Ps\SpotGrouper.cs" />
     <Compile Include="WeldSpotGrouper\Ui\GrouperForm.cs">
-      <SubType>Form</SubType>
+      <SubType>Component</SubType>
     </Compile>
     <Compile Include="WeldSpotGrouper\WeldSpotGrouperCmd.cs" />
     <Compile Include="CatiaPartTree\Core\TreeEditNode.cs" />
+    <Compile Include="CatiaPartTree\Core\CatiaImportSource.cs" />
+    <Compile Include="CatiaPartTree\Core\ThreeDXmlSource.cs" />
+    <Compile Include="CatiaPartTree\Core\CatiaConversionDiagnostics.cs" />
+    <Compile Include="CatiaPartTree\Core\CatiaLibraryDestination.cs" />
+    <Compile Include="CatiaPartTree\StructureSourceTree.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="CatiaPartTree\StructureTreeImages.cs" />
+    <Compile Include="CatiaPartTree\Ps\CatiaImportSession.cs" />
+    <Compile Include="CatiaPartTree\Ps\CatiaExistingAssignment.cs" />
+    <Compile Include="CatiaPartTree\Conversion\Frame12.cs" />
     <Compile Include="CatiaPartTree\Ps\CatiaPartTreeService.cs" />
     <Compile Include="CatiaPartTree\CatiaPartTreeCmd.cs" />
     <Compile Include="CatiaPartTree\CatiaPartTreeForm.cs">
@@ -623,10 +648,18 @@
     <Compile Include="CrossEnvIO\Core\PszSaveReload.cs" />
     <Compile Include="CrossEnvIO\Core\CrossEnvJson.cs" />
     <Compile Include="CrossEnvIO\Core\TransferResponses.cs" />
-    <Compile Include="CrossEnvIO\CrossEnvIOWorkflow.cs" />
-    <Compile Include="CrossEnvIO\CrossEnvGuidedUi.cs" />
-    <Compile Include="CrossEnvIO\CrossEnvStorageUi.cs" />
-    <Compile Include="CrossEnvIO\CrossEnvNativeFrame.cs" />
+    <Compile Include="CrossEnvIO\CrossEnvIOWorkflow.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="CrossEnvIO\CrossEnvGuidedUi.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="CrossEnvIO\CrossEnvStorageUi.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="CrossEnvIO\CrossEnvNativeFrame.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="CrossEnvIO\Core\TransferJobs.cs" />
     <Compile Include="CrossEnvIO\Core\TransferRuntime.cs" />
     <Compile Include="CrossEnvIO\Core\TransferBundle.cs" />
@@ -651,18 +684,40 @@
     </Compile>
     <Compile Include="CrossEnvIO\CrossEnvIOCmd.cs" />
     <Compile Include="ThemeTuner\ThemeTunerCmd.cs" />
-    <Compile Include="ThemeTuner\ThemeTunerForm.About.cs" />
+    <Compile Include="ThemeTuner\ThemeTunerForm.About.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="ThemeTuner\ReleaseChecker.cs" />
-    <EmbeddedResource Include="LICENSE"><LogicalName>TxTools.Licenses.TxTools</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="NOTICE.md"><LogicalName>TxTools.Licenses.HostNotice</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="ThemeTuner\Licenses\OpenXml.txt"><LogicalName>TxTools.Licenses.OpenXml</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="ExportByColor\Vendor\EarCut\LICENSE"><LogicalName>TxTools.Licenses.EarCut</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="ExportByColor\JtDirectCs\LICENSE.JTReader"><LogicalName>TxTools.Licenses.JTReader</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="ExportByColor\JtDirectCs\THIRD-PARTY-NOTICES.txt"><LogicalName>TxTools.Licenses.JTDependencies</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="Agent\UI\pet\dsh-pet\LICENSE-dsh-pet.txt"><LogicalName>TxTools.Licenses.DshPet</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="Agent\UI\model-logos\LICENSE"><LogicalName>TxTools.Licenses.LobeIcons</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="$(TxToolsNuGetDir)**\LICENSE.*"><LogicalName>TxTools.Licenses.NuGet.%(RecursiveDir)%(Filename)%(Extension)</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="$(TxToolsPetComponentsDir)electron\LICENSE"><LogicalName>TxTools.Licenses.Electron</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="LICENSE">
+      <LogicalName>TxTools.Licenses.TxTools</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="NOTICE.md">
+      <LogicalName>TxTools.Licenses.HostNotice</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="ThemeTuner\Licenses\OpenXml.txt">
+      <LogicalName>TxTools.Licenses.OpenXml</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="ExportByColor\Vendor\EarCut\LICENSE">
+      <LogicalName>TxTools.Licenses.EarCut</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="ExportByColor\JtDirectCs\LICENSE.JTReader">
+      <LogicalName>TxTools.Licenses.JTReader</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="ExportByColor\JtDirectCs\THIRD-PARTY-NOTICES.txt">
+      <LogicalName>TxTools.Licenses.JTDependencies</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Agent\UI\pet\dsh-pet\LICENSE-dsh-pet.txt">
+      <LogicalName>TxTools.Licenses.DshPet</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Agent\UI\model-logos\LICENSE">
+      <LogicalName>TxTools.Licenses.LobeIcons</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(TxToolsNuGetDir)**\LICENSE.*">
+      <LogicalName>TxTools.Licenses.NuGet.%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(TxToolsPetComponentsDir)electron\LICENSE">
+      <LogicalName>TxTools.Licenses.Electron</LogicalName>
+    </EmbeddedResource>
     <Compile Include="ThemeTuner\ThemeTunerForm.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -1605,10 +1660,11 @@
       <LogicalName>TxTools.ExportByColor.Vendor.EarCut.LICENSE</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
-
   <ItemGroup>
     <Compile Include="FootingPlanExport\FootingPlanExportCommand.cs" />
-    <Compile Include="FootingPlanExport\FootingPlanExportForm.cs" />
+    <Compile Include="FootingPlanExport\FootingPlanExportForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="FootingPlanExport\PsSectionService.cs" />
     <Compile Include="FootingPlanExport\SaveComponentDialog.cs" />
     <Compile Include="FootingPlanExport\CacheSession.cs" />

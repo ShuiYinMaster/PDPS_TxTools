@@ -5,6 +5,27 @@ using System.Linq;
 
 namespace TxTools.CatiaPartTree.Conversion
 {
+    // Packed edges store two nearby vertex IDs in the high/low 32-bit words.
+    // Mix both words before hashing; the default Int64 XOR hash puts many CAD
+    // grid edges in the same bucket (for example, every (2n, 2n+1) hashes to 1).
+    internal sealed class MeshEdgeComparer : IEqualityComparer<long>
+    {
+        internal static readonly MeshEdgeComparer Instance = new MeshEdgeComparer();
+        private MeshEdgeComparer() { }
+        public bool Equals(long a, long b) { return a == b; }
+        public int GetHashCode(long value)
+        {
+            unchecked
+            {
+                ulong key = (ulong)value;
+                key ^= key >> 33; key *= 0xff51afd7ed558ccdUL;
+                key ^= key >> 33; key *= 0xc4ceb9fe1a85ec53UL;
+                key ^= key >> 33;
+                return (int)(key ^ (key >> 32));
+            }
+        }
+    }
+
     public sealed class MeshShape
     {
         public string name;
@@ -126,13 +147,17 @@ namespace TxTools.CatiaPartTree.Conversion
             if(vehicleFromPart.Determinant<0)foreach(var t in result.triangles){int old=t[1];t[1]=t[2];t[2]=old;}
             if(normals!=null)
             {
-                bool mirror=vehicleFromPart.Determinant<0;
+                var inverse=vehicleFromPart.Inverse().Components;
                 result.normals=normals.Select(n=>
                 {
-                    if(n==null)return null;var d=vehicleFromPart.Direction(n);
+                    // Normals are covectors. Use inverse-transpose for scale/shear;
+                    // reflected triangle winding was already corrected above.
+                    if(n==null)return null;
+                    var d=new[]{inverse[0]*n[0]+inverse[1]*n[1]+inverse[2]*n[2],
+                        inverse[3]*n[0]+inverse[4]*n[1]+inverse[5]*n[2],
+                        inverse[6]*n[0]+inverse[7]*n[1]+inverse[8]*n[2]};
                     double length=Math.Sqrt(d[0]*d[0]+d[1]*d[1]+d[2]*d[2]);if(length==0)return null;
-                    double sign=mirror?-1:1;
-                    return new[]{sign*d[0]/length,sign*d[1]/length,sign*d[2]/length};
+                    return new[]{d[0]/length,d[1]/length,d[2]/length};
                 }).ToArray();
             }
             result.Validate();return result;
@@ -181,7 +206,7 @@ namespace TxTools.CatiaPartTree.Conversion
             using(var sha=System.Security.Cryptography.SHA256.Create())hash=BitConverter.ToString(sha.ComputeHash(data)).Replace("-", "").ToLowerInvariant();
             string name=Path.GetFileNameWithoutExtension(path);
             var mesh=NativeCadReader.Mesh(NativeCadReader.EmbeddedCgr(data),name,"source/1",path,hash);
-            if(SourceDigest.Hash(path)!=hash)throw new IOException("Source CATPart changed during conversion");
+            // Geometry and digest come from the same immutable byte snapshot.
             return new SourceMeshScene{name=name,sourceFile=path,sourceSha256=hash,shapes=new[]{mesh}};
         }
     }

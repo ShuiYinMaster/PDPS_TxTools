@@ -27,13 +27,33 @@ namespace TxTools.CrossEnvIO
             var split=new SplitContainer { Width=560,Height=230,MinimumSize=new Size(300,190),SplitterDistance=278,
                 Panel1MinSize=140,Panel2MinSize=140,FixedPanel=FixedPanel.None,Margin=new Padding(0,3,0,3) };
             _storageSplit=split;
-            var left=new GroupBox { Text="本端 · 模型文件",Dock=DockStyle.Fill,Padding=new Padding(6,20,6,6),Font=Font };
-            var right=new GroupBox { Text="接收端 · 库文件夹",Dock=DockStyle.Fill,Padding=new Padding(6,20,6,6),Font=Font };
+            var left=CreateSection("本端 · 模型文件");
+            var right=CreateSection("接收端 · 库文件夹");
             _storageSources=new DataGridView { Dock=DockStyle.Fill,ReadOnly=true,AllowUserToAddRows=false,AllowUserToDeleteRows=false,
                 RowHeadersVisible=false,SelectionMode=DataGridViewSelectionMode.FullRowSelect,MultiSelect=true,
                 AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.Fill,BackgroundColor=Color.White,Font=Font };
             _storageSources.Columns.Add("File","文件名");_storageSources.Columns[0].FillWeight=130;
             _storageSources.Columns.Add("Type","类型");_storageSources.Columns.Add("Folder","接收目录");
+            var choices = new ContextMenuStrip();
+            _storageSources.Disposed += (s,e) => choices.Dispose();
+            _storageSources.CellContentClick += (s,e) =>
+            {
+                if (e.RowIndex < 0 || e.ColumnIndex != 2 || _busy || _uncertain || _sourceDirty) return;
+                var row = _storageSources.Rows[e.RowIndex];
+                if (!(row.Cells[2].Tag is string[] directories)) return;
+                choices.Items.Clear();
+                var plan = _plan;
+                string key = (string)row.Tag, scope = ReceiverScope(_confirmedPid,_description);
+                foreach (string directory in directories)
+                    choices.Items.Add(directory, null, (sender,args) =>
+                    {
+                        if (_sourceDirty || plan != _plan || scope != ReceiverScope(_confirmedPid,_description)) return;
+                        try { AssignStorage(new[] { key },directory,false); }
+                        catch (Exception ex) { ShowFailure(ex); }
+                    });
+                var cell = _storageSources.GetCellDisplayRectangle(2,e.RowIndex,true);
+                choices.Show(_storageSources,new Point(cell.Left,cell.Bottom));
+            };
             _storageSources.SelectionChanged+=(s,e)=>
             {
                 if(!_storageRefreshing)UpdateStorageActions();
@@ -132,8 +152,24 @@ namespace TxTools.CrossEnvIO
                     _storageSources.Rows[row].Cells[0].ToolTipText=package.Source+"\n场景实例："+package.Instances+"；文件只复制一次，每个实例分别重建。";
                     string basis;
                     if(!string.IsNullOrWhiteSpace(package.OverrideDirectory))basis="手动拖放 / 分配";
-                    else if(_plan.Placement==TransferPlacement.Automatic)TransferDirectoryMatcher.Match(package,_plan.LibraryDirectories,out basis);
+                    else if(_plan.Placement==TransferPlacement.Automatic) basis="自动匹配";
                     else basis="高级目录规则";
+                    if (_description != null && package.Conflict != TransferConflict.Skip)
+                    {
+                        IEnumerable<string> candidates = Array.Empty<string>();
+                        if (_plan.Placement == TransferPlacement.Automatic)
+                            candidates = TransferDirectoryMatcher.Candidates(package,_plan.LibraryDirectories,out basis);
+                        else if (_plan.Placement == TransferPlacement.ByType)
+                            candidates = _plan.Categories().Where(c => package.Types.ContainsKey(c.Key))
+                                .Select(c => _plan.TypeDirectories.TryGetValue(c.Key,out var path) && !string.IsNullOrWhiteSpace(path) ? path : _plan.DefaultDirectory);
+                        var options = candidates.Where(p => !string.IsNullOrWhiteSpace(p)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                        if (options.Length > 1)
+                        {
+                            _storageSources.Rows[row].Cells[2] = new DataGridViewButtonCell {
+                                Value = (package.OverrideDirectory ?? "选择目录") + " ▾", Tag = options };
+                            basis = "点击选择接收目录：" + string.Join("、",options);
+                        }
+                    }
                     _storageSources.Rows[row].Cells[2].ToolTipText=basis;
                 }
                 if(_plan.Kind=="model")

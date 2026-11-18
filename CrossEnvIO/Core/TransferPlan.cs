@@ -306,6 +306,12 @@ namespace TxTools.CrossEnvIO
         }
         internal static string Match(TransferPackage item,IEnumerable<string> folders,out string reason)
         {
+            var matches = Candidates(item, folders, out reason);
+            return matches.Count == 1 ? matches[0] : null;
+        }
+
+        internal static List<string> Candidates(TransferPackage item,IEnumerable<string> folders,out string reason)
+        {
             string relative=CojtTransfer.RelativeToRoot(item.OriginalSource,item.SourceRoot);
             string sourceDirectory=relative==null?"":Path.GetDirectoryName(relative)??"";
             string[] source=sourceDirectory.Split(new[]{'\\','/'},StringSplitOptions.RemoveEmptyEntries).Select(Category).ToArray();
@@ -346,7 +352,7 @@ namespace TxTools.CrossEnvIO
                 if(score==best)matches.Add(folder);
             }
             reason=matches.Count==1?basis:matches.Count>1?"匹配到多个接收目录："+string.Join("、",matches):"未找到对应的接收目录";
-            return matches.Count==1?matches[0]:null;
+            return matches;
         }
         internal static string Association(TransferPackage item)
         {

@@ -22,7 +22,7 @@ namespace TxTools.WeldSpotAllocator
     }
 
     /// <summary>点匹配的命中依据。</summary>
-    public enum MatchBy { None, Name, Position }
+    public enum MatchBy { None, Name, Position, NameAndPosition }
 
     /// <summary>镜像后焊枪工具系手性修正：再绕工具自身某轴翻 180°。</summary>
     public enum FlipAxis { None, X, Y, Z }
@@ -33,8 +33,10 @@ namespace TxTools.WeldSpotAllocator
         public string Name;          // 焊点/via 名
         public PointType Kind;       // WeldPoint / PathPoint(=via) / ...
         public double[] Matrix;      // 世界系位姿 double[16] row-major
+        internal double[] TrajectoryMatrix; // 焊接位置操作的世界位姿，用于复制旋转
         public double[] Position;    // {m[3], m[7], m[11]}，匹配距离用
         public double[] SymCenter;   // 该点对称中心（绑定零件分身 AbsoluteLocation），可空
+        internal string ReferenceFrameSource; // 基准来源或无法确定基准的原因
 
         public ITxObject Raw;        // 底层：TxWeldPoint（焊点）或 via 操作对象
         public ITxObject LocOp;      // 焊点所属的 TxWeldLocationOperation；via 时与 Raw 同
@@ -67,10 +69,12 @@ namespace TxTools.WeldSpotAllocator
     {
         public SpotData Ref;       // 参考点（已分配）
         public SpotData Target;    // 目标点（待更新/待分配）
-        public double Dist;        // 命中距离（name 命中记 0）
+        public double Dist;        // 所用坐标系中的实际距离，无法比较时为 NaN
         public MatchBy By;
-        public bool Mirrored;      // C 模式：ref 经过镜像后参与匹配
-        public double[] RefMirror; // C 模式：ref 镜像后的完整位姿（写姿态用），可空
+        public bool Mirrored;      // 参考点经过车件换系或镜像
+        public double[] RefMirror; // 变换后的参考制造焊点位姿，可空
+        internal double[] RotationInTargetWorld;
+        internal string FrameDetails;
     }
 
     /// <summary>操作配对（A 模式用；B/C 的 target 为待分配操作时 TargetOp 可空）。</summary>
@@ -78,20 +82,30 @@ namespace TxTools.WeldSpotAllocator
     {
         public OpData RefOp;
         public OpData TargetOp;
+        internal double[] ViaReferenceFrame;
+        internal double[] ViaTargetFrame;
         public readonly List<SpotMatch> Matches = new List<SpotMatch>();
     }
 
     /// <summary>一次执行的完整计划（预览用，确认后交给 SpotWriter）。</summary>
     public sealed class AllocPlan
     {
+        internal const string DefaultMappedSuffix = "_Mapped";
+        internal string MappedSuffix = DefaultMappedSuffix;
+
         public AllocMode Mode;
-        public bool CopyVias;        // 复制过渡点（Paste 自动带，C 模式镜像 via 位置）
+        public bool CopyVias;        // C 模式镜像已随轨迹复制的过渡点
+        public bool DiffFrame;       // 两侧按车件局部坐标匹配，写入时转回目标世界系
         public bool CopyRotation;    // 复制（镜像）参考焊点旋转姿态到匹配焊点
         public bool CopyParams;      // 复制参考焊点轨迹参数（速度/zone/duration/OLP）
-        public bool ConsumeTargets;  // “挪”语义：分配后从待分配轨迹删除已用焊点
+        public bool ConsumeTargets;  // 将目标位置操作从原轨迹移入，否则复制位置操作
         public FlipAxis Flip;        // 镜像姿态修正（绕工具轴翻 180°，实物试定）
         public readonly List<OpMatch> OpMatches = new List<OpMatch>();
         public readonly List<string> Warnings = new List<string>();
+        internal readonly List<string> WriteBlockers = new List<string>();
+
+        internal bool UsesReferenceFrame => Mode == AllocMode.Symmetric || DiffFrame;
+        internal string GetMappedName(OpData reference) => reference.Name + MappedSuffix;
 
         public int TotalMatches
         {

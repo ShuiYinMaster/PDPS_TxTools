@@ -14,6 +14,8 @@
 // 焊钳手性：镜像后工具系手性翻转，实际枪型常需再绕工具自身某轴翻 180°（FlipAxis，UI 实测选）。
 //   按上面坐标约定：绕 X=前后翻 / 绕 Y=左右翻 / 绕 Z=上下翻，见 ApplyToolFlip。
 
+using System;
+using System.Collections.Generic;
 using Tecnomatix.Engineering;
 using TxTools.ExportGun;
 
@@ -23,13 +25,15 @@ namespace TxTools.WeldSpotAllocator
     {
         // 关于局部 XZ 平面的反射：diag(1,-1,1,1)
         private static readonly double[] MIRROR_XZ = { 1,0,0,0,  0,-1,0,0,  0,0,1,0,  0,0,0,1 };
-        private static readonly TxTransformation M = PsReader.ArrToTxPublic(MIRROR_XZ);
+        private static readonly Lazy<TxTransformation> MirrorTransform =
+            new Lazy<TxTransformation>(() => PsReader.ArrToTxPublic(MIRROR_XZ));
 
         /// <summary>世界系位姿 T 关于中心 C 的 XZ 平面镜像。flip 用于焊枪手性修正。</summary>
         public static TxTransformation MirrorWorld(TxTransformation T, TxTransformation C, FlipAxis flip = FlipAxis.None)
         {
             var local  = TxTransformation.Multiply(C.Inverse, T);               // C⁻¹·T
-            var mLocal = TxTransformation.Multiply(TxTransformation.Multiply(M, local), M); // M·local·M
+            var mirror = MirrorTransform.Value;
+            var mLocal = TxTransformation.Multiply(TxTransformation.Multiply(mirror, local), mirror);
             var world  = TxTransformation.Multiply(C, mLocal);                  // C·(…)
             return flip == FlipAxis.None ? world : ApplyToolFlip(world, flip);
         }
@@ -55,17 +59,28 @@ namespace TxTools.WeldSpotAllocator
             return TxTransformation.Multiply(w, PsReader.ArrToTxPublic(rot));
         }
 
-        /// <summary>把参考焊点解析成“用于匹配/姿态复制”的位姿。统一 B/C × 是否不同参考系。
-        /// B 同系→原样；B 不同系→变到参考车件局部(对齐车身在原点的目标)；
+        /// <summary>用于匹配的参考位姿。B 同系使用世界位姿，B 异系使用参考车件局部位姿。
         /// C 同系→世界镜像；C 不同系→局部镜像。</summary>
         public static double[] ResolveRef(double[] refWorld, double[] center, AllocMode mode, bool diffFrame, FlipAxis flip)
         {
-            var T = PsReader.ArrToTxPublic(refWorld);
             if (mode == AllocMode.Symmetric)
-                return diffFrame ? PsReader.TxToArr(MirrorLocal(T, center, flip))
+                return diffFrame ? PsReader.TxToArr(MirrorLocal(PsReader.ArrToTxPublic(refWorld), center, flip))
                                  : MirrorWorld(refWorld, center, flip);
-            // NewSpot
-            return diffFrame ? PsReader.TxToArr(ToLocal(T, center)) : refWorld;
+            return diffFrame ? PsReader.TxToArr(ToLocal(PsReader.ArrToTxPublic(refWorld), center)) : refWorld;
+        }
+
+        internal static double[] LocalPosition(double[] worldPose, double[] frame)
+        {
+            var position = ToLocal(PsReader.ArrToTxPublic(worldPose), frame);
+            return new[] { position[0, 3], position[1, 3], position[2, 3] };
+        }
+
+        internal static double[] ResolveWritePose(double[] worldPose, double[] sourceFrame, double[] targetFrame,
+            AllocMode mode, bool diffFrame, FlipAxis flip)
+        {
+            var pose = ResolveRef(worldPose, sourceFrame, mode, diffFrame, flip);
+            return diffFrame ? PsReader.TxToArr(TxTransformation.Multiply(
+                PsReader.ArrToTxPublic(targetFrame), PsReader.ArrToTxPublic(pose))) : pose;
         }
 
         // C⁻¹·T：变到车件局部坐标系
@@ -79,7 +94,8 @@ namespace TxTools.WeldSpotAllocator
         private static TxTransformation MirrorLocal(TxTransformation T, double[] center, FlipAxis flip)
         {
             var local = ToLocal(T, center);
-            var m = TxTransformation.Multiply(TxTransformation.Multiply(M, local), M);
+            var mirror = MirrorTransform.Value;
+            var m = TxTransformation.Multiply(TxTransformation.Multiply(mirror, local), mirror);
             return flip == FlipAxis.None ? m : ApplyToolFlip(m, flip);
         }
 
@@ -88,6 +104,19 @@ namespace TxTools.WeldSpotAllocator
         {
             double dx = a[0]-b[0], dy = a[1]-b[1], dz = a[2]-b[2];
             return dx*dx + dy*dy + dz*dz;
+        }
+
+        internal static double[] SharedFrame(IEnumerable<double[]> frames)
+        {
+            double[] shared = null;
+            foreach (var frame in frames)
+            {
+                if (frame == null) continue;
+                if (shared == null) shared = frame;
+                for (int i = 0; i < 12; i++)
+                    if (!(Math.Abs(shared[i] - frame[i]) <= 1e-6)) return null;
+            }
+            return shared;
         }
     }
 }

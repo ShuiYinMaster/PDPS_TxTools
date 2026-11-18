@@ -15,6 +15,8 @@ namespace TxTools.CatiaPartTree.Core
     {
         internal string File;
         internal double[] Frame;
+        internal string ReferenceId, InstancePath, ConversionIssue;
+        internal string[] GeometryEntries;
     }
 
     internal sealed class CatiaImportSource
@@ -56,8 +58,6 @@ namespace TxTools.CatiaPartTree.Core
                 // CATPart geometry is read from disk by the conversion worker.
                 if (!Path.GetExtension(file).Equals(".CATPart", StringComparison.OrdinalIgnoreCase)) return;
                 if (_result.Files.ContainsKey(file) || _result.GeometryIssues.ContainsKey(file)) return;
-                if (!Convert.ToBoolean(Get(document, "Saved")))
-                { _result.GeometryIssues[file] = "CATPart 几何尚未保存，请保存后重新读取：" + file; return; }
                 try { _result.Files.Add(file, Hash(file)); }
                 catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
                 { _result.GeometryIssues[file] = "无法读取 CATPart 几何文件：" + file + "；" + error.Message; }
@@ -68,7 +68,18 @@ namespace TxTools.CatiaPartTree.Core
                 try { app = Track(application ?? Marshal.GetActiveObject("CATIA.Application")); }
                 catch (COMException) { throw new InvalidOperationException("请先打开 CATIA 及已保存的 CATProduct 或 CATPart。"); }
                 var document = Get(app, "ActiveDocument");
-                string file = Path.GetFullPath(Text(document, "FullName"));
+                string documentName = null;
+                try { documentName = Text(document, "Name"); } catch (Exception ex) when (MissingProperty(ex)) { }
+                bool is3dXml = string.Equals(Path.GetExtension(documentName), ".3dxml", StringComparison.OrdinalIgnoreCase);
+                string documentFile;
+                try { documentFile = Text(document, "FullName"); }
+                catch (Exception) when (is3dXml) { throw new ThreeDXmlFileRequiredException(documentName); }
+                if (is3dXml && (string.IsNullOrWhiteSpace(documentFile) || !File.Exists(documentFile) ||
+                    !string.Equals(Path.GetExtension(documentFile), ".3dxml", StringComparison.OrdinalIgnoreCase)))
+                    throw new ThreeDXmlFileRequiredException(documentName);
+                string file = Path.GetFullPath(documentFile);
+                if (Path.GetExtension(file).Equals(".3dxml", StringComparison.OrdinalIgnoreCase))
+                    return ThreeDXmlSource.Read(file);
                 _result.DocumentPath = file; RememberDocument(document, file);
                 if (Path.GetExtension(file).Equals(".CATPart", StringComparison.OrdinalIgnoreCase))
                 {
@@ -78,7 +89,6 @@ namespace TxTools.CatiaPartTree.Core
                 else if (Path.GetExtension(file).Equals(".CATProduct", StringComparison.OrdinalIgnoreCase))
                     _result.Root = Product(Get(document, "Product"), Frame12.Identity, 0);
                 else throw new NotSupportedException("活动文档必须是 CATProduct 或 CATPart。");
-                if (_result.Parts.Count == 0) throw new IOException("CATIA 产品没有可导入的 CATPart 引用。");
                 return _result;
             }
             private StructureNode Product(object product, Frame12 parent, int depth)

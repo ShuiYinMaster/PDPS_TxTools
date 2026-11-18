@@ -1446,7 +1446,7 @@ namespace TxTools.Common
         /// 自绘 GroupBox：标题用 TitleColor/HeaderColor 上色、边框用 BorderColor，
         /// 绕过 WinForms 视觉主题对 GroupBox.ForeColor 的忽略。
         /// </summary>
-        public sealed class ColoredGroupBox : GroupBox
+        public class ColoredGroupBox : GroupBox
         {
             private Color _title = Color.FromArgb(0, 100, 140);
             private Color _border = Color.FromArgb(214, 219, 228);

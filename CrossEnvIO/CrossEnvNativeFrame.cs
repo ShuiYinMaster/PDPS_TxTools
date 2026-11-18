@@ -2,19 +2,24 @@ using System;
 using System.Drawing;
 using System.Windows.Forms;
 using Tecnomatix.Engineering.Ui;
+using TxTools.Common;
 
 namespace TxTools.CrossEnvIO
 {
     // SDK editors change their default size while their handles are being initialized.
     // Give the native root an explicit row and keep the caption outside that row.
-    internal sealed class CrossEnvNativeFrame : GroupBox
+    internal sealed class CrossEnvNativeFrame : FormUiKit.ColoredGroupBox
     {
         private readonly Control _picker;
         private int _nativeHeight, _top, _side, _bottom;
         private bool _arranging;
         internal CrossEnvNativeFrame(string title,Control picker)
         {
-            Text=title; Font=picker.Font; BackColor=Color.White; AutoSize=false;
+            Text=title;
+            Font=FormUiKit.BoldFont;
+            TitleColor=FormUiKit.Theme.TxCol1.Color;
+            BackColor=FormUiKit.CardBack;
+            AutoSize=false;
             Margin=new Padding(6,5,6,7); Padding=Padding.Empty;
             _picker=picker; picker.Dock=DockStyle.None; picker.Anchor=AnchorStyles.Top|AnchorStyles.Left;
             Controls.Add(picker);

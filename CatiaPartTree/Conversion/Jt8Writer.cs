@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -12,12 +13,12 @@ namespace TxTools.CatiaPartTree.Conversion
     // unit face normals at each corner. Geometry is already in the requested mm frame.
     public static class Jt8Writer
     {
-        // Corners within this angle of the welded vertex normal are shaded smooth.
-        static readonly double CreaseCos=Math.Cos(25*Math.PI/180);
         // Long strips are legal; a generous bound only guards against pathological
         // chains. Reference (DTK) files average well over twenty triangles a strip.
         const int StripLimit=1024;
         sealed class Piece { public MeshShape Mesh;public int[] Faces;public byte[] Color;public Guid Segment;public int ShapeId,MaterialId,LateId,NameId,VertexRecords;public string Name; }
+        // PS persists geometry under a Part. Group all color shapes in one LOD.
+        sealed class Part { public List<Piece> Pieces=new List<Piece>();public string Name;public int NodeId,LodId,GroupId,NameId,TriangleCountId; }
         // Faces[k] = the piece-relative face that introduced Vertices[k]; used only
         // when a corner normal is missing and the face normal is the fallback.
         sealed class Strip { public List<int> Vertices=new List<int>();public List<int> Faces=new List<int>();public int Start,Triangles; }
@@ -43,10 +44,42 @@ namespace TxTools.CatiaPartTree.Conversion
         }
         static byte[] Material(Piece p){return Element(Type("10dd1030"),3,Build(w=>{
             w.Write(p.MaterialId);w.Write((byte)0);w.Write(0U);w.Write((ushort)0);
-            foreach(float v in new[]{.2f,.2f,.2f,1f})w.Write(v);
+            foreach(float v in new[]{.3f,.3f,.3f,1f})w.Write(v);
             foreach(float v in new[]{p.Color[0]/255f,p.Color[1]/255f,p.Color[2]/255f,1f})w.Write(v);
-            foreach(float v in new[]{.2f,.2f,.2f,1f,0f,0f,0f,1f})w.Write(v);w.Write(16f);}));}
+            foreach(float v in new[]{.8f,.8f,.8f,1f,0f,0f,0f,1f})w.Write(v);w.Write(15f);}));}
         static byte[] PropertyString(int id,string text){return Element(Type("10dd106e"),5,Build(w=>{w.Write(id);w.Write(0x40000000U);String(w,text);}));}
+        // 延迟装载属性：把属性/形状绑定到另一个段。末尾的整型是目标段的段类型（1=LSG，4=元数据，7=LOD0）。
+        static byte[] LateRef(int id,Guid segment,int type){return Element(new Guid("e0b05be5-fbbd-11d1-a3a7-00aa00d10954"),8,Build(w=>{
+            w.Write(id);w.Write(0x40000000U);w.Write(segment.ToByteArray());w.Write(type);}));}
+        // 元数据段元素（ce357247 Property Proxy）：键长 + UTF-16 键 + 类型字节 + 值，0 结尾。
+        // 类型 1 的值为 字符数 + UTF-16。PS 与 DTK 的件都带一个 `JT_PROP_ORIGINATING_BREPTYPE=None`，
+        // 用于声明该零件没有 B-Rep、几何只有网格。
+        static void MetaString(BinaryWriter w,string key,string value)
+        {
+            w.Write(key.Length);w.Write(Encoding.Unicode.GetBytes(key));w.Write((byte)1);
+            w.Write(value.Length);w.Write(Encoding.Unicode.GetBytes(value));
+        }
+        static byte[] MetaDataElement(){return Element(new Guid("ce357247-38fb-11d1-a506-006097bdc6e1"),9,Build(w=>{
+            MetaString(w,"JT_PROP_ORIGINATING_BREPTYPE","None");
+            MetaString(w,"AdvCompressLODLevel::","0.000000 0.000000 0.000000");
+            w.Write(0);}));}
+        static byte[] PartNode(int id,int lod){return Element(new Guid("ce357244-38fb-11d1-a506-006097bdc6e1"),1,Build(w=>{
+            BaseNode(w,id);w.Write(1);w.Write(lod);w.Write((ushort)1);w.Write((ushort)1);
+            w.Write(99); // Part empty field as written by the native JT reference.
+        }));}
+        static byte[] RangeLodNode(int id,int group){return Element(Type("10dd104c"),1,Build(w=>{
+            BaseNode(w,id);w.Write(1);w.Write(group);
+            w.Write(0); // Reserved float vector size.
+            w.Write(0); // Reserved integer.
+            w.Write(0); // Zero range limits for one representation.
+            w.Write(0f);w.Write(0f);w.Write(0f);
+        }));}
+        static byte[] GroupNode(int id,int[] children){return Element(Type("10dd101b"),1,Build(w=>{
+            BaseNode(w,id);w.Write(children.Length);foreach(int c in children)w.Write(c);}));}
+        // MetaData 节点是「文档/装配」层，参考件（DTK 导出件与 PS 自己写出的件）都把零件挂在它下面：
+        // Partition → MetaData → Part → …。Part 直连 Partition 时 PS 建模提交会把几何丢掉。
+        static byte[] MetaDataNode(int id,int[] children){return Element(new Guid("ce357245-38fb-11d1-a506-006097bdc6e1"),1,Build(w=>{
+            BaseNode(w,id);w.Write(children.Length);foreach(int c in children)w.Write(c);w.Write((short)1);}));}
         static byte[] Late(Piece p){return Element(new Guid("e0b05be5-fbbd-11d1-a3a7-00aa00d10954"),8,Build(w=>{w.Write(p.LateId);w.Write(0x40000000U);w.Write(p.Segment.ToByteArray());w.Write(7);}));}
         // Chained strips keep the triangle set, positions and corner normals identical;
         // only the strip boundaries change. Two triangles may share a vertex record only
@@ -92,7 +125,7 @@ namespace TxTools.CatiaPartTree.Conversion
             // position. Chaining is free to rotate the candidate's indices: a cyclic
             // rotation keeps the winding, so the strip can pick up any adjacent
             // triangle no matter how the reader stored its rotation.
-            var leading=new Dictionary<long,int>(count*3);
+            var leading=new Dictionary<long,int>(count*3,MeshEdgeComparer.Instance);
             for(int position=0;position<count;position++)
             {
                 var ids=mesh.triangles[p.Faces[position]];
@@ -201,6 +234,30 @@ namespace TxTools.CatiaPartTree.Conversion
                 foreach(double v in p.Mesh.vertices[index])w.Write(F(v));
             }});
             var compressed=Zlib(raw);
+            if(!FlatStrips&&strips.Count>1)
+            {
+                // DEFLATE can reuse nearby repeated position/normal records only
+                // within its sliding window. Spatially order whole strips; never
+                // change a strip's vertices, winding or corner attributes.
+                var centers=strips.Select(s=>Enumerable.Range(0,3).Select(axis=>s.Vertices.Average(v=>p.Mesh.vertices[v][axis])).ToArray()).ToArray();
+                var lo=Enumerable.Range(0,3).Select(axis=>centers.Min(c=>c[axis])).ToArray();
+                var span=Enumerable.Range(0,3).Select(axis=>centers.Max(c=>c[axis])-lo[axis]).ToArray();
+                var order=Enumerable.Range(0,strips.Count).OrderBy(i=>SpatialKey(centers[i],lo,span)).ToArray();
+                var offsets=new int[strips.Count];int offset=0;
+                for(int i=0;i<strips.Count;i++){offsets[i]=offset;offset+=strips[i].Vertices.Count*24;}
+                var spatial=new byte[raw.Length];offset=0;
+                foreach(int i in order)
+                {
+                    int length=strips[i].Vertices.Count*24;
+                    Buffer.BlockCopy(raw,offsets[i],spatial,offset,length);offset+=length;
+                }
+                var candidate=Zlib(spatial);
+                if(candidate.Length<compressed.Length)
+                {
+                    compressed=candidate;raw=spatial;
+                    strips=order.Select(i=>strips[i]).ToList();
+                }
+            }
             var bounds=new List<int>{0};foreach(var strip in strips)bounds.Add(bounds[bounds.Count-1]+strip.Vertices.Count);
             return Element(Type("10dd10ab"),4,Build(w=>{
                 w.Write((short)1);w.Write(1);w.Write(new byte[4]); // VertexShapeLOD v1, per-vertex normal binding
@@ -213,6 +270,16 @@ namespace TxTools.CatiaPartTree.Conversion
                 if(compressed.Length<raw.Length){w.Write(compressed.Length);w.Write(compressed);}
                 else{w.Write(-raw.Length);w.Write(raw);}
             }));
+        }
+        static uint SpatialKey(double[] point,double[] lo,double[] span)
+        {
+            uint key=0;
+            for(int axis=0;axis<3;axis++)
+            {
+                uint cell=span[axis]>0?(uint)Math.Max(0,Math.Min(1023,(point[axis]-lo[axis])/span[axis]*1023)):0;
+                for(int bit=0;bit<10;bit++)key|=((cell>>bit)&1U)<<(bit*3+axis);
+            }
+            return key;
         }
         static byte[] Zlib(byte[] input)
         {
@@ -229,9 +296,40 @@ namespace TxTools.CatiaPartTree.Conversion
         {
             scene.Validate();WriteCore(scene.name,"CadDrop.SourceFrame",scene.shapes,output);
         }
+        // Share only records that are identical at JT's actual storage precision.
+        // CAD patch IDs and sub-float differences must not break otherwise valid
+        // strips. Distinct hard-edge normals remain distinct vertex records.
+        static MeshShape CompactRecords(MeshShape mesh)
+        {
+            if(mesh.normals==null)return mesh;
+            var lookup=new Dictionary<Tuple<float,float,float,float,float,float>,int>();
+            var vertices=new List<double[]>();var normals=new List<double[]>();
+            var map=new int[mesh.vertices.Length];
+            for(int i=0;i<map.Length;i++)
+            {
+                var p=mesh.vertices[i];var n=mesh.normals[i];int index;
+                if(n==null)
+                {
+                    // A missing normal belongs to its introducing face, so it
+                    // cannot be welded safely without splitting every corner.
+                    map[i]=vertices.Count;vertices.Add(p);normals.Add(null);continue;
+                }
+                var key=Tuple.Create(F(p[0]),F(p[1]),F(p[2]),F(n[0]),F(n[1]),F(n[2]));
+                if(!lookup.TryGetValue(key,out index))
+                {
+                    index=vertices.Count;lookup.Add(key,index);vertices.Add(p);
+                    normals.Add(new[]{(double)key.Item4,(double)key.Item5,(double)key.Item6});
+                }
+                map[i]=index;
+            }
+            return new MeshShape{name=mesh.name,instanceId=mesh.instanceId,sourceFile=mesh.sourceFile,sourceSha256=mesh.sourceSha256,
+                vertices=vertices.ToArray(),normals=normals.ToArray(),rgb=mesh.rgb,
+                triangles=mesh.triangles.Select(t=>new[]{map[t[0]],map[t[1]],map[t[2]]}).ToArray()};
+        }
         static void WriteCore(string sceneName,string frameProperty,MeshShape[] shapes,string output)
         {
             var pieces=new List<Piece>();
+            var parts=new List<Part>();
             // float32 取整与校验每个 mesh 只做一次，各颜色分组共享同一份，避免
             // 多色零件按颜色数重复克隆顶点/重复校验全部三角形。
             var roundedCache=new Dictionary<MeshShape,MeshShape>();
@@ -242,41 +340,81 @@ namespace TxTools.CatiaPartTree.Conversion
                 {
                     rounded=new MeshShape{name=mesh.name,instanceId=mesh.instanceId,sourceFile=mesh.sourceFile,sourceSha256=mesh.sourceSha256,
                         vertices=mesh.vertices.Select(v=>v.Select(x=>(double)F(x)).ToArray()).ToArray(),triangles=mesh.triangles,rgb=mesh.rgb,normals=mesh.normals};
+                    rounded=CompactRecords(rounded);
                     rounded.Validate(); // reject triangles that collapse after float32 storage
                     roundedCache.Add(mesh,rounded);
                 }
+                // 每个来源网格（一个 CATPart）成为一个 Part 节点，颜色分组成为它下面的形状。
+                var part=new Part{Name=string.IsNullOrWhiteSpace(mesh.name)?sceneName:mesh.name};
+                parts.Add(part);
                 foreach(var group in Enumerable.Range(0,mesh.triangles.Length).GroupBy(i=>BitConverter.ToString(mesh.rgb[i])))
                 {
                     var p=new Piece{Mesh=rounded,Faces=group.ToArray(),Color=mesh.rgb[group.First()],Name=mesh.name+"/"+group.Key};
-                    pieces.Add(p);
+                    pieces.Add(p);part.Pieces.Add(p);
                 }
             }
-            int id=1;foreach(var p in pieces)p.ShapeId=id++;foreach(var p in pieces)p.MaterialId=id++;
+            int id=1,metaId=id++;foreach(var part in parts)part.NodeId=id++;foreach(var part in parts)part.LodId=id++;
+            foreach(var part in parts)part.GroupId=id++;
+            foreach(var p in pieces)p.ShapeId=id++;foreach(var p in pieces)p.MaterialId=id++;
             int shapeImplKey=id++,nameKey=id++,frameKey=id++,frameValue=id++,unitKey=id++,unitValue=id++;
+            int metaKey=id++,trisKey=id++,partTypeKey=id++,partTypeValue=id++,metaLate=id++;
+            foreach(var part in parts){part.NameId=id++;part.TriangleCountId=id++;}
             foreach(var p in pieces){p.LateId=id++;p.NameId=id++;}
             var lods=new byte[pieces.Count][];
             for(int i=0;i<pieces.Count;i++){int records;lods[i]=Lod(pieces[i],out records);pieces[i].VertexRecords=records;}
             for(int i=0;i<pieces.Count;i++)pieces[i].Segment=Stable("jt8-normal-v3/"+pieces[i].Mesh.instanceId+"/"+BitConverter.ToString(pieces[i].Color)+"/"+Digest(lods[i]));
             var all=pieces.SelectMany(Points).ToArray();int totalFaces=pieces.Sum(p=>p.Faces.Length);
+            var metaStream=MetaDataElement();var metaSegment=Stable("jt8-metadata-v1/"+Digest(metaStream));
             var graph=Build(w=>{
-                w.Write(Element(Type("10dd103e"),1,Build(b=>{BaseNode(b,0);b.Write(pieces.Count);foreach(var p in pieces)b.Write(p.ShapeId);
-                    b.Write(1);String(b,sceneName+".jt");Bounds(b,all);b.Write(F(pieces.Sum(p=>Area(p))));Range(b,all.Length);Range(b,pieces.Count+1);Range(b,totalFaces);Bounds(b,all);})));
+                w.Write(Element(Type("10dd103e"),1,Build(b=>{BaseNode(b,0);b.Write(1);b.Write(metaId);
+                    b.Write(1);String(b,sceneName+".jt");Bounds(b,all);b.Write(F(pieces.Sum(p=>Area(p))));
+                    Range(b,pieces.Sum(p=>p.VertexRecords));Range(b,1+3*parts.Count+pieces.Count);
+                    Range(b,totalFaces);Bounds(b,all);})));
+                w.Write(MetaDataNode(metaId,parts.Select(p=>p.NodeId).ToArray()));
+                foreach(var part in parts)w.Write(PartNode(part.NodeId,part.LodId));
+                foreach(var part in parts)
+                {
+                    // 参考件（PS 自己写出与 DTK 导出件）都是 Part → RangeLOD → Group → 形状：
+                    // Group 是实体的形状容器，RangeLOD 下的多个子节点会被当成同一零件的 LOD 备选，
+                    // 所以按颜色拆分的形状一律放在 Group 下，不直接挂 LOD。
+                    w.Write(RangeLodNode(part.LodId,part.GroupId));
+                }
+                foreach(var part in parts)w.Write(GroupNode(part.GroupId,part.Pieces.Select(p=>p.ShapeId).ToArray()));
                 for(int i=0;i<pieces.Count;i++)w.Write(Shape(pieces[i],lods[i].Length));
                 foreach(var p in pieces)w.Write(Material(p));
                 End(w);w.Write(PropertyString(shapeImplKey,"JT_LLPROP_SHAPEIMPL"));w.Write(PropertyString(nameKey,"JT_PROP_NAME"));
                 w.Write(PropertyString(frameKey,frameProperty));w.Write(PropertyString(frameValue,sceneName));
                 w.Write(PropertyString(unitKey,"JT_PROP_MEASUREMENT_UNITS"));w.Write(PropertyString(unitValue,"millimeters"));
+                w.Write(PropertyString(metaKey,"JT_LLPROP_METADATA"));
+                w.Write(PropertyString(trisKey,"_nTrisLODs"));
+                w.Write(PropertyString(partTypeKey,"PartitionType"));w.Write(PropertyString(partTypeValue,"Assembly"));
+                w.Write(LateRef(metaLate,metaSegment,4));
+                foreach(var part in parts)
+                {
+                    w.Write(PropertyString(part.NameId,part.Name));
+                    int triangles=part.Pieces.Sum(piece=>piece.Faces.Length);
+                    w.Write(PropertyString(part.TriangleCountId,"1::"+triangles.ToString(CultureInfo.InvariantCulture)));
+                }
                 foreach(var p in pieces){w.Write(Late(p));w.Write(PropertyString(p.NameId,p.Name));}End(w);
-                w.Write((short)1);w.Write(pieces.Count+1);w.Write(0);w.Write(frameKey);w.Write(frameValue);w.Write(nameKey);w.Write(frameValue);w.Write(unitKey);w.Write(unitValue);w.Write(0);
+                w.Write((short)1);w.Write(parts.Count+pieces.Count+2);w.Write(0);
+                w.Write(frameKey);w.Write(frameValue);w.Write(nameKey);w.Write(frameValue);w.Write(unitKey);w.Write(unitValue);
+                w.Write(partTypeKey);w.Write(partTypeValue);w.Write(0);
+                w.Write(metaId);w.Write(nameKey);w.Write(frameValue);w.Write(metaKey);w.Write(metaLate);w.Write(unitKey);w.Write(unitValue);w.Write(0);
+                foreach(var part in parts){w.Write(part.NodeId);w.Write(nameKey);w.Write(part.NameId);
+                    w.Write(metaKey);w.Write(metaLate);w.Write(trisKey);w.Write(part.TriangleCountId);w.Write(unitKey);w.Write(unitValue);w.Write(0);}
                 foreach(var p in pieces){w.Write(p.ShapeId);w.Write(shapeImplKey);w.Write(p.LateId);w.Write(nameKey);w.Write(p.NameId);w.Write(unitKey);w.Write(unitValue);w.Write(0);}
             });
             Guid lsg=Stable("jt8-normal-v3/lsg/"+Digest(graph));
             var compressed=Zlib(graph);var lsgBody=Build(w=>{w.Write(2);w.Write(compressed.Length+1);w.Write((byte)2);w.Write(compressed);});
+            var metaCompressed=Zlib(metaStream);
+            var metaBody=Build(w=>{w.Write(2);w.Write(metaCompressed.Length+1);w.Write((byte)2);w.Write(metaCompressed);});
             var segments=new List<byte[]>{Segment(lsg,1,lsgBody)};segments.AddRange(pieces.Select((p,i)=>Segment(p.Segment,7,lods[i])));
+            segments.Add(Segment(metaSegment,4,metaBody));
+            var segmentTypes=new List<int>{1};segmentTypes.AddRange(pieces.Select(_=>7));segmentTypes.Add(4);
             int toc=105+segments.Sum(s=>s.Length);var result=Build(w=>{
                 var header=Encoding.ASCII.GetBytes("Version 8.0 JT            TxTools CATIA mesh writer");w.Write(header);w.Write(Enumerable.Repeat((byte)32,76-header.Length).ToArray());w.Write(new byte[]{10,13,10,32});
                 w.Write((byte)0);w.Write(0);w.Write(toc);w.Write(lsg.ToByteArray());foreach(var s in segments)w.Write(s);
-                w.Write(segments.Count);int offset=105;for(int i=0;i<segments.Count;i++){var s=segments[i];w.Write(s.Take(16).ToArray());w.Write(offset);w.Write(s.Length);w.Write(new byte[]{0,0,0,(byte)(i==0?1:7)});offset+=s.Length;}
+                w.Write(segments.Count);int offset=105;for(int i=0;i<segments.Count;i++){var s=segments[i];w.Write(s.Take(16).ToArray());w.Write(offset);w.Write(s.Length);w.Write(new byte[]{0,0,0,(byte)segmentTypes[i]});offset+=s.Length;}
             });
             if(result.Length!=toc+4+28*segments.Count)throw new InvalidDataException("JT size accounting mismatch");
             if(File.Exists(output))throw new IOException("Output already exists");

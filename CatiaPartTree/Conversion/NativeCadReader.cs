@@ -134,7 +134,7 @@ namespace TxTools.CatiaPartTree.Conversion
             }
             var faces = mesh.triangles.Select(t => t.Select(i => ids[i]).ToArray()).ToArray();
             var coincident = new Dictionary<Tuple<int, int, int>, List<int>>();
-            var edges = new Dictionary<long, int>();
+            var edges = new Dictionary<long, int>(MeshEdgeComparer.Instance);
             long Edge(int a, int b) { return ((long)Math.Min(a, b) << 32) | (uint)Math.Max(a, b); }
             for (int f = 0; f < faces.Length; f++)
             {
