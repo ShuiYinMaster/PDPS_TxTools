@@ -369,7 +369,8 @@
         confirmActions.appendChild(cancelDelete);
         confirmActions.appendChild(confirmDelete);
         deleteConfirm.appendChild(confirmActions);
-        meta.appendChild(deleteBtn);
+        var metaTools = el('div', 'rcp-meta-actions');
+        meta.appendChild(metaTools);
         card.appendChild(meta);
         card.appendChild(deleteConfirm);
         // 体
@@ -426,12 +427,16 @@
         }
         act.appendChild(stat);
 
-        var codeBtn = el('button', 'rcp-iconbtn', '⟨⟩');
+        var codeBtn = el('button', 'rcp-iconbtn');
+        codeBtn.setAttribute('aria-label', '查看配方内容');
+        codeBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M14 3H6v18h12V7zM14 3v5h4M9 12h6M9 16h6"/></svg>';
         codeBtn.title = '在对话里查看配方文档';
         codeBtn.onclick = function () { reveal({ recipeId: rec.id }); };
-        act.appendChild(codeBtn);
+        metaTools.appendChild(codeBtn);
 
-        var exportBtn = el('button', 'rcp-btn', '导出');
+        var exportBtn = el('button', 'rcp-iconbtn rcp-export');
+        exportBtn.setAttribute('aria-label', '导出配方');
+        exportBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3v12m-4-4 4 4 4-4M5 15v6h14v-6"/></svg>';
         exportBtn.title = '导出 Markdown 文件，分享给其他人导入使用';
         exportBtn.onclick = function () {
             exportBtn.disabled = true;
@@ -441,7 +446,8 @@
                 notice(!!(r && r.ok), (r && (r.text || r.error)) || '导出失败。');
             });
         };
-        act.appendChild(exportBtn);
+        metaTools.appendChild(exportBtn);
+        metaTools.appendChild(deleteBtn);
 
         body.appendChild(act);
 
