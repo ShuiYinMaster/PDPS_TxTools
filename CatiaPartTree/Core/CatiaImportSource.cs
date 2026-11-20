@@ -38,6 +38,11 @@ namespace TxTools.CatiaPartTree.Core
             using (var reader = new Reader()) return reader.Read();
         }
 
+        internal static CatiaImportSource ReadProductFile(string path)
+        {
+            using (var reader = new Reader()) return reader.ReadProductFile(path);
+        }
+
         private sealed class Reader : IDisposable
         {
             private readonly List<object> _com = new List<object>();
@@ -52,22 +57,51 @@ namespace TxTools.CatiaPartTree.Core
             private object Call(object value, string member, params object[] args)
             { return Track(value.GetType().InvokeMember(member, BindingFlags.InvokeMethod, null, value, args)); }
             private string Text(object value, string member) { return Convert.ToString(Get(value, member), CultureInfo.InvariantCulture); }
-            private void RememberDocument(object document, string file)
+            private void RememberPart(string file)
             {
                 // Assembly placement comes from the captured CATIA session. Only
                 // CATPart geometry is read from disk by the conversion worker.
-                if (!Path.GetExtension(file).Equals(".CATPart", StringComparison.OrdinalIgnoreCase)) return;
                 if (_result.Files.ContainsKey(file) || _result.GeometryIssues.ContainsKey(file)) return;
                 try { _result.Files.Add(file, Hash(file)); }
                 catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
                 { _result.GeometryIssues[file] = "无法读取 CATPart 几何文件：" + file + "；" + error.Message; }
             }
+            private object Connect(object application)
+            {
+                try { return Track(application ?? Marshal.GetActiveObject("CATIA.Application")); }
+                catch (COMException) { throw new InvalidOperationException("请先启动 CATIA。"); }
+            }
             internal CatiaImportSource Read(object application = null)
             {
-                object app;
-                try { app = Track(application ?? Marshal.GetActiveObject("CATIA.Application")); }
-                catch (COMException) { throw new InvalidOperationException("请先打开 CATIA 及已保存的 CATProduct 或 CATPart。"); }
-                var document = Get(app, "ActiveDocument");
+                var document = Get(Connect(application), "ActiveDocument");
+                if (document == null) throw new InvalidOperationException("请先在 CATIA 中打开要读取的文档。");
+                return ReadDocument(document);
+            }
+            internal CatiaImportSource ReadProductFile(string path, object application = null)
+            {
+                string file = Path.GetFullPath(path);
+                if (!Path.GetExtension(file).Equals(".CATProduct", StringComparison.OrdinalIgnoreCase) || !File.Exists(file))
+                    throw new IOException("请选择存在的 CATProduct 装配文件。");
+
+                var documents = Get(Connect(application), "Documents");
+                int count = Convert.ToInt32(Get(documents, "Count"), CultureInfo.InvariantCulture);
+                for (int i = 1; i <= count; i++)
+                {
+                    var document = Call(documents, "Item", i);
+                    string fullName;
+                    try { fullName = Text(document, "FullName"); }
+                    catch (Exception error) when (MissingProperty(error) || error.GetBaseException() is COMException) { continue; }
+                    if (!string.IsNullOrWhiteSpace(fullName) && Path.IsPathRooted(fullName) &&
+                        string.Equals(Path.GetFullPath(fullName), file, StringComparison.OrdinalIgnoreCase))
+                        return ReadDocument(document);
+                }
+
+                var opened = Call(documents, "Open", file);
+                try { return ReadDocument(opened); }
+                finally { Call(opened, "Close"); }
+            }
+            private CatiaImportSource ReadDocument(object document)
+            {
                 string documentName = null;
                 try { documentName = Text(document, "Name"); } catch (Exception ex) when (MissingProperty(ex)) { }
                 bool is3dXml = string.Equals(Path.GetExtension(documentName), ".3dxml", StringComparison.OrdinalIgnoreCase);
@@ -80,39 +114,57 @@ namespace TxTools.CatiaPartTree.Core
                 string file = Path.GetFullPath(documentFile);
                 if (Path.GetExtension(file).Equals(".3dxml", StringComparison.OrdinalIgnoreCase))
                     return ThreeDXmlSource.Read(file);
-                _result.DocumentPath = file; RememberDocument(document, file);
+                _result.DocumentPath = file;
                 if (Path.GetExtension(file).Equals(".CATPart", StringComparison.OrdinalIgnoreCase))
                 {
+                    RememberPart(file);
                     _result.Root = new StructureNode { SourceName = Path.GetFileNameWithoutExtension(file), PartNumber = Path.GetFileNameWithoutExtension(file) };
                     _result.Parts.Add(_result.Root.Key, new CatiaSourcePart { File = file, Frame = Frame12.Identity.Components });
                 }
                 else if (Path.GetExtension(file).Equals(".CATProduct", StringComparison.OrdinalIgnoreCase))
-                    _result.Root = Product(Get(document, "Product"), Frame12.Identity, 0);
+                    _result.Root = Product(Get(document, "Product"), Frame12.Identity, "root", 0);
                 else throw new NotSupportedException("活动文档必须是 CATProduct 或 CATPart。");
                 return _result;
             }
-            private StructureNode Product(object product, Frame12 parent, int depth)
+            private Frame12 ReadPosition(object product, string name)
+            {
+                var position = Get(product, "Position");
+                var args = new object[] { new object[12] };
+                // IDispatch needs an explicit by-reference VARIANT. A managed test
+                // double can infer ref from its signature, unlike CATIA late binding.
+                var byRef = new ParameterModifier(1);
+                byRef[0] = true;
+                position.GetType().InvokeMember("GetComponents", BindingFlags.InvokeMethod,
+                    null, position, args, new[] { byRef }, CultureInfo.InvariantCulture, null);
+                var array = args[0] as Array;
+                if (array == null || array.Rank != 1 || array.Length != 12)
+                    throw new InvalidDataException("CATIA 未返回完整的实例位姿：" + name);
+                var components = array.Cast<object>().ToArray();
+                if (components.Any(value => value == null || value == DBNull.Value))
+                    throw new InvalidDataException("CATIA 实例位姿存在空分量：" + name);
+                return new Frame12(components.Select(v => Convert.ToDouble(v, CultureInfo.InvariantCulture)).ToArray());
+            }
+            private StructureNode Product(object product, Frame12 parent, string instancePath, int depth)
             {
                 if (depth > 100) throw new IOException("CATIA 装配层级超过 100，已停止读取。");
-                var components = new object[12];
-                var args = new object[] { components };
-                Call(Get(product, "Position"), "GetComponents", args);
-                var local = ((Array)args[0]).Cast<object>().Select(v => Convert.ToDouble(v, CultureInfo.InvariantCulture)).ToArray();
-                var frame = parent.ThenChild(new Frame12(local));
+                string name = Text(product, "Name");
+                var frame = depth == 0 ? Frame12.Identity : parent.ThenChild(ReadPosition(product, name));
                 var reference = Get(product, "ReferenceProduct");
                 var refDoc = ReferenceDocument(reference);
                 string file = Path.GetFullPath(Text(refDoc, "FullName"));
-                RememberDocument(refDoc, file);
-                var node = new StructureNode { SourceName = Text(product, "Name"), PartNumber = Text(reference, "PartNumber") };
+                var node = new StructureNode { SourceName = name, PartNumber = Text(reference, "PartNumber") };
                 if (Path.GetExtension(file).Equals(".CATPart", StringComparison.OrdinalIgnoreCase))
-                    _result.Parts.Add(node.Key, new CatiaSourcePart { File = file, Frame = frame.Components });
+                {
+                    RememberPart(file);
+                    _result.Parts.Add(node.Key, new CatiaSourcePart { File = file, Frame = frame.Components, InstancePath = instancePath });
+                }
                 else
                 {
                     if (!Path.GetExtension(file).Equals(".CATProduct", StringComparison.OrdinalIgnoreCase))
                         throw new IOException("引用未解析为 CATProduct/CATPart：" + node.SourceName);
                     node.IsContainer = true;
                     var children = Get(product, "Products"); int count = Convert.ToInt32(Get(children, "Count"));
-                    for (int i = 1; i <= count; i++) node.Add(Product(Call(children, "Item", i), frame, depth + 1));
+                    for (int i = 1; i <= count; i++) node.Add(Product(Call(children, "Item", i), frame, instancePath + "/" + i, depth + 1));
                 }
                 return node;
             }

@@ -34,9 +34,13 @@ namespace TxTools.CrossEnvIO
         {
             if(values==null||values.Length!=12||values.Any(v=>double.IsNaN(v)||double.IsInfinity(v)))
                 throw new InvalidDataException("完整世界位姿必须包含 12 个有效数值");
+            // Assign Translation before the matrix. The SDK transformation can be
+            // rebuilt as a pure translation when the property is assigned, which
+            // silently drops a rotation written earlier while keeping the position.
             var pose=new TxTransformation();
+            pose.Translation=new TxVector(values[3],values[7],values[11]);
             for(int row=0;row<3;row++)for(int column=0;column<3;column++)pose[row,column]=values[row*4+column];
-            pose.Translation=new TxVector(values[3],values[7],values[11]);return pose;
+            return pose;
         }
 
         // target * inverse(source) * world; native frame rotations are rigid.

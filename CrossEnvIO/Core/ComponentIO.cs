@@ -130,6 +130,85 @@ namespace TxTools.CrossEnvIO
             }
         }
 
+        internal sealed class CojtLoadResult
+        {
+            internal ITxObject Instance;
+            internal Exception Error;
+            internal List<ITxObject> CreatedBeforeError;
+        }
+
+        // PS 2402 exposes single-component loading. Submit the whole batch on
+        // the document thread before checking any of the returned instances.
+        internal static CojtLoadResult[] LoadCojts(IReadOnlyList<string> paths, string libraryRoot, Action<int> beforeLoad)
+        {
+            var root = TxApplication.ActiveDocument?.PhysicalRoot;
+            if (root == null) throw new InvalidOperationException("无活动的 PhysicalRoot。");
+
+            var results = new CojtLoadResult[paths.Count];
+            var created = new List<ITxObject>();
+            TxObjectRoot_ItemCreatedEventHandler onCreated = (sender, args) =>
+            {
+                if (args.Item is ITxComponent component) created.Add(component);
+            };
+            root.ItemCreated += onCreated;
+            try
+            {
+                for (int i = 0; i < paths.Count; i++)
+                {
+                    beforeLoad(i);
+                    created.Clear();
+                    var result = results[i] = new CojtLoadResult();
+                    string path = paths[i];
+                    try
+                    {
+                        LibraryInsertion.AtDestination(path, libraryRoot, sdkPath =>
+                        {
+                            var data = new TxInsertComponentCreationData(string.Empty, sdkPath)
+                            {
+                                AbsoluteLocation = new TxTransformation()
+                            };
+                            return result.Instance = root.InsertComponent(data);
+                        }, null);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (AppFuncCompatibilityException error)
+                    {
+                        throw new NativeLibraryException("插入环境不可用：" + error.Message + "\n模型路径：" + path, error);
+                    }
+                    catch (Exception error) { result.Error = error; }
+                    if (result.Instance == null && created.Count != 0)
+                        result.CreatedBeforeError = new List<ITxObject>(created);
+                }
+            }
+            finally { root.ItemCreated -= onCreated; }
+            return results;
+        }
+
+        internal static void VerifyLoadedCojt(CojtLoadResult result, string path, string libraryRoot)
+        {
+            if (result.Instance == null)
+            {
+                // Recover an unambiguous partial insertion from the SDK event.
+                // An ambiguous or failed call is never resubmitted here.
+                string detail = result.Error?.GetBaseException().Message ?? "插入后未取得实例";
+                if (result.CreatedBeforeError != null)
+                {
+                    var matches = result.CreatedBeforeError
+                        .Where(item => item.IsValid() && LibraryPersistence.ReferenceIssue(item, path, libraryRoot) == null)
+                        .GroupBy(item => item.Id)
+                        .Select(items => items.First())
+                        .Take(2)
+                        .ToArray();
+                    if (matches.Length == 1) result.Instance = matches[0];
+                    else detail += "；PS 报告有新增组件，库引用无法唯一匹配，请核对场景。";
+                }
+                throw new IOException(detail);
+            }
+            if (result.Error != null) throw new IOException(result.Error.GetBaseException().Message);
+            LibraryPersistence.Ensure(result.Instance, path, path, null);
+            RecordInsertedPath(path);
+        }
+
         /// <summary>
         /// 直插：直接 InsertComponent。库内无原型即可；库外/零件等带原型更稳。
         /// 统一逻辑：先尝试无原型；失败则从 cojt TuneData 的 ExternalID 从库注册表取原型重试。

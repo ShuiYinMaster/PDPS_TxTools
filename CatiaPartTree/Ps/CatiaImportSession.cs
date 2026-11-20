@@ -58,7 +58,6 @@ namespace TxTools.CatiaPartTree.Ps
         private readonly string _library, _parentLocation;
         private readonly ITxObject _parent;
         private readonly bool _newRoot;
-        private bool _modernWorker;
         private readonly List<Package> _packages = new List<Package>();
         private readonly Dictionary<string, Package> _bySource = new Dictionary<string, Package>(StringComparer.OrdinalIgnoreCase);
         internal readonly List<StructureChange> Items = new List<StructureChange>();
@@ -118,8 +117,16 @@ namespace TxTools.CatiaPartTree.Ps
         private void Require(CatiaImportStage stage)
         { EnsureDocument(); if (Stage != stage) throw new InvalidOperationException("当前步骤不能执行，失败后请核对结果并重新读取来源。"); }
 
+        // PS documents the call as refreshing every viewer with the current data.
+        // Do it after the scene transaction ends so the object tree sees the final
+        // hierarchy instead of the intermediate insert-at-root state.
+        private static void RefreshView()
+        {
+            try { TxApplication.RefreshDisplay(); } catch (Exception) { }
+        }
+
         // One user-visible format stage: JT + COJT + the receiver project's PmPartPrototype.
-        internal async Task ConvertAsync(CancellationToken cancel, IProgress<string> progress)
+        internal async Task ConvertAsync(CancellationToken cancel, IProgress<string> progress, bool reduceMesh = true)
         {
             EnsureDocument();
             if (Stage != CatiaImportStage.Ready && Stage != CatiaImportStage.TreeCreated)
@@ -153,14 +160,16 @@ namespace TxTools.CatiaPartTree.Ps
                     _packages.Add(package); _bySource.Add(file, package);
                 }
                 // Probe once, before starting any concurrent conversion.
-                _modernWorker = await Task.Run(() => SupportsCurrentProtocol(worker, cancel, progress), cancel);
+                bool modernWorker = await Task.Run(() => SupportsCurrentProtocol(worker, cancel, progress), cancel);
+                bool optimize = reduceMesh && modernWorker;
+                string meshMode = optimize ? "自动减面" : "不减面";
                 int parallelism = Math.Min(_packages.Count, Math.Max(1, Environment.ProcessorCount));
                 int completed = 0;
                 var progressGate = new object();
                 var batchProgress = new ConversionProgress(message =>
                 {
                     lock (progressGate) progress.Report("JT 转换已完成 " + completed + "/" + _packages.Count +
-                        "（最多 " + parallelism + " 路并行）" + Environment.NewLine + message);
+                        "（" + meshMode + "，最多 " + parallelism + " 路并行）" + Environment.NewLine + message);
                 });
                 Current = "JT 并行转换（" + _packages.Count + " 个文件，最多 " + parallelism + " 路）";
                 batchProgress.Report("开始批量转换");
@@ -169,7 +178,7 @@ namespace TxTools.CatiaPartTree.Ps
                     try
                     {
                         CatiaLibraryDestination.CreatePackage(package.Directory);
-                        ConvertPart(worker, package, cancel, batchProgress);
+                        ConvertPart(worker, package, optimize, cancel, batchProgress);
                         cancel.ThrowIfCancellationRequested();
                         package.JtHash = CatiaImportSource.Hash(package.Jt);
                     }
@@ -268,19 +277,19 @@ namespace TxTools.CatiaPartTree.Ps
                 }
             }
         }
-        private void ConvertPart(string worker, Package package, CancellationToken cancel, IProgress<string> progress)
+        private static void ConvertPart(string worker, Package package, bool optimize, CancellationToken cancel, IProgress<string> progress)
         {
             cancel.ThrowIfCancellationRequested();
             using (var diagnostics = new CatiaConversionDiagnostics(package.Source, message => progress.Report(message)))
             {
                 package.Log = diagnostics.LogPath;
-                var start = new ProcessStartInfo(worker, Quote(package.Source) + " " + Quote(package.Jt) + " " + Quote(package.Hash) + (_modernWorker ? " quality" : ""))
+                var start = new ProcessStartInfo(worker, Quote(package.Source) + " " + Quote(package.Jt) + " " + Quote(package.Hash) + (optimize ? " quality" : ""))
                 { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardErrorEncoding = Encoding.UTF8, StandardOutputEncoding = Encoding.UTF8 };
                 diagnostics.Begin("启动 JT 转换程序");
                 using (var process = Process.Start(start))
                 {
                     diagnostics.Write("PROCESS pid=" + process.Id + " executable=" + worker + " output=" + package.Jt);
-                    diagnostics.Begin("生成 JT（曲面优化与写入）");
+                    diagnostics.Begin(optimize ? "生成 JT（自动减面与写入）" : "生成 JT（不减面）");
                     var stdout = process.StandardOutput.ReadToEndAsync(); var stderr = process.StandardError.ReadToEndAsync();
                     var heartbeat = Stopwatch.StartNew();
                     try
@@ -363,15 +372,16 @@ namespace TxTools.CatiaPartTree.Ps
                         }
                     }
                 TreeBuilt = true; Stage = CatiaImportStage.TreeCreated;
+                RefreshView();
             }
             catch { Stage = attempted ? CatiaImportStage.Failed : previousStage; throw; }
         }
-        private static void VerifyPlacement(StructureChange item, ITxLocatableObject located, double[] expected)
+        private static void VerifyPlacement(StructureChange item, ITxLocatableObject located, double[] expected, HashSet<string> childIds)
         {
             var issues = new List<string>();
             if (!string.Equals(item.Result.Name, item.Name, StringComparison.Ordinal))
                 issues.Add($"名称应为“{item.Name}”，PS 中为“{item.Result.Name}”");
-            if (!StructureEngine.Children(item.Parent.Result).Any(o => StructureEngine.Id(o) == StructureEngine.Id(item.Result)))
+            if (!childIds.Contains(StructureEngine.Id(item.Result)))
                 issues.Add($"未找到目标父级“{item.Parent.Result.Name}”下的该实例");
 
             var actual = TxMath.WorldValues(located.AbsoluteLocation);
@@ -383,11 +393,127 @@ namespace TxTools.CatiaPartTree.Ps
                 double basisError = Enumerable.Range(0, 12).Where(i => i % 4 != 3).Max(i => Math.Abs(actual[i] - expected[i]));
                 // Compare translation in millimeters and basis entries as unitless values.
                 if (distance > 0.001)
-                    issues.Add("位置偏差 " + distance.ToString("G6", CultureInfo.InvariantCulture) + " mm（容差 0.001 mm）");
+                    issues.Add("位置偏差 " + distance.ToString("G6", CultureInfo.InvariantCulture) + " mm（容差 0.001 mm；期望 "
+                        + Vector(expected, 3) + "，实际 " + Vector(actual, 3) + "）");
                 if (basisError > 1e-6)
-                    issues.Add("姿态矩阵最大分量偏差 " + basisError.ToString("G6", CultureInfo.InvariantCulture) + "（容差 1e-6）");
+                {
+                    int index = Enumerable.Range(0, 12).Where(i => i % 4 != 3)
+                        .OrderByDescending(i => Math.Abs(actual[i] - expected[i])).First();
+                    issues.Add("姿态矩阵最大分量偏差 " + basisError.ToString("G6", CultureInfo.InvariantCulture)
+                        + "（容差 1e-6；矩阵第 " + (index / 4 + 1) + " 行第 " + (index % 4 + 1) + " 列 期望 "
+                        + expected[index].ToString("G9", CultureInfo.InvariantCulture) + "，实际 "
+                        + actual[index].ToString("G9", CultureInfo.InvariantCulture) + "）");
+                    try
+                    {
+                        var parent = item.Parent == null ? null : item.Parent.Result as ITxLocatableObject;
+                        if (parent != null)
+                            issues.Add("目标容器位姿 " + Vector(TxMath.WorldValues(parent.AbsoluteLocation), 3)
+                                + "；实际姿态相对期望的整体差异：" + RotationDelta(expected, actual));
+                    }
+                    catch (Exception) { }
+                }
             }
             if (issues.Count != 0) throw new IOException(string.Join("，", issues));
+        }
+
+        private static string Vector(double[] values, int offset)
+        {
+            return "(" + values[offset].ToString("G9", CultureInfo.InvariantCulture) + ", "
+                + values[offset + 4].ToString("G9", CultureInfo.InvariantCulture) + ", "
+                + values[offset + 8].ToString("G9", CultureInfo.InvariantCulture) + ")";
+        }
+
+        // Classifies the read-back basis against the expected one so a systematic
+        // SDK convention problem is visible in the warning itself.
+        private static string RotationDelta(double[] expected, double[] actual)
+        {
+            double transpose = 0, identity = 0;
+            for (int row = 0; row < 3; row++)
+                for (int column = 0; column < 3; column++)
+                {
+                    transpose = Math.Max(transpose, Math.Abs(actual[row * 4 + column] - expected[column * 4 + row]));
+                    identity = Math.Max(identity, Math.Abs(actual[row * 4 + column] - (row == column ? 1d : 0d)));
+                }
+            if (transpose <= 1e-6) return "等于期望矩阵的转置（写入被转置）";
+            if (identity <= 1e-6) return "等于单位矩阵（旋转未写入）";
+            return "不等于转置，也不等于单位矩阵";
+        }
+
+        private void RecordImportIssue(StructureChange item, Exception error, Action<string> log)
+        {
+            bool partial = item.Result != null && item.Result.IsValid();
+            if (!partial) item.Result = null;
+            item.Error = partial ? "已插入，需核对" : "未插入";
+            if (partial) NeedsReview++;
+            else SkippedInstances++;
+            string message = "[" + item.Error + "] " + item.Name + "：" + error.GetBaseException().Message;
+            Warnings.Add(message);
+            log?.Invoke(message);
+        }
+
+        private static void MoveAfter(ITxOrderedObjectCollection ordered, ITxObject item, ITxObject previous)
+        {
+            // Some PS versions accept ordering only through MoveChildAfter when the
+            // child already belongs to the target collection.
+            try { ordered.AddObjectAfter(item, previous); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception) { ordered.MoveChildAfter(item, previous); }
+        }
+
+        private void MoveInstances(StructureChange parent, List<StructureChange> items, SceneUndoScope undo, Action<string> log)
+        {
+            undo.EnsureDocument();
+            Current = parent.Name;
+            var collection = (ITxObjectCollection)parent.Result;
+            var childIds = new HashSet<string>(StructureEngine.Children(parent.Result).Select(StructureEngine.Id));
+            var pending = items.Where(item => !childIds.Contains(StructureEngine.Id(item.Result))).ToList();
+            if (pending.Count > 1)
+            {
+                var objects = new TxObjectList();
+                foreach (var item in pending) objects.Add(item.Result);
+                try { collection.AddObjects(objects); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception error)
+                {
+                    log?.Invoke("[批量归位] " + parent.Name + "：" + error.GetBaseException().Message + "；将核对并补放未移动的实例。");
+                }
+                undo.EnsureDocument();
+                childIds = new HashSet<string>(StructureEngine.Children(parent.Result).Select(StructureEngine.Id));
+            }
+            // A collection can reject AddObjects or move only part of the list.
+            foreach (var item in pending.Where(item => !childIds.Contains(StructureEngine.Id(item.Result))))
+            {
+                undo.EnsureDocument(); Current = item.Name;
+                try { collection.AddObject(item.Result); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception error) { RecordImportIssue(item, error, log); }
+            }
+            undo.EnsureDocument();
+            var missing = pending.Any(item => item.Error == null && !childIds.Contains(StructureEngine.Id(item.Result)));
+            if (missing) childIds = new HashSet<string>(StructureEngine.Children(parent.Result).Select(StructureEngine.Id));
+            foreach (var item in items.Where(item => item.Error == null && !childIds.Contains(StructureEngine.Id(item.Result))))
+                RecordImportIssue(item, new IOException($"未找到目标父级“{parent.Result.Name}”下的该实例"), log);
+        }
+
+        private void ApplyInstancePositions(IEnumerable<StructureChange> items, HashSet<string> childIds, SceneUndoScope undo, Action<string> log)
+        {
+            foreach (var item in items.Where(item => item.Error == null))
+            {
+                undo.EnsureDocument(); Current = item.Name;
+                try
+                {
+                    var located = item.Result as ITxLocatableObject;
+                    if (located == null) throw new IOException("插入对象无法设置实例位置");
+                    var c = _source.Parts[item.Node.Key].Frame;
+                    var expected = new[] { c[0], c[3], c[6], c[9], c[1], c[4], c[7], c[10], c[2], c[5], c[8], c[11] };
+                    located.AbsoluteLocation = TxMath.FromWorldValues(expected);
+                    VerifyPlacement(item, located, expected, childIds);
+                    item.Node.BoundPart = item.Result; Imported++;
+                    log?.Invoke("[已归位] " + item.Name);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception error) { RecordImportIssue(item, error, log); }
+            }
         }
 
         internal void Import(Action<string> log)
@@ -406,70 +532,93 @@ namespace TxTools.CatiaPartTree.Ps
                         (container.Result != _parent && !StructureEngine.Children(expectedParent).Any(o => StructureEngine.Id(o) == StructureEngine.Id(container.Result))))
                         throw new InvalidOperationException("本批目标容器已失效、改名或移动，请重新预览。");
                 }
-                foreach (var package in _packages.Where(p => p.Error == null))
+                foreach (var paths in _packages.Where(p => p.Error == null).GroupBy(p => LibraryInsertion.NeedsCompatibility(p.Directory)))
                 {
-                    string issue = LibraryInsertion.SupportIssue(package.Directory);
+                    string issue = LibraryInsertion.SupportIssue(paths.First().Directory);
                     if (issue != null) throw new InvalidOperationException(issue);
                 }
                 using (var undo = SceneUndoScope.Begin("CATIA 导入 · 导入归位"))
                 {
-                    foreach (var item in Items.Where(c => !c.Container && c.Error == null))
+                    var instances = Items.Where(c => !c.Container && c.Error == null).ToList();
+                    var paths = instances.Select(item => _bySource[_source.Parts[item.Node.Key].File].Directory).ToArray();
+                    var loaded = ComponentIO.LoadCojts(paths, _library, index =>
                     {
+                        undo.EnsureDocument(); Current = instances[index].Name;
+                        SceneWriteAttempted = attempted = true;
+                    });
+                    for (int i = 0; i < instances.Count; i++)
+                    {
+                        var item = instances[i];
                         undo.EnsureDocument(); Current = item.Name;
-                        var source = _source.Parts[item.Node.Key]; var package = _bySource[source.File];
-                        ITxObject inserted = null; string summary = ""; SceneWriteAttempted = attempted = true;
                         try
                         {
-                            if (!ComponentIO.InsertCojt(package.Directory, item.Name, package.Directory, _library, 0, 0, 0, log, out summary, out inserted))
-                            { item.Result = inserted; throw new IOException(summary.Trim()); }
-                            item.Result = inserted;
-                            if (inserted == null || !inserted.IsValid()) throw new IOException("插入后未取得有效实例");
-                            undo.EnsureDocument(); inserted.Name = item.Name;
-                            dynamic parent = item.Parent.Result; parent.AddObject(inserted);
-                            var located = inserted as ITxLocatableObject;
-                            if (located == null) throw new IOException("插入对象无法设置实例位置");
-                            var c = source.Frame;
-                            var expected = new[] { c[0], c[3], c[6], c[9], c[1], c[4], c[7], c[10], c[2], c[5], c[8], c[11] };
-                            located.AbsoluteLocation = TxMath.FromWorldValues(expected);
-                            VerifyPlacement(item, located, expected);
-                            item.Node.BoundPart = inserted; Imported++;
-                            log?.Invoke("[已归位] " + item.Name);
+                            ComponentIO.VerifyLoadedCojt(loaded[i], paths[i], _library);
+                            item.Result = loaded[i].Instance;
+                            undo.EnsureDocument(); item.Result.Name = item.Name;
                         }
                         catch (OperationCanceledException) { throw; }
                         catch (Exception error)
                         {
-                            // A blocked compatibility layer is process wide: stop instead of
-                            // repeating a known-bad insert for every remaining instance.
-                            string blocked = LibraryInsertion.SupportIssue(package.Directory);
-                            if (blocked != null) throw new IOException("插入环境不可用：" + blocked, error);
-                            bool partial = inserted != null && inserted.IsValid();
-                            item.Result = partial ? inserted : null;
-                            item.Error = partial ? "已插入，需核对" : "未插入";
-                            if (partial) NeedsReview++;
-                            else SkippedInstances++;
-                            string detail = error.GetBaseException().Message;
-                            string message = "[" + item.Error + "] " + item.Name + "：" + detail;
-                            Warnings.Add(message);
-                            log?.Invoke(message);
+                            item.Result = loaded[i].Instance;
+                            RecordImportIssue(item, error, log);
                         }
                     }
-                    if (Imported + NeedsReview == 0 && Items.Any(c => !c.Container))
-                        throw new IOException("未插入任何实例，请查看日志。");
+                    foreach (var group in instances.Where(item => item.Error == null).GroupBy(item => item.Parent))
+                        MoveInstances(group.Key, group.ToList(), undo, log);
+                    var childrenByParent = new Dictionary<StructureChange, HashSet<string>>();
                     foreach (var group in Items.Where(c => c.Parent != null && (c.Container ? (c == Items[0] || live.Contains(c)) : c.Error == null)).GroupBy(c => c.Parent))
                     {
-                        ITxObject previous = null; dynamic container = group.Key.Result;
-                        foreach (var item in group)
+                        var expected = group.Select(c => StructureEngine.Id(c.Result)).ToArray();
+                        var ids = new HashSet<string>(expected);
+                        var current = StructureEngine.Children(group.Key.Result).Select(StructureEngine.Id).Where(ids.Contains).ToArray();
+                        if (!current.SequenceEqual(expected))
                         {
-                            undo.EnsureDocument();
-                            if (previous != null) container.AddObjectAfter(item.Result, previous);
-                            previous = item.Result;
+                            // PS inserts new children at the top, so the scene order may
+                            // differ from the preview. Ordering is only exposed by the
+                            // SDK ordered collection; TxCompoundPart has no public
+                            // AddObjectAfter, so a dynamic call fails at runtime.
+                            var ordered = group.Key.Result as ITxOrderedObjectCollection;
+                            if (ordered == null)
+                            {
+                                string message = "[顺序] " + group.Key.Name + "：目标容器不支持子节点排序，请手工核对顺序。";
+                                Warnings.Add(message); log?.Invoke(message);
+                            }
+                            else
+                            {
+                                ITxObject previous = null;
+                                try
+                                {
+                                    foreach (var item in group)
+                                    {
+                                        undo.EnsureDocument();
+                                        if (previous != null) MoveAfter(ordered, item.Result, previous);
+                                        previous = item.Result;
+                                    }
+                                }
+                                catch (OperationCanceledException) { throw; }
+                                catch (Exception error)
+                                {
+                                    string message = "[顺序] " + group.Key.Name + "：" + error.GetBaseException().Message + "，请手工核对顺序。";
+                                    Warnings.Add(message); log?.Invoke(message);
+                                }
+                                if (!StructureEngine.Children(group.Key.Result).Select(StructureEngine.Id).Where(ids.Contains).SequenceEqual(expected))
+                                {
+                                    string message = "[顺序] " + group.Key.Name + "：子节点顺序与预览不一致，请手工核对。";
+                                    Warnings.Add(message); log?.Invoke(message);
+                                }
+                            }
                         }
-                        var ids = new HashSet<string>(group.Select(c => StructureEngine.Id(c.Result)));
-                        if (!StructureEngine.Children(group.Key.Result).Where(o => ids.Contains(StructureEngine.Id(o))).Select(StructureEngine.Id).SequenceEqual(group.Select(c => StructureEngine.Id(c.Result))))
-                            throw new IOException("目标子节点顺序与预览不一致：" + group.Key.Name);
+                        childrenByParent.Add(group.Key, ids);
                     }
+                    // Assign absolute poses after all SDK hierarchy edits. The
+                    // preview may flatten or move containers within the PS tree.
+                    foreach (var group in instances.Where(item => item.Error == null).GroupBy(item => item.Parent))
+                        ApplyInstancePositions(group, childrenByParent[group.Key], undo, log);
+                    if (Imported + NeedsReview == 0 && Items.Any(c => !c.Container))
+                        throw new IOException("未插入任何实例，请查看日志。");
                 }
                 Stage = CatiaImportStage.Completed;
+                RefreshView();
             }
             catch { Stage = attempted ? CatiaImportStage.Failed : CatiaImportStage.TreeCreated; throw; }
         }

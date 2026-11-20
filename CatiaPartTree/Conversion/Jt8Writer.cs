@@ -16,9 +16,14 @@ namespace TxTools.CatiaPartTree.Conversion
         // Long strips are legal; a generous bound only guards against pathological
         // chains. Reference (DTK) files average well over twenty triangles a strip.
         const int StripLimit=1024;
-        sealed class Piece { public MeshShape Mesh;public int[] Faces;public byte[] Color;public Guid Segment;public int ShapeId,MaterialId,LateId,NameId,VertexRecords;public string Name; }
-        // PS persists geometry under a Part. Group all color shapes in one LOD.
-        sealed class Part { public List<Piece> Pieces=new List<Piece>();public string Name;public int NodeId,LodId,GroupId,NameId,TriangleCountId; }
+        sealed class Piece { public MeshShape Mesh;public int[] Faces;public byte[] Color;public Guid Segment;public int ShapeId,MaterialId,LateId,VertexRecords; }
+        sealed class Part
+        {
+            public readonly List<Piece> Pieces = new List<Piece>();
+            public string Name;
+            public int EntityId, RootId, NodeId, LodId, GroupId;
+            public int EntityNameId, RootNameId, NameId;
+        }
         // Faces[k] = the piece-relative face that introduced Vertices[k]; used only
         // when a corner normal is missing and the face normal is the fallback.
         sealed class Strip { public List<int> Vertices=new List<int>();public List<int> Faces=new List<int>();public int Start,Triangles; }
@@ -42,12 +47,27 @@ namespace TxTools.CatiaPartTree.Conversion
                 Range(w,p.VertexRecords);Range(w,1);Range(w,p.Faces.Length);w.Write(payloadBytes);w.Write(0f);
                 w.Write(1);w.Write(0);w.Write(0);w.Write(new byte[4]);}));
         }
-        static byte[] Material(Piece p){return Element(Type("10dd1030"),3,Build(w=>{
+        // Use the legacy header found in the PS library JT 8.0. The GUID and
+        // payload identify this element as a material.
+        static byte[] Material(Piece p){return Element(Type("10dd1030"),1,Build(w=>{
             w.Write(p.MaterialId);w.Write((byte)0);w.Write(0U);w.Write((ushort)0);
             foreach(float v in new[]{.3f,.3f,.3f,1f})w.Write(v);
             foreach(float v in new[]{p.Color[0]/255f,p.Color[1]/255f,p.Color[2]/255f,1f})w.Write(v);
             foreach(float v in new[]{.8f,.8f,.8f,1f,0f,0f,0f,1f})w.Write(v);w.Write(15f);}));}
         static byte[] PropertyString(int id,string text){return Element(Type("10dd106e"),5,Build(w=>{w.Write(id);w.Write(0x40000000U);String(w,text);}));}
+        // JT_PROP_NAME encodes assembly and part names as name.type;version;instance:.
+        // A semicolon in a source file name cannot be part of the encoded name.
+        static string ProductNodeName(string name, string type, int instance)
+        {
+            return name.Replace(';', '_') + "." + type + ";1;" +
+                instance.ToString(CultureInfo.InvariantCulture) + ":";
+        }
+        static void NodeProperties(BinaryWriter writer, int nodeId, params int[] propertyPairs)
+        {
+            writer.Write(nodeId);
+            foreach (int id in propertyPairs) writer.Write(id);
+            writer.Write(0);
+        }
         // 延迟装载属性：把属性/形状绑定到另一个段。末尾的整型是目标段的段类型（1=LSG，4=元数据，7=LOD0）。
         static byte[] LateRef(int id,Guid segment,int type){return Element(new Guid("e0b05be5-fbbd-11d1-a3a7-00aa00d10954"),8,Build(w=>{
             w.Write(id);w.Write(0x40000000U);w.Write(segment.ToByteArray());w.Write(type);}));}
@@ -59,7 +79,8 @@ namespace TxTools.CatiaPartTree.Conversion
             w.Write(key.Length);w.Write(Encoding.Unicode.GetBytes(key));w.Write((byte)1);
             w.Write(value.Length);w.Write(Encoding.Unicode.GetBytes(value));
         }
-        static byte[] MetaDataElement(){return Element(new Guid("ce357247-38fb-11d1-a506-006097bdc6e1"),9,Build(w=>{
+        static byte[] MetaDataElement(string sceneName){return Element(new Guid("ce357247-38fb-11d1-a506-006097bdc6e1"),9,Build(w=>{
+            MetaString(w,"Name::",sceneName);
             MetaString(w,"JT_PROP_ORIGINATING_BREPTYPE","None");
             MetaString(w,"AdvCompressLODLevel::","0.000000 0.000000 0.000000");
             w.Write(0);}));}
@@ -67,8 +88,8 @@ namespace TxTools.CatiaPartTree.Conversion
             BaseNode(w,id);w.Write(1);w.Write(lod);w.Write((ushort)1);w.Write((ushort)1);
             w.Write(99); // Part empty field as written by the native JT reference.
         }));}
-        static byte[] RangeLodNode(int id,int group){return Element(Type("10dd104c"),1,Build(w=>{
-            BaseNode(w,id);w.Write(1);w.Write(group);
+        static byte[] RangeLodNode(int id,int child){return Element(Type("10dd104c"),1,Build(w=>{
+            BaseNode(w,id);w.Write(1);w.Write(child);
             w.Write(0); // Reserved float vector size.
             w.Write(0); // Reserved integer.
             w.Write(0); // Zero range limits for one representation.
@@ -76,11 +97,9 @@ namespace TxTools.CatiaPartTree.Conversion
         }));}
         static byte[] GroupNode(int id,int[] children){return Element(Type("10dd101b"),1,Build(w=>{
             BaseNode(w,id);w.Write(children.Length);foreach(int c in children)w.Write(c);}));}
-        // MetaData 节点是「文档/装配」层，参考件（DTK 导出件与 PS 自己写出的件）都把零件挂在它下面：
-        // Partition → MetaData → Part → …。Part 直连 Partition 时 PS 建模提交会把几何丢掉。
+        // The document metadata node groups the parts and references file metadata.
         static byte[] MetaDataNode(int id,int[] children){return Element(new Guid("ce357245-38fb-11d1-a506-006097bdc6e1"),1,Build(w=>{
             BaseNode(w,id);w.Write(children.Length);foreach(int c in children)w.Write(c);w.Write((short)1);}));}
-        static byte[] Late(Piece p){return Element(new Guid("e0b05be5-fbbd-11d1-a3a7-00aa00d10954"),8,Build(w=>{w.Write(p.LateId);w.Write(0x40000000U);w.Write(p.Segment.ToByteArray());w.Write(7);}));}
         // Chained strips keep the triangle set, positions and corner normals identical;
         // only the strip boundaries change. Two triangles may share a vertex record only
         // when both of them shade that corner from the same vertex normal.
@@ -349,60 +368,90 @@ namespace TxTools.CatiaPartTree.Conversion
                 parts.Add(part);
                 foreach(var group in Enumerable.Range(0,mesh.triangles.Length).GroupBy(i=>BitConverter.ToString(mesh.rgb[i])))
                 {
-                    var p=new Piece{Mesh=rounded,Faces=group.ToArray(),Color=mesh.rgb[group.First()],Name=mesh.name+"/"+group.Key};
+                    var p=new Piece{Mesh=rounded,Faces=group.ToArray(),Color=mesh.rgb[group.First()]};
                     pieces.Add(p);part.Pieces.Add(p);
                 }
             }
-            int id=1,metaId=id++;foreach(var part in parts)part.NodeId=id++;foreach(var part in parts)part.LodId=id++;
-            foreach(var part in parts)part.GroupId=id++;
+            int id = 1, metaId = id++;
+            foreach (var part in parts)
+            {
+                part.EntityId = id++;
+                part.RootId = id++;
+                part.NodeId = id++;
+                part.LodId = id++;
+                if (part.Pieces.Count > 1) part.GroupId = id++;
+            }
             foreach(var p in pieces)p.ShapeId=id++;foreach(var p in pieces)p.MaterialId=id++;
-            int shapeImplKey=id++,nameKey=id++,frameKey=id++,frameValue=id++,unitKey=id++,unitValue=id++;
-            int metaKey=id++,trisKey=id++,partTypeKey=id++,partTypeValue=id++,metaLate=id++;
-            foreach(var part in parts){part.NameId=id++;part.TriangleCountId=id++;}
-            foreach(var p in pieces){p.LateId=id++;p.NameId=id++;}
+            int shapeImplKey=id++,nameKey=id++,assemblyName=id++,frameKey=id++,frameValue=id++,unitKey=id++,unitValue=id++;
+            int metaKey=id++,partTypeKey=id++,partTypeValue=id++,metaLate=id++;
+            int simplifierKey = id++, simplifierValue = id++, simplifyParamsKey = id++, simplifyParamsValue = id++;
+            foreach (var part in parts)
+            {
+                part.EntityNameId = id++;
+                part.RootNameId = id++;
+                part.NameId = id++;
+            }
+            foreach (var piece in pieces) piece.LateId = id++;
             var lods=new byte[pieces.Count][];
             for(int i=0;i<pieces.Count;i++){int records;lods[i]=Lod(pieces[i],out records);pieces[i].VertexRecords=records;}
             for(int i=0;i<pieces.Count;i++)pieces[i].Segment=Stable("jt8-normal-v3/"+pieces[i].Mesh.instanceId+"/"+BitConverter.ToString(pieces[i].Color)+"/"+Digest(lods[i]));
             var all=pieces.SelectMany(Points).ToArray();int totalFaces=pieces.Sum(p=>p.Faces.Length);
-            var metaStream=MetaDataElement();var metaSegment=Stable("jt8-metadata-v1/"+Digest(metaStream));
+            var metaStream=MetaDataElement(sceneName);var metaSegment=Stable("jt8-metadata-v1/"+Digest(metaStream));
+            int descendantCount = 1 + parts.Count * 4 + parts.Count(part => part.GroupId != 0) + pieces.Count;
             var graph=Build(w=>{
                 w.Write(Element(Type("10dd103e"),1,Build(b=>{BaseNode(b,0);b.Write(1);b.Write(metaId);
                     b.Write(1);String(b,sceneName+".jt");Bounds(b,all);b.Write(F(pieces.Sum(p=>Area(p))));
-                    Range(b,pieces.Sum(p=>p.VertexRecords));Range(b,1+3*parts.Count+pieces.Count);
+                    Range(b,pieces.Sum(p=>p.VertexRecords));Range(b,descendantCount);
                     Range(b,totalFaces);Bounds(b,all);})));
-                w.Write(MetaDataNode(metaId,parts.Select(p=>p.NodeId).ToArray()));
-                foreach(var part in parts)w.Write(PartNode(part.NodeId,part.LodId));
-                foreach(var part in parts)
+                w.Write(MetaDataNode(metaId, parts.Select(part => part.EntityId).ToArray()));
+                foreach (var part in parts)
                 {
-                    // 参考件（PS 自己写出与 DTK 导出件）都是 Part → RangeLOD → Group → 形状：
-                    // Group 是实体的形状容器，RangeLOD 下的多个子节点会被当成同一零件的 LOD 备选，
-                    // 所以按颜色拆分的形状一律放在 Group 下，不直接挂 LOD。
-                    w.Write(RangeLodNode(part.LodId,part.GroupId));
+                    // Match the entity and Root assembly nodes of the PS library.
+                    w.Write(MetaDataNode(part.EntityId, new[] { part.RootId }));
+                    w.Write(MetaDataNode(part.RootId, new[] { part.NodeId }));
+                    w.Write(PartNode(part.NodeId, part.LodId));
+                    int lodChild = part.GroupId == 0 ? part.Pieces[0].ShapeId : part.GroupId;
+                    w.Write(RangeLodNode(part.LodId, lodChild));
+                    // A RangeLOD's children are alternatives. Keep all colors
+                    // together in a single representation when a group is needed.
+                    if (part.GroupId != 0)
+                        w.Write(GroupNode(part.GroupId, part.Pieces.Select(piece => piece.ShapeId).ToArray()));
                 }
-                foreach(var part in parts)w.Write(GroupNode(part.GroupId,part.Pieces.Select(p=>p.ShapeId).ToArray()));
                 for(int i=0;i<pieces.Count;i++)w.Write(Shape(pieces[i],lods[i].Length));
                 foreach(var p in pieces)w.Write(Material(p));
                 End(w);w.Write(PropertyString(shapeImplKey,"JT_LLPROP_SHAPEIMPL"));w.Write(PropertyString(nameKey,"JT_PROP_NAME"));
+                w.Write(PropertyString(assemblyName,ProductNodeName(sceneName,"asm",0)));
                 w.Write(PropertyString(frameKey,frameProperty));w.Write(PropertyString(frameValue,sceneName));
                 w.Write(PropertyString(unitKey,"JT_PROP_MEASUREMENT_UNITS"));w.Write(PropertyString(unitValue,"millimeters"));
                 w.Write(PropertyString(metaKey,"JT_LLPROP_METADATA"));
-                w.Write(PropertyString(trisKey,"_nTrisLODs"));
                 w.Write(PropertyString(partTypeKey,"PartitionType"));w.Write(PropertyString(partTypeValue,"Assembly"));
+                w.Write(PropertyString(simplifierKey, "JT_PROP_SIMP_NAME"));
+                w.Write(PropertyString(simplifierValue, "TxToolsTriStripper"));
+                w.Write(PropertyString(simplifyParamsKey, "JT_PROP_SIMP_PARAMS"));
+                w.Write(PropertyString(simplifyParamsValue, ":LOD selection ratio=1.000000"));
                 w.Write(LateRef(metaLate,metaSegment,4));
-                foreach(var part in parts)
+                for(int i=0;i<parts.Count;i++)
                 {
-                    w.Write(PropertyString(part.NameId,part.Name));
-                    int triangles=part.Pieces.Sum(piece=>piece.Faces.Length);
-                    w.Write(PropertyString(part.TriangleCountId,"1::"+triangles.ToString(CultureInfo.InvariantCulture)));
+                    var part=parts[i];
+                    string entityPath = part.Name + "\\\\" + part.Name;
+                    w.Write(PropertyString(part.EntityNameId, ProductNodeName(entityPath, "asm", i)));
+                    w.Write(PropertyString(part.RootNameId, ProductNodeName("Root", "asm", i)));
+                    w.Write(PropertyString(part.NameId, ProductNodeName(part.Name, "part", i)));
                 }
-                foreach(var p in pieces){w.Write(Late(p));w.Write(PropertyString(p.NameId,p.Name));}End(w);
-                w.Write((short)1);w.Write(parts.Count+pieces.Count+2);w.Write(0);
-                w.Write(frameKey);w.Write(frameValue);w.Write(nameKey);w.Write(frameValue);w.Write(unitKey);w.Write(unitValue);
-                w.Write(partTypeKey);w.Write(partTypeValue);w.Write(0);
-                w.Write(metaId);w.Write(nameKey);w.Write(frameValue);w.Write(metaKey);w.Write(metaLate);w.Write(unitKey);w.Write(unitValue);w.Write(0);
-                foreach(var part in parts){w.Write(part.NodeId);w.Write(nameKey);w.Write(part.NameId);
-                    w.Write(metaKey);w.Write(metaLate);w.Write(trisKey);w.Write(part.TriangleCountId);w.Write(unitKey);w.Write(unitValue);w.Write(0);}
-                foreach(var p in pieces){w.Write(p.ShapeId);w.Write(shapeImplKey);w.Write(p.LateId);w.Write(nameKey);w.Write(p.NameId);w.Write(unitKey);w.Write(unitValue);w.Write(0);}
+                foreach (var piece in pieces) w.Write(LateRef(piece.LateId, piece.Segment, 7));
+                End(w);
+                w.Write((short)1);
+                w.Write(2 + parts.Count * 3 + pieces.Count);
+                NodeProperties(w, 0, partTypeKey, partTypeValue, nameKey, assemblyName, frameKey, frameValue);
+                NodeProperties(w, metaId, unitKey, unitValue, metaKey, metaLate);
+                foreach (var part in parts)
+                {
+                    NodeProperties(w, part.EntityId, nameKey, part.EntityNameId, unitKey, unitValue);
+                    NodeProperties(w, part.RootId, nameKey, part.RootNameId, unitKey, unitValue);
+                    NodeProperties(w, part.NodeId, nameKey, part.NameId, unitKey, unitValue);
+                }
+                foreach (var piece in pieces)
+                    NodeProperties(w, piece.ShapeId, simplifyParamsKey, simplifyParamsValue, simplifierKey, simplifierValue, shapeImplKey, piece.LateId);
             });
             Guid lsg=Stable("jt8-normal-v3/lsg/"+Digest(graph));
             var compressed=Zlib(graph);var lsgBody=Build(w=>{w.Write(2);w.Write(compressed.Length+1);w.Write((byte)2);w.Write(compressed);});
