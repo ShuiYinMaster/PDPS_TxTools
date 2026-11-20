@@ -2156,6 +2156,10 @@ namespace TxTools.ExportGun
         /// 返回 (显示名, 4x4矩阵)；取消返回 null。
         /// </summary>
         private Tuple<string, double[]> AskUserPickRefFrame(PsReader.RefFrameResult rf, string operationName = null)
+            => SelectOperationRefFrame(this, rf, operationName);
+
+        internal static Tuple<string, double[]> SelectOperationRefFrame(IWin32Window owner,
+            PsReader.RefFrameResult rf, string operationName)
         {
             var options = new List<Tuple<string, double[], string>>();
             if (rf.PartCandidates != null)
@@ -2212,7 +2216,7 @@ namespace TxTools.ExportGun
                 dlg.Controls.Add(pnlBtn);
                 dlg.Controls.Add(lbl);
 
-                if (dlg.ShowDialog(this) != DialogResult.OK) return null;
+                if (dlg.ShowDialog(owner) != DialogResult.OK) return null;
                 int idx = lb.SelectedIndex;
                 if (idx < 0 || idx >= options.Count) return null;
                 return Tuple.Create(options[idx].Item1, options[idx].Item2);

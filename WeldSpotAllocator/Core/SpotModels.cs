@@ -47,6 +47,8 @@ namespace TxTools.WeldSpotAllocator
     {
         public string Name;
         public ITxObject Raw;                          // TxWeldOperation
+        internal double[] OperationFrame;
+        internal string OperationFrameName;
         public readonly List<SpotData> Spots = new List<SpotData>();   // 仅焊点
         public readonly List<SpotData> Vias  = new List<SpotData>();   // 仅过渡点
         public readonly List<SpotData> Ordered = new List<SpotData>(); // 焊点+via 按轨迹顺序

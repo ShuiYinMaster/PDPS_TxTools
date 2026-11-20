@@ -19,6 +19,9 @@ namespace TxTools.WeldSpotAllocator
 
         // ── 读取一条焊接操作 ────────────────────────────────────────────────
         public static OpData ReadOneWeldOp(ITxObject weldOp, Action<string> log)
+            => ReadOneWeldOp(weldOp, log, readSpotFrames: true);
+
+        internal static OpData ReadOneWeldOp(ITxObject weldOp, Action<string> log, bool readSpotFrames)
         {
             var od = new OpData { Name = SafeName(weldOp), Raw = weldOp };
             foreach (ITxObject child in EnumChildrenOrdered(weldOp))
@@ -29,7 +32,7 @@ namespace TxTools.WeldSpotAllocator
                     {
                         var wp = weld.WeldPoint;
                         if (wp == null) continue;
-                        var sd = MakeWeldSpot(wp, weld);
+                        var sd = MakeWeldSpot(wp, weld, readSpotFrames);
                         od.Spots.Add(sd); od.Ordered.Add(sd);
                     }
                     else if (child is TxRoboticViaLocationOperation via)
@@ -58,13 +61,14 @@ namespace TxTools.WeldSpotAllocator
         }
 
         // ── 构造 SpotData ───────────────────────────────────────────────────
-        private static SpotData MakeWeldSpot(TxWeldPoint wp, TxWeldLocationOperation locOp)
+        private static SpotData MakeWeldSpot(TxWeldPoint wp, TxWeldLocationOperation locOp, bool readSpotFrames)
         {
             var tx = wp.AbsoluteLocation;
             if (tx == null) throw new InvalidOperationException("无法读取制造焊点的位姿。");
             var m = PsReader.TxToArr(tx);
             var trajectory = SafeTx(() => locOp.AbsoluteLocation);
-            var frame = ReadSymCenter(wp, locOp, out var frameSource);
+            string frameSource = null;
+            var frame = readSpotFrames ? ReadSymCenter(wp, locOp, out frameSource) : null;
             var sd = new SpotData
             {
                 Name = wp.Name,

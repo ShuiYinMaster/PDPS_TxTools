@@ -470,7 +470,7 @@ namespace TxTools.WeldSpotAllocator
             _chkTargetWorld.Visible = differentFrames;
             _targetFramePicker.Enabled = differentFrames && !_chkTargetWorld.Checked;
             if (differentFrames)
-                _lblHint.Text = "在当前工程分别选取参考和目标车件坐标后预览。坐标拾取框留空时，从各侧焊点自动识别。";
+                _lblHint.Text = "默认按导插枪规则读取各操作的自身坐标。需要统一某一侧时，在当前工程选取该侧坐标，再预览匹配。";
             else if (Mode == AllocMode.Symmetric)
                 _lblHint.Text = "选对侧待分配操作，并在当前工程确认参考车件坐标后预览。对称面为参考车件的局部 XZ 平面。";
             else if (Mode == AllocMode.NewSpot)
@@ -494,16 +494,38 @@ namespace TxTools.WeldSpotAllocator
         }
         private void DropLog(ITxObject o) => Log($"⚠ 已剔除非焊接操作：{SafeName(o)}");
 
-        private List<OpData> ReadHost(OpGridHost h)
+        private List<OpData> ReadHost(OpGridHost h, bool readSpotFrames)
         {
             var res = new List<OpData>();
             foreach (var o in h.GetObjects())
             {
-                var od = SpotReader.ReadOneWeldOp(o, Log);
+                var od = SpotReader.ReadOneWeldOp(o, Log, readSpotFrames);
                 if (od != null && (od.Spots.Count > 0 || od.Vias.Count > 0)) res.Add(od);
                 else Log($"⚠ 跳过非焊接/空操作：{SafeName(o)}");
             }
             return res;
+        }
+
+        private bool ResolveOperationFrames(IEnumerable<OpData> operations, string side)
+        {
+            foreach (var operation in operations)
+            {
+                if (operation.Spots.Count == 0) continue;
+                var info = new OperationInfo { Name = operation.Name, PsObject = operation.Raw };
+                PsReader.FillPoints(info, PointType.All, useMfg: true, log: Log);
+                var frame = PsReader.ResolveOperationRefFrame(info, fallbackToWorld: true, log: Log);
+                operation.OperationFrame = frame.Matrix;
+                operation.OperationFrameName = frame.Name;
+                if (frame.NeedsUserChoice)
+                {
+                    var chosen = ExportGunForm.SelectOperationRefFrame(this, frame, $"{side} · {operation.Name}");
+                    if (chosen == null) return false;
+                    operation.OperationFrameName = chosen.Item1;
+                    operation.OperationFrame = chosen.Item2;
+                }
+                Log($"[坐标] {side}操作「{operation.Name}」使用{operation.OperationFrameName}");
+            }
+            return true;
         }
 
         private void DoPreview()
@@ -512,9 +534,6 @@ namespace TxTools.WeldSpotAllocator
             try
             {
                 _lblRef.Text = RefText(); _lblTarget.Text = TgtText();
-                _refOps = ReadHost(_refHost);
-                _targetOps = ReadHost(_tgtHost);
-
                 var mode = Mode;
                 var cfg = new MatchSettings
                 {
@@ -532,6 +551,13 @@ namespace TxTools.WeldSpotAllocator
                     cfg.TargetFrame = _chkTargetWorld.Checked ? PsReader.TxToArr(new TxTransformation())
                         : ReadFrameOverride(_targetFramePicker);
                     if (_chkTargetWorld.Checked) cfg.TargetFrameSource = "世界坐标";
+                }
+                _refOps = ReadHost(_refHost, mode == AllocMode.Symmetric && !cfg.DiffFrame && cfg.ReferenceFrame == null);
+                _targetOps = ReadHost(_tgtHost, readSpotFrames: false);
+                if (cfg.DiffFrame)
+                {
+                    if (cfg.ReferenceFrame == null && !ResolveOperationFrames(_refOps, "参考侧")) return;
+                    if (cfg.TargetFrame == null && !ResolveOperationFrames(_targetOps, "目标侧")) return;
                 }
                 if (!cfg.ByDistance && !cfg.ByName) { Log("⚠ 未勾任何匹配条件，按仅距离处理"); cfg.ByDistance = true; }
 

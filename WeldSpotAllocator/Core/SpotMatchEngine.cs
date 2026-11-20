@@ -179,10 +179,17 @@ namespace TxTools.WeldSpotAllocator
         private static void BuildAssign(AllocPlan plan, IList<OpData> refOps, IList<OpData> targetOps, MatchSettings cfg, Action<string> log)
         {
             var pool = new List<SpotData>();
-            if (targetOps != null) foreach (var op in targetOps) pool.AddRange(op.Spots);
+            var targetOwners = plan.DiffFrame ? new Dictionary<SpotData, OpData>() : null;
+            if (targetOps != null)
+                foreach (var op in targetOps)
+                {
+                    pool.AddRange(op.Spots);
+                    if (targetOwners != null)
+                        foreach (var spot in op.Spots) targetOwners[spot] = op;
+                }
             if (refOps == null || pool.Count == 0) { plan.Warnings.Add("参考操作集 / 待分配焊点为空"); return; }
 
-            var localTargetPositions = plan.DiffFrame ? ReadLocalTargetPositions(pool, cfg, plan) : null;
+            var localTargetPositions = plan.DiffFrame ? ReadLocalTargetPositions(targetOwners, cfg, plan) : null;
             var ambiguous = cfg.NameOnly ? FindAmbiguousNames(refOps.SelectMany(op => op.Spots), pool, cfg.Names) : null;
             var usedT = new HashSet<SpotData>();
             foreach (var refOp in refOps)
@@ -190,10 +197,10 @@ namespace TxTools.WeldSpotAllocator
                 var om = new OpMatch { RefOp = refOp };
                 foreach (var r in refOp.Spots)
                 {
-                    double[] referenceFrame = cfg.ReferenceFrame ?? r.SymCenter;
+                    double[] referenceFrame = cfg.ReferenceFrame ?? (plan.DiffFrame ? refOp.OperationFrame : r.SymCenter);
                     bool missingFrame = plan.UsesReferenceFrame && referenceFrame == null;
                     string frameSource = cfg.ReferenceFrame != null ? "指定的参考车件坐标"
-                        : r.ReferenceFrameSource ?? "缺少坐标基准";
+                        : (plan.DiffFrame ? refOp.OperationFrameName : r.ReferenceFrameSource) ?? "缺少坐标基准";
                     if (missingFrame && !cfg.NameOnly)
                     {
                         plan.Warnings.Add($"参考焊点[{r.Name}] {frameSource}，无法按距离匹配。");
@@ -211,13 +218,17 @@ namespace TxTools.WeldSpotAllocator
                     if (match == null) continue;
                     match.Mirrored = resolved != null;
                     match.RefMirror = resolved;
-                    double[] targetFrame = cfg.TargetFrame ?? match.Target.SymCenter;
-                    string targetSource = cfg.TargetFrameSource ?? (cfg.TargetFrame != null ? "指定的目标车件坐标"
-                        : match.Target.ReferenceFrameSource ?? "缺少坐标基准");
+                    var targetOp = plan.DiffFrame ? targetOwners[match.Target] : null;
+                    double[] targetFrame = cfg.TargetFrame ?? targetOp?.OperationFrame;
                     if (plan.UsesReferenceFrame)
                     {
-                        match.FrameDetails = $"参考侧  {frameSource}";
-                        if (plan.DiffFrame) match.FrameDetails += $"\n目标侧  {targetSource}";
+                        match.FrameDetails = $"参考操作「{refOp.Name}」  {frameSource}";
+                        if (targetOp != null)
+                        {
+                            string targetSource = cfg.TargetFrameSource ?? (cfg.TargetFrame != null ? "指定的目标车件坐标"
+                                : targetOp.OperationFrameName ?? "缺少坐标基准");
+                            match.FrameDetails += $"\n目标操作「{targetOp.Name}」  {targetSource}";
+                        }
                     }
                     om.Matches.Add(match);
                     if (plan.CopyRotation)
@@ -225,10 +236,11 @@ namespace TxTools.WeldSpotAllocator
                 }
                 if (om.Matches.Count > 0 && plan.CopyVias && refOp.Vias.Count > 0)
                 {
-                    om.ViaReferenceFrame = cfg.ReferenceFrame ?? SymmetryMath.SharedFrame(refOp.Spots.Select(s => s.SymCenter));
+                    om.ViaReferenceFrame = cfg.ReferenceFrame ?? (plan.DiffFrame ? refOp.OperationFrame
+                        : SymmetryMath.SharedFrame(refOp.Spots.Select(s => s.SymCenter)));
                     if (plan.DiffFrame)
                     {
-                        var frames = om.Matches.Select(m => cfg.TargetFrame ?? m.Target.SymCenter).ToList();
+                        var frames = om.Matches.Select(m => cfg.TargetFrame ?? targetOwners[m.Target].OperationFrame).ToList();
                         if (frames.All(frame => frame != null)) om.ViaTargetFrame = SymmetryMath.SharedFrame(frames);
                     }
                     if (om.ViaReferenceFrame == null || (plan.DiffFrame && om.ViaTargetFrame == null))
@@ -240,15 +252,17 @@ namespace TxTools.WeldSpotAllocator
             log($"[Match] 命中 {plan.TotalMatches} 点，参考轨迹 {plan.OpMatches.Count} 条");
         }
 
-        private static Dictionary<SpotData, double[]> ReadLocalTargetPositions(IEnumerable<SpotData> pool, MatchSettings cfg, AllocPlan plan)
+        private static Dictionary<SpotData, double[]> ReadLocalTargetPositions(Dictionary<SpotData, OpData> owners,
+            MatchSettings cfg, AllocPlan plan)
         {
             var positions = new Dictionary<SpotData, double[]>();
-            foreach (var target in pool.Distinct())
+            foreach (var entry in owners)
             {
-                var frame = cfg.TargetFrame ?? target.SymCenter;
+                var target = entry.Key;
+                var frame = cfg.TargetFrame ?? entry.Value.OperationFrame;
                 positions[target] = frame == null ? null : SymmetryMath.LocalPosition(target.Matrix, frame);
                 if (frame == null && !cfg.NameOnly)
-                    plan.Warnings.Add($"目标焊点[{target.Name}] {target.ReferenceFrameSource ?? "缺少坐标基准"}，无法按距离匹配。");
+                    plan.Warnings.Add($"目标焊点[{target.Name}] {entry.Value.OperationFrameName ?? "缺少操作坐标基准"}，无法按距离匹配。");
             }
             return positions;
         }
