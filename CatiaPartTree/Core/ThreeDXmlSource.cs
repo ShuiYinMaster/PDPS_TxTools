@@ -4,6 +4,9 @@ using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
 using System.Xml;
 using System.Xml.Linq;
 using TxTools.CatiaPartTree.Conversion;
@@ -13,13 +16,21 @@ namespace TxTools.CatiaPartTree.Core
 {
     internal sealed class ThreeDXmlFileRequiredException : IOException
     {
-        internal ThreeDXmlFileRequiredException(string name)
-            : base("CATIA 中的 " + name + " 是内存产品，请选择对应的原始 3DXML 文件读取结构。") { }
+        internal string FileName { get; }
+        internal string Directory { get; }
+        internal ThreeDXmlFileRequiredException(string name, string directory)
+            : base("CATIA 未提供可读取的 3DXML 路径，请选择原始文件：" + name)
+        {
+            FileName = name;
+            Directory = directory;
+        }
     }
 
     internal static class ThreeDXmlSource
     {
         private static readonly XNamespace Ns = "http://www.3ds.com/xsd/3DXML";
+        private static readonly Regex NumberedCgrName = new Regex(@"\Acgr[0-9]+(?:_[0-9]+)*\z",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         private static string Id(XElement e) { return Required(e.Attribute("id")?.Value, "节点 ID"); }
         private static string Required(string value, string label)
         { if (string.IsNullOrWhiteSpace(value)) throw new InvalidDataException("3DXML 缺少" + label + "。"); return value.Trim(); }
@@ -47,6 +58,68 @@ namespace TxTools.CatiaPartTree.Core
             const string prefix = "urn:3DXML:";
             value = Required(value, "几何文件引用");
             return (value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? value.Substring(prefix.Length) : value).Replace('\\', '/');
+        }
+        internal static string GeometryStem(string entry)
+        {
+            string name = entry.Replace('\\', '/');
+            name = name.Substring(name.LastIndexOf('/') + 1);
+            int dot = name.LastIndexOf('.');
+            return CatiaLibraryDestination.FolderSegment(dot > 0 ? name.Substring(0, dot) : name);
+        }
+        internal static string GeometryOutputStem(string member, string partNumber, string instanceName)
+        {
+            string stem = GeometryStem(member);
+            if (!NumberedCgrName.IsMatch(stem)) return stem;
+            string name = string.IsNullOrWhiteSpace(partNumber) ? instanceName : partNumber;
+            return string.IsNullOrWhiteSpace(name) ? stem : CatiaLibraryDestination.FolderSegment(name);
+        }
+        private static string GeometryIssue(ZipArchiveEntry entry, string name, string format)
+        {
+            if (entry == null) return "3DXML 缺少包内几何：" + name;
+            try
+            {
+                var header = new byte[8];
+                using (var stream = entry.Open())
+                {
+                    int offset = 0, read;
+                    while (offset < header.Length && (read = stream.Read(header, offset, header.Length - offset)) != 0) offset += read;
+                    if (offset == header.Length)
+                    {
+                        string magic = Encoding.ASCII.GetString(header);
+                        if (magic == "V5_CFV2\0" || magic == "V5_CFV3\0") return null;
+                    }
+                }
+                return "3DXML 表示格式非 CGR（" + format + "）：" + name;
+            }
+            catch (Exception error) when (error is IOException || error is InvalidDataException || error is NotSupportedException)
+            { return "3DXML 几何无法读取：" + name + "；" + error.Message; }
+        }
+        private static Frame12 LocalFrame(XElement instance)
+        {
+            string matrix = (string)instance.Element(Ns + "RelativeMatrix");
+            return string.IsNullOrWhiteSpace(matrix) ? Frame12.Identity : new Frame12(matrix.Split((char[])null, StringSplitOptions.RemoveEmptyEntries)
+                .Select(value => double.Parse(value, CultureInfo.InvariantCulture)).ToArray());
+        }
+        internal static void ExtractGeometry(string archivePath, string member, string output, CancellationToken cancel)
+        {
+            using (var file = File.OpenRead(archivePath))
+            using (var archive = new ZipArchive(file, ZipArchiveMode.Read))
+            {
+                var entry = archive.GetEntry(member);
+                if (entry == null) throw new IOException("3DXML 缺少包内几何：" + member);
+                using (var source = entry.Open())
+                using (var destination = new FileStream(output, FileMode.CreateNew, FileAccess.Write))
+                {
+                    var buffer = new byte[128 * 1024];
+                    int count;
+                    while ((count = source.Read(buffer, 0, buffer.Length)) != 0)
+                    {
+                        cancel.ThrowIfCancellationRequested();
+                        destination.Write(buffer, 0, count);
+                    }
+                    if (destination.Length != entry.Length) throw new InvalidDataException("3DXML 几何长度不匹配：" + member);
+                }
+            }
         }
         internal static CatiaImportSource Read(string path)
         {
@@ -85,11 +158,12 @@ namespace TxTools.CatiaPartTree.Core
                 {
                     string parent = Link(e, "IsAggregatedBy"), target = Link(e, "IsInstanceOf");
                     if (!references.ContainsKey(parent) || !representations.ContainsKey(target)) throw new InvalidDataException("3DXML 几何引用不存在：" + Id(e));
-                    geometry[parent].Add(representations[target]);
+                    geometry[parent].Add(e);
                 }
                 string rootId = Required((string)structure.Attribute("root"), "根引用 ID");
                 if (!references.ContainsKey(rootId)) throw new InvalidDataException("3DXML 根引用不存在：" + rootId);
                 var source = new CatiaImportSource { DocumentPath = path };
+                var issues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 int count = 0;
                 Func<string, string, string, Frame12, HashSet<string>, StructureNode> expand = null;
                 expand = (id, instanceName, instancePath, frame, ancestors) =>
@@ -97,35 +171,43 @@ namespace TxTools.CatiaPartTree.Core
                     if (ancestors.Count >= 100 || !ancestors.Add(id)) throw new InvalidDataException("3DXML 存在循环引用或层级超过 100。");
                     if (++count > 100000) throw new InvalidDataException("3DXML 展开实例超过 100000。");
                     var reference = references[id];
-                    bool hasGeometry = geometry[id].Count > 0;
+                    string partNumber = (string)reference.Element(Ns + "PLM_ExternalID");
+                    if (string.IsNullOrWhiteSpace(partNumber)) partNumber = (string)reference.Attribute("name");
                     var node = new StructureNode { Key = "3dxml/" + instancePath,
                         SourceName = instanceName ?? (string)reference.Attribute("name") ?? id,
-                        PartNumber = (string)reference.Element(Ns + "PLM_ExternalID") ?? (string)reference.Attribute("name"),
-                        IsContainer = children[id].Count > 0 || !hasGeometry };
+                        PartNumber = partNumber,
+                        IsContainer = children[id].Count > 0 || geometry[id].Count != 1 };
                     // Geometry owned by an assembly becomes a separate part beneath it.
                     // This preserves both its own representation and its child products.
-                    if (hasGeometry)
+                    var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var repInstance in geometry[id])
                     {
+                        if (++count > 100000) throw new InvalidDataException("3DXML 展开实例超过 100000。");
+                        var representation = representations[Link(repInstance, "IsInstanceOf")];
+                        string member = EntryName((string)representation.Attribute("associatedFile"));
+                        entries.TryGetValue(member, out var entry);
+                        if (!issues.TryGetValue(member, out string issue))
+                        {
+                            issue = GeometryIssue(entry, member, (string)representation.Attribute("format"));
+                            issues.Add(member, issue);
+                        }
                         var partNode = node;
+                        string partPath = instancePath;
                         if (node.IsContainer)
                         {
-                            partNode = new StructureNode { Key = node.Key + "/geometry", SourceName = node.SourceName + " · 几何", PartNumber = node.PartNumber };
+                            string stem = geometry[id].Count == 1 ? node.SourceName + " · 几何" : GeometryStem(member);
+                            string name = stem;
+                            for (int version = 2; !names.Add(name); version++) name = stem + "_" + version;
+                            partPath += "/geometry/" + Id(repInstance);
+                            partNode = new StructureNode { Key = "3dxml/" + partPath, SourceName = name, PartNumber = node.PartNumber };
                             node.Add(partNode);
                         }
-                        string[] files = geometry[id].Select(e => EntryName((string)e.Attribute("associatedFile"))).ToArray();
-                        string missing = string.Join("、", files.Where(n => !entries.ContainsKey(n)));
-                        string issue = missing.Length > 0 ? "3DXML 缺少几何文件：" + missing :
-                            "3DXML 几何表示（" + string.Join("/", geometry[id].Select(e => (string)e.Attribute("format")).Distinct()) +
-                            "）已识别；当前转换器仅支持 CATPart。可创建复合零件或分配已有零件。";
-                        source.Parts.Add(partNode.Key, new CatiaSourcePart { File = path, Frame = frame.Components,
-                            ReferenceId = id, InstancePath = instancePath, GeometryEntries = files, ConversionIssue = issue });
+                        source.Parts.Add(partNode.Key, new CatiaSourcePart { File = path, Frame = frame.ThenChild(LocalFrame(repInstance)).Components,
+                            ReferenceId = id, InstancePath = partPath, GeometryEntries = new[] { entry?.FullName ?? member }, ConversionIssue = issue });
                     }
                     foreach (var child in children[id])
                     {
-                        string matrix = (string)child.Element(Ns + "RelativeMatrix");
-                        var local = string.IsNullOrWhiteSpace(matrix) ? Frame12.Identity : new Frame12(matrix.Split((char[])null, StringSplitOptions.RemoveEmptyEntries)
-                            .Select(v => double.Parse(v, CultureInfo.InvariantCulture)).ToArray());
-                        node.Add(expand(Link(child, "IsInstanceOf"), (string)child.Attribute("name"), instancePath + "/" + Id(child), frame.ThenChild(local), ancestors));
+                        node.Add(expand(Link(child, "IsInstanceOf"), (string)child.Attribute("name"), instancePath + "/" + Id(child), frame.ThenChild(LocalFrame(child)), ancestors));
                     }
                     ancestors.Remove(id); return node;
                 };

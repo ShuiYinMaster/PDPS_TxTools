@@ -17,6 +17,8 @@ namespace TxTools.CatiaPartTree.Core
         internal double[] Frame;
         internal string ReferenceId, InstancePath, ConversionIssue;
         internal string[] GeometryEntries;
+        internal string GeometryEntry => GeometryEntries == null ? null : GeometryEntries[0];
+        internal string AssetKey => GeometryEntry == null ? File : File + "\0" + GeometryEntry;
     }
 
     internal sealed class CatiaImportSource
@@ -28,8 +30,12 @@ namespace TxTools.CatiaPartTree.Core
         internal readonly Dictionary<string, string> GeometryIssues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         internal static string Hash(string path)
         {
-            using (var file = File.OpenRead(path)) using (var sha = SHA256.Create())
-                return BitConverter.ToString(sha.ComputeHash(file)).Replace("-", "").ToLowerInvariant();
+            using (var file = File.OpenRead(path)) return Hash(file);
+        }
+        internal static string Hash(Stream source)
+        {
+            using (var sha = SHA256.Create())
+                return BitConverter.ToString(sha.ComputeHash(source)).Replace("-", "").ToLowerInvariant();
         }
 
         // Called in a dedicated STA. Only DTOs leave this apartment; no shared CATIA RCWs.
@@ -73,9 +79,12 @@ namespace TxTools.CatiaPartTree.Core
             }
             internal CatiaImportSource Read(object application = null)
             {
-                var document = Get(Connect(application), "ActiveDocument");
-                if (document == null) throw new InvalidOperationException("请先在 CATIA 中打开要读取的文档。");
-                return ReadDocument(document);
+                var app = Connect(application);
+                var document = OptionalProperty(app, "ActiveDocument");
+                if (document != null) return ReadDocument(document, app);
+                string hint = ActiveArchiveHint(app);
+                if (hint != null) return ReadArchive(hint, null);
+                throw new InvalidOperationException("无法取得 CATIA 当前文档。请确认 CATIA 中已打开要读取的文档。");
             }
             internal CatiaImportSource ReadProductFile(string path, object application = null)
             {
@@ -100,20 +109,95 @@ namespace TxTools.CatiaPartTree.Core
                 try { return ReadDocument(opened); }
                 finally { Call(opened, "Close"); }
             }
-            private CatiaImportSource ReadDocument(object document)
+            private object OptionalProperty(object value, string member)
             {
-                string documentName = null;
-                try { documentName = Text(document, "Name"); } catch (Exception ex) when (MissingProperty(ex)) { }
-                bool is3dXml = string.Equals(Path.GetExtension(documentName), ".3dxml", StringComparison.OrdinalIgnoreCase);
-                string documentFile;
-                try { documentFile = Text(document, "FullName"); }
-                catch (Exception) when (is3dXml) { throw new ThreeDXmlFileRequiredException(documentName); }
-                if (is3dXml && (string.IsNullOrWhiteSpace(documentFile) || !File.Exists(documentFile) ||
-                    !string.Equals(Path.GetExtension(documentFile), ".3dxml", StringComparison.OrdinalIgnoreCase)))
-                    throw new ThreeDXmlFileRequiredException(documentName);
+                if (value == null) return null;
+                try { return Get(value, member); }
+                catch (Exception error) when (MissingProperty(error) || error.GetBaseException() is COMException) { return null; }
+            }
+            private string OptionalText(object value, string member)
+            {
+                return Convert.ToString(OptionalProperty(value, member), CultureInfo.InvariantCulture)?.Trim();
+            }
+            private static bool Is3dXml(string text)
+            {
+                return !string.IsNullOrEmpty(text) && text.EndsWith(".3dxml", StringComparison.OrdinalIgnoreCase);
+            }
+            private static bool IsAbsolutePath(string path)
+            {
+                // Path.IsPathRooted also accepts drive-relative paths such as C:file.
+                return path != null && (path.StartsWith(@"\\", StringComparison.Ordinal) ||
+                    path.StartsWith("//", StringComparison.Ordinal) ||
+                    (path.Length >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/')));
+            }
+            private static string ArchiveWindowTitle(string title)
+            {
+                string caption = title?.TrimEnd('*').Trim();
+                if (string.IsNullOrEmpty(caption)) return null;
+                // The CATIA frame may wrap the active window's file name in brackets.
+                int bracket = caption.IndexOf('[');
+                if (bracket >= 0 && caption.EndsWith("]", StringComparison.Ordinal))
+                {
+                    string bracketed = caption.Substring(bracket + 1, caption.Length - bracket - 2).Trim().TrimEnd('*').Trim();
+                    if (Is3dXml(bracketed) && bracketed.IndexOfAny(Path.GetInvalidPathChars()) < 0) return bracketed;
+                }
+                return Is3dXml(caption) && caption.IndexOfAny(Path.GetInvalidPathChars()) < 0 ? caption : null;
+            }
+            private string ActiveArchiveHint(object app)
+            {
+                var window = OptionalProperty(app, "ActiveWindow");
+                return ArchiveWindowTitle(OptionalText(window, "Caption")) ??
+                    ArchiveWindowTitle(OptionalText(window, "Name"));
+            }
+            private static bool FileStemMatches(string file, string stem)
+            {
+                return !string.IsNullOrEmpty(file) && file.IndexOfAny(Path.GetInvalidPathChars()) < 0 &&
+                    string.Equals(Path.GetFileNameWithoutExtension(file), stem, StringComparison.OrdinalIgnoreCase);
+            }
+            private static CatiaImportSource ReadArchive(string hint, string directory)
+            {
+                if (IsAbsolutePath(hint) && File.Exists(hint)) return ThreeDXmlSource.Read(hint);
+                string name = Path.GetFileName(hint);
+                if (string.Equals(hint, name, StringComparison.Ordinal) && name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 &&
+                    IsAbsolutePath(directory))
+                {
+                    string path = Path.Combine(directory, name);
+                    if (File.Exists(path)) return ThreeDXmlSource.Read(path);
+                }
+                if (IsAbsolutePath(hint) && !Directory.Exists(directory)) directory = Path.GetDirectoryName(hint);
+                throw new ThreeDXmlFileRequiredException(name, Directory.Exists(directory) ? directory : null);
+            }
+            private CatiaImportSource ReadDocument(object document, object app = null)
+            {
+                string documentFile = OptionalText(document, "FullName");
+                if (Is3dXml(documentFile) && IsAbsolutePath(documentFile) && File.Exists(documentFile))
+                    return ThreeDXmlSource.Read(documentFile);
+
+                string documentName = OptionalText(document, "Name");
+                string archiveHint = Is3dXml(documentFile) ? documentFile : Is3dXml(documentName) ? documentName : null;
+                bool hasDocumentFile = IsAbsolutePath(documentFile) && File.Exists(documentFile);
+                bool isProduct = string.Equals(Path.GetExtension(documentFile), ".CATProduct", StringComparison.OrdinalIgnoreCase);
+                if (archiveHint == null && (!hasDocumentFile || isProduct))
+                {
+                    string windowHint = ActiveArchiveHint(app);
+                    // A CATProduct path can be CATIA's alias for the open 3DXML.
+                    // Require a matching name before overriding a real CATProduct file.
+                    if (windowHint != null)
+                    {
+                        string stem = Path.GetFileNameWithoutExtension(windowHint);
+                        if (!hasDocumentFile || FileStemMatches(documentFile, stem) || FileStemMatches(documentName, stem))
+                            archiveHint = windowHint;
+                    }
+                }
+                if (archiveHint != null)
+                {
+                    string directory = OptionalText(document, "Path");
+                    if (!IsAbsolutePath(directory) && IsAbsolutePath(documentFile)) directory = Path.GetDirectoryName(documentFile);
+                    return ReadArchive(archiveHint, directory);
+                }
+                if (string.IsNullOrWhiteSpace(documentFile))
+                    throw new InvalidOperationException("CATIA 当前文档未提供可用的文件路径。");
                 string file = Path.GetFullPath(documentFile);
-                if (Path.GetExtension(file).Equals(".3dxml", StringComparison.OrdinalIgnoreCase))
-                    return ThreeDXmlSource.Read(file);
                 _result.DocumentPath = file;
                 if (Path.GetExtension(file).Equals(".CATPart", StringComparison.OrdinalIgnoreCase))
                 {
@@ -121,7 +205,7 @@ namespace TxTools.CatiaPartTree.Core
                     _result.Root = new StructureNode { SourceName = Path.GetFileNameWithoutExtension(file), PartNumber = Path.GetFileNameWithoutExtension(file) };
                     _result.Parts.Add(_result.Root.Key, new CatiaSourcePart { File = file, Frame = Frame12.Identity.Components });
                 }
-                else if (Path.GetExtension(file).Equals(".CATProduct", StringComparison.OrdinalIgnoreCase))
+                else if (isProduct)
                     _result.Root = Product(Get(document, "Product"), Frame12.Identity, "root", 0);
                 else throw new NotSupportedException("活动文档必须是 CATProduct 或 CATPart。");
                 return _result;

@@ -160,21 +160,29 @@ namespace TxTools.CatiaPartTree.Conversion
         }
         public static MeshShape Mesh(byte[] cgr,string name,string instance,string source,string hash)
         {
+            return MeshFromGraph(CgrSceneGraph(cgr),name,instance,source,hash);
+        }
+        internal static byte[] CgrSceneGraph(byte[] cgr)
+        {
             var records=Container(cgr);var owners=records.Where(r=>r.Kind==1&&r.Name=="SceneGraph").Select(r=>r.Id).ToArray();
-            var graph=records.Single(r=>r.Kind==2&&r.Name=="MainDataStream"&&owners.Contains(r.Parent)).Data;
+            return records.Single(r=>r.Kind==2&&r.Name=="MainDataStream"&&owners.Contains(r.Parent)).Data;
+        }
+        internal static MeshShape MeshFromGraph(byte[] graph,string name,string instance,string source,string hash)
+        {
             // Initial Part cache adapter accepts an A3 root only. Scene branches need
             // explicit matrix/reference expansion; never silently flatten them.
             if(graph.Length<6||graph[0]!=0xa3)throw new NotSupportedException("Native cache scene branches require matrix expansion");
             var env=new Cursor(graph,1,graph.Length);int envelope=env.Count();if(envelope+2!=graph.Length)throw new InvalidDataException("Incomplete native A3 cache");
-            var vs=new List<double[]>();var ts=new List<int[]>();var colors=new List<byte[]>();var normals=new List<double[]>();double[][] leafNormals=null;byte[] signature={255,255,2,0,1};int search=0,leaves=0,ignored=0;
+            var vs=new List<double[]>();var ts=new List<int[]>();var colors=new List<byte[]>();var normals=new List<double[]>();double[][] leafNormals=null;byte[] signature={255,255,2,0,1};int search=0,leaves=0;
             while(true)
             {
                 int start=Find(graph,signature,search,graph.Length);if(start<0)break;int header=start-41;
                 // The five-byte marker can also occur inside packed coordinate
-                // words; only an envelope header confirms a leaf.
-                if(header<0||graph[header]!=149||graph[header+1]!=255){ignored++;search=start+1;continue;}
+                // words; only an envelope header confirms a leaf. Stray markers are
+                // data noise and must not invalidate the leaves that did parse.
+                if(header<0||graph[header]!=149||graph[header+1]!=255){search=start+1;continue;}
                 long endLong=(long)header+1+BitConverter.ToUInt32(graph,header+2);if(endLong>graph.Length||endLong<=start)throw new InvalidDataException("Invalid mesh range");
-                int end=(int)endLong;if(Find(graph,signature,start+5,end)>=0)throw new NotSupportedException("Native mesh marker ambiguity");
+                int end=(int)endLong;
                 var cur=new Cursor(graph,start+5,end);int nv=cur.Count(),secondary=cur.Count();
                 // Single-leaf caches carry the whole part: index width follows the
                 // vertex count (1/2/3 bytes), it is not a per-part constant.
@@ -185,9 +193,13 @@ namespace TxTools.CatiaPartTree.Conversion
                 for(int i=0;i<nv;i++)
                 {
                     int code=(bitmap[i/4]>>(2*(i%4)))&3;var p=i==0?new double[3]:(double[])local[i-1].Clone();
-                    // Controlled box fixtures explicitly reuse the initial zero point.
-                    if(i==0&&code!=0&&code!=1)throw new InvalidDataException("Unverified initial coordinate reuse");
-                    if(code==0){p[0]=cur.Float();p[1]=cur.Float();p[2]=cur.Float();}else if(code==2)p[2]=cur.Float();else if(code==3){p[1]=cur.Float();p[2]=cur.Float();}
+                    // Codes 1/2/3 reuse the previous vertex. The first vertex starts
+                    // from the zero point, so a cache may legitimately begin with
+                    // code 2/3 (X stays 0) or code 1 (origin); the value count below
+                    // verifies that the bitmap and payload agree.
+                    if(code==0){p[0]=cur.Float();p[1]=cur.Float();p[2]=cur.Float();}
+                    else if(code==2)p[2]=cur.Float();
+                    else if(code==3){p[1]=cur.Float();p[2]=cur.Float();}
                     local.Add(p);
                 }
                 if(cur.P!=valuesEnd)throw new InvalidDataException("Coordinate bitmap value mismatch");
@@ -291,8 +303,7 @@ namespace TxTools.CatiaPartTree.Conversion
                 }
                 leaves++;search=end;
             }
-            if(leaves==0)throw new NotSupportedException("该零件的 CATIA 可视化缓存不含可解析的三角网格"+(ignored==0?"":"（"+ignored+" 处标记未匹配网格叶）")+"，请在 CATIA 中打开并保存（更新 CGR 缓存）后重试");
-            if(ignored>0)throw new NotSupportedException("缓存网格部分未适配（已解析叶 "+leaves+"，跳过 "+ignored+" 处）");
+            if(leaves==0)throw new NotSupportedException("该零件的 CATIA 可视化缓存不含可解析的三角网格，请在 CATIA 中打开并保存（更新 CGR 缓存）后重试");
             // Discard only unreferenced records superseded by domain binding.
             var used=ts.SelectMany(t=>t).Distinct().OrderBy(i=>i).ToArray();var remap=new int[vs.Count];
             for(int i=0;i<used.Length;i++)remap[used[i]]=i;

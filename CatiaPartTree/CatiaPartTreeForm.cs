@@ -29,7 +29,9 @@ namespace TxTools.CatiaPartTree
         private readonly TextBox _rootName = new TextBox { Text = "CATIA导入", Width = 160 };
         private readonly CheckBox _includeRoot = new CheckBox { Text = "保留来源根层", AutoSize = true };
         private readonly TextBox _modelFolder = new TextBox { Dock = DockStyle.Fill };
-        private readonly CheckBox _noReduction = new CheckBox { Text = "不减面", AutoSize = true, Anchor = AnchorStyles.Left };
+        private readonly CheckBox _documentFolder = new CheckBox { Text = "以 CATIA 文档名建子文件夹", Checked = true, AutoSize = true, Anchor = AnchorStyles.Left };
+        private readonly CheckBox _hierarchyFolder = new CheckBox { Text = "按层级建文件夹", Checked = false, AutoSize = true, Anchor = AnchorStyles.Left };
+        private readonly CheckBox _noReduction = new CheckBox { Text = "不减面", Checked = true, AutoSize = true, Anchor = AnchorStyles.Left };
         private readonly Label _rightLegend = WorkflowUi.Label("复合零件：新建容器；零件：导入实例");
         private readonly ToolTip _tips = new ToolTip { AutoPopDelay = 15000, ShowAlways = true };
         private ImageList _treeImages;
@@ -40,7 +42,7 @@ namespace TxTools.CatiaPartTree
         private readonly StructureSourceTree _left = new StructureSourceTree { Dock = DockStyle.Fill, CheckBoxes = true, HideSelection = false, ShowNodeToolTips = true };
         private readonly TreeView _right = new TreeView { Dock = DockStyle.Fill, HideSelection = false, LabelEdit = true, ShowNodeToolTips = true };
         private readonly Control _sourceFrame, _targetFrame, _assignmentFrame, _settings, _input, _modelLocation;
-        private readonly Button _read, _check, _apply, _create, _assign, _browseDestination;
+        private readonly Button _read, _check, _apply, _exportJt, _create, _assign, _browseDestination;
         private CatiaExistingAssignment _assignment;
         private bool _assignmentInvalid;
         private StructureNode _source;
@@ -87,16 +89,23 @@ namespace TxTools.CatiaPartTree
             _sourceLabel.Height = FormUiKit.BaseFont.Height + 8;
             _sourceLabel.MinimumSize = new Size(0, _sourceLabel.Height);
             _sourceLabel.TextChanged += (s, e) => _tips.SetToolTip(_sourceLabel, _sourceLabel.Text);
-            var location = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 4, RowCount = 1 };
-            location.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); location.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); location.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            var location = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, RowCount = 2 };
             location.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            location.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            location.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            location.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            location.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             location.Controls.Add(WorkflowUi.Label("COJT 保存至"), 0, 0); location.Controls.Add(_modelFolder, 1, 0);
             _browseDestination = WorkflowUi.Button(location, "浏览…", BrowseDestination);
             location.SetCellPosition(_browseDestination, new TableLayoutPanelCellPosition(2, 0));
-            location.Controls.Add(_noReduction, 3, 0);
+            var saveOptions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty, Padding = new Padding(0, 3, 0, 0) };
+            saveOptions.Controls.Add(_documentFolder); saveOptions.Controls.Add(_hierarchyFolder); saveOptions.Controls.Add(_noReduction);
+            location.Controls.Add(saveOptions, 0, 1); location.SetColumnSpan(saveOptions, 3);
             _modelLocation = location;
-            _tips.SetToolTip(_modelFolder, "模型文件的最终保存文件夹，必须在当前 PS 系统库内。默认 product\\CATIA文档名；场景父容器在上方选取。");
-            _tips.SetToolTip(_noReduction, "沿用 CATPart 内嵌可视化网格的精度，跳过转换减面。生成的 JT 可能更大。");
+            _tips.SetToolTip(_modelFolder, "模型文件的基准保存文件夹，必须在当前 PS 系统库内。默认模糊匹配库内的 product 文件夹；勾选下方选项时再按 CATIA 文档名建立子文件夹。");
+            _tips.SetToolTip(_documentFolder, "勾选后在保存文件夹下按当前 CATIA 文档名建立子文件夹；取消则 COJT 直接保存到所选文件夹。");
+            _tips.SetToolTip(_hierarchyFolder, "勾选后按本次导入创建的复合零件层级建立子文件夹，COJT 放在所属复合零件的文件夹中；默认不勾选，全部平铺在保存文件夹下。");
+            _tips.SetToolTip(_noReduction, "默认沿用 CATPart 内嵌可视化网格的精度，跳过转换减面；取消勾选才按几何与光照误差自动减面。");
             var settings = WorkflowUi.Bar(); settings.Controls.Add(WorkflowUi.Label("整理")); settings.Controls.Add(_mode); _settings = settings;
             settings.Dock = DockStyle.None; settings.Margin = Padding.Empty; settings.Padding = Padding.Empty; origin.Controls.Add(settings);
             var leftTools = WorkflowUi.Bar();
@@ -111,6 +120,7 @@ namespace TxTools.CatiaPartTree
             _check = WorkflowUi.Button(footer, "重新检查", Preview);
             _create = WorkflowUi.Button(footer, "创建复合零件", CreateCompounds);
             _apply = WorkflowUi.Button(footer, "转换格式并导入", Advance);
+            _exportJt = WorkflowUi.Button(footer, "仅转换 JT", () => Advance(true));
             _assign = WorkflowUi.Button(footer, "分配已有零件", AssignExisting);
             Controls.Add(split); Controls.Add(_issues); Controls.Add(footer);
             var header = WorkflowUi.Stack(origin, _sourceLabel, inputs, location, _status);
@@ -130,6 +140,8 @@ namespace TxTools.CatiaPartTree
             _newRoot.CheckedChanged += (s, e) => { _rootName.Enabled = _newRoot.Checked && !Frozen && !_busy; InvalidatePlan(); };
             _rootName.TextChanged += (s, e) => InvalidatePlan();
             _modelFolder.TextChanged += (s, e) => InvalidatePlan();
+            _documentFolder.CheckedChanged += (s, e) => InvalidatePlan();
+            _hierarchyFolder.CheckedChanged += (s, e) => InvalidatePlan();
             _includeRoot.CheckedChanged += (s, e) => InvalidatePlan(); _mode.SelectedIndexChanged += (s, e) => InvalidatePlan();
             _search.TextChanged += (s, e) => RefreshSource();
             _left.AfterCheck += (s, e) =>
@@ -196,9 +208,9 @@ namespace TxTools.CatiaPartTree
             switch (SelectedKind)
             {
                 case SourceKind.CatProductFile: _sourceLabel.Text = "启动 CATIA，点击读取并选择 CATProduct。导入位置以所选根装配为基准。"; break;
-                case SourceKind.ThreeDXml: _sourceLabel.Text = "读取原始 3DXML 文件；按几何引用识别零件，可建树并分配已有零件。"; break;
+                case SourceKind.ThreeDXml: _sourceLabel.Text = "选择 3DXML 文件。读取产品树后，可将包内 CGR 拆分成独立 JT。"; break;
                 case SourceKind.PsBranch: _sourceLabel.Text = "在当前 PS 工程的原生选取框中选择来源分支与目标。"; break;
-                default: _sourceLabel.Text = "在 CATIA 中打开文档；内存 3DXML 可切换为“3DXML 文件”读取。"; break;
+                default: _sourceLabel.Text = "读取 CATIA 当前打开的 CATPart、CATProduct 或 3DXML。"; break;
             }
             _issues.Text = IsCatia ? "先读取 CATIA 并核对预览，可直接创建复合零件或转换格式并导入。分配已有零件前，请在当前 PS 工程选取其所在复合零件。" : "读取 PS 来源，调整左树，核对预览后执行。";
             UpdateActions();
@@ -214,7 +226,7 @@ namespace TxTools.CatiaPartTree
             Run(() =>
             {
                 EnsureDocument();
-                using (var dialog = new FolderBrowserDialog { Description = "选择 COJT 的最终保存文件夹（当前 PS 系统库内）", ShowNewFolderButton = true })
+                using (var dialog = new FolderBrowserDialog { Description = "选择 COJT 的基准保存文件夹（当前 PS 系统库内）", ShowNewFolderButton = true })
                 {
                     string path = _modelFolder.Text;
                     while (!string.IsNullOrWhiteSpace(path) && !Directory.Exists(path)) path = Path.GetDirectoryName(path);
@@ -267,12 +279,17 @@ namespace TxTools.CatiaPartTree
                 else
                 {
                     try { source = await ReadCatiaAsync(); }
-                    catch (ThreeDXmlFileRequiredException) { source = await Read3dXmlFile(); }
+                    catch (ThreeDXmlFileRequiredException missing)
+                    {
+                        _sourceLabel.Text = "CATIA 当前文档：" + missing.FileName + "（待定位）";
+                        _issues.Text = missing.Message;
+                        source = await Read3dXmlFile(missing);
+                    }
                 }
                 if (source == null) return;
                 EnsureDocument(); _catia = source; _source = source.Root;
                 _sourceLabel.Text = "来源：" + source.DocumentPath; _sourceLabel.MaximumSize = new Size(610, 0);
-                _modelFolder.Text = CatiaLibraryDestination.Default(TxApplication.SystemRootDirectory, source.DocumentPath);
+                _modelFolder.Text = CatiaLibraryDestination.DefaultFolder(TxApplication.SystemRootDirectory);
                 _rootName.Text = StructureEngine.Clean(_source.SourceName); _search.Clear(); RefreshSource(); _stale = true;
             }
             catch (Exception ex) { _issues.Text = ex.GetBaseException().Message + (SelectedKind == SourceKind.CatiaCurrent ? Environment.NewLine + "读取 3DXML 时，也可将来源切换为“3DXML 文件”，选择原始文件读取。" : ""); }
@@ -288,10 +305,16 @@ namespace TxTools.CatiaPartTree
                 return await ReadCatiaAsync(dialog.FileName);
             }
         }
-        private async Task<CatiaImportSource> Read3dXmlFile()
+        private async Task<CatiaImportSource> Read3dXmlFile(ThreeDXmlFileRequiredException missing = null)
         {
-            using (var dialog = new OpenFileDialog { Title = "选择 CATIA 中打开的原始 3DXML 文件", Filter = "3DXML 文件 (*.3dxml)|*.3dxml", CheckFileExists = true, Multiselect = false })
+            using (var dialog = new OpenFileDialog { Title = missing == null ? "选择 3DXML 文件" : "定位 CATIA 当前文档的原始 3DXML 文件",
+                Filter = "3DXML 文件 (*.3dxml)|*.3dxml", CheckFileExists = true, Multiselect = false })
             {
+                if (missing != null)
+                {
+                    dialog.FileName = missing.FileName;
+                    if (missing.Directory != null) dialog.InitialDirectory = missing.Directory;
+                }
                 if (dialog.ShowDialog(this) != DialogResult.OK) return null;
                 string path = dialog.FileName;
                 _issues.Text = "正在读取 3DXML 产品结构、几何引用及实例位置…";
@@ -393,9 +416,9 @@ namespace TxTools.CatiaPartTree
                 List<StructureChange> changes;
                 if (IsCatia)
                 {
-                    _import = new CatiaImportSession(_catia, _source, parent, _newRoot.Checked, _rootName.Text, _includeRoot.Checked, _modelFolder.Text);
+                    _import = new CatiaImportSession(_catia, _source, parent, _newRoot.Checked, _rootName.Text, _includeRoot.Checked, _modelFolder.Text, _documentFolder.Checked, _hierarchyFolder.Checked);
                     changes = _import.Items; _status.Text = "② 复合零件 " + changes.Count(c => c.Container && c.Existing == null) + " 个；零件实例 " + _import.InstanceCount + " 个。请选择执行操作。";
-                    _rightLegend.Text = _catia.Parts.Values.Any(p => p.GeometryEntries != null) ? "建层 / 分配" : "建层 / 导入";
+                    _rightLegend.Text = "建层 / 导入";
                     _issues.Text = "当前预览：转换并导入新实例；选择待分配范围后预览切换为已有零件分配。左树勾选决定创建哪些复合零件层，右键可排除分支。保存位置：" + _import.OutputDirectory;
                 }
                 else
@@ -405,8 +428,12 @@ namespace TxTools.CatiaPartTree
                     _status.Text = "② 目标预览：" + changes.Count + " 项；问题 " + _plan.Issues.Count;
                 }
                 if (IsCatia) PrepareAssignment();
-                if (IsCatia && !_import.CanConvert && _import.InstanceCount > 0)
-                    _issues.AppendText(Environment.NewLine + "3DXML 几何已识别，可建树和分配已有零件；当前不支持其几何转换为 JT。");
+                if (IsCatia)
+                {
+                    int unsupported = _import.Items.Count(c => !c.Container && _catia.Parts[c.Node.Key].ConversionIssue != null);
+                    if (unsupported > 0)
+                        _issues.AppendText(Environment.NewLine + unsupported + " 个实例缺少可转换的 CGR。悬停目标预览中的零件可查看原因。");
+                }
                 RenderPreview(IsCatia && _assignment != null ? _assignment.Plan.Changes : changes);
                 _stale = false;
             }
@@ -430,7 +457,7 @@ namespace TxTools.CatiaPartTree
         }
         private static string PartPreviewTooltip(CatiaSourcePart part)
         {
-            if (part.GeometryEntries != null) return "3DXML 零件引用；选择复合零件范围后可分配已有实例";
+            if (part.GeometryEntry != null) return part.ConversionIssue ?? "包内 CGR：" + part.GeometryEntry;
             if (part.InstancePath == null) return "导入零件实例；模型文件名保持源 CATIA 文件名";
             return string.Format(CultureInfo.InvariantCulture, "CATProduct 实例位置（mm） X {0:0.###} · Y {1:0.###} · Z {2:0.###}",
                 part.Frame[9], part.Frame[10], part.Frame[11]);
@@ -502,9 +529,21 @@ namespace TxTools.CatiaPartTree
                 MarkImportIssues(node.Nodes);
             }
         }
-        private async void Advance()
+        private void Advance() { Advance(false); }
+        private async void Advance(bool jtOnly)
         {
-            if (_busy || _stale || !_apply.Enabled) return;
+            if (_busy || _stale || !(jtOnly ? _exportJt.Enabled : _apply.Enabled)) return;
+            string jtFolder = null;
+            if (jtOnly)
+            {
+                using (var dialog = new FolderBrowserDialog { Description = "选择独立 JT 保存文件夹", ShowNewFolderButton = true,
+                    SelectedPath = Path.GetDirectoryName(_catia.DocumentPath) })
+                {
+                    if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                    jtFolder = dialog.SelectedPath;
+                }
+            }
+            var session = _import;
             _autoPreview.Stop(); _busy = true; UpdateActions();
             try
             {
@@ -518,13 +557,23 @@ namespace TxTools.CatiaPartTree
                 else
                 {
                     _cancel = new CancellationTokenSource();
-                    RenderPreview(_import.Items);
-                    _issues.Text = "正在转换格式，完成后将自动创建所需复合零件并导入。关闭窗口可请求取消转换。";
+                    if (jtOnly)
+                        session = new CatiaImportSession(_catia, _source, ParentTarget, _newRoot.Checked, _rootName.Text, _includeRoot.Checked);
+                    else RenderPreview(session.Items);
+                    _issues.Text = jtOnly ? "正在将选中的包内 CGR 转换成独立 JT。关闭窗口可请求取消转换。" :
+                        "正在转换格式，完成后将自动创建所需复合零件并导入。关闭窗口可请求取消转换。";
                     bool converting = true;
                     var progress = new Progress<string>(message => { if (converting && !IsDisposed) _issues.Text = message; });
-                    try { await _import.ConvertAsync(_cancel.Token, progress, reduceMesh: !_noReduction.Checked); }
+                    try { await session.ConvertAsync(_cancel.Token, progress, reduceMesh: !_noReduction.Checked, jtOutputDirectory: jtFolder); }
                     finally { converting = false; }
                     EnsureDocument(); _cancel.Token.ThrowIfCancellationRequested();
+                    if (jtOnly)
+                    {
+                        _status.Text = "已生成 " + session.ConvertedFileCount + " 个独立 JT。";
+                        _issues.Text = _status.Text + Environment.NewLine + "保存位置：" + session.OutputDirectory;
+                        if (session.Warnings.Count != 0) _issues.AppendText(Environment.NewLine + string.Join(Environment.NewLine, session.Warnings));
+                        return;
+                    }
                     _import.CreateTree();
                     _import.Import(message => _issues.AppendText(Environment.NewLine + message));
                     _finished = true;
@@ -539,6 +588,14 @@ namespace TxTools.CatiaPartTree
             }
             catch (Exception ex)
             {
+                if (jtOnly)
+                {
+                    _status.Text = "独立 JT 转换已停止。";
+                    _issues.Text = ex.GetBaseException().Message;
+                    if (session?.Warnings.Count > 0) _issues.AppendText(Environment.NewLine + string.Join(Environment.NewLine, session.Warnings));
+                    if (session?.DiagnosticLog != null) _issues.AppendText(Environment.NewLine + "诊断日志：" + session.DiagnosticLog);
+                    return;
+                }
                 _issues.Text = IsCatia && _import != null ? _import.Failure(ex) : _plan != null ?
                     _plan.Execution.Failure(ex.GetBaseException()) : ex.GetBaseException().Message;
                 _finished = IsCatia ? _import != null && _import.SceneWriteAttempted :
@@ -556,7 +613,7 @@ namespace TxTools.CatiaPartTree
             _targetPick.Enabled = _newRoot.Enabled = _includeRoot.Enabled = _mode.Enabled = edit;
             _assignmentPick.Enabled = !_busy && !_finished;
             _rootName.Enabled = edit && _newRoot.Checked; _left.Enabled = edit; _right.Enabled = !_busy; _search.Enabled = !_busy;
-            _modelFolder.Enabled = _browseDestination.Enabled = edit;
+            _modelFolder.Enabled = _browseDestination.Enabled = _documentFolder.Enabled = _hierarchyFolder.Enabled = edit;
             _noReduction.Enabled = !_busy && !_finished;
             _check.Enabled = !_busy && !_finished && _source != null;
             bool ready = !_busy && !_stale && !_finished;
@@ -569,6 +626,9 @@ namespace TxTools.CatiaPartTree
             _apply.Enabled = IsCatia ? catiaReady && _import.CanConvert :
                 ready && _plan != null && _plan.HasChanges && _plan.Issues.Count == 0;
             _apply.Text = IsCatia ? "转换格式并导入" : "执行整理";
+            _exportJt.Visible = SelectedKind == SourceKind.ThreeDXml ||
+                (_catia != null && string.Equals(Path.GetExtension(_catia.DocumentPath), ".3dxml", StringComparison.OrdinalIgnoreCase));
+            _exportJt.Enabled = catiaReady && _import.CanConvert;
         }
     }
 }

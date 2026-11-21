@@ -209,6 +209,14 @@ namespace TxTools.CrossEnvIO
             RecordInsertedPath(path);
         }
 
+        // Paste 会复制实例（新 Id）。副本是否仍持有正式库引用不由 Paste 保证，
+        // 重建原生树后必须重新核验，避免树里层级正确但模型引用已丢。
+        internal static void VerifyPastedCojt(ITxObject instance, string path, string libraryRoot)
+        {
+            if (instance == null || !instance.IsValid()) throw new IOException("Paste 后未取得有效实例");
+            LibraryPersistence.Ensure(instance, path, path, null);
+        }
+
         /// <summary>
         /// 直插：直接 InsertComponent。库内无原型即可；库外/零件等带原型更稳。
         /// 统一逻辑：先尝试无原型；失败则从 cojt TuneData 的 ExternalID 从库注册表取原型重试。

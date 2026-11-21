@@ -141,6 +141,46 @@ namespace TxTools.Agent.Core
             return cp;
         }
 
+        // ── 原生对象树关系 ──
+        // Create/AddObject 只写托管 Collection，不写原生对象库的树关系；PS 对象树
+        // (Object Viewer) 按原生关系建层，因此新层级会平铺在 Parts/Resources 根下。
+        // Paste 是当前 SDK 中唯一会写入原生关系并复制整棵子树的托管入口。
+
+        public static TxObjectList PasteSubtree(ITxObjectCollection target, IList<ITxObject> roots)
+        {
+            if (target == null) throw new ArgumentNullException(nameof(target));
+            if (roots == null || roots.Count == 0) return new TxObjectList();
+            var source = new TxObjectList();
+            foreach (var root in roots)
+            {
+                if (root == null) throw new InvalidOperationException("\u539f\u751f\u6811\u91cd\u5efa\u7684\u6e90\u5bf9\u8c61\u4e3a\u7a7a\u3002");
+                source.Add(root);
+            }
+            var copies = target.Paste(source);
+            if (copies == null || copies.Count != source.Count)
+                throw new InvalidOperationException("Paste \u8fd4\u56de\u7684\u5bf9\u8c61\u6570\u91cf\u4e0e\u8f93\u5165\u4e0d\u4e00\u81f4\u3002");
+            return copies;
+        }
+
+        /// <summary>在子对象列表里按名称找唯一对应项；名称重复时回退到顺序。</summary>
+        public static List<ITxObject> MatchChildren(IList<ITxObject> source, IList<ITxObject> target)
+        {
+            if (source.Count != target.Count) return null;
+            var used = new bool[target.Count];
+            var result = new List<ITxObject>(source.Count);
+            foreach (var item in source)
+            {
+                int index = -1;
+                for (int i = 0; i < target.Count; i++)
+                    if (!used[i] && string.Equals(target[i].Name, item.Name, StringComparison.Ordinal)) { index = i; break; }
+                for (int i = 0; index < 0 && i < target.Count; i++) if (!used[i]) { index = i; break; }
+                if (index < 0) return null;
+                used[index] = true;
+                result.Add(target[index]);
+            }
+            return result;
+        }
+
         // ── 尽力 rename (creationData 没 Name 字段,只能创建完之后再改) ──
 
         /// <summary>

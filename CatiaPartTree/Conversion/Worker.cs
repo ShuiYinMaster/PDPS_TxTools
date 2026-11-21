@@ -191,15 +191,16 @@ namespace TxTools.CatiaPartTree.Conversion
                 if (args.Length == 1 && args[0] == "--protocol")
                 {
                     Console.WriteLine("TxTools.CatiaConverter/2");
-                    Console.WriteLine("quality mesh meshhash");
+                    Console.WriteLine("quality mesh meshhash cgr");
                     return 0;
                 }
-                if (args.Length < 3) throw new ArgumentException("格式转换缺少源 CATPart、目标 JT 或源文件摘要。");
-                int simplify = 0, targetKb = 0; bool quality = false; string meshFile = null, meshHash = null, dumpMesh = null, objFile = null;
+                if (args.Length < 3) throw new ArgumentException("格式转换缺少源文件、目标 JT 或源文件摘要。");
+                int simplify = 0, targetKb = 0; bool quality = false, cgr = false; string meshFile = null, meshHash = null, dumpMesh = null, objFile = null;
                 for (int i = 3; i < args.Length; i++)
                 {
                     if (args[i] == "flat") Jt8Writer.FlatStrips = true;
                     else if (args[i] == "quality") quality = true;
+                    else if (args[i] == "cgr") cgr = true;
                     else if (args[i].StartsWith("mesh=", StringComparison.Ordinal)) meshFile = args[i].Substring(5);
                     else if (args[i].StartsWith("meshhash=", StringComparison.Ordinal)) meshHash = args[i].Substring(9);
                     else if (args[i].StartsWith("dumpmesh=", StringComparison.Ordinal)) dumpMesh = args[i].Substring(9);
@@ -212,7 +213,29 @@ namespace TxTools.CatiaPartTree.Conversion
                 }
                 SourceMeshScene scene;
                 var phase = System.Diagnostics.Stopwatch.StartNew();
-                if (objFile != null) scene = ObjScene(objFile, args[0], args[2]);
+                if (cgr)
+                {
+                    if (objFile != null || meshFile != null || meshHash != null) throw new ArgumentException("CGR 输入不能与外部网格参数同时使用。");
+                    string source = Path.GetFullPath(args[0]);
+                    byte[] data = File.ReadAllBytes(source);
+                    string digest;
+                    using (var sha = SHA256.Create())
+                        digest = BitConverter.ToString(sha.ComputeHash(data)).Replace("-", "").ToLowerInvariant();
+                    if (digest != args[2]) throw new IOException("CGR 在转换前发生变化。");
+                    string name = Path.GetFileNameWithoutExtension(source);
+                    MeshShape mesh;
+                    if (data.Length >= 8 && Encoding.ASCII.GetString(data, 0, 8) == "V5_CFV3\0")
+                        mesh = Cfv3MeshReader.Read(data, name, source, digest);
+                    else
+                    {
+                        byte[] graph = NativeCadReader.CgrSceneGraph(data);
+                        mesh = graph.Length > 0 && graph[0] == 0x62
+                            ? Cfv3MeshReader.ReadCompactCgr(graph, name, source, digest)
+                            : NativeCadReader.MeshFromGraph(graph, name, "source/1", source, digest);
+                    }
+                    scene = new SourceMeshScene { name = name, sourceFile = source, sourceSha256 = digest, shapes = new[] { mesh } };
+                }
+                else if (objFile != null) scene = ObjScene(objFile, args[0], args[2]);
                 else if (meshFile == null) scene = SourceMeshScene.ReadPart(args[0]);
                 else
                 {

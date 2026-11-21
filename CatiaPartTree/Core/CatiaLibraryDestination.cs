@@ -1,42 +1,70 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
-using System.Security.Cryptography;
-using System.Text;
 
 namespace TxTools.CatiaPartTree.Core
 {
     internal static class CatiaLibraryDestination
     {
-        internal static string Default(string library, string document)
+        // The library folder is named by the customer ("product", "1_Products", ...), so
+        // the default destination uses a fuzzy match instead of an exact "product" name.
+        internal static string DefaultFolder(string library)
         {
-            string product = Directory.Exists(library) ? Directory.EnumerateDirectories(library)
-                .FirstOrDefault(p => string.Equals(Path.GetFileName(p), "product", StringComparison.OrdinalIgnoreCase)) : null;
-            return Path.Combine(product ?? Path.Combine(library, "product"), Path.GetFileNameWithoutExtension(document));
+            string fallback = Path.Combine(library, "product");
+            if (!Directory.Exists(library)) return fallback;
+            try
+            {
+                string exact = null, fuzzy = null;
+                foreach (string path in Directory.EnumerateDirectories(library))
+                {
+                    string name = Path.GetFileName(path);
+                    if (string.IsNullOrEmpty(name)) continue;
+                    if (string.Equals(name, "product", StringComparison.OrdinalIgnoreCase)) { exact = name; break; }
+                    if (name.IndexOf("product", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    if (fuzzy == null || name.Length < fuzzy.Length
+                        || (name.Length == fuzzy.Length && string.Compare(name, fuzzy, StringComparison.OrdinalIgnoreCase) < 0))
+                        fuzzy = name;
+                }
+                return Path.Combine(library, exact ?? fuzzy ?? "product");
+            }
+            catch (Exception) { return fallback; }
         }
 
-        internal static string Resolve(string library, string destination, string document)
+        internal static string ResolveFolder(string library, string folder)
         {
-            string path = string.IsNullOrWhiteSpace(destination) ? Default(library, document) : destination.Trim();
+            string path = string.IsNullOrWhiteSpace(folder) ? DefaultFolder(library) : folder.Trim();
             return Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(library, path));
+        }
+
+        internal static string DocumentFolder(string folder, string document)
+        {
+            string name = Path.GetFileNameWithoutExtension(document ?? "");
+            return string.IsNullOrWhiteSpace(name) ? folder : Path.Combine(folder, name);
+        }
+
+        internal static string FolderSegment(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return "container";
+            char[] invalid = Path.GetInvalidFileNameChars();
+            var buffer = new char[name.Length];
+            for (int i = 0; i < name.Length; i++)
+                buffer[i] = Array.IndexOf(invalid, name[i]) >= 0 ? '_' : name[i];
+            string cleaned = new string(buffer).Trim().TrimEnd('.', ' ');
+            return string.IsNullOrEmpty(cleaned) ? "container" : cleaned;
         }
 
         internal static string Package(string destination, string source, ISet<string> reserved)
         {
-            string name = Path.GetFileNameWithoutExtension(source) + ".cojt";
-            string path = Path.Combine(destination, name);
-            if (Occupied(path, reserved))
-            {
-                string parent = Path.GetFileName(Path.GetDirectoryName(source)) ?? "source";
-                string identity;
-                using (var sha = SHA256.Create())
-                    identity = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(Path.GetFullPath(source).ToUpperInvariant()))).Replace("-", "").Substring(0, 8);
-                string bucket = parent + "-" + identity;
-                path = Path.Combine(destination, bucket, name);
-                for (int version = 2; Occupied(path, reserved); version++)
-                    path = Path.Combine(destination, bucket + "-" + version, name);
-            }
+            return Reserve(destination, Path.GetFileNameWithoutExtension(source), ".cojt", reserved);
+        }
+
+        internal static string Reserve(string destination, string name, string extension, ISet<string> reserved)
+        {
+            string path = Path.Combine(destination, name + extension);
+            // Keep the package directly in the destination folder; same-name
+            // sources get a numbered suffix instead of a nested bucket folder.
+            for (int version = 2; Occupied(path, reserved) || (extension == ".jt" && File.Exists(path + ".pending")); version++)
+                path = Path.Combine(destination, name + "_" + version + extension);
             reserved.Add(path);
             return path;
         }
