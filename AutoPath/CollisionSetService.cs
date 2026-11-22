@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -1120,7 +1120,132 @@ namespace TxTools.AutoPathPlanner
             }
         }
 
-        /// <summary>精确结果查询；基线仅诊断。无法验证时按碰撞处理。</summary>
+        /// <summary>观察正向回放的实际位置序列和 PS 干涉结果。</summary>
+        internal string VerifyPlayback(ITxOperation operation, IList<ITxRoboticLocationOperation> locations, Func<bool> cancelled)
+        {
+            var expected = locations.Select(location => ((ITxObject)location).Id).ToList();
+            var pendingDepartures = new HashSet<string>();
+            var savedAxes = new Dictionary<TxJoint, double>();
+            foreach (var location in locations)
+            {
+                var arrival = location.RobotExternalAxesData ?? new TxRobotExternalAxisData[0];
+                var departure = location.RobotDepartureExternalAxesData ?? new TxRobotExternalAxisData[0];
+                foreach (var axis in arrival.Concat(departure))
+                    if (!savedAxes.ContainsKey(axis.Joint)) savedAxes.Add(axis.Joint, axis.Joint.CurrentValue);
+                if (departure.Any(d => !arrival.Any(a => SameObject(a.Joint, d.Joint) &&
+                    Math.Abs(a.JointValue-d.JointValue) <= 1e-4)))
+                    pendingDepartures.Add(((ITxObject)location).Id);
+            }
+            if (expected.Count < 2) return "实际操作没有可验证的运动边";
+            var root = TxApplication.ActiveDocument.CollisionRoot;
+            var player = new TxSimulationPlayer();
+            if (player.IsSimulationRunning()) return "已有仿真正在运行";
+            bool ended = false, started = false;
+            int ticks = 0, reached = 0;
+            string issue = null;
+            var context = root.GlobalQueryContext;
+            using (var query = new TxCollisionQueryParams { Mode = TxCollisionQueryParams.TxCollisionQueryMode.DefinedPairs })
+            {
+                Action<double, bool> observe = (time, snapshot) =>
+                {
+                    if (issue != null) return;
+                    try
+                    {
+                        if (cancelled != null && cancelled()) throw new OperationCanceledException();
+                        TxTools.Common.SceneUndoScope.EnsureActiveDocument();
+                        if (!root.CheckCollisions || !_pair.Active || root.CollisionQueryMode != query.Mode)
+                            throw new InvalidOperationException("播放时干涉集状态改变");
+                        using (var results = snapshot ? root.GetCollidingObjects(query)
+                            : root.GetGlobalCollidingObjectsChanges(query, context))
+                        {
+                            if (results == null || results.States == null)
+                                throw new InvalidOperationException("未取得干涉状态");
+                            foreach (TxCollisionState state in results.States)
+                            {
+                                if (state.Type == TxCollisionState.TxCollisionStateType.Unchecked)
+                                    throw new InvalidOperationException("PS 返回未检查状态");
+                                if (state.Type != TxCollisionState.TxCollisionStateType.Contact &&
+                                    state.Type != TxCollisionState.TxCollisionStateType.Collision) continue;
+                                var objects = new List<ITxObject> { state.FirstObject, state.SecondObject };
+                                if (state.Type == TxCollisionState.TxCollisionStateType.Contact && IsInstallationContact(objects)) continue;
+                                throw new InvalidOperationException(state.Type + " " + state.FirstObject.Name + " / " + state.SecondObject.Name);
+                            }
+                        }
+                    }
+                    catch (Exception ex) { issue = string.Format("播放 {0:F3}s，已到达 {1}/{2} 个位置: {3}", time, reached, expected.Count, ex.Message); }
+                };
+                TxSimulationPlayer_SimulationStartedForwardEventHandler start = (sender, e) =>
+                { started = true; observe(player.CurrentTime, true); };
+                TxSimulationPlayer_TimeIntervalReachedEventHandler tick = (sender, e) =>
+                { ticks++; observe(e.CurrentTime, false); };
+                TxSimulationPlayer_OperationReachedDestinationEventHandler arrival = (sender, e) =>
+                {
+                    if (!(e.Operation is ITxRoboticLocationOperation location)) return;
+                    try
+                    {
+                        if (issue == null && (location.RobotExternalAxesData ?? new TxRobotExternalAxisData[0])
+                            .Any(a => !(Math.Abs(a.JointValue-a.Joint.CurrentValue) <= 1e-4)))
+                            issue = location.Name + " 到达外部轴与声明值不符";
+                    }
+                    catch (Exception ex) { if (issue == null) issue = ex.Message; }
+                    if (reached < expected.Count && e.Operation.Id == expected[reached]) reached++;
+                    else if (issue == null) issue = "PS 回放位置顺序与写入操作不符";
+                    observe(player.CurrentTime, true);
+                };
+                TxSimulationPlayer_OperationEndedProcessingLocationEventHandler processed = (sender, e) =>
+                {
+                    try
+                    {
+                        var location = e.FinishedTarget as ITxRoboticLocationOperation;
+                        if (location == null || !pendingDepartures.Contains(e.FinishedTarget.Id)) return;
+                        if (location.RobotDepartureExternalAxesData.All(a => Math.Abs(a.JointValue-a.Joint.CurrentValue) <= 1e-4))
+                            pendingDepartures.Remove(e.FinishedTarget.Id);
+                        observe(player.CurrentTime, true);
+                    }
+                    catch (Exception ex) { if (issue == null) issue = ex.Message; }
+                };
+                TxSimulationPlayer_SimulationEndedForwardEventHandler end = (sender, e) =>
+                { ended = true; observe(player.CurrentTime, true); };
+                player.SetOperation(operation);
+                player.SimulationStartedForward += start;
+                player.TimeIntervalReached += tick;
+                player.OperationReachedDestination += arrival;
+                player.OperationEndedProcessingLocation += processed;
+                player.SimulationEndedForward += end;
+                try
+                {
+                    player.Play();
+                    // Some player modes return before dispatching their final events.
+                    while (player.IsSimulationRunning() && issue == null && !(cancelled != null && cancelled()))
+                    {
+                        System.Windows.Forms.Application.DoEvents();
+                        System.Threading.Thread.Sleep(10);
+                    }
+                    if (cancelled != null && cancelled()) throw new OperationCanceledException();
+                    if (issue != null) return issue;
+                    var errors = player.GetErrorsAndTraces(TxSimulationErrorType.Error);
+                    if (errors != null && errors.Count > 0) return string.Join(" / ", errors);
+                    var internalErrors = player.GetErrorsAndTraces(TxSimulationErrorType.InternalError);
+                    if (internalErrors != null && internalErrors.Count > 0) return string.Join(" / ", internalErrors);
+                    if (pendingDepartures.Count > 0) return "未观察到声明的离开外部轴状态: " + string.Join(", ", pendingDepartures);
+                    if (!started || !ended || ticks == 0 || reached != expected.Count)
+                        return string.Format("PS 回放覆盖不足: 时间步 {0}，到达位置 {1}/{2}，正向结束 {3}", ticks, reached, expected.Count, ended);
+                    return null;
+                }
+                finally
+                {
+                    player.SimulationStartedForward -= start;
+                    player.TimeIntervalReached -= tick;
+                    player.OperationReachedDestination -= arrival;
+                    player.OperationEndedProcessingLocation -= processed;
+                    player.SimulationEndedForward -= end;
+                    if (player.IsSimulationRunning()) player.Stop();
+                    try { player.Rewind(); }
+                    finally { foreach (var axis in savedAxes) axis.Key.CurrentValue = axis.Value; }
+                }
+            }
+        }
+
         public bool QueryColliding()
         {
             if (_pair == null)

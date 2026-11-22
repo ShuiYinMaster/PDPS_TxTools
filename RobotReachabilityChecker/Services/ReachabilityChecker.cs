@@ -38,6 +38,8 @@ namespace TxTools.RobotReachabilityChecker.Services
         public bool   InterferenceEnabled     { get; set; } = false;
         public InterferenceSession InterferenceSession { get; set; }
         public Action<string> InterferenceStage { get; set; }
+        public bool ApplyLocationExternalAxes { get; set; }
+        public TxRobot PlanningRobot { get; set; }
         public RobotBrand UserSelectedBrand   { get; set; } = RobotBrand.Auto;
     }
 
@@ -66,6 +68,7 @@ namespace TxTools.RobotReachabilityChecker.Services
             TxPoseData savedPose = null;
             double[] savedJointValues = null;
             InterferenceContext ifCtx = null;
+            var savedAxes = new Dictionary<TxJoint, double>();
 
             try
             {
@@ -73,7 +76,7 @@ namespace TxTools.RobotReachabilityChecker.Services
                 if (doc == null) throw new InvalidOperationException("ActiveDocument 为 null");
 
                 // ── 1. 解析机器人 ─────────────────────────────────────────
-                TxRobot robot = RobotFinder.FindAssociatedRobot(preferredOp, doc, log);
+                TxRobot robot = options.PlanningRobot ?? RobotFinder.FindAssociatedRobot(preferredOp, doc, log);
                 if (robot == null)
                     throw new InvalidOperationException(
                         $"无法从操作 [{operationName}] 找到关联机器人，请确认操作已分配到机器人");
@@ -168,6 +171,17 @@ namespace TxTools.RobotReachabilityChecker.Services
 
                 foreach (ITxRoboticLocationOperation loc in locs)
                 {
+                    if (options.ApplyLocationExternalAxes)
+                    {
+                        foreach (var axis in savedAxes) axis.Key.CurrentValue = axis.Value;
+                        foreach (var axis in loc.RobotExternalAxesData ?? new TxRobotExternalAxisData[0])
+                        {
+                            if (!savedAxes.ContainsKey(axis.Joint)) savedAxes.Add(axis.Joint, axis.Joint.CurrentValue);
+                            axis.Joint.CurrentValue = axis.JointValue;
+                            if (!(Math.Abs(axis.Joint.CurrentValue - axis.JointValue) <= 1e-4))
+                                throw new InvalidOperationException(loc.Name + " 到达外部轴回放失败");
+                        }
+                    }
                     // 检测点类型 (Weld / Via)
                     string ptType = "Via";
                     try
@@ -437,7 +451,8 @@ namespace TxTools.RobotReachabilityChecker.Services
             }
             finally
             {
-                if (options.InterferenceSession == null) ifCtx?.Dispose();
+                try { foreach (var axis in savedAxes) axis.Key.CurrentValue = axis.Value; }
+                finally { if (options.InterferenceSession == null) ifCtx?.Dispose(); }
             }
             return results;
         }

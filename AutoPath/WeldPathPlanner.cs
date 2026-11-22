@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Forms;
@@ -18,6 +18,7 @@ namespace TxTools.AutoPathPlanner
         public string Source = "";
         public string CustomName; // 非空则Via直接用此名 (如 "home")
         public bool Verified;
+        public bool KeepTcpSample;
         public TxPoseData JointPose;
         public TxRobotConfigurationData Configuration;
         public TxRobotExternalAxisData[] ExternalAxes, DepartureExternalAxes;
@@ -34,7 +35,7 @@ namespace TxTools.AutoPathPlanner
         public int PreparedRetractCount;
         public int PreparedHomeCount;
         public int PreparedOnlyOperations;
-        public int VerifiedPathGroups, FailedPathGroups;
+        public int VerifiedPathGroups, FailedPathGroups, PlaybackVerifiedOperations;
         public int DirectHits;
         public int QuickPlanHits;
         public int RelayHits;
@@ -155,6 +156,7 @@ namespace TxTools.AutoPathPlanner
 
         private readonly Action<string> _log;
         private PlanningReport _activeReport;
+        private CollisionSetService _activeSet;
         private CollisionWorld _world;
         private RrtPlanner _rrt;
         private CycleCost _cost;        // v6.0 关节节拍代价
@@ -165,6 +167,7 @@ namespace TxTools.AutoPathPlanner
         private PlanningProgress _progress { get { return Progress; } }
         private readonly HashSet<string> _preparedLocationIds = new HashSet<string>(StringComparer.Ordinal);
         private bool _preparationReady;
+        private Action _restoreSourceSettings;
         private int _preparedInsertedCount, _preparedGunCount;
         private const string PreparationStatus = "[TxTools.AutoPath:PreparedOnly] 准备点已生成，完整路径未验证";
 
@@ -268,10 +271,13 @@ namespace TxTools.AutoPathPlanner
                 foreach(var weld in welds)
                 {
                     originals.Add(Tuple.Create(weld,weld.RobotExternalAxesData,weld.RobotDepartureExternalAxesData));
-                    if(!_gunAxis.WriteOpening(weld,WeldGunOpening,weld,true))
+                    double? declared = _gunAxis.ReadOpening(weld.RobotExternalAxesData);
+                    double? departure = _gunAxis.ReadOpening(weld.RobotDepartureExternalAxesData);
+                    if (declared.HasValue && departure.HasValue) continue;
+                    double arrival = declared ?? WeldGunOpening;
+                    if(!_gunAxis.WriteOpening(weld,arrival,weld,true,departure ?? arrival))
                         throw new InvalidOperationException("焊点开口写入失败: "+weld.Name);
-                    _log(string.Format("  焊点开口已读回 {0}: 到达/离开 {1:F1}mm，轴值 {2:F1}",
-                        weld.Name,_gunAxis.ClampOpening(WeldGunOpening),_gunAxis.OpeningToJointValue(WeldGunOpening)));
+                    _log(string.Format("  补齐焊点开口 {0}: 到达 {1:F1} / 离开 {2:F1} mm", weld.Name, arrival, departure ?? arrival));
                 }
                 return restore;
             }
@@ -414,6 +420,7 @@ namespace TxTools.AutoPathPlanner
                                 costCache[robot] = new CycleCost(robot, _log);
                         }
                         isolation.Activate(setCache[robot]);
+                        _activeSet = setCache[robot];
                         _world = worldCache[robot];
                         _rrt.IsStateFree = _world.IsPositionFree;
                         _cost = costCache.ContainsKey(robot) ? costCache[robot] : null;
@@ -459,6 +466,7 @@ namespace TxTools.AutoPathPlanner
                         _preparedInsertedCount = report.InsertedViaCount;
                         _preparedGunCount = _viaOpeningCount;
                         int failuresBefore = report.FailedSegments;
+                        _restoreSourceSettings = null;
                         bool accepted = false;
                         try { PlanSingleOperation(op, report); accepted = true; }
                         catch (OperationCanceledException)
@@ -477,6 +485,8 @@ namespace TxTools.AutoPathPlanner
                         finally
                         {
                             if (!accepted) CleanupFailedOperation(report);
+                            if (!_preparationReady) _restoreSourceSettings?.Invoke();
+                            _restoreSourceSettings = null;
                             _operationCreatedLocations.Clear();
                         }
                     }
@@ -498,7 +508,7 @@ namespace TxTools.AutoPathPlanner
 
                     if (report.FailedSegments > 0)
                         report.Warnings.Add(string.Format(
-                            "共 {0} 个过渡段规划失败 (未插过渡点), 明细见上方警告", report.FailedSegments));
+                            "共 {0} 个连接未通过规划或验证，明细见上方警告", report.FailedSegments));
                 }
                 catch (OperationCanceledException)
                 {
@@ -610,19 +620,26 @@ namespace TxTools.AutoPathPlanner
             }
             report.WeldCount += weldLocs.Count;
             _log(string.Format("  焊点数: {0}", weldLocs.Count));
+            Dictionary<string, TxPoseData> selectedPoses;
             Action restoreWeldOpenings=delegate{};
+            var configs = new Dictionary<TxWeldLocationOperation, TxRobotConfigurationData>();
+            foreach (var weld in weldLocs)
+            {
+                try { configs[weld] = weld.RobotConfigurationData; }
+                catch (TxRobotConfigurationDoesNotExistException) { configs[weld] = null; }
+            }
+            _restoreSourceSettings = () => {
+                restoreWeldOpenings();
+                foreach (var item in configs) item.Key.RobotConfigurationData = item.Value;
+            };
             try
             {
-                if (GunAxisWriteEnabled && GenerateApproachRetract &&
-                    _gunAxis.ClampOpening(TargetGunOpening) <= _gunAxis.ClampOpening(WeldGunOpening))
-                    throw new InvalidOperationException("进/出枪开口必须大于焊点开口（按实际枪行程比较）");
                 restoreWeldOpenings=PrepareWeldOpenings(weldLocs);
                 if(!_world.SetSearchOpening(WeldGunOpening))throw new InvalidOperationException("焊接开口摆位失败");
-                _world.PrepareConfigurations(weldLocs.Cast<ITxRoboticLocationOperation>());
+                selectedPoses = _world.PrepareConfigurations(weldLocs.Cast<ITxRoboticLocationOperation>());
             }
             catch (Exception ex)
             {
-                restoreWeldOpenings();
                 report.FailedSegments++;
                 report.Warnings.Add("Config/完整位姿预检失败，跳过操作 " + opName + ": " + ex.Message);
                 _log("  [中止] " + report.Warnings.Last());
@@ -639,88 +656,38 @@ namespace TxTools.AutoPathPlanner
             foreach (var loc in weldLocs)
             {
                 PlanPoint p = ExtractWeldPoint(loc);
-                if (p == null)
-                {
-                    _log(string.Format("  [跳过] {0}: 位姿获取失败", loc.Name));
-                    continue;
-                }
-                p.JointPose = _world.ReadLocationJointPose(loc);
+                if (p == null) throw new InvalidOperationException("焊点完整位姿不可读: " + loc.Name);
+                p.JointPose = selectedPoses[loc.Id];
                 p.ExternalAxes = loc.RobotExternalAxesData;
                 p.DepartureExternalAxes = loc.RobotDepartureExternalAxesData;
                 weldPoints.Add(p);
                 weldObjs.Add(loc);
             }
 
-            // ---- 自检门控: 在第一个焊点的进枪位姿处测试完整摆位链路 ----
-            // 逆解摆位失败说明链路故障(而非真实障碍)，继续规划只会产出垃圾
-            if (weldPoints.Count > 0)
-            {
-                PlanPoint first = weldPoints[0];
-                Vec3 firstOff = GenerateApproachRetract
-                    ? first.Position + GetOffsetDir(first) * ApproachRetractDistance
-                    : first.Position;
-                _world.SetOrientation(first.AbsTransform, first.RpyZyx);
-                ITxObject refLoc = weldObjs.Count > 0 ? (ITxObject)weldObjs[0] : null;
-                string verdict = _world.SelfTest(firstOff, first.RpyZyx, refLoc);
-                _log(string.Format("  自检({0} 进枪点): {1}", first.Source, verdict));
-                if (verdict == "逆解摆位失败")
-                {
-                    string warn = string.Format(
-                        "操作 {0} 自检失败: 焊点进枪位姿无法完成逆解摆位，已跳过 — 见上方[诊断]日志",
-                        opName);
-                    _log("  [中止] " + warn);
-                    report.Warnings.Add(warn);
-                    return;
-                }
-            }
-
-            // ---- v6.1 焊点顺序优化 ----
-            // 必须在 IK 后端标定 (上面的自检) **之后** 跑 ——
-            // 标定决定 Destination 用局部坐标还是世界坐标; 标定前摆位会全部失败,
-            // 关节姿态读不出来, 焊序只能退回笛卡尔距离, 关节代价模型形同虚设。
-            // (v6.0 就栽在这: 日志报 "0/25 个焊点关节姿态可读")
             if (WeldOrderOptEnabled && weldPoints.Count > 4)
             {
                 if (!OptimizeWeldOrder(weldPoints, weldObjs, report, op)) return;
                 // Sequence costs must follow the final process order.
                 if (!_world.SetSearchOpening(WeldGunOpening))
                     throw new InvalidOperationException("重排后焊接开口摆位失败");
-                _world.PrepareConfigurations(weldObjs.Cast<ITxRoboticLocationOperation>());
+                selectedPoses = _world.PrepareConfigurations(weldObjs.Cast<ITxRoboticLocationOperation>());
                 for (int i=0; i<weldPoints.Count; i++)
-                    weldPoints[i].JointPose=_world.ReadLocationJointPose(weldObjs[i]);
+                    weldPoints[i].JointPose = selectedPoses[weldObjs[i].Id];
                 if (!_world.SetSearchOpening(GenerateApproachRetract || AdaptiveGunOpening ? TargetGunOpening : TransitGunOpening))
                     throw new InvalidOperationException("重排后恢复进出枪开口失败");
             }
 
-            // ---- 自适应进出枪偏移解析 ----
-            // 焊点坐标系Z轴方向在焊点间常不一致 (投影焊点一半朝内一半朝外),
-            // 盲用 -toolZ 会让部分偏移点扎进钣金 → 端点无效 → 级联全灭。
-            // 按候选序列逐个验证，取第一个有效方向; 全无效退回焊点原位。
-            // ================================================================
-            //  阶段一: 进出枪点全量生成 (工艺约束, 排除在路径规划之外)
-            //  严格沿焊点 -Z 生成, 距离在 [Min,Max] 区间优先取无干涉;
-            //  全区间干涉也照样生成 (取最大距离), 仅标记+警告 — 不挪点、不换向、不换姿态。
-            // ================================================================
-            var offsets = new Vec3[weldPoints.Count];
-            var offsetFree = new bool[weldPoints.Count];
+            var approach = new PlanPoint[weldPoints.Count];
+            var retract = new PlanPoint[weldPoints.Count];
             var weldFree = new bool[weldPoints.Count];
-            int freeCount = 0;
-            for (int i = 0; i < weldPoints.Count; i++)
+            if (GenerateApproachRetract)
             {
-                ThrowIfCancelled();
-                if (GenerateApproachRetract)
-                    offsetFree[i] = GenerateOffsetPoint(weldPoints[i], out offsets[i]);
-                else { offsets[i] = weldPoints[i].Position; offsetFree[i] = true; }
-                if (offsetFree[i]) freeCount++;
-                else
-                    report.Warnings.Add(string.Format(
-                        "焊点 {0} 的进/出枪点({1})存在干涉或不可达, 仅保留工艺位置计算结果，尚未写入场景",
-                        weldPoints[i].Source,
-                        UseWorldZForApproach ? "世界Z" : "自动方向搜索"));
+                for (int i = 0; i < weldPoints.Count; i++)
+                {
+                    approach[i] = SelectProcessPoint(weldPoints[i], PlanPointKind.Approach);
+                    retract[i] = SelectProcessPoint(weldPoints[i], PlanPointKind.Retract);
+                }
             }
-            if (GenerateApproachRetract) _log(string.Format("  进出枪偏移计算: {0}/{1} 位置可用，{2} 个位置待处理（尚未创建场景点）",
-                freeCount, weldPoints.Count, weldPoints.Count - freeCount));
-            else _log("  进出枪点创建已关闭：不计算偏移、不创建准备点");
 
             // ================================================================
 
@@ -728,46 +695,21 @@ namespace TxTools.AutoPathPlanner
             //  v6.8 规划前静态干涉检查 — 提前暴露问题点, 避免无谓的动态规划
             // ================================================================
             _log("\n  == 静态干涉检查 (规划前) ==");
-            int stFree = 0, stNoIk = 0, stColl = 0;
-            var stProblems = new List<string>();
-            for (int si = 0; si < weldPoints.Count; si++)
+            for (int i = 0; i < weldPoints.Count; i++)
             {
                 ThrowIfCancelled();
-                var wp = weldPoints[si];
-                _world.SetOrientation(wp.AbsTransform, wp.RpyZyx);
-                _world.SetSearchOpening(WeldGunOpening);
-                CollisionWorld.PositionState stWeld = _world.WithAdjacentConfiguration(wp.JointPose,
-                    ()=>_world.ClassifyStrict(wp.Position));
-                _world.SetSearchOpening(GenerateApproachRetract || AdaptiveGunOpening ? TargetGunOpening : TransitGunOpening);
-                CollisionWorld.PositionState stOff = !GenerateApproachRetract
-                    ? CollisionWorld.PositionState.Free
-                    : (offsetFree[si]
-                        ? CollisionWorld.PositionState.Free
-                        : _world.ClassifyStrict(offsets[si]));
-                weldFree[si] = stWeld == CollisionWorld.PositionState.Free;
-                if (stWeld == CollisionWorld.PositionState.Free
-                    && stOff == CollisionWorld.PositionState.Free)
+                var weld = weldPoints[i];
+                var departure = weld.DepartureExternalAxes;
+                if (departure == null || departure.Length == 0) departure = weld.ExternalAxes;
+                using (var state = new CollisionWorld.JointSearchSpace(_world, weld.JointPose, weld.JointPose,
+                    weld.ExternalAxes, departure))
                 {
-                    stFree++;
-                }
-                else
-                {
-                    if (stWeld == CollisionWorld.PositionState.NoIk
-                        || stOff == CollisionWorld.PositionState.NoIk)
-                        stNoIk++;
-                    else
-                        stColl++;
-                    stProblems.Add(string.Format("    [!] {0}: 焊点{1} 进/出枪点{2}",
-                        wp.Source, stWeld, stOff));
+                    weld.Verified = weldFree[i] = state.EndpointMatches(state.Start, weld.Position, weld.RpyZyx) &&
+                        state.IsFree(state.Start) && state.IsFree(state.Goal) && state.IsMotionFree(state.Start, state.Goal);
+                    if (!weld.Verified) throw new InvalidOperationException(weld.Source +
+                        " 焊点到达/离开外部轴运动未通过: " + state.DiagnosticSummary);
                 }
             }
-            _log(string.Format("  静态检查: {0} 个焊点 — 无干涉 {1} / 不可达 {2} / 碰撞 {3}",
-                weldPoints.Count, stFree, stNoIk, stColl));
-            foreach (var pr in stProblems)
-                _log(pr);
-            if (stNoIk + stColl > 0)
-                _log(string.Format("  [提示] {0} 个焊点存在静态问题(不可达/碰撞), 建议先调整焊点姿态或夹具再规划",
-                    stNoIk + stColl));
 
             //  结构骨架优先 (用户既定流程):
             //   ①创建两个 home Via → 移到 POSE home 位姿
@@ -792,24 +734,8 @@ namespace TxTools.AutoPathPlanner
                 for (int i = 0; i < weldPoints.Count; i++)
                 {
                     ThrowIfCancelled();
-                    TxPoseData offsetPose=null;
-                    if (offsetFree[i] && !_world.WithAdjacentConfiguration(weldPoints[i].JointPose,
-                        ()=>_world.TryCaptureJointPose(offsets[i],weldPoints[i].RpyZyx,out offsetPose)))
-                        throw new InvalidOperationException("进出枪点连续关节解不可用: "+weldPoints[i].Source+" / "+_world.LastPoseRejection);
-                    var ap = new PlanPoint
-                    {
-                        Position = offsets[i], RpyZyx = weldPoints[i].RpyZyx,
-                        Kind = PlanPointKind.Approach, Source = weldPoints[i].Source,
-                        JointPose = offsetPose, Verified = offsetFree[i]
-                    };
-                    var rp = new PlanPoint
-                    {
-                        Position = offsets[i], RpyZyx = weldPoints[i].RpyZyx,
-                        Kind = PlanPointKind.Retract, Source = weldPoints[i].Source,
-                        JointPose = offsetPose, Verified = offsetFree[i]
-                    };
-                    approachVia[i] = EnsureProcessPoint(op, weldObjs[i], ap, report);
-                    retractVia[i] = EnsureProcessPoint(op, weldObjs[i], rp, report);
+                    approachVia[i] = EnsureProcessPoint(op, weldObjs[i], approach[i], report);
+                    retractVia[i] = EnsureProcessPoint(op, weldObjs[i], retract[i], report);
                 }
             }
 
@@ -872,8 +798,7 @@ namespace TxTools.AutoPathPlanner
             if (homeFirst != null)
             {
                 _world.SetOrientation(null, home.Rpy);
-                TxPoseData capturedHomeFirst;
-                bool hf = _world.TryCaptureJointPose(home.Pos, home.Rpy, out capturedHomeFirst, home.JointPose);
+                bool hf = home.JointPose != null;
                 chain.Add(new ChainNode { WeldObj = homeFirst,
                     Point = new PlanPoint { Position = home.Pos, RpyZyx = home.Rpy,
                         Kind = PlanPointKind.Transit, Source = "home", JointPose = home.JointPose, Verified = hf,
@@ -881,9 +806,9 @@ namespace TxTools.AutoPathPlanner
                         DepartureExternalAxes = ((ITxRoboticLocationOperation)homeFirst).RobotDepartureExternalAxesData } });
 
                 // home → 首进枪 过渡
-                Vec3 firstGoal = GenerateApproachRetract ? offsets[0] : weldPoints[0].Position;
+                Vec3 firstGoal = GenerateApproachRetract ? approach[0].Position : weldPoints[0].Position;
                 var lead = PlanTransit(
-                    chain[0].Point, weldPoints[0], home.Pos, firstGoal, hf, offsetFree[0], report);
+                    chain[0].Point, GenerateApproachRetract ? approach[0] : weldPoints[0], home.Pos, firstGoal, hf, (GenerateApproachRetract || weldFree[0]), report);
                 if (lead == null) chain[chain.Count-1].BreakAfter = true;
                 if (lead != null) foreach (var t in lead) chain.Add(new ChainNode { Point = t });
             }
@@ -893,26 +818,22 @@ namespace TxTools.AutoPathPlanner
                 ThrowIfCancelled();
                 if (GenerateApproachRetract && approachVia[i] != null)
                     chain.Add(new ChainNode { WeldObj = approachVia[i],
-                        Point = new PlanPoint { Position = offsets[i], RpyZyx = weldPoints[i].RpyZyx,
-                            Kind = PlanPointKind.Approach, Source = weldPoints[i].Source,
-                            Verified = offsetFree[i] } });
+                        Point = approach[i] });
 
                 chain.Add(new ChainNode { WeldObj = weldObjs[i], Point = weldPoints[i] });
 
                 if (GenerateApproachRetract && retractVia[i] != null)
                     chain.Add(new ChainNode { WeldObj = retractVia[i],
-                        Point = new PlanPoint { Position = offsets[i], RpyZyx = weldPoints[i].RpyZyx,
-                            Kind = PlanPointKind.Retract, Source = weldPoints[i].Source,
-                            Verified = offsetFree[i] } });
+                        Point = retract[i] });
 
                 if (i >= weldPoints.Count - 1) break;
 
                 PlanPoint a = weldPoints[i], b = weldPoints[i + 1];
-                Vec3 transitStart = GenerateApproachRetract ? offsets[i] : weldPoints[i].Position;
-                Vec3 transitGoal = GenerateApproachRetract ? offsets[i + 1] : weldPoints[i + 1].Position;
-                bool transitStartFree = GenerateApproachRetract ? offsetFree[i] : weldFree[i];
-                bool transitGoalFree = GenerateApproachRetract ? offsetFree[i + 1] : weldFree[i + 1];
-                var transitPoints = PlanTransit(a, b, transitStart, transitGoal,
+                Vec3 transitStart = GenerateApproachRetract ? retract[i].Position : weldPoints[i].Position;
+                Vec3 transitGoal = GenerateApproachRetract ? approach[i + 1].Position : weldPoints[i + 1].Position;
+                bool transitStartFree = GenerateApproachRetract ? retract[i].Verified : weldFree[i];
+                bool transitGoalFree = GenerateApproachRetract ? approach[i + 1].Verified : weldFree[i + 1];
+                var transitPoints = PlanTransit(GenerateApproachRetract ? retract[i] : a, GenerateApproachRetract ? approach[i+1] : b, transitStart, transitGoal,
                     transitStartFree, transitGoalFree, report);
                 if (transitPoints == null) chain[chain.Count-1].BreakAfter = true;
                 if (transitPoints != null)
@@ -924,14 +845,13 @@ namespace TxTools.AutoPathPlanner
             {
                 int last = weldPoints.Count - 1;
                 _world.SetOrientation(null, home.Rpy);
-                TxPoseData capturedHomeLast;
-                bool hl = _world.TryCaptureJointPose(home.Pos, home.Rpy, out capturedHomeLast, home.JointPose);
-                Vec3 tailStart = GenerateApproachRetract ? offsets[last] : weldPoints[last].Position;
-                var tail = PlanTransit(weldPoints[last],
+                bool hl = home.JointPose != null;
+                Vec3 tailStart = GenerateApproachRetract ? retract[last].Position : weldPoints[last].Position;
+                var tail = PlanTransit(GenerateApproachRetract ? retract[last] : weldPoints[last],
                     new PlanPoint { Position = home.Pos, RpyZyx = home.Rpy, Source = "home", JointPose = home.JointPose,
                         ExternalAxes = ((ITxRoboticLocationOperation)homeLast).RobotExternalAxesData,
                         DepartureExternalAxes = ((ITxRoboticLocationOperation)homeLast).RobotDepartureExternalAxesData },
-                    tailStart, home.Pos, offsetFree[last], hl, report);
+                    tailStart, home.Pos, (GenerateApproachRetract || weldFree[last]), hl, report);
                 if (tail == null) chain[chain.Count-1].BreakAfter = true;
                 if (tail != null) foreach (var t in tail) chain.Add(new ChainNode { Point = t });
 
@@ -963,6 +883,18 @@ namespace TxTools.AutoPathPlanner
             {
                 ThrowIfCancelled();
                 if (!ProcessPathGroup(op, group, report)) complete = false;
+            }
+            if (complete)
+            {
+                var expected = CollectExecutionLocations(op);
+                string issue = _activeSet.VerifyPlayback((ITxOperation)op, expected, IsCancelled);
+                if (issue != null)
+                {
+                    complete = false;
+                    report.FailedSegments++;
+                    report.Warnings.Add("PS 整段回放未通过: " + opName + " / " + issue);
+                }
+                else { report.PlaybackVerifiedOperations++; _log("  PS 整段回放通过: " + opName); }
             }
             if (complete)
             {
@@ -1035,6 +967,12 @@ namespace TxTools.AutoPathPlanner
             finally { _world.ShouldAbortMotion = previousAbort; }
         }
 
+        private static bool UsesJointMotion(ITxRoboticLocationOperation location)
+        {
+            using (var service = new TxPathPlanningRCSService())
+                return service.GetLocationMotionType((ITxRoboticOperation)location) == TxMotionType.Joint;
+        }
+
         private bool ProcessPathGroup(ITxObject operation, List<ChainNode> group, PlanningReport report)
         {
             int createdBefore = _operationCreatedLocations.Count;
@@ -1045,19 +983,9 @@ namespace TxTools.AutoPathPlanner
                 int from = before.FindIndex(l => ((ITxObject)l).Id == group[0].WeldObj.Id);
                 int to = before.FindIndex(l => ((ITxObject)l).Id == group[group.Count-1].WeldObj.Id);
                 if (from >= 0 && to > from+1)
-                {
-                    // Preserve a pre-existing verified path; never stack another path on it.
-                    for (int i = from+1; i <= to; i++)
-                    {
-                        var issue = _world.CheckWrittenMotion(before[i-1], before[i]);
-                        if (issue != null) throw new InvalidOperationException(
-                            "既有区间路径未通过，保留原有点、不叠加新点: " + issue);
-                    }
-                    report.VerifiedPathGroups++;
-                    _log("  [分段通过] 复用并重新验证既有区间路径");
-                    return true;
-                }
-                if (DynamicCheckEnabled) DynamicRefine(group, report);
+                    return VerifyPathGroup(operation, group, report, createdBefore);
+
+                if (DynamicCheckEnabled && UsesJointMotion((ITxRoboticLocationOperation)group[group.Count-1].WeldObj)) DynamicRefine(group, report);
                 if (PruneEnabled) ShortcutPath(group, report);
                 ITxObject anchor = null;
                 foreach (var node in group)
@@ -1069,40 +997,123 @@ namespace TxTools.AutoPathPlanner
                     node.WeldObj = anchor = via;
                     report.InsertedViaCount++;
                 }
-                var actual = CollectExecutionLocations(operation);
-                int first = actual.FindIndex(l => ((ITxObject)l).Id == group[0].WeldObj.Id);
-                int last = actual.FindIndex(l => ((ITxObject)l).Id == group[group.Count-1].WeldObj.Id);
-                if (first < 0 || last <= first) throw new InvalidOperationException("分段实际执行顺序不可核实");
-                for (int i = first+1; i <= last; i++)
-                {
-                    ThrowIfCancelled();
-                    var failure = _world.CheckWrittenMotion(actual[i-1], actual[i]);
-                    if (failure != null) throw new InvalidOperationException(
-                        ((ITxObject)actual[i-1]).Name + " → " + ((ITxObject)actual[i]).Name + ": " + failure);
-                }
-                for (int i = createdBefore; i < _operationCreatedLocations.Count; i++)
-                    _preparedLocationIds.Add(_operationCreatedLocations[i].Id);
-                _preparedInsertedCount = report.InsertedViaCount;
-                _preparedGunCount = _viaOpeningCount;
-                report.VerifiedPathGroups++;
-                _log("  [分段通过] " + group[0].Point.Source + " → " + group[group.Count-1].Point.Source);
-                return true;
+                return VerifyPathGroup(operation, group, report, createdBefore);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 for (int i = _operationCreatedLocations.Count-1; i >= createdBefore; i--)
                 {
+                    if (_preparedLocationIds.Contains(_operationCreatedLocations[i].Id)) continue;
                     try { _operationCreatedLocations[i].Delete(); } catch { }
                     _operationCreatedLocations.RemoveAt(i);
                 }
-                report.InsertedViaCount = insertedBefore; _viaOpeningCount = gunBefore;
+                report.InsertedViaCount = Math.Max(insertedBefore, _preparedInsertedCount);
+                _viaOpeningCount = Math.Max(gunBefore, _preparedGunCount);
                 report.FailedPathGroups++;
                 report.FailedSegments++;
                 report.Warnings.Add("分段未通过，其他分段继续: " + group[0].Point.Source + " → " +
                     group[group.Count-1].Point.Source + " / " + ex.Message);
                 _log("  [分段未通过] " + report.Warnings.Last());
                 return false;
+            }
+        }
+
+        private bool VerifyPathGroup(ITxObject operation, List<ChainNode> group,
+            PlanningReport report, int createdBefore)
+        {
+            var anchorIds = group.Where(n => n.WeldObj != null).Select(n => n.WeldObj.Id).ToList();
+            var anchorSet = new HashSet<string>(anchorIds, StringComparer.Ordinal);
+            var attempted = new HashSet<Tuple<string, string>>();
+            const int maxRepairs = 3;
+            while (true)
+            {
+                var actual = CollectExecutionLocations(operation);
+                int first = actual.FindIndex(l => l.Id == group[0].WeldObj.Id);
+                int last = actual.FindIndex(l => l.Id == group[group.Count-1].WeldObj.Id);
+                if (first < 0 || last <= first ||
+                    !actual.Skip(first).Take(last-first+1).Select(l => l.Id)
+                        .Where(anchorSet.Contains).SequenceEqual(anchorIds))
+                    throw new InvalidOperationException("分段实际执行顺序不可核实");
+
+                // A complete, correctly ordered candidate is useful even if
+                // motion validation fails. Incomplete writes still roll back.
+                for (int i = createdBefore; i < _operationCreatedLocations.Count; i++)
+                    _preparedLocationIds.Add(_operationCreatedLocations[i].Id);
+                _preparedInsertedCount = report.InsertedViaCount;
+                _preparedGunCount = _viaOpeningCount;
+                createdBefore = _operationCreatedLocations.Count;
+
+                bool deferred = false;
+                bool retry = false;
+                var failures = new List<string>();
+                for (int i = first+1; i <= last; i++)
+                {
+                    ThrowIfCancelled();
+                    var from = actual[i-1];
+                    var to = actual[i];
+                    if (!UsesJointMotion(to)) { deferred = true; continue; }
+                    var issue = _world.CheckWrittenMotion(from, to);
+                    if (issue == null) continue;
+                    failures.Add(from.Name + " → " + to.Name + ": " + issue);
+                    if (!DynamicCheckEnabled || attempted.Count >= maxRepairs ||
+                        !issue.StartsWith("扫掠干涉@", StringComparison.Ordinal) ||
+                        !attempted.Add(Tuple.Create(from.Id, to.Id))) continue;
+                    var fromPoint = new PlanPoint { Source = from.Name, ExternalAxes = from.RobotExternalAxesData,
+                        DepartureExternalAxes = from.RobotDepartureExternalAxesData };
+                    var toPoint = new PlanPoint { Source = to.Name, ExternalAxes = to.RobotExternalAxesData };
+                    int insertedBefore = report.InsertedViaCount, gunBefore = _viaOpeningCount;
+                    try
+                    {
+                        var repair = RepairJointConnection(fromPoint, toPoint,
+                            _world.ReadLocationJointPose(from), _world.ReadLocationJointPose(to));
+                        ThrowIfCancelled();
+                        if (repair == null) continue;
+                        ITxObject anchor = from;
+                        var ids = new List<string> { from.Id };
+                        foreach (var point in repair)
+                        {
+                            ThrowIfCancelled();
+                            anchor = InsertViaAfter(operation, point, anchor);
+                            if (anchor == null) throw new InvalidOperationException("修复点写入失败");
+                            ids.Add(anchor.Id);
+                            report.InsertedViaCount++;
+                        }
+                        ids.Add(to.Id);
+                        var reread = CollectExecutionLocations(operation);
+                        int start = reread.FindIndex(l => l.Id == from.Id);
+                        if (start < 0 || !reread.Skip(start).Take(ids.Count).Select(l => l.Id).SequenceEqual(ids))
+                            throw new InvalidOperationException("修复点实际顺序不符");
+                        report.DynamicRepairs++;
+                        retry = true;
+                        break;
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        for (int k = _operationCreatedLocations.Count-1; k >= createdBefore; k--)
+                        {
+                            _operationCreatedLocations[k].Delete();
+                            _operationCreatedLocations.RemoveAt(k);
+                        }
+                        report.InsertedViaCount = insertedBefore;
+                        _viaOpeningCount = gunBefore;
+                        failures.Add("插入绕行失败: " + ex.Message);
+                    }
+                }
+                if (retry) continue;
+                if (failures.Count > 0)
+                {
+                    report.FailedPathGroups++;
+                    report.FailedSegments++;
+                    report.Warnings.Add("分段未验证，保留候选点供复核: " + string.Join(" / ", failures));
+                    _log("  [分段未通过] " + report.Warnings.Last());
+                    return false;
+                }
+                if (!deferred) report.VerifiedPathGroups++;
+                _log((deferred ? "  [等待 PS 回放] " : "  [分段通过] ") +
+                    actual[first].Name + " → " + actual[last].Name);
+                return true;
             }
         }
 
@@ -1163,7 +1174,7 @@ namespace TxTools.AutoPathPlanner
                     bool allTransit = true;
                     for (int k = i + 1; k < j; k++)
                     {
-                        if (chain[k].WeldObj != null) { allTransit = false; break; }
+                        if (chain[k].WeldObj != null || chain[k].Point.KeepTcpSample) { allTransit = false; break; }
                     }
                     if (!allTransit) continue;
 
@@ -1783,26 +1794,18 @@ namespace TxTools.AutoPathPlanner
                 return null;
             }
 
-            Func<PlanPoint, Vec3, PlanPointKind, PlanPoint> resolve = (point, position, kind) =>
+            var fromSpec = a;
+            var toSpec = b;
+            var startJoint = a.JointPose;
+            var goalJoint = b.JointPose;
+            if (startJoint == null || goalJoint == null)
             {
-                if (Vec3.Distance(point.Position, position) < 1e-4 && point.ExternalAxes != null) return point;
-                return _writtenPointStates.Values.FirstOrDefault(p => p.Kind == kind &&
-                    p.Source == point.Source && Vec3.Distance(p.Position, position) < 1e-4) ?? point;
-            };
-            var fromSpec = resolve(a, start, PlanPointKind.Retract);
-            var toSpec = resolve(b, goal, PlanPointKind.Approach);
-            TxPoseData startJoint, goalJoint;
-            var preferredStart = Vec3.Distance(fromSpec.Position, start) < 1e-4 ? fromSpec.JointPose : null;
-            var preferredGoal = Vec3.Distance(toSpec.Position, goal) < 1e-4 ? toSpec.JointPose : null;
-            if (!_world.TryCaptureJointPose(start, a.RpyZyx, out startJoint, preferredStart) ||
-                !_world.TryCaptureJointPose(goal, b.RpyZyx, out goalJoint, preferredGoal))
-            {
-                MarkSegmentFailed(a, b, "段端点最终关节解不可用: " + _world.LastPoseRejection, report);
+                MarkSegmentFailed(a, b, "端点关节解缺失", report);
                 return null;
             }
             var fromAxes = fromSpec.DepartureExternalAxes;
             if (fromAxes == null || fromAxes.Length == 0) fromAxes = fromSpec.ExternalAxes;
-            report.RrtInvocations++;
+
             try
             {
                 using (var space = new CollisionWorld.JointSearchSpace(_world, startJoint, goalJoint,
@@ -1814,6 +1817,14 @@ namespace TxTools.AutoPathPlanner
                         MarkSegmentFailed(a, b, "机器人/外部轴联合端点与目标位姿不符: " + _world.LastPoseRejection, report);
                         return null;
                     }
+                    var tcpPath = space.TryTcpTransfer(start, goal, a.RpyZyx, b.RpyZyx, a.Source + "→" + b.Source);
+                    if (tcpPath != null)
+                    {
+                        report.DirectHits++;
+                        _log("    TCP 连续位姿候选通过: " + tcpPath.Count + " 个中间点");
+                        return tcpPath;
+                    }
+                    report.RrtInvocations++;
                     var caps = AdaptiveGunOpening && _gunAxis != null
                         ? new[]{ TargetGunOpening, Math.Max(TargetGunOpening,60), Math.Max(TargetGunOpening,120), _gunAxis.MaxOpeningMagnitude }
                             .Select(v=>_gunAxis.ClampOpening(v)).Distinct().OrderBy(v=>v).ToArray()
@@ -2665,75 +2676,60 @@ namespace TxTools.AutoPathPlanner
         /// 每个方向在 [Min, Max] 区间递减取首个无干涉。
         /// 全方向全距离干涉则取当前策略的主方向最大距离强制生成, 返回 false。
         /// </summary>
-        private bool GenerateOffsetPoint(PlanPoint weld, out Vec3 pos)
+        private PlanPoint SelectProcessPoint(PlanPoint weld, PlanPointKind kind)
         {
-            Vec3 result=new Vec3();
-            bool free=_world.WithAdjacentConfiguration(weld.JointPose,()=>GenerateOffsetPointCore(weld,out result));
-            pos=result;
-            return free;
-        }
-
-        private bool GenerateOffsetPointCore(PlanPoint weld, out Vec3 pos)
-        {
-            _world.SetOrientation(weld.AbsTransform, weld.RpyZyx);
-
-            // 方向阶梯: 焊点局部系 → 世界系
-            Vec3 negZ = DeserializeZAxis(weld.Note) * -1.0;  // 焊点 -Z (枪后退)
-            Vec3 posZDir = DeserializeZAxis(weld.Note);       // 焊点 +Z
-            Vec3 xAxis = GetAxisOf(weld.AbsTransform, 0);     // 焊点 X (前后)
-            Vec3 yAxis = GetAxisOf(weld.AbsTransform, 1);     // 焊点 Y (左右)
-            Vec3 worldZ = new Vec3(0, 0, 1);                  // 世界 Z
-
-            Vec3[] directions = UseWorldZForApproach
-                ? new[] { worldZ } // 用户手动选择世界Z时仅此方向
-                : new[] { negZ, posZDir, xAxis * -1.0, xAxis, yAxis * -1.0, yAxis, worldZ };
-
-            double dMax = ApproachRetractDistance;
-            double dMin = Math.Min(ApproachRetractMin, dMax);
-            double dMid = (dMax + dMin) / 2.0;
-            double[] dists = dMax - dMin < 1e-6
-                ? new[] { dMax }
-                : new[] { dMax, dMid, dMin };
-
-            // v6.7: 原区间 [Min,Max] 全失败 → 超出 Max 递增搜索 (40→SearchMax),
-            // 让焊枪先退深到净空, 而不是强制在 20mm 处生成必然干涉的点。
-            double sMax = ApproachRetractSearchMax > dMax ? ApproachRetractSearchMax : dMax;
-            double[] farDists = new[] { 40.0, 60.0, 100.0, sMax };
-
-            foreach (Vec3 dir in directions)
+            bool incoming = kind == PlanPointKind.Approach;
+            var axes = incoming || weld.DepartureExternalAxes == null || weld.DepartureExternalAxes.Length == 0
+                ? weld.ExternalAxes : weld.DepartureExternalAxes;
+            axes = axes ?? new TxRobotExternalAxisData[0];
+            var z = DeserializeZAxis(weld.Note);
+            var x = GetAxisOf(weld.AbsTransform, 0);
+            var y = GetAxisOf(weld.AbsTransform, 1);
+            var up = new Vec3(0, 0, 1);
+            var directions = UseWorldZForApproach ? new[] { up } : new[] { z * -1, z, x * -1, x, y * -1, y, up };
+            double minimum = Math.Min(ApproachRetractMin, ApproachRetractDistance);
+            var distances = new[] { ApproachRetractDistance, (minimum + ApproachRetractDistance)/2, minimum,
+                40, 60, 100, ApproachRetractSearchMax }.Distinct();
+            double weldOpening = _gunAxis?.ReadOpening(axes) ?? WeldGunOpening;
+            var openings = _gunAxis == null || !AdaptiveGunOpening ? new[] { TargetGunOpening } :
+                new[] { Math.Max(weldOpening, TargetGunOpening), 60, 120, _gunAxis.MaxOpeningMagnitude }.Select(_gunAxis.ClampOpening).Distinct().OrderBy(v => v).ToArray();
+            double previous = _world.SearchOpening;
+            var saved = axes.ToDictionary(axis => axis.Joint, axis => axis.Joint.CurrentValue);
+            try
             {
-                foreach (double d in dists)
+                foreach (var axis in axes) axis.Joint.CurrentValue = axis.JointValue;
+                foreach (var opening in openings)
                 {
-                    Vec3 p = weld.Position + dir * d;
-                    if (_world.ClassifyStrict(p) == CollisionWorld.PositionState.Free)
+                    if (_gunAxis != null && _gunAxis.ClampOpening(opening) < weldOpening) continue;
+                    var atOffset = axes.Select(axis => _gunAxis != null && _gunAxis.IsGunAxis(axis)
+                        ? new TxRobotExternalAxisData { Device = axis.Device, Joint = axis.Joint, JointValue = _gunAxis.OpeningToJointValue(opening) }
+                        : axis).ToArray();
+                    foreach (var dir in directions)
+                    foreach (var distance in distances)
                     {
-                        pos = p;
-                        return true;
+                        ThrowIfCancelled();
+                        if (!_world.SetSearchOpening(opening)) throw new InvalidOperationException("进出枪开口设置失败");
+                        var pos = weld.Position + dir * distance;
+                        TxPoseData pose = null;
+                        if (!_world.WithAdjacentConfiguration(weld.JointPose,
+                            () => _world.TryCaptureJointPose(pos, weld.RpyZyx, out pose))) continue;
+                        using (var space = new CollisionWorld.JointSearchSpace(_world,
+                            incoming ? pose : weld.JointPose, incoming ? weld.JointPose : pose,
+                            incoming ? atOffset : axes, incoming ? axes : atOffset))
+                        {
+                            if (!space.IsMotionFree(space.Start, space.Goal)) continue;
+                        }
+                        return new PlanPoint { Kind = kind, Source = weld.Source, Position = pos, RpyZyx = weld.RpyZyx,
+                            Verified = true, JointPose = pose, GunOpening = opening, ExternalAxes = atOffset, DepartureExternalAxes = atOffset };
                     }
                 }
+                throw new InvalidOperationException(weld.Source + " " + kind + " 未找到可执行的偏移与开口组合");
             }
-
-
-            // v6.7 第二阶段: 超出原区间的净空搜索 (从近到远, 找到即用)
-            foreach (Vec3 dir in directions)
+            finally
             {
-                foreach (double d in farDists)
-                {
-                    if (d <= dMax + 1e-6) continue; // 与第一阶段重叠的跳过
-                    Vec3 p = weld.Position + dir * d;
-                    if (_world.ClassifyStrict(p) == CollisionWorld.PositionState.Free)
-                    {
-                        pos = p;
-                        return true;
-                    }
-                }
+                _world.SetSearchOpening(previous);
+                foreach (var axis in saved) axis.Key.CurrentValue = axis.Value;
             }
-
-            // 全方向全距离失败: 固定世界Z策略不能偷偷回退到局部枪轴。
-            // 自动策略仍以枪后退方向作为工艺兜底，并由调用方保留警告。
-            Vec3 fallbackDir = UseWorldZForApproach ? worldZ : negZ;
-            pos = weld.Position + fallbackDir * dMax;
-            return false;
         }
 
         /// <summary>从变换矩阵提取指定列的轴向 (0=X,1=Y,2=Z); 失败退化为世界轴</summary>
