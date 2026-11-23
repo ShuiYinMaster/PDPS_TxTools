@@ -75,18 +75,39 @@ namespace TxTools.Agent.Core
 
             using (var undo = TxTools.Common.SceneUndoScope.Begin(TxApplication.ActiveDocument, "导入 CATIA 层级"))
             {
-            if (includeRoot)
-            {
-                // 先建根,再递归子
-                var rootCp = TryCreate(psParent, root, log, ref created, ref failed);
-                if (rootCp != null) CreateChildren(rootCp, root, log, ref created, ref failed);
-            }
-            else
-            {
-                // 直接把 CATIA 根的子项建到 psParent 下
-                CreateChildren(psParent, root, log, ref created, ref failed);
-            }
-
+                var tops = new List<TxCompoundPart>();
+                var topNames = new List<string>();
+                if (includeRoot)
+                {
+                    // 先建根,再递归子
+                    var rootCp = TryCreate(psParent, root, log, ref created, ref failed);
+                    if (rootCp != null)
+                    {
+                        tops.Add(rootCp); topNames.Add(rootCp.Name);
+                        CreateChildren(rootCp, root, log, ref created, ref failed);
+                    }
+                }
+                else
+                {
+                    // 直接把 CATIA 根的子项建到 psParent 下
+                    CreateChildren(psParent, root, log, ref created, ref failed, tops, topNames);
+                }
+                // Create 只写托管 Collection，对象树按原生关系建层。整棵新树建完后
+                // 一次 Paste 到父级，删除原对象并恢复顶层名称。
+                if (tops.Count > 0 && psParent is ITxObjectCollection collection)
+                {
+                    try
+                    {
+                        var copies = PsCompoundHelper.MoveToNativeTree(collection,
+                            tops.ConvertAll(cp => (ITxObject)cp), message => log.AppendLine("  ! " + message));
+                        for (int i = 0; i < copies.Count && i < topNames.Count; i++)
+                            PsCompoundHelper.TryRename(copies[i], topNames[i]);
+                    }
+                    catch (Exception pasteError)
+                    {
+                        log.AppendLine("  ! 原生树关系重建失败，对象树可能仍平铺: " + pasteError.GetBaseException().Message);
+                    }
+                }
             }
             log.AppendLine();
             log.AppendLine("\u5b8c\u6210: \u65b0\u5efa " + created + " \u4e2a CompoundPart" +
@@ -97,12 +118,15 @@ namespace TxTools.Agent.Core
         // ── 递归 ──
 
         private static void CreateChildren(ITxObject psParent, CatiaProductNode catiaParent,
-            System.Text.StringBuilder log, ref int created, ref int failed)
+            System.Text.StringBuilder log, ref int created, ref int failed,
+            List<TxCompoundPart> tops = null, List<string> topNames = null)
         {
             foreach (var child in catiaParent.Children)
             {
                 var cp = TryCreate(psParent, child, log, ref created, ref failed);
-                if (cp != null && child.Children.Count > 0)
+                if (cp == null) continue;
+                if (tops != null) { tops.Add(cp); topNames.Add(cp.Name); }
+                if (child.Children.Count > 0)
                     CreateChildren(cp, child, log, ref created, ref failed);
             }
         }

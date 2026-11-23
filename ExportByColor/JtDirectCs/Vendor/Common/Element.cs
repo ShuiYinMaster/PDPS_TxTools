@@ -57,7 +57,16 @@ namespace DLAT.JTReader {
             }
             elementType = ObjectTypeIdentifiers.types[objectTypeID];
             if (segment.segmentType == 1)
-                Instantiate();
+            {
+                if (segment.file.TriangleGeometryOnly && elementType == typeof(PointSetShapeNodeData))
+                {
+                    // JT8 takes the node ID from this base header. Keep it in the
+                    // scene graph and skip only the point-specific fields.
+                    _elementData = new BaseNodeData(this);
+                    dataStream = null;
+                }
+                else Instantiate();
+            }
             //
             // if (elementType == typeof(PropertyProxyMetaData)) {
             //     var data = elementData;

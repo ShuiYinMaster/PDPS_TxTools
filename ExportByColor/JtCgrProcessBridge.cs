@@ -46,9 +46,9 @@ namespace TxTools.ExportByColor
                 if (!File.Exists(stagedOutput)) throw new FileNotFoundException("JT worker produced no CGR", stagedOutput);
                 // Publication happens only after a clean exit and receipt; never import
                 // partially written files from a crashed or timed-out conversion.
-                File.Move(stagedOutput, output);
                 foreach (string suffix in new[] { ".holes.csv", ".cylinders.csv", ".cylinders.log" })
                     if (File.Exists(stagedOutput + suffix)) File.Move(stagedOutput + suffix, output + suffix);
+                File.Move(stagedOutput, output);
                 return counts;
             }
             finally

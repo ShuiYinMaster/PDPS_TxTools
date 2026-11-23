@@ -43,6 +43,8 @@ namespace DLAT.JTReader {
             //----TOC Entry----
 
             //----Segment Header----
+            if (segmentLength < 24 || segmentOffset < 0 || segmentOffset > fb.LongLength - segmentLength)
+                throw new InvalidDataException("Invalid JT segment range");
             pos = segmentOffset;
             if (segmentID != fb.ReadGUID(ref pos))
                 throw new Exception("TOC Entry Segment ID doesn't equal to Segment Header Segment ID");
@@ -51,6 +53,10 @@ namespace DLAT.JTReader {
             if (segmentLength != fb.ReadI32(ref pos))
                 throw new Exception("TOC Entry Segment Length doesn't equal to Segment Header Segment Length");
             //----Segment Header----
+
+            // Retain only the TOC entry for payloads outside the triangle export path.
+            if (file.TriangleGeometryOnly && segmentType != 1 && segmentType != 6 && segmentType != 7)
+                return;
 
             if (segmentType == 0) {
                 //Debug.Log("#rFound segment type 0, skipped.#w");
@@ -61,16 +67,24 @@ namespace DLAT.JTReader {
             var supportCompress = SegmentTypes.GetType(segmentType).Item2;
             if(supportCompress) {
                 var compressionFlag = fb.ReadI32(ref pos);
-                var compressedLength = fb.ReadI32(ref pos) - 1;
+                int payloadLengthWithAlgorithm = fb.ReadI32(ref pos);
                 var compressionAlgorithm = fb.ReadU8(ref pos);
+                if (payloadLengthWithAlgorithm < 1 || payloadLengthWithAlgorithm - 1 > (long)segmentLength - 33
+                    || pos > fb.LongLength - (payloadLengthWithAlgorithm - 1))
+                    throw new InvalidDataException("Invalid JT segment payload length");
+                int compressedLength = payloadLengthWithAlgorithm - 1;
 
                 //Console.WriteLine(file.version + " " + compressionAlgorithm);
                 if (compressionFlag == 2 && compressionAlgorithm == 2) {
+                    if (compressedLength < 6) throw new InvalidDataException("Truncated JT zlib segment");
                     compressed = true;
                     pos += 2; //skip zlib header
                     dataStream = new StreamReader(
                         CODEC.DecompressZLIB(new MemoryStream(fb, (int)pos, compressedLength - 2)),
                         file);
+                } else if (compressionFlag == 2 && compressionAlgorithm == 1) {
+                    compressed = true;
+                    dataStream = new StreamReader(new MemoryStream(fb, (int)pos, compressedLength), file);
                 } else if (compressionFlag == 3 && compressionAlgorithm == 3) {
                     compressed = true;
                     dataStream = new StreamReader(

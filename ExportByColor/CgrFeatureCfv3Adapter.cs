@@ -51,11 +51,15 @@ namespace TxTools.ExportByColor
                 if(code==0){RequireRange(data,value,12,valuesEnd);Buffer.BlockCopy(data,value,current,0,12);value+=12;}
                 else
                 {
-                    if(i==0)throw new InvalidDataException("Feature coordinate reuse at first vertex");
-                    var previous=local[i-1];current[0]=previous[0];current[1]=previous[1];current[2]=previous[2];
-                    if(code==2){RequireRange(data,value,4,valuesEnd);current[2]=BitConverter.ToSingle(data,value);value+=4;}
-                    else if(code==3){RequireRange(data,value,8,valuesEnd);current[1]=BitConverter.ToSingle(data,value);current[2]=BitConverter.ToSingle(data,value+4);value+=8;}
-                    else if(code!=1)throw new InvalidDataException("Invalid feature coordinate code");
+                    // Reuse codes refer to the previous vertex; the first vertex
+                    // reuses the zero point and may legally start with 2/3.
+                    if (i > 0)
+                    {
+                        var previous = local[i - 1]; current[0] = previous[0]; current[1] = previous[1]; current[2] = previous[2];
+                    }
+                    if (code == 2) { RequireRange(data, value, 4, valuesEnd); current[2] = BitConverter.ToSingle(data, value); value += 4; }
+                    else if (code == 3) { RequireRange(data, value, 8, valuesEnd); current[1] = BitConverter.ToSingle(data, value); current[2] = BitConverter.ToSingle(data, value + 4); value += 8; }
+                    else if (code != 1) throw new InvalidDataException("Invalid feature coordinate code");
                 }
                 local.Add(current);
             }

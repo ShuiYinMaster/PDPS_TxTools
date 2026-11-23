@@ -8,6 +8,8 @@ partial class Program
 {
     static Node Root9()
     {
+        if (!segments.Values.Any(TriangleSegment))
+            throw new NotSupportedException("JT9 contains no supported triangle tessellation");
         // DTK files can have a Group root without a Partition node. Choose
         // only parentless scene nodes with a supported triangle descendant.
         var children=new HashSet<int>(nodes.Values.SelectMany(n=>n.Children));
@@ -49,6 +51,7 @@ partial class Program
             for(int k=1;k<nv-1;k++)
             {
                 int[] ids={mesh.faceVtx(f,0),mesh.faceVtx(f,k),mesh.faceVtx(f,k+1)};
+                if (binding.Mirrored) ReverseTriangle(ids);
                 if(ids.Any(id=>id<0||id>=local.Count))throw new InvalidDataException("Invalid JT9 vertex index");
                 var original=ids.Select(id=>new[]{(double)xyz[id*3],xyz[id*3+1],xyz[id*3+2]}).ToArray();
                 var sourceNormal=Cross(original[0],original[1],original[2]);
@@ -67,7 +70,6 @@ partial class Program
                 faces.Add(new Face{Ids=ids.Select(id=>id+offset).ToArray(),RGB=rgb,Alpha=(byte)Math.Round(binding.RGBA[3]*255),Surface=surface,Normal=sum});
             }
         }
-        if(vertices.Count>5000000||faces.Count>5000000)throw new InvalidDataException("Mesh size limit");
         Console.WriteLine("JT9_TOPOLOGY shape="+surface+" vertices="+local.Count+" totalFaces="+faces.Count+" windingCorrections="+corrected+" hidden="+hidden+" degenerate="+degenerate);
     }
 }

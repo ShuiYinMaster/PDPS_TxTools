@@ -110,6 +110,11 @@ namespace TxTools.Agent.Tools
             var safeName = Recipe.ToApiSafeName(name);
 
             if (input["params"] != null && (!(input["params"] is JArray) || ((JArray)input["params"]).Any(p => !(p is JObject) || string.IsNullOrWhiteSpace((string)p["name"])))) return "Error: params 必须是包含有效 name 的对象数组。";
+            if (input["params"] is JArray)
+            {
+                var fieldError = RecipeStore.ValidateParamFields((JArray)input["params"]);
+                if (fieldError != null) return "Error: " + fieldError;
+            }
             var recipe = new Recipe
             {
                 Name = name,
@@ -153,7 +158,7 @@ namespace TxTools.Agent.Tools
             return msg + "，现在可在配方栏执行。";
         }
 
-        /// <summary>把 params 数组解析成 RecipeParam 列表。宽容处理缺失字段。</summary>
+        /// <summary>把 params 数组解析成 RecipeParam 列表；字段名与 kind 已在调用前校验。</summary>
         private static List<RecipeParam> ParseParams(JToken jparams)
         {
             var list = new List<RecipeParam>();
@@ -165,20 +170,27 @@ namespace TxTools.Agent.Tools
                 var jo = (JObject)jp;
                 var p = new RecipeParam
                 {
-                    Name = (string)jo["name"],
-                    Label = (string)jo["label"],
-                    Kind = jo["kind"] != null ? (string)jo["kind"] : "object",
-                    TypeHint = (string)jo["typeHint"],
-                    ObjectFilter = (bool?)jo["objectFilter"] == true,
-                    Required = jo["required"] == null || (bool)jo["required"],
-                    Default = (string)jo["default"],
-                    Help = (string)jo["help"],
-                    Choices = jo["choices"] == null ? null : jo["choices"].ToObject<List<RecipeChoice>>()
+                    Name = (string)Field(jo, "name"),
+                    Label = (string)Field(jo, "label"),
+                    Kind = (string)Field(jo, "kind"),
+                    TypeHint = (string)Field(jo, "typeHint"),
+                    ObjectFilter = (bool?)Field(jo, "objectFilter") == true,
+                    Required = Field(jo, "required") == null || (bool)Field(jo, "required"),
+                    Default = (string)Field(jo, "default"),
+                    Help = (string)Field(jo, "help"),
+                    Choices = Field(jo, "choices") == null ? null : Field(jo, "choices").ToObject<List<RecipeChoice>>()
                 };
                 if (string.IsNullOrWhiteSpace(p.Name)) continue;
                 list.Add(p);
             }
             return list;
+        }
+
+        private static JToken Field(JObject item, string name)
+        {
+            foreach (var property in item.Properties())
+                if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase)) return property.Value;
+            return null;
         }
     }
 }

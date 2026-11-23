@@ -1,6 +1,6 @@
 # CatiaPartTree — 零件树整理
 
-从当前 CATIA 文档或指定 CATProduct 文件读取 CATProduct/CATPart，编辑目标零件树，将 CATPart 转换为 JT 并封装为 COJT，在当前 PS 离线工程创建 CompoundPart 容器并导入实例。也支持整理 PS 已有零件。命令入口为 `CatiaPartTreeCmd`。
+从当前 CATIA 文档、CATProduct、3DXML 或 STEP 文件读取零件和装配，编辑目标零件树，转换 JT 并封装为 COJT，在当前 PS 离线工程创建 CompoundPart 容器并导入实例。也支持整理 PS 已有零件。命令入口为 `CatiaPartTreeCmd`。
 
 ## CATIA 转换与导入
 
@@ -36,6 +36,19 @@
 “仅转换 JT”将选中实例引用的 CGR 并行转换，在所选目录生成独立 JT。“转换格式并导入”还会封装 COJT，创建目标层级并应用实例位姿。JT 和 COJT 沿用包内 CGR 名称。遇到 `cgr10`、`cgr10_1` 等编号式名称时，优先使用关联零件的 PartNumber，其次使用实例名。同名文件使用编号后缀。转换前校验 3DXML 包的摘要，临时 CGR 在工作进程结束后清理。
 
 通过文件头识别包内 `V5_CFV2` CGR 和 `V5_CFV3` UVR，包括用 `.3DRep` 命名的二进制资源。JT 保存三角面及 RGB，材质输出为不透明。部分 CFV 布局尚未适配。XML 网格表示、缺失资源和无法解码的项按包内路径报告，其余资源继续转换。已有零件分配仍按实例名称、零件编号或几何文件名在选定范围内匹配。
+
+### STEP 文件
+
+选择「STEP 文件」后读取 `.stp` 或 `.step`，无需启动 CATIA。按 STEP 产品名称预览单件及装配树，累积各实例的旋转和平移。按定义生成 JT，同一定义的多个实例共享几何。支持「仅转换 JT」和「转换格式并导入」，COJT 以零件定义名称命名。
+
+STEP 读取器用 Open CASCADE XDE 转移产品和颜色，以毫米为单位细分曲面，绝对线性偏差为 0.05 mm，角度偏差为 0.20 rad。「不减面」保留细分结果，取消后使用现有自动减面。JT 使用三角网格、法向及零件定义或面颜色。STEP 装配需保存在一个自包含文件中。
+
+部分面未生成网格时，仍转换该零件的可用几何并报告缺面数量。零件没有可用网格时，跳过引用该零件的实例。
+
+- Windows x64 STEP 读取器随插件安装在 `CatiaPartTree/Step`。从源码构建时，使用 [Open CASCADE 7.9.2 SDK 与运行依赖](https://github.com/Open-Cascade-SAS/OCCT/releases/tag/V7_9_2)。将 `OpenCASCADE_DIR` 指向 SDK 的 `cmake` 目录，将 `STEP_RUNTIME_DIRS` 设置为第三方 DLL 目录和 x64 MSVC CRT 目录的分号分隔列表。
+- 用 CMake 构建 `CatiaPartTree/Step`，将 Release 安装到同级 `TxTools.Local/build/bin/StepReader/Release`。运行 `tools/Build.ps1` 时会将已构建的 STEP 读取器与运行依赖复制到插件输出目录。
+
+### 模型保存与导入
 
 - 默认模型路径为当前 PS 系统库中名称含 `product` 的文件夹（优先精确 `product`，否则取名称最短的匹配项；未存在时在转换阶段创建 `product`），勾选“以 CATIA 文档名建子文件夹”时再追加 `<CATIA 文档名>`，其下为 `<源零件文件名>.cojt/<源零件文件名>.jt`（同名冲突时目录与 JT 同步追加 `_2`、`_3`… 序号），附带 SDK 生成的 `TuneData.xml`。文档名及源零件文件名均去掉原扩展名并保留原始中文、空格及大小写；场景实例名与模型文件名相互独立。已导入场景依赖这些文件，不能作为临时文件删除。
 - 同名不同来源或重复转换遇到已有 COJT 时，直接在保存目录内为 COJT 目录名追加 `_2`、`_3`… 序号，包内 JT 使用与目录相同的名称；不建立额外子文件夹，也不覆盖已有模型及原型记录。预览及修改保存路径不会创建目录，格式转换时才实际建立目录。

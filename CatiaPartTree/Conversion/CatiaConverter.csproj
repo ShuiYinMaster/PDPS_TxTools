@@ -9,8 +9,9 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System"/><Reference Include="System.Core"/>
+    <Reference Include="System.Xml"/><Reference Include="System.Xml.Linq"/>
     <Compile Include="Worker.cs"/><Compile Include="Frame12.cs"/>
-    <Compile Include="NativeCadReader.cs"/><Compile Include="Cfv3MeshReader.cs"/><Compile Include="MeshScene.cs"/><Compile Include="MeshSimplify.cs"/><Compile Include="Jt8Writer.cs"/>
+    <Compile Include="NativeCadReader.cs"/><Compile Include="Cfv3MeshReader.cs"/><Compile Include="StepMeshReader.cs"/><Compile Include="MeshScene.cs"/><Compile Include="MeshSimplify.cs"/><Compile Include="Jt8Writer.cs"/>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>
 </Project>

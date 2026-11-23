@@ -15,10 +15,10 @@ namespace TxTools.CatiaPartTree.Core
     {
         internal string File;
         internal double[] Frame;
-        internal string ReferenceId, InstancePath, ConversionIssue;
+        internal string ReferenceId, InstancePath, ConversionIssue, StepDefinition;
         internal string[] GeometryEntries;
         internal string GeometryEntry => GeometryEntries == null ? null : GeometryEntries[0];
-        internal string AssetKey => GeometryEntry == null ? File : File + "\0" + GeometryEntry;
+        internal string AssetKey => GeometryEntry == null && StepDefinition == null ? File : File + "\0" + (GeometryEntry ?? StepDefinition);
     }
 
     internal sealed class CatiaImportSource

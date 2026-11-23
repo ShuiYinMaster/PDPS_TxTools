@@ -623,6 +623,7 @@
     <Compile Include="CatiaPartTree\Core\TreeEditNode.cs" />
     <Compile Include="CatiaPartTree\Core\CatiaImportSource.cs" />
     <Compile Include="CatiaPartTree\Core\ThreeDXmlSource.cs" />
+    <Compile Include="CatiaPartTree\Core\StepSource.cs" />
     <Compile Include="CatiaPartTree\Core\CatiaConversionDiagnostics.cs" />
     <Compile Include="CatiaPartTree\Core\CatiaLibraryDestination.cs" />
     <Compile Include="CatiaPartTree\StructureSourceTree.cs">
@@ -635,6 +636,15 @@
     <Compile Include="CatiaPartTree\Ps\CatiaPartTreeService.cs" />
     <Compile Include="CatiaPartTree\CatiaPartTreeCmd.cs" />
     <Compile Include="CatiaPartTree\CatiaPartTreeForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="ResourceImporter\CatProductConversion.cs" />
+    <Compile Include="ResourceImporter\ResourceConversion.cs" />
+    <Compile Include="ResourceImporter\ResourcePrototype.cs" />
+    <Compile Include="ResourceImporter\ResourceCustomizationInstallation.cs" />
+    <Compile Include="ResourceImporter\ResourceImportSession.cs" />
+    <Compile Include="ResourceImporter\ResourceImporterCommand.cs" />
+    <Compile Include="ResourceImporter\ResourceImporterForm.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="CrossEnvIO\Core\CojtTransfer.cs" />
@@ -696,6 +706,9 @@
     </EmbeddedResource>
     <EmbeddedResource Include="ThemeTuner\Licenses\OpenXml.txt">
       <LogicalName>TxTools.Licenses.OpenXml</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="ThemeTuner\Licenses\Runtime\*.txt">
+      <LogicalName>TxTools.Licenses.Runtime.%(Filename)</LogicalName>
     </EmbeddedResource>
     <EmbeddedResource Include="ExportByColor\Vendor\EarCut\LICENSE">
       <LogicalName>TxTools.Licenses.EarCut</LogicalName>
@@ -1608,6 +1621,7 @@
     <EmbeddedResource Include="image\CrossEnvIO.png" />
     <EmbeddedResource Include="image\ExportByColor.png" />
     <EmbeddedResource Include="image\CatiaPartTree.png" />
+    <EmbeddedResource Include="image\ResourceImporter.png" />
     <EmbeddedResource Include="image\ThemeTuner.png" />
     <EmbeddedResource Include="image\MechArena.png" />
     <EmbeddedResource Include="image\SnakeGame.png" />

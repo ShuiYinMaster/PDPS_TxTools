@@ -90,13 +90,9 @@ namespace TxTools.Agent.Core
                     "\u5e38\u89c1\u53ef\u7528\u7236\u7ea7: PhysicalRoot \u3001 TxCompoundResource\u3002");
 
             var data = new TxCompoundResourceCreationData();
-            try
-            {
-                var p = data.GetType().GetProperty("Collection");
-                if (p != null && p.CanWrite) p.SetValue(data, parent as ITxObjectCollection, null);
-            }
-            catch { }
-            if (!string.IsNullOrEmpty(typeName)) data.TypeName = typeName;
+            // CreationData.Collection 在 2402 standalone 下被忽略，父级只由
+            // “在哪个对象上调用 Create”决定，不再写这个无效字段。
+            if (ShouldSetTypeName(typeName)) data.TypeName = typeName;
 
             var result = creator.CreateCompoundResource(data);
             var cr = result as TxCompoundResource;
@@ -119,17 +115,13 @@ namespace TxTools.Agent.Core
             if (creator == null)
                 throw new InvalidOperationException(
                     "\u7236\u5bf9\u8c61 " + parent.GetType().Name +
-                    " \u4e0d\u652f\u6301\u521b\u5efa CompoundPart(\u672a\u5b9e\u73b0 ITxCompoundPartCreation)\u3002" +
+                    " \u4e0d\u652f\u6301\u521b\u5efa\u6a21\u62df\u590d\u5408\u96f6\u4ef6(ITxCompoundPartCreation)\u3002" +
                     "\u5e38\u89c1\u53ef\u7528\u7236\u7ea7: PhysicalRoot \u3001 TxCompoundPart\u3002");
 
             var data = new TxCompoundPartCreationData();
-            try
-            {
-                var p = data.GetType().GetProperty("Collection");
-                if (p != null && p.CanWrite) p.SetValue(data, parent as ITxObjectCollection, null);
-            }
-            catch { }
-            if (setTypeName && !string.IsNullOrEmpty(typeName)) data.TypeName = typeName;
+            // CreationData.Collection 在 2402 standalone 下被忽略，父级只由
+            // “在哪个对象上调用 Create”决定，不再写这个无效字段。
+            if (setTypeName && ShouldSetTypeName(typeName)) data.TypeName = typeName;
 
             var result = creator.CreateCompoundPart(data);
             var cp = result as TxCompoundPart;
@@ -139,6 +131,27 @@ namespace TxTools.Agent.Core
                 TryRename(cp, desiredName);
 
             return cp;
+        }
+
+        // 只有当前平台注册过的类型名才能安全写入 CreationData.TypeName。
+        // standalone 下 BaseTypeNames 为空，写入 Assembly/Station 等名字会让对象树
+        // 图标变成带叉方块；此时应保持为空，使用默认 CompoundPart/CompoundResource。
+        private static bool ShouldSetTypeName(string typeName)
+        {
+            if (string.IsNullOrEmpty(typeName)) return false;
+            try
+            {
+                var document = TxApplication.ActiveDocument;
+                var provider = document == null ? null : document.PlatformGlobalServicesProvider;
+                if (provider == null) return false;
+                var property = provider.GetType().GetProperty("BaseTypeNames");
+                var names = property == null ? null : property.GetValue(provider, null) as IEnumerable;
+                if (names == null) return false;
+                foreach (var value in names)
+                    if (string.Equals(Convert.ToString(value), typeName, StringComparison.OrdinalIgnoreCase)) return true;
+                return false;
+            }
+            catch { return false; }
         }
 
         // ── 原生对象树关系 ──
@@ -179,6 +192,21 @@ namespace TxTools.Agent.Core
                 result.Add(target[index]);
             }
             return result;
+        }
+
+        /// <summary>
+        /// 把已建好的子树搬到 target 并通过 Paste 写入原生树关系，随后删除原对象。
+        /// 只适用于本次新建、没有外部引用的对象；已有场景对象不能被替换。
+        /// </summary>
+        public static TxObjectList MoveToNativeTree(ITxObjectCollection target, IList<ITxObject> roots, Action<string> log = null)
+        {
+            var copies = PasteSubtree(target, roots);
+            foreach (var root in roots)
+            {
+                try { root.Delete(); }
+                catch (Exception error) { log?.Invoke("删除原对象失败：" + root.Name + "；" + error.Message); }
+            }
+            return copies;
         }
 
         // ── 尽力 rename (creationData 没 Name 字段,只能创建完之后再改) ──

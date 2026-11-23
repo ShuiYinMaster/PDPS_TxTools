@@ -19,7 +19,7 @@ namespace TxTools.CatiaPartTree
 {
     public class CatiaPartTreeForm : PickAwareTxForm
     {
-        private enum SourceKind { CatiaCurrent, PsBranch, ThreeDXml, CatProductFile }
+        private enum SourceKind { CatiaCurrent, PsBranch, ThreeDXml, CatProductFile, StepFile }
         private readonly Size _design = new Size(650, 780);
         private readonly System.Windows.Forms.Timer _autoPreview = new System.Windows.Forms.Timer { Interval = 250 };
         private readonly TxObjEditBoxCtrl _sourcePick = new TxObjEditBoxCtrl(), _targetPick = new TxObjEditBoxCtrl(), _assignmentPick = new TxObjEditBoxCtrl();
@@ -64,7 +64,7 @@ namespace TxTools.CatiaPartTree
             FormUiKit.InitStandardForm(this, "零件树整理 · CATIA 转换与导入", _design, new Size(650, 680), sizable: true);
             SemiModal = false; FormBorderStyle = FormBorderStyle.Sizable;
             _document = TxApplication.ActiveDocument; _generation = SceneUndoScope.DocumentGeneration;
-            _sourceKind.Items.AddRange(new object[] { "CATIA 当前文档", "PS 零件分支", "3DXML 文件", "CATProduct 文件" });
+            _sourceKind.Items.AddRange(new object[] { "CATIA 当前文档", "PS 零件分支", "3DXML 文件", "CATProduct 文件", "STEP 文件" });
             _sourceKind.SelectedIndex = (int)SourceKind.CatiaCurrent;
             _mode.Items.AddRange(new object[] { "仅创建容器结构", "创建结构并归类现有零件" }); _mode.SelectedIndex = 0;
             foreach (var picker in new[] { _sourcePick, _targetPick, _assignmentPick })
@@ -103,9 +103,9 @@ namespace TxTools.CatiaPartTree
             location.Controls.Add(saveOptions, 0, 1); location.SetColumnSpan(saveOptions, 3);
             _modelLocation = location;
             _tips.SetToolTip(_modelFolder, "模型文件的基准保存文件夹，必须在当前 PS 系统库内。默认模糊匹配库内的 product 文件夹；勾选下方选项时再按 CATIA 文档名建立子文件夹。");
-            _tips.SetToolTip(_documentFolder, "勾选后在保存文件夹下按当前 CATIA 文档名建立子文件夹；取消则 COJT 直接保存到所选文件夹。");
+            _tips.SetToolTip(_documentFolder, "勾选后在保存文件夹下按来源文件名建立子文件夹；取消则 COJT 直接保存到所选文件夹。");
             _tips.SetToolTip(_hierarchyFolder, "勾选后按本次导入创建的复合零件层级建立子文件夹，COJT 放在所属复合零件的文件夹中；默认不勾选，全部平铺在保存文件夹下。");
-            _tips.SetToolTip(_noReduction, "默认沿用 CATPart 内嵌可视化网格的精度，跳过转换减面；取消勾选才按几何与光照误差自动减面。");
+            _tips.SetToolTip(_noReduction, "保留来源网格或 STEP 细分后的三角面。取消勾选可按几何与光照误差自动减面。");
             var settings = WorkflowUi.Bar(); settings.Controls.Add(WorkflowUi.Label("整理")); settings.Controls.Add(_mode); _settings = settings;
             settings.Dock = DockStyle.None; settings.Margin = Padding.Empty; settings.Padding = Padding.Empty; origin.Controls.Add(settings);
             var leftTools = WorkflowUi.Bar();
@@ -192,6 +192,7 @@ namespace TxTools.CatiaPartTree
         }
         private void ShowSourceMode()
         {
+            _documentFolder.Text = SelectedKind == SourceKind.StepFile ? "以 STEP 文件名建子文件夹" : "以 CATIA 文档名建子文件夹";
             _sourceFrame.Visible = !IsCatia; _settings.Visible = !IsCatia;
             _newRoot.Checked = IsCatia; _includeRoot.Checked = !IsCatia;
             _newRoot.Visible = _rootName.Visible = IsCatia;
@@ -209,10 +210,11 @@ namespace TxTools.CatiaPartTree
             {
                 case SourceKind.CatProductFile: _sourceLabel.Text = "启动 CATIA，点击读取并选择 CATProduct。导入位置以所选根装配为基准。"; break;
                 case SourceKind.ThreeDXml: _sourceLabel.Text = "选择 3DXML 文件。读取产品树后，可将包内 CGR 拆分成独立 JT。"; break;
+                case SourceKind.StepFile: _sourceLabel.Text = "选择 STEP 文件（.stp 或 .step），读取零件与装配结构后转换为 JT。"; break;
                 case SourceKind.PsBranch: _sourceLabel.Text = "在当前 PS 工程的原生选取框中选择来源分支与目标。"; break;
                 default: _sourceLabel.Text = "读取 CATIA 当前打开的 CATPart、CATProduct 或 3DXML。"; break;
             }
-            _issues.Text = IsCatia ? "先读取 CATIA 并核对预览，可直接创建复合零件或转换格式并导入。分配已有零件前，请在当前 PS 工程选取其所在复合零件。" : "读取 PS 来源，调整左树，核对预览后执行。";
+            _issues.Text = IsCatia ? "先读取来源并核对预览，可直接创建复合零件或转换格式并导入。分配已有零件前，请在当前 PS 工程选取其所在复合零件。" : "读取 PS 来源，调整左树，核对预览后执行。";
             UpdateActions();
         }
         private void ClearSource()
@@ -269,12 +271,14 @@ namespace TxTools.CatiaPartTree
         {
             if (_busy) return;
             if (!IsCatia) { Run(ReadPs); return; }
-            ClearSource(); _busy = true; UpdateActions(); _issues.Text = "正在读取 CATIA 活动文档、保存路径及各实例位置…";
+            ClearSource(); _busy = true; UpdateActions();
+            _issues.Text = SelectedKind == SourceKind.CatiaCurrent ? "正在读取 CATIA 活动文档及实例位置…" : "请选择来源文件。";
             _document = TxApplication.ActiveDocument; _generation = SceneUndoScope.DocumentGeneration;
             try
             {
                 CatiaImportSource source;
                 if (SelectedKind == SourceKind.ThreeDXml) source = await Read3dXmlFile();
+                else if (SelectedKind == SourceKind.StepFile) source = await ReadStepFile();
                 else if (SelectedKind == SourceKind.CatProductFile) source = await ReadCatProductFile();
                 else
                 {
@@ -303,6 +307,16 @@ namespace TxTools.CatiaPartTree
                 if (dialog.ShowDialog(this) != DialogResult.OK) return null;
                 _issues.Text = "正在通过 CATIA 读取装配引用及各零件实例位姿…";
                 return await ReadCatiaAsync(dialog.FileName);
+            }
+        }
+        private async Task<CatiaImportSource> ReadStepFile()
+        {
+            using (var dialog = new OpenFileDialog { Title = "选择 STEP 文件", Filter = "STEP 文件 (*.stp;*.step)|*.stp;*.step", CheckFileExists = true })
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return null;
+                string path = dialog.FileName;
+                _issues.Text = "正在读取 STEP 装配结构、零件名称及实例位置…";
+                return await Task.Run(() => StepSource.Read(path));
             }
         }
         private async Task<CatiaImportSource> Read3dXmlFile(ThreeDXmlFileRequiredException missing = null)
@@ -432,7 +446,7 @@ namespace TxTools.CatiaPartTree
                 {
                     int unsupported = _import.Items.Count(c => !c.Container && _catia.Parts[c.Node.Key].ConversionIssue != null);
                     if (unsupported > 0)
-                        _issues.AppendText(Environment.NewLine + unsupported + " 个实例缺少可转换的 CGR。悬停目标预览中的零件可查看原因。");
+                        _issues.AppendText(Environment.NewLine + unsupported + " 个实例缺少可转换的几何。悬停目标预览中的零件可查看原因。");
                 }
                 RenderPreview(IsCatia && _assignment != null ? _assignment.Plan.Changes : changes);
                 _stale = false;
@@ -458,6 +472,7 @@ namespace TxTools.CatiaPartTree
         private static string PartPreviewTooltip(CatiaSourcePart part)
         {
             if (part.GeometryEntry != null) return part.ConversionIssue ?? "包内 CGR：" + part.GeometryEntry;
+            if (part.StepDefinition != null) return part.ConversionIssue ?? "STEP 零件：按源装配位置导入。";
             if (part.InstancePath == null) return "导入零件实例；模型文件名保持源 CATIA 文件名";
             return string.Format(CultureInfo.InvariantCulture, "CATProduct 实例位置（mm） X {0:0.###} · Y {1:0.###} · Z {2:0.###}",
                 part.Frame[9], part.Frame[10], part.Frame[11]);
@@ -560,7 +575,7 @@ namespace TxTools.CatiaPartTree
                     if (jtOnly)
                         session = new CatiaImportSession(_catia, _source, ParentTarget, _newRoot.Checked, _rootName.Text, _includeRoot.Checked);
                     else RenderPreview(session.Items);
-                    _issues.Text = jtOnly ? "正在将选中的包内 CGR 转换成独立 JT。关闭窗口可请求取消转换。" :
+                    _issues.Text = jtOnly ? "正在将选中的零件转换成独立 JT。关闭窗口可请求取消转换。" :
                         "正在转换格式，完成后将自动创建所需复合零件并导入。关闭窗口可请求取消转换。";
                     bool converting = true;
                     var progress = new Progress<string>(message => { if (converting && !IsDisposed) _issues.Text = message; });
@@ -626,7 +641,7 @@ namespace TxTools.CatiaPartTree
             _apply.Enabled = IsCatia ? catiaReady && _import.CanConvert :
                 ready && _plan != null && _plan.HasChanges && _plan.Issues.Count == 0;
             _apply.Text = IsCatia ? "转换格式并导入" : "执行整理";
-            _exportJt.Visible = SelectedKind == SourceKind.ThreeDXml ||
+            _exportJt.Visible = SelectedKind == SourceKind.ThreeDXml || SelectedKind == SourceKind.StepFile ||
                 (_catia != null && string.Equals(Path.GetExtension(_catia.DocumentPath), ".3dxml", StringComparison.OrdinalIgnoreCase));
             _exportJt.Enabled = catiaReady && _import.CanConvert;
         }

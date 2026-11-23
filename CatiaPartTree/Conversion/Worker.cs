@@ -1,9 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Xml;
+using System.Xml.Linq;
 
 namespace TxTools.CatiaPartTree.Conversion
 {
@@ -191,16 +194,18 @@ namespace TxTools.CatiaPartTree.Conversion
                 if (args.Length == 1 && args[0] == "--protocol")
                 {
                     Console.WriteLine("TxTools.CatiaConverter/2");
-                    Console.WriteLine("quality mesh meshhash cgr");
+                    Console.WriteLine("quality mesh meshhash cgr stepmesh assembly");
                     return 0;
                 }
                 if (args.Length < 3) throw new ArgumentException("格式转换缺少源文件、目标 JT 或源文件摘要。");
-                int simplify = 0, targetKb = 0; bool quality = false, cgr = false; string meshFile = null, meshHash = null, dumpMesh = null, objFile = null;
+                int simplify = 0, targetKb = 0; bool quality = false, cgr = false; string meshFile = null, meshHash = null, dumpMesh = null, objFile = null, stepMesh = null, assembly = null;
                 for (int i = 3; i < args.Length; i++)
                 {
                     if (args[i] == "flat") Jt8Writer.FlatStrips = true;
                     else if (args[i] == "quality") quality = true;
                     else if (args[i] == "cgr") cgr = true;
+                    else if (args[i].StartsWith("assembly=", StringComparison.Ordinal)) assembly = args[i].Substring("assembly=".Length);
+                    else if (args[i].StartsWith("stepmesh=", StringComparison.Ordinal)) stepMesh = args[i].Substring("stepmesh=".Length);
                     else if (args[i].StartsWith("mesh=", StringComparison.Ordinal)) meshFile = args[i].Substring(5);
                     else if (args[i].StartsWith("meshhash=", StringComparison.Ordinal)) meshHash = args[i].Substring(9);
                     else if (args[i].StartsWith("dumpmesh=", StringComparison.Ordinal)) dumpMesh = args[i].Substring(9);
@@ -213,7 +218,19 @@ namespace TxTools.CatiaPartTree.Conversion
                 }
                 SourceMeshScene scene;
                 var phase = System.Diagnostics.Stopwatch.StartNew();
-                if (cgr)
+                if (assembly != null)
+                {
+                    if (cgr || stepMesh != null || objFile != null || meshFile != null || meshHash != null)
+                        throw new ArgumentException("装配网格清单不能与其他几何输入模式同时使用。");
+                    scene = ReadAssembly(assembly, Path.GetFullPath(args[0]), args[2]);
+                }
+                else if (stepMesh != null)
+                {
+                    if (cgr || objFile != null || meshFile != null || meshHash != null)
+                        throw new ArgumentException("STEP 网格参数不能与其他几何输入模式同时使用。");
+                    scene = StepMeshReader.Read(stepMesh, Path.GetFileNameWithoutExtension(args[1]), Path.GetFullPath(args[0]), args[2]);
+                }
+                else if (cgr)
                 {
                     if (objFile != null || meshFile != null || meshHash != null) throw new ArgumentException("CGR 输入不能与外部网格参数同时使用。");
                     string source = Path.GetFullPath(args[0]);
@@ -223,16 +240,7 @@ namespace TxTools.CatiaPartTree.Conversion
                         digest = BitConverter.ToString(sha.ComputeHash(data)).Replace("-", "").ToLowerInvariant();
                     if (digest != args[2]) throw new IOException("CGR 在转换前发生变化。");
                     string name = Path.GetFileNameWithoutExtension(source);
-                    MeshShape mesh;
-                    if (data.Length >= 8 && Encoding.ASCII.GetString(data, 0, 8) == "V5_CFV3\0")
-                        mesh = Cfv3MeshReader.Read(data, name, source, digest);
-                    else
-                    {
-                        byte[] graph = NativeCadReader.CgrSceneGraph(data);
-                        mesh = graph.Length > 0 && graph[0] == 0x62
-                            ? Cfv3MeshReader.ReadCompactCgr(graph, name, source, digest)
-                            : NativeCadReader.MeshFromGraph(graph, name, "source/1", source, digest);
-                    }
+                    var mesh = ReadCgr(data, name, source, digest);
                     scene = new SourceMeshScene { name = name, sourceFile = source, sourceSha256 = digest, shapes = new[] { mesh } };
                 }
                 else if (objFile != null) scene = ObjScene(objFile, args[0], args[2]);
@@ -275,6 +283,180 @@ namespace TxTools.CatiaPartTree.Conversion
                 return 0;
             }
             catch (Exception ex) { Console.Error.WriteLine(ex.Message); return 1; }
+        }
+
+        private static MeshShape ReadCgr(byte[] data, string name, string source, string digest)
+        {
+            if (data.Length >= 8 && Encoding.ASCII.GetString(data, 0, 8) == "V5_CFV3\0")
+                return Cfv3MeshReader.Read(data, name, source, digest);
+            byte[] graph = NativeCadReader.CgrSceneGraph(data);
+            return graph.Length > 0 && graph[0] == 0x62
+                ? Cfv3MeshReader.ReadCompactCgr(graph, name, source, digest)
+                : NativeCadReader.MeshFromGraph(graph, name, "source/1", source, digest);
+        }
+
+        private static SourceMeshScene ReadAssembly(string manifest, string source, string digest)
+        {
+            string extension = Path.GetExtension(source).ToLowerInvariant();
+            bool step = extension == ".step" || extension == ".stp";
+            bool nativeProduct = extension == ".catproduct";
+            var definitions = new Dictionary<string, MeshShape[]>(StringComparer.OrdinalIgnoreCase);
+            var shapes = new List<MeshShape>();
+            long removed = 0;
+            using (var reader = new BinaryReader(File.OpenRead(manifest)))
+            {
+                int count = reader.ReadInt32();
+                if (count < 1 || count > 100000) throw new InvalidDataException("装配几何实例数无效。");
+                for (int i = 0; i < count; i++)
+                {
+                    string path = reader.ReadString();
+                    string name = reader.ReadString();
+                    var frame = new double[12];
+                    for (int k = 0; k < frame.Length; k++) frame[k] = reader.ReadDouble();
+                    string partDigest = nativeProduct ? reader.ReadString() : null;
+                    if (!definitions.TryGetValue(path, out var meshes))
+                    {
+                        if (nativeProduct)
+                            meshes = SourceMeshScene.ReadPart(path).shapes;
+                        else
+                            meshes = step ? StepMeshReader.Read(path, name, source, digest).shapes
+                                : ReadRepresentation(path, name, source, digest);
+                        definitions.Add(path, meshes);
+                    }
+                    if (nativeProduct && meshes[0].sourceSha256 != partDigest)
+                        throw new IOException("CATPart 文件与装配索引不一致：" + path);
+                    var transform = new Frame12(frame);
+                    foreach (var mesh in meshes)
+                    {
+                        int collapsed = 0;
+                        var instance = step ? mesh.BakeStepInstanceForJt(transform, out collapsed) : mesh.Bake(transform);
+                        removed += collapsed;
+                        if (instance == null)
+                        {
+                            Console.WriteLine("STEP-WARNING 已跳过 " + name + "（1 个实例）：装配坐标中的三角面全部退化。");
+                            continue;
+                        }
+                        instance.name = name;
+                        instance.instanceId = "source/" + (shapes.Count + 1);
+                        shapes.Add(instance);
+                    }
+                }
+            }
+            if (SourceDigest.Hash(source) != digest) throw new IOException("装配源文件在转换期间发生变化。");
+            if (shapes.Count == 0) throw new InvalidDataException("装配没有可写入 JT 的面几何。");
+            if (removed != 0) Console.WriteLine("STEP-WARNING 已清理 " + removed + " 个在装配坐标或 JT 精度下退化的三角面。");
+            return new SourceMeshScene { name = Path.GetFileNameWithoutExtension(source), sourceFile = source,
+                sourceSha256 = digest, shapes = shapes.ToArray() };
+        }
+
+        private static MeshShape[] ReadRepresentation(string path, string name, string source, string digest)
+        {
+            var header = new byte[8];
+            using (var file = File.OpenRead(path)) file.Read(header, 0, header.Length);
+            string magic = Encoding.ASCII.GetString(header);
+            if (magic == "V5_CFV2\0" || magic == "V5_CFV3\0")
+                return new[] { ReadCgr(File.ReadAllBytes(path), name, source, digest) };
+            return ThreeDRepMeshReader.Read(path, name, source, digest);
+        }
+    }
+
+    internal static class ThreeDRepMeshReader
+    {
+        private static readonly char[] Separators = { ' ', '\t', '\r', '\n', ',', ';' };
+        private static readonly byte[] DefaultColor = { 190, 190, 190 };
+
+        internal static MeshShape[] Read(string path, string name, string source, string digest)
+        {
+            XDocument document;
+            using (var reader = XmlReader.Create(path, new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null
+            }))
+                document = XDocument.Load(reader);
+            var result = new List<MeshShape>();
+            var ns = document.Root.Name.Namespace;
+            foreach (var representation in document.Descendants(ns + "Rep"))
+            {
+                var faces = representation.Element(ns + "Faces");
+                if (faces == null) continue;
+                var buffer = representation.Element(ns + "VertexBuffer");
+                var points = Vectors((string)buffer?.Element(ns + "Positions"));
+                var normals = Vectors((string)buffer?.Element(ns + "Normals"));
+                if (points.Length == 0 || (normals.Length != 0 && normals.Length != points.Length))
+                    throw new InvalidDataException("3DXML 顶点缓冲区无效：" + name);
+                var triangles = new List<int[]>();
+                var colors = new List<byte[]>();
+                var repColor = Color(representation) ?? DefaultColor;
+                foreach (var face in faces.Elements(ns + "Face"))
+                {
+                    var color = Color(face) ?? repColor;
+                    int start = triangles.Count;
+                    var indices = Indices((string)face.Attribute("triangles"));
+                    if (indices.Length % 3 != 0) throw new InvalidDataException("3DXML 三角形索引数无效。");
+                    for (int i = 0; i < indices.Length; i += 3)
+                        triangles.Add(new[] { indices[i], indices[i + 1], indices[i + 2] });
+                    AddStrips(triangles, (string)face.Attribute("strips"), false);
+                    AddStrips(triangles, (string)face.Attribute("fans"), true);
+                    for (int i = start; i < triangles.Count; i++) colors.Add(color);
+                }
+                if (triangles.Count == 0) continue;
+                var mesh = new MeshShape
+                {
+                    name = name, instanceId = "rep/" + (result.Count + 1), sourceFile = source, sourceSha256 = digest,
+                    vertices = points, triangles = triangles.ToArray(), rgb = colors.ToArray(),
+                    normals = normals.Length == 0 ? null : normals, nativeNormalBindings = normals.Length != 0
+                };
+                mesh.Validate();
+                if (mesh.normals == null) mesh.Smooth();
+                result.Add(mesh);
+            }
+            if (result.Count == 0) throw new NotSupportedException("3DXML 表示没有可导入的三角面：" + name);
+            return result.ToArray();
+        }
+
+        private static void AddStrips(List<int[]> triangles, string encoded, bool fan)
+        {
+            if (string.IsNullOrWhiteSpace(encoded)) return;
+            foreach (var group in encoded.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var indices = Indices(group);
+                for (int i = 2; i < indices.Length; i++)
+                {
+                    int a = fan ? indices[0] : indices[i - 2];
+                    int b = indices[i - 1], c = indices[i];
+                    if (a == b || a == c || b == c) continue;
+                    triangles.Add(!fan && i % 2 != 0 ? new[] { b, a, c } : new[] { a, b, c });
+                }
+            }
+        }
+
+        private static int[] Indices(string text) => (text ?? "").Split(Separators, StringSplitOptions.RemoveEmptyEntries)
+            .Select(value => int.Parse(value, NumberStyles.None, CultureInfo.InvariantCulture)).ToArray();
+
+        private static double[][] Vectors(string text)
+        {
+            var coordinates = (text ?? "").Split(Separators, StringSplitOptions.RemoveEmptyEntries);
+            if (coordinates.Length % 3 != 0) throw new InvalidDataException("3DXML 向量分量数无效。");
+            var vectors = new double[coordinates.Length / 3][];
+            for (int i = 0; i < vectors.Length; i++)
+                vectors[i] = new[] { Number(coordinates[3 * i]), Number(coordinates[3 * i + 1]), Number(coordinates[3 * i + 2]) };
+            return vectors;
+        }
+
+        private static double Number(string text)
+        {
+            double value = double.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture);
+            if (double.IsNaN(value) || double.IsInfinity(value)) throw new InvalidDataException("3DXML 数值无效。");
+            return value;
+        }
+
+        private static byte[] Color(XElement owner)
+        {
+            var ns = owner.Name.Namespace;
+            var color = owner.Element(ns + "SurfaceAttributes")?.Element(ns + "Color");
+            if (color == null) return null;
+            return new[] { "red", "green", "blue" }.Select(channel =>
+                (byte)Math.Round(255 * Math.Max(0, Math.Min(1, Number((string)color.Attribute(channel)))))).ToArray();
         }
     }
 }

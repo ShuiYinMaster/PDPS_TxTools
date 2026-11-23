@@ -10,6 +10,7 @@ using JTReader.Common;
 namespace DLAT.JTReader {
     public class JTFile {
         public readonly string _filePath;
+        internal readonly bool TriangleGeometryOnly;
         string _version;
         public string Version {
             get {
@@ -41,8 +42,11 @@ namespace DLAT.JTReader {
 
         public string txKinModelingBuffer = null;
         
-        public JTFile(string filePath) {
+        public JTFile(string filePath) : this(filePath, false) { }
+
+        internal JTFile(string filePath, bool triangleGeometryOnly) {
             _filePath = filePath;
+            TriangleGeometryOnly = triangleGeometryOnly;
             var start = DateTime.Now;
             
             if(!isXZInited) 

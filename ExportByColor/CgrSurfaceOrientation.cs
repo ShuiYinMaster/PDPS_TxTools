@@ -35,15 +35,42 @@ namespace TxTools.ExportByColor
             PrepareSurfaces(ref vertices,ref faces,progress,true,false);
         }
 
-        private static void PrepareSurfaces(ref List<float[]> vertices,ref List<Face> faces,Action<string> progress,bool preserveSurfaces=true,bool addBackfaces=true)
+        internal static List<Face> PrepareJtLineFaceWinding(List<float[]> vertices, List<Face> faces, Action<string> progress)
         {
-            vertices=new List<float[]>(vertices);faces=new List<Face>(faces);
-            var positions=new Dictionary<Tuple<float,float,float>,int>();var canonical=new int[vertices.Count];
-            for(int i=0;i<vertices.Count;i++)
+            // The decoder emits each JT Shape as a contiguous run with its own indices.
+            // Keep the edge graph limited to one Shape and leave coincident sheets separate.
+            for (int start = 0; start < faces.Count;)
             {
-                var v=vertices[i];if(v==null||v.Length!=3) throw new ArgumentException("Expected XYZ");
-                foreach(float x in v) Finite(x);
-                var key=Tuple.Create(v[0],v[1],v[2]);int id;if(!positions.TryGetValue(key,out id)) {id=positions.Count;positions.Add(key,id);}canonical[i]=id;
+                int surface = faces[start].Surface;
+                int end = start + 1;
+                while (end < faces.Count && faces[end].Surface == surface) end++;
+                if (end - start > 1)
+                {
+                    var shape = faces.GetRange(start, end - start);
+                    PrepareSurfaces(ref vertices, ref shape, progress, preserveSurfaces: false, addBackfaces: false, repairJtWinding: true);
+                    for (int i = start; i < end; i++) faces[i] = shape[i - start];
+                }
+                start = end;
+            }
+            return faces;
+        }
+
+        private static void PrepareSurfaces(ref List<float[]> vertices,ref List<Face> faces,Action<string> progress,
+            bool preserveSurfaces=true,bool addBackfaces=true,bool repairJtWinding=false)
+        {
+            int[] canonical = null;
+            if (!repairJtWinding)
+            {
+                faces=new List<Face>(faces);
+                vertices=new List<float[]>(vertices);
+                var positions=new Dictionary<Tuple<float,float,float>,int>();
+                canonical=new int[vertices.Count];
+                for(int i=0;i<vertices.Count;i++)
+                {
+                    var v=vertices[i];if(v==null||v.Length!=3) throw new ArgumentException("Expected XYZ");
+                    foreach(float x in v) Finite(x);
+                    var key=Tuple.Create(v[0],v[1],v[2]);int id;if(!positions.TryGetValue(key,out id)) {id=positions.Count;positions.Add(key,id);}canonical[i]=id;
+                }
             }
             var edges=new Dictionary<long,SurfaceEdge>(EdgeKeyComparer.Instance);var faceEdges=new long[faces.Count][];
             var surfaceVertices=new Dictionary<Tuple<int,int>,int>();
@@ -54,7 +81,8 @@ namespace TxTools.ExportByColor
                 faceEdges[i]=new long[3];
                 for(int k=0;k<3;k++)
                 {
-                    int a=canonical[ids[k]],b=canonical[ids[(k+1)%3]];
+                    int a=ids[k],b=ids[(k+1)%3];
+                    if (canonical != null) { a=canonical[a]; b=canonical[b]; }
                     if(preserveSurfaces)
                     {
                         var ka=Tuple.Create(faces[i].Surface,a);var kb=Tuple.Create(faces[i].Surface,b);
@@ -66,10 +94,26 @@ namespace TxTools.ExportByColor
                     SurfaceEdge e;if(!edges.TryGetValue(key,out e)) {e=new SurfaceEdge();edges.Add(key,e);}e.Faces.Add(i);e.Directions.Add(a<b);
                 }
             }
-            int nonmanifold=0;foreach(var e in edges.Values) if(e.Faces.Count>2) nonmanifold++;
-            if(progress!=null) progress("[CGR] 拓扑检查："+nonmanifold+" 条多邻面边；保留输入三角面");
+            if (repairJtWinding)
+            {
+                bool hasSameDirectionEdge = false;
+                foreach (var edge in edges.Values)
+                {
+                    if (edge.Faces.Count != 2 || edge.Directions[0] != edge.Directions[1]) continue;
+                    hasSameDirectionEdge = true;
+                    break;
+                }
+                if (!hasSameDirectionEdge) return;
+            }
+            else if (progress != null)
+            {
+                int nonmanifold = 0;
+                foreach (var edge in edges.Values) if (edge.Faces.Count > 2) nonmanifold++;
+                progress("[CGR] 拓扑检查：" + nonmanifold + " 条多邻面边；保留输入三角面");
+            }
             var state=new int[faces.Count];var backFaces=new List<int>();
             var conflicts=new HashSet<long>();var forcedBackFaces=new HashSet<int>();
+            int repaired = 0, inconsistentComponents = 0;
             for(int seed=0;seed<faces.Count;seed++)
             {
                 if(state[seed]!=0) continue;
@@ -87,7 +131,15 @@ namespace TxTools.ExportByColor
                     }
                 }
                 bool invert=false;
-                if(closed)
+                if (repairJtWinding)
+                {
+                    // Optimize for the source winding on orientable components only.
+                    if (conflicting) { inconsistentComponents++; continue; }
+                    int balance = 0;
+                    foreach (int f in component) balance += state[f];
+                    invert = balance < 0;
+                }
+                else if(closed)
                 {
                     // Translate origin near the component for stable volume at plant coordinates.
                     var origin=vertices[faces[seed].Idx[0]];double volume=0;
@@ -108,11 +160,19 @@ namespace TxTools.ExportByColor
                 }
                 foreach(int f in component)
                 {
-                    if((state[f]<0)^invert) {var face=faces[f];face.Idx=new[]{face.Idx[0],face.Idx[2],face.Idx[1]};faces[f]=face;}
-                    if(!closed) backFaces.Add(f);
-                    if(conflicting) forcedBackFaces.Add(f);
+                    if((state[f]<0)^invert)
+                    {
+                        var face=faces[f];face.Idx=new[]{face.Idx[0],face.Idx[2],face.Idx[1]};
+                        if (repairJtWinding) { face.Nx=-face.Nx;face.Ny=-face.Ny;face.Nz=-face.Nz;repaired++; }
+                        faces[f]=face;
+                    }
+                    if(addBackfaces && !closed) backFaces.Add(f);
+                    if(addBackfaces && conflicting) forcedBackFaces.Add(f);
                 }
             }
+            if (repairJtWinding && progress != null && (repaired != 0 || inconsistentComponents != 0))
+                progress("[JT 线面] Shape " + faces[0].Surface + "：已校正 " + repaired
+                    + " 个三角面的绕序；跳过 " + inconsistentComponents + " 个方向约束冲突的连通块");
             // Until the native two-sided flag is proven, open sheets have explicit reverse-side
             // triangles with independent vertex identity. Closed solids are NOT duplicated.
             if(!addBackfaces)return;

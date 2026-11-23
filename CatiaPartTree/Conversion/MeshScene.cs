@@ -133,14 +133,54 @@ namespace TxTools.CatiaPartTree.Conversion
             {
                 var t=triangles[i];if(t==null||t.Length!=3||t.Distinct().Count()!=3||t.Any(v=>v<0||v>=vertices.Length)||rgb[i]==null||rgb[i].Length!=3)
                     throw new InvalidDataException("Invalid triangle/color");
-                var a=vertices[t[0]];var b=vertices[t[1]];var c=vertices[t[2]];
-                double x=(b[1]-a[1])*(c[2]-a[2])-(b[2]-a[2])*(c[1]-a[1]);
-                double y=(b[2]-a[2])*(c[0]-a[0])-(b[0]-a[0])*(c[2]-a[2]);
-                double z=(b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]);
-                if(x*x+y*y+z*z==0)throw new InvalidDataException("Degenerate triangle");
+                if (Degenerate(vertices, t)) throw new InvalidDataException("Degenerate triangle");
             }
         }
+
+        private static bool Degenerate(double[][] points, int[] triangle)
+        {
+            var a = points[triangle[0]];
+            var b = points[triangle[1]];
+            var c = points[triangle[2]];
+            double x = (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]);
+            double y = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
+            double z = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+            return x * x + y * y + z * z == 0;
+        }
+
         public MeshShape Bake(Frame12 vehicleFromPart)
+        {
+            var result = BakeGeometry(vehicleFromPart);
+            result.Validate();
+            return result;
+        }
+
+        internal MeshShape BakeStepInstanceForJt(Frame12 frame, out int removed)
+        {
+            var result = BakeGeometry(frame);
+            // Assembly transforms can collapse small faces at the precision used by JT.
+            var rounded = result.vertices.Select(point => point.Select(value => (double)(float)value).ToArray()).ToArray();
+            var triangles = new List<int[]>(result.triangles.Length);
+            var colors = new List<byte[]>(result.rgb.Length);
+            for (int i = 0; i < result.triangles.Length; i++)
+            {
+                var triangle = result.triangles[i];
+                if (Degenerate(result.vertices, triangle) || Degenerate(rounded, triangle)) continue;
+                triangles.Add(triangle);
+                colors.Add(result.rgb[i]);
+            }
+            removed = result.triangles.Length - triangles.Count;
+            if (triangles.Count == 0) return null;
+            if (removed != 0)
+            {
+                result.triangles = triangles.ToArray();
+                result.rgb = colors.ToArray();
+            }
+            result.Validate();
+            return result;
+        }
+
+        private MeshShape BakeGeometry(Frame12 vehicleFromPart)
         {
             Validate();var result=new MeshShape{name=name,instanceId=instanceId,sourceFile=sourceFile,sourceSha256=sourceSha256,
                 vertices=vertices.Select(vehicleFromPart.Point).ToArray(),triangles=triangles.Select(t=>(int[])t.Clone()).ToArray(),rgb=rgb.Select(c=>(byte[])c.Clone()).ToArray(),nativeNormalBindings=nativeNormalBindings};
@@ -160,7 +200,7 @@ namespace TxTools.CatiaPartTree.Conversion
                     return new[]{d[0]/length,d[1]/length,d[2]/length};
                 }).ToArray();
             }
-            result.Validate();return result;
+            return result;
         }
     }
     public sealed class VehicleMeshScene

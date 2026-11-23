@@ -102,6 +102,12 @@
     "large": "image.CatiaPartTree.png"
   },
   {
+    "file": "ResourceImporter/ResourceImporterCommand.cs",
+    "command": "ResourceImporterCommand",
+    "small": "image.Small.ResourceImporter.bmp",
+    "large": "image.ResourceImporter.png"
+  },
+  {
     "file": "ThemeTuner/ThemeTunerCmd.cs",
     "command": "ThemeTunerCmd",
     "small": "image.Small.ThemeTuner.bmp",

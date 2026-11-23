@@ -23,6 +23,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace TxTools.Agent.Core
 {
@@ -358,12 +359,7 @@ namespace TxTools.Agent.Core
             if (string.IsNullOrWhiteSpace(json) || string.IsNullOrWhiteSpace(code))
             { error = "文件须包含“## 参数”下的 JSON 数组和“## 代码”下的完整代码块。"; return false; }
             List<RecipeParam> ps;
-            try
-            {
-                ps = JsonConvert.DeserializeObject<List<RecipeParam>>(json);
-                if (ps == null) throw new FormatException("参数须为 JSON 数组，无参数时请使用 []。");
-            }
-            catch (Exception ex) { error = "参数区不是合法 JSON 数组: " + ex.Message; return false; }
+            if (!TryParseParams(json, out ps, out error)) return false;
             error = ValidateParams(ps);
             if (error != null) return false;
             List<RecipeAction> actions;
@@ -441,6 +437,61 @@ namespace TxTools.Agent.Core
 
         // ── 校验 ──
 
+        private static readonly HashSet<string> ParamFields = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "name", "label", "kind", "typeHint", "required", "default", "help", "choices", "objectFilter"
+        };
+
+        /// <summary>
+        /// 参数声明的字段级校验。JSON 反序列化会静默忽略未知字段，把 kind 写成 type
+        /// 时参数会被当成 object 并最终报“对象参数不能保存默认绑定”，与真实原因无关。
+        /// 因此先按原始 JSON 检查字段名，并要求每个参数显式声明 kind。
+        /// </summary>
+        public static string ValidateParamFields(JArray array)
+        {
+            if (array == null) return null;
+            foreach (var token in array)
+            {
+                var item = token as JObject;
+                if (item == null) return "参数项必须是 JSON 对象。";
+                var nameProperty = item.Properties().FirstOrDefault(p => string.Equals(p.Name, "name", StringComparison.OrdinalIgnoreCase));
+                string name = nameProperty == null ? "" : (nameProperty.Value.Type == JTokenType.String ? (string)nameProperty.Value : nameProperty.Value.ToString());
+                foreach (var property in item.Properties())
+                {
+                    if (ParamFields.Contains(property.Name)) continue;
+                    string hint = null;
+                    if (string.Equals(property.Name, "type", StringComparison.OrdinalIgnoreCase))
+                        hint = "参数类型请使用 kind（object/objects/number/text/bool/color）";
+                    else if (string.Equals(property.Name, "defaultValue", StringComparison.OrdinalIgnoreCase))
+                        hint = "默认值字段请使用 default";
+                    else if (string.Equals(property.Name, "filter", StringComparison.OrdinalIgnoreCase))
+                        hint = "对象筛选请使用 objectFilter";
+                    return "参数 " + (name.Length == 0 ? "(未命名)" : name) + " 含未知字段 " + property.Name
+                        + (hint != null ? "，" + hint : "；允许的字段：Name/Label/Kind/TypeHint/Required/Default/Help/Choices/ObjectFilter") + "。";
+                }
+                if (!item.Properties().Any(p => string.Equals(p.Name, "kind", StringComparison.OrdinalIgnoreCase)))
+                    return "参数 " + (name.Length == 0 ? "(未命名)" : name)
+                        + " 缺少 kind（object/objects/number/text/bool/color）。";
+            }
+            return null;
+        }
+
+        /// <summary>反序列化参数数组：先做字段校验，再落到 RecipeParam。</summary>
+        public static bool TryParseParams(string json, out List<RecipeParam> parameters, out string error)
+        {
+            parameters = null;
+            error = null;
+            JArray array;
+            try { array = JArray.Parse(json); }
+            catch (Exception ex) { error = "参数区不是合法 JSON 数组: " + ex.Message; return false; }
+            if (array == null) { error = "参数须为 JSON 数组，无参数时请使用 []。"; return false; }
+            error = ValidateParamFields(array);
+            if (error != null) return false;
+            try { parameters = array.ToObject<List<RecipeParam>>() ?? new List<RecipeParam>(); }
+            catch (Exception ex) { error = "参数区不是合法 JSON 数组: " + ex.Message; return false; }
+            return true;
+        }
+
         /// <summary>
         /// 参数名会被原样写进生成的代码，所以必须是合法 C#/Python 标识符。
         /// 【这里必须拦住】一个叫 "robot name" 或 "机器人" 的参数名，
@@ -466,6 +517,8 @@ namespace TxTools.Agent.Core
                     return "参数名重复: " + n;
 
                 var k = (p.Kind ?? "").Trim().ToLowerInvariant();
+                if (k.Length == 0)
+                    return "参数 " + n + " 缺少 kind（object/objects/number/text/bool/color）。";
                 if (k != "object" && k != "objects" && k != "number" && k != "text" && k != "bool" && k != "color")
                     return "参数 " + n + " 的 kind 非法: \"" + p.Kind
                          + "\"，只能是 object / objects / number / text / bool / color。";
@@ -473,7 +526,7 @@ namespace TxTools.Agent.Core
                 p.Name = n;
                 if (n == "__recipe_action") return "参数名 __recipe_action 为配方执行按钮保留。";
                 if ((k == "object" || k == "objects") && !string.IsNullOrEmpty(p.Default))
-                    return "对象参数不能保存默认绑定，请在当前研究中重新选取。";
+                    return "参数 " + n + "（kind=" + k + "）不能保存默认绑定，请在当前研究中重新选取。";
                 if (p.ObjectFilter && k != "object" && k != "objects") return "只有对象参数可以启用类型和名称筛选。";
                 if (k == "color" && !string.IsNullOrEmpty(p.Default))
                 {
@@ -643,24 +696,21 @@ namespace TxTools.Agent.Core
             var json = FencedAfter(body, ParamHeader);
             if (!string.IsNullOrWhiteSpace(json))
             {
-                try
-                {
-                    r.Params = JsonConvert.DeserializeObject<List<RecipeParam>>(json)
-                               ?? new List<RecipeParam>();
-                }
-                catch (Exception ex)
+                List<RecipeParam> parameters;
+                string paramError;
+                if (!TryParseParams(json, out parameters, out paramError))
                 {
                     // 【不要吞掉】参数区解析失败时如果当成"没有参数"，
                     // 配方会带着未替换的变量名去执行，报一个跟真实原因无关的错。
                     // 宁可让这条配方整个不出现，并在日志里说清楚。
                     try
                     {
-                        AuditLog.Write("[warn] [Recipe] " + key
-                            + " 的参数区不是合法 JSON，已跳过该配方: " + ex.Message);
+                        AuditLog.Write("[warn] [Recipe] " + key + ": " + paramError);
                     }
                     catch { }
                     return null;
                 }
+                r.Params = parameters;
             }
 
             string error;

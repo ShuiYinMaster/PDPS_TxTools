@@ -73,7 +73,7 @@ namespace TxTools.CatiaPartTree.Core
             string name = string.IsNullOrWhiteSpace(partNumber) ? instanceName : partNumber;
             return string.IsNullOrWhiteSpace(name) ? stem : CatiaLibraryDestination.FolderSegment(name);
         }
-        private static string GeometryIssue(ZipArchiveEntry entry, string name, string format)
+        private static string GeometryIssue(ZipArchiveEntry entry, string name, string format, bool allowXmlGeometry)
         {
             if (entry == null) return "3DXML 缺少包内几何：" + name;
             try
@@ -89,6 +89,7 @@ namespace TxTools.CatiaPartTree.Core
                         if (magic == "V5_CFV2\0" || magic == "V5_CFV3\0") return null;
                     }
                 }
+                if (allowXmlGeometry && IsXmlRepresentation(name)) return null;
                 return "3DXML 表示格式非 CGR（" + format + "）：" + name;
             }
             catch (Exception error) when (error is IOException || error is InvalidDataException || error is NotSupportedException)
@@ -104,24 +105,31 @@ namespace TxTools.CatiaPartTree.Core
         {
             using (var file = File.OpenRead(archivePath))
             using (var archive = new ZipArchive(file, ZipArchiveMode.Read))
+                ExtractGeometry(archive, member, output, cancel);
+        }
+
+        internal static void ExtractGeometry(ZipArchive archive, string member, string output, CancellationToken cancel)
+        {
+            var entry = archive.GetEntry(member);
+            if (entry == null) throw new IOException("3DXML 缺少包内几何：" + member);
+            using (var source = entry.Open())
+            using (var destination = new FileStream(output, FileMode.CreateNew, FileAccess.Write))
             {
-                var entry = archive.GetEntry(member);
-                if (entry == null) throw new IOException("3DXML 缺少包内几何：" + member);
-                using (var source = entry.Open())
-                using (var destination = new FileStream(output, FileMode.CreateNew, FileAccess.Write))
+                var buffer = new byte[128 * 1024];
+                int count;
+                while ((count = source.Read(buffer, 0, buffer.Length)) != 0)
                 {
-                    var buffer = new byte[128 * 1024];
-                    int count;
-                    while ((count = source.Read(buffer, 0, buffer.Length)) != 0)
-                    {
-                        cancel.ThrowIfCancellationRequested();
-                        destination.Write(buffer, 0, count);
-                    }
-                    if (destination.Length != entry.Length) throw new InvalidDataException("3DXML 几何长度不匹配：" + member);
+                    cancel.ThrowIfCancellationRequested();
+                    destination.Write(buffer, 0, count);
                 }
+                if (destination.Length != entry.Length) throw new InvalidDataException("3DXML 几何长度不匹配：" + member);
             }
         }
-        internal static CatiaImportSource Read(string path)
+        internal static bool IsXmlRepresentation(string member) =>
+            member.EndsWith(".3drep", StringComparison.OrdinalIgnoreCase);
+
+        internal static CatiaImportSource Read(string path, CancellationToken cancel = default(CancellationToken),
+            bool allowXmlGeometry = false)
         {
             path = Path.GetFullPath(path);
             using (var file = File.OpenRead(path))
@@ -130,6 +138,7 @@ namespace TxTools.CatiaPartTree.Core
                 var entries = new Dictionary<string, ZipArchiveEntry>(StringComparer.OrdinalIgnoreCase);
                 foreach (var e in archive.Entries)
                 {
+                    cancel.ThrowIfCancellationRequested();
                     string name = e.FullName.Replace('\\', '/');
                     if (entries.ContainsKey(name)) throw new InvalidDataException("3DXML 包内文件名重复：" + name);
                     entries.Add(name, e);
@@ -168,6 +177,7 @@ namespace TxTools.CatiaPartTree.Core
                 Func<string, string, string, Frame12, HashSet<string>, StructureNode> expand = null;
                 expand = (id, instanceName, instancePath, frame, ancestors) =>
                 {
+                    cancel.ThrowIfCancellationRequested();
                     if (ancestors.Count >= 100 || !ancestors.Add(id)) throw new InvalidDataException("3DXML 存在循环引用或层级超过 100。");
                     if (++count > 100000) throw new InvalidDataException("3DXML 展开实例超过 100000。");
                     var reference = references[id];
@@ -182,13 +192,14 @@ namespace TxTools.CatiaPartTree.Core
                     var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     foreach (var repInstance in geometry[id])
                     {
+                        cancel.ThrowIfCancellationRequested();
                         if (++count > 100000) throw new InvalidDataException("3DXML 展开实例超过 100000。");
                         var representation = representations[Link(repInstance, "IsInstanceOf")];
                         string member = EntryName((string)representation.Attribute("associatedFile"));
                         entries.TryGetValue(member, out var entry);
                         if (!issues.TryGetValue(member, out string issue))
                         {
-                            issue = GeometryIssue(entry, member, (string)representation.Attribute("format"));
+                            issue = GeometryIssue(entry, member, (string)representation.Attribute("format"), allowXmlGeometry);
                             issues.Add(member, issue);
                         }
                         var partNode = node;

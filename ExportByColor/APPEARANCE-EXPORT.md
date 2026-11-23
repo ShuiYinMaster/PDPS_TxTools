@@ -49,7 +49,7 @@ p_export = extraInverse × originInverse × A × inverse(S) × G × p
 | 3DXML | 同一采集数据 → CGR/CFV3 → 装配封装，保留外观所在目录层级。 |
 | STL / OBJ / PLY / FBX | 复用网格写出、颜色及合并缓存流程；STL 颜色仍通过 .rgb.json 保存。 |
 | JT → CGR → CATIA | 外观在解析 JT 路径前使用关联零件采集；只把脱离 SDK 的三角面提交有界编码队列。 |
-| JT 内外圆柱重建模式 | 普通 JT 资源继续重建；外观保留已变换的 PS 三角网格并在日志说明，不套用 JT 圆柱识别。 |
+| JT 路线启用内外圆柱重建 | 普通 JT 资源对 JT 网格执行重建；外观对映射到外观位置的 PS 三角网格执行重建。 |
 
 ## 验证
 

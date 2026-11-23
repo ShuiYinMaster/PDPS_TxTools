@@ -19,4 +19,6 @@
 
 开源引用包括 Newtonsoft.Json、Open XML SDK、ONNX Runtime、JTReader、EarCut、dsh-pet、Lobe Icons、SharpCompress、Electron 及配套 .NET 库。JTReader 和 dsh-pet 含本地修改。品牌图标的商标权归相应权利人。
 
+STEP 导入使用 Open CASCADE 7.9.2（LGPL 2.1 加 OCCT 附加例外）。地脚图转换器使用 ezdxf、NumPy、CPython，并通过 PyInstaller 打包。随附 Python 支持库，以及 OCCT 的 oneTBB、FreeType、FreeImage、FFmpeg、jemalloc、OpenVR 也列入鸣谢。随附组件不一定在每条转换路径中使用。对应版权、许可及例外原文保存在 `Licenses/Runtime`，构建时嵌入 DLL 供离线阅读。
+
 WebView2、Process Simulate SDK、CATIA COM 和 C1 控件使用各自专有许可，不适用本项目 MIT 许可。来源和用途清单位于 `ThemeTunerForm.About.cs`；更新请求和版本处理位于 `ReleaseChecker.cs`。

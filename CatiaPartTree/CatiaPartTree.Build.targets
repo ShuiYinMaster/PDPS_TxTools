@@ -2,5 +2,10 @@
   <Target Name="BuildCatiaConverter" AfterTargets="Build">
     <MSBuild Projects="$(MSBuildProjectDirectory)\CatiaPartTree\Conversion\CatiaConverter.csproj" Targets="Build" Properties="Configuration=$(Configuration);Platform=AnyCPU" RemoveProperties="OutputPath;OutDir" />
     <Copy SourceFiles="$(TxToolsBuildRoot)bin\CatiaConverter\$(Configuration)\TxTools.CatiaConverter.exe" DestinationFolder="$(TargetDir)CatiaPartTree" SkipUnchangedFiles="true" />
+    <ItemGroup Condition="Exists('$(TxToolsBuildRoot)bin\StepReader\$(Configuration)\TxTools.StepReader.exe')">
+      <StepReaderRuntime Include="$(TxToolsBuildRoot)bin\StepReader\$(Configuration)\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(StepReaderRuntime)" DestinationFiles="@(StepReaderRuntime->'$(TargetDir)CatiaPartTree\Step\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" Condition="'@(StepReaderRuntime)' != ''" />
   </Target>
 </Project>

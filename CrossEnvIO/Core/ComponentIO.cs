@@ -139,7 +139,8 @@ namespace TxTools.CrossEnvIO
 
         // PS 2402 exposes single-component loading. Submit the whole batch on
         // the document thread before checking any of the returned instances.
-        internal static CojtLoadResult[] LoadCojts(IReadOnlyList<string> paths, string libraryRoot, Action<int> beforeLoad)
+        internal static CojtLoadResult[] LoadCojts(IReadOnlyList<string> paths, string libraryRoot, Action<int> beforeLoad,
+            bool allowRoot = false)
         {
             var root = TxApplication.ActiveDocument?.PhysicalRoot;
             if (root == null) throw new InvalidOperationException("无活动的 PhysicalRoot。");
@@ -168,7 +169,7 @@ namespace TxTools.CrossEnvIO
                                 AbsoluteLocation = new TxTransformation()
                             };
                             return result.Instance = root.InsertComponent(data);
-                        }, null);
+                        }, null, allowRoot);
                     }
                     catch (OperationCanceledException) { throw; }
                     catch (AppFuncCompatibilityException error)

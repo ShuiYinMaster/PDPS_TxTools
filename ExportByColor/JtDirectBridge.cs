@@ -53,6 +53,11 @@ namespace TxTools.ExportByColor
             foreach (var face in mesh.Faces)
                 faces.Add(new CgrWriter.Face { Idx=face.Indices, R=face.R, G=face.G, B=face.B,
                     Surface=face.Surface, Opacity=face.Alpha, Nx=face.Normal[0], Ny=face.Normal[1], Nz=face.Normal[2] });
+            // The CGR faces now own the index references. Release the decoder's face wrappers.
+            mesh.Faces.Clear();
+            mesh.Faces.TrimExcess();
+            if (backend == CgrBackend.LineFace || backend == CgrBackend.LineFacePlanar)
+                faces = CgrWriter.PrepareJtLineFaceWinding(mesh.Vertices, faces, log);
             if (!reconstruct){CgrWriter.BuildFile(mesh.Vertices, faces, output, backend, 20000, log, true);return null;}
             if(backend!=CgrBackend.LineFace)throw new ArgumentException("Cylinder reconstruction requires line/face CGR");
             var holes = RoundHoleReconstruction.Find(mesh.Vertices, faces,
@@ -131,9 +136,11 @@ namespace TxTools.ExportByColor
                 if(expected.Length!=32)throw new InvalidDataException("摘要截断");
                 for(int i=0;i<32;i++)if(expected[i]!=actual[i])throw new InvalidDataException("JT 文件已变化或网格来源不匹配");
                 uint nv=r.ReadUInt32(),nf=r.ReadUInt32();
-                if(nv==0||nf==0||nv>5000000||nf>5000000||r.BaseStream.Length!=52L+nv*12L+nf*(rgba?32L:31L))
-                    throw new InvalidDataException("网格数量、长度或 500 万限制不符合要求");
+                if(nv==0||nf==0||nv>int.MaxValue||nf>int.MaxValue||r.BaseStream.Length!=52L+nv*12L+nf*(rgba?32L:31L))
+                    throw new InvalidDataException("JT 网格数量或长度无效：顶点=" + nv + "，三角面=" + nf);
                 var mesh=new Mesh();
+                mesh.Vertices.Capacity = (int)nv;
+                mesh.Faces.Capacity = (int)nf;
                 for(uint i=0;i<nv;i++)mesh.Vertices.Add(new[]{Finite(r.ReadSingle()),Finite(r.ReadSingle()),Finite(r.ReadSingle())});
                 for(uint i=0;i<nf;i++) {
                     int[] ids={r.ReadInt32(),r.ReadInt32(),r.ReadInt32()};
@@ -155,7 +162,6 @@ namespace TxTools.ExportByColor
                 if(Math.Abs(dot-(i==j?1:0))>1e-5)throw new ArgumentException("放置矩阵暂仅支持刚体变换");
             }
             double det=m[0]*(m[5]*m[10]-m[6]*m[9])-m[1]*(m[4]*m[10]-m[6]*m[8])+m[2]*(m[4]*m[9]-m[5]*m[8]);
-            if(det<0)throw new ArgumentException("暂不支持镜像资源放置");
             foreach(var p in mesh.Vertices) {
                 double x=p[0],y=p[1],z=p[2];
                 for(int k=0;k<3;k++)p[k]=Finite((float)(x*m[k]+y*m[4+k]+z*m[8+k]+m[12+k]));
@@ -163,6 +169,14 @@ namespace TxTools.ExportByColor
             foreach(var f in mesh.Faces) {
                 double x=f.Normal[0],y=f.Normal[1],z=f.Normal[2];
                 for(int k=0;k<3;k++)f.Normal[k]=Finite((float)(x*m[k]+y*m[4+k]+z*m[8+k]));
+                // A reflection reverses the geometric winding, but the outward normal
+                // still transforms as a vector under the same orthogonal matrix.
+                if (det < 0)
+                {
+                    int second = f.Indices[1];
+                    f.Indices[1] = f.Indices[2];
+                    f.Indices[2] = second;
+                }
             }
         }
     }

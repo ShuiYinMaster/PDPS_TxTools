@@ -397,23 +397,25 @@ namespace TxTools.ExportByColor
                 }
                 else
                 {
-                    if (vertex == 0) throw new InvalidDataException("首顶点不能复用坐标");
+                    // Reuse codes are relative to the previous vertex; the first
+                    // vertex reuses the zero point, so a leading 2/3 is legal.
                     int previous = target - 12;
-                    if (code == 1) Buffer.BlockCopy(rawCoordinates, previous, rawCoordinates, target, 12);
+                    if (vertex > 0 && code == 1) Buffer.BlockCopy(rawCoordinates, previous, rawCoordinates, target, 12);
                     else if (code == 2)
                     {
-                        Buffer.BlockCopy(rawCoordinates, previous, rawCoordinates, target, 8);
+                        if (vertex > 0) Buffer.BlockCopy(rawCoordinates, previous, rawCoordinates, target, 8);
                         RequireRange(source, valuePosition, 4, "Z 坐标值");
                         Buffer.BlockCopy(source, valuePosition, rawCoordinates, target + 8, 4);
                         valuePosition += 4;
                     }
-                    else
+                    else if (code == 3)
                     {
-                        Buffer.BlockCopy(rawCoordinates, previous, rawCoordinates, target, 4);
+                        if (vertex > 0) Buffer.BlockCopy(rawCoordinates, previous, rawCoordinates, target, 4);
                         RequireRange(source, valuePosition, 8, "YZ 坐标值");
                         Buffer.BlockCopy(source, valuePosition, rawCoordinates, target + 4, 8);
                         valuePosition += 8;
                     }
+                    else if (code != 1) throw new InvalidDataException("坐标位图编码异常");
                 }
             }
             if (valuePosition != valuesEnd) throw new InvalidDataException("坐标位图与值数量不一致");

@@ -457,8 +457,9 @@ namespace TxTools.ExportByColor
                 failed++;
                 progress.Completed++;
                 progress.Failed++;
-                progress.Report(onProgress, "编码失败", result.Device == null ? null : result.Device.Name);
-                SafeLog(onLog, "[设备失败] " + result.Device.Name + ": " + ex.Message);
+                string name = result.Device?.Name ?? result.ExportName;
+                progress.Report(onProgress, "编码失败", name);
+                SafeLog(onLog, "[设备失败] " + name + ": " + ex.Message);
                 DetailLog(onLog, "[设备失败详情] " + ex);
             }
         }
@@ -518,6 +519,33 @@ namespace TxTools.ExportByColor
             internal EncodedDevice Result;
             internal Task<EncodedDevice> Task;
             internal List<string> Logs;
+            internal ITxObject NativeFallback;
+        }
+
+        private PendingJtConversion StartNativeJtConversion(ITxObject device, string name, string directory,
+            CgrBackend backend, bool reconstruct, TxTransformation originInverse, Action<string> onLog)
+        {
+            var snapshot = new DeviceData { Name = name };
+            foreach (var data in CollectDeviceGroups(new List<ITxObject> { device }, null, onLog, true,
+                originInverseOverride: originInverse))
+            {
+                snapshot.Path = data.Path;
+                snapshot.Colors.AddRange(data.Colors);
+            }
+            var result = new EncodedDevice { Device = snapshot, ExportName = name };
+            var logs = new List<string>();
+            var task = Task.Run(() =>
+            {
+                try
+                {
+                    result.Path = BuildCgr(snapshot.Colors, name, directory,
+                        message => { if (logs.Count < 4096) logs.Add(message); }, backend, reconstruct);
+                }
+                catch (Exception ex) { result.Error = ex; }
+                finally { snapshot.Colors.Clear(); }
+                return result;
+            });
+            return new PendingJtConversion { Result = result, Task = task, Logs = logs };
         }
 
         private static Task<EncodedDevice> StartJtConversion(EncodedDevice result,
@@ -575,7 +603,7 @@ namespace TxTools.ExportByColor
                         "JtDirectCs", "TxTools.JtDecoder.exe");
                     progress.Report(onProgress, "JT 准备", null);
                     SafeLog(onLog, "[JT→CGR parallel R56] isolated workers=" + workers + "; timeoutSeconds=" + JtCgrProcessBridge.TimeoutMs/1000 + "; backend=" + backend + "; resources=" + devices.Count + "; output=" + workDir);
-                    SafeLog(onLog, "[JT 直接保色] 普通资源使用 JT 文件内姿态和颜色并应用整体放置；外观读取关联零件几何并映射到外观世界位置");
+                    SafeLog(onLog, "[JT] 优先使用 JT 文件内的姿态和材质；外观及直读失败的资源使用 PS 原生网格。");
                     var names = new ExportNames();
                     Action<PendingJtConversion> finish = item =>
                     {
@@ -584,6 +612,28 @@ namespace TxTools.ExportByColor
                         {
                             result = item.Task.GetAwaiter().GetResult();
                             foreach (string message in item.Logs) DetailLog(onLog, "[" + result.ExportName + "] " + message);
+                            if (result.Error != null && item.NativeFallback != null)
+                            {
+                                var directError = result.Error;
+                                SafeLog(onLog, "[JT 兼容回退] " + result.ExportName + "："
+                                    + directError.Message + "；尝试使用 PS 原生三角网格。");
+                                progress.Report(onProgress, "读取 PS 原生网格", result.ExportName);
+                                try
+                                {
+                                    var fallback = StartNativeJtConversion(item.NativeFallback, result.ExportName, workDir,
+                                        backend, reconstructRoundHoles, selectedOriginInverse, onLog);
+                                    var native = fallback.Task.GetAwaiter().GetResult();
+                                    foreach (string message in fallback.Logs) DetailLog(onLog, "[" + native.ExportName + "] " + message);
+                                    if (native.Error != null) throw native.Error;
+                                    result = native;
+                                    SafeLog(onLog, "[JT 兼容回退] " + result.ExportName + "：已生成 PS 原生网格 CGR。");
+                                }
+                                catch (Exception ex)
+                                {
+                                    result.Error = new InvalidOperationException("JT 直读失败：" + directError.Message
+                                        + "；PS 原生网格回退失败：" + ex.Message, ex);
+                                }
+                            }
                             if (result.Error == null && reconstructRoundHoles && result.CylinderCounts != null)
                             {
                                 SafeLog(onLog, "[圆柱 CGR] 内孔="+result.CylinderCounts[0]+"，外圆柱="+result.CylinderCounts[1]+"；圆柱壁与圆形端边已直接编码到单个 CGR；其余保留源网格");
@@ -615,57 +665,48 @@ namespace TxTools.ExportByColor
                                 name = names.Next(OnPsJt(() => device.Name));
                                 progress.Report(onProgress, "外观三角面采集", name);
                                 SafeLog(onLog, "[外观→CGR] " + name + "：按需临时显示关联零件，读取三角面和设计色，再映射到外观世界位置");
-                                if (reconstructRoundHoles)
-                                    SafeLog(onLog, "[外观→CGR] 外观保留 PS 三角面；JT 内外圆柱重建不应用于外观网格");
-                                var nativeData = CollectDeviceGroups(new List<ITxObject> { device }, null, onLog, true, originInverseOverride: selectedOriginInverse);
-                                var appearanceSnapshot = new DeviceData { Name = name };
-                                foreach (var data in nativeData)
-                                {
-                                    appearanceSnapshot.Path = data.Path;
-                                    appearanceSnapshot.Colors.AddRange(data.Colors);
-                                }
-                                var appearanceResult = new EncodedDevice { Device = appearanceSnapshot, ExportName = name };
-                                var appearanceLogs = new List<string>();
-                                var appearanceTask = Task.Run(() =>
-                                {
-                                    try { appearanceResult.Path = BuildCgr(appearanceSnapshot.Colors, appearanceResult.ExportName, workDir, message => { if (appearanceLogs.Count < 4096) appearanceLogs.Add(message); }, backend); }
-                                    catch (Exception ex) { appearanceResult.Error = ex; }
-                                    finally { appearanceSnapshot.Colors.Clear(); }
-                                    return appearanceResult;
-                                });
-                                pending.Add(new PendingJtConversion { Result = appearanceResult, Task = appearanceTask, Logs = appearanceLogs });
+                                pending.Add(StartNativeJtConversion(device, name, workDir, backend, reconstructRoundHoles,
+                                    selectedOriginInverse, onLog));
                                 progress.Collected++;
                                 progress.Report(onProgress, "外观 CGR 编码", name);
                                 continue;
                             }
                             string jtPath = null, trace = null;
                             double[] placement = null;
-                            DeviceData snapshot = OnPsJt(() =>
-                            {
-                                name = names.Next(device.Name);
-                                if (!JtResourceResolver.TryResolve(device, out jtPath, out trace) || string.IsNullOrWhiteSpace(jtPath))
-                                    throw new FileNotFoundException("未能从资源解析 JT 文件或 COJT 目录（" + trace + "）", jtPath);
-                                var located = device as ITxLocatableObject;
-                                if (located == null) throw new InvalidOperationException("资源没有可读取的放置坐标");
-                                var loc = located.AbsoluteLocation;
-                                if (selectedOriginInverse != null) loc = TxTransformation.Multiply(selectedOriginInverse, loc);
-                                var o = loc.Transform(new TxVector(0, 0, 0));
-                                var x = loc.Transform(new TxVector(1, 0, 0));
-                                var y = loc.Transform(new TxVector(0, 1, 0));
-                                var z = loc.Transform(new TxVector(0, 0, 1));
-                                placement = new double[] { x.X-o.X,x.Y-o.Y,x.Z-o.Z,0,
-                                    y.X-o.X,y.Y-o.Y,y.Z-o.Z,0,z.X-o.X,z.Y-o.Y,z.Z-o.Z,0,o.X,o.Y,o.Z,1 };
-                                return new DeviceData { Name=name, Path=GetTreePath(device, onLog) };
-                            });
-                            if (!SysFile.Exists(jtPath) && !Directory.Exists(jtPath))
-                                throw new FileNotFoundException("JT 文件或 COJT 资源目录不存在", jtPath);
-                            SafeLog(onLog, "[JT] " + name + " ← " + jtPath + "（" + trace + "）");
+                            name = names.Next(OnPsJt(() => device.Name));
+                            var result = new EncodedDevice { ExportName = name, Path = Path.Combine(workDir, name + ".cgr") };
                             var logs = new List<string>();
-                            // The worker closure captures only strings, a matrix and detached data.
-                            var result = new EncodedDevice { Device=snapshot, ExportName=name,
-                                Path=Path.Combine(workDir, name + ".cgr"), SourcePath=jtPath };
-                            var task = StartJtConversion(result, workDir, decoder, placement, logs, backend, reconstructRoundHoles);
-                            pending.Add(new PendingJtConversion { Result=result, Task=task, Logs=logs });
+                            Task<EncodedDevice> task;
+                            try
+                            {
+                                result.Device = OnPsJt(() =>
+                                {
+                                    if (!JtResourceResolver.TryResolve(device, out jtPath, out trace))
+                                        throw new FileNotFoundException("未能解析 JT 文件或 COJT 目录：" + trace);
+                                    var located = device as ITxLocatableObject;
+                                    if (located == null) throw new InvalidOperationException("资源没有可读取的放置坐标");
+                                    var loc = located.AbsoluteLocation;
+                                    if (selectedOriginInverse != null) loc = TxTransformation.Multiply(selectedOriginInverse, loc);
+                                    var o = loc.Transform(new TxVector(0, 0, 0));
+                                    var x = loc.Transform(new TxVector(1, 0, 0));
+                                    var y = loc.Transform(new TxVector(0, 1, 0));
+                                    var z = loc.Transform(new TxVector(0, 0, 1));
+                                    placement = new double[] { x.X-o.X,x.Y-o.Y,x.Z-o.Z,0,
+                                        y.X-o.X,y.Y-o.Y,y.Z-o.Z,0,z.X-o.X,z.Y-o.Y,z.Z-o.Z,0,o.X,o.Y,o.Z,1 };
+                                    return new DeviceData { Name = name, Path = GetTreePath(device, onLog) };
+                                });
+                                if (!SysFile.Exists(jtPath) && !Directory.Exists(jtPath))
+                                    throw new FileNotFoundException("JT 文件或 COJT 资源目录不存在", jtPath);
+                                result.SourcePath = jtPath;
+                                SafeLog(onLog, "[JT] " + name + " ← " + jtPath + "（" + trace + "）");
+                                task = StartJtConversion(result, workDir, decoder, placement, logs, backend, reconstructRoundHoles);
+                            }
+                            catch (Exception ex)
+                            {
+                                result.Error = ex;
+                                task = Task.FromResult(result);
+                            }
+                            pending.Add(new PendingJtConversion { Result=result, Task=task, Logs=logs, NativeFallback=device });
                             progress.Collected++;
                             progress.Report(onProgress, "JT 并行转码", name);
                         }
@@ -681,7 +722,7 @@ namespace TxTools.ExportByColor
                     progress.Failed = failed;
                     progress.Report(onProgress, failed == 0 ? "JT→CGR 完成" : "JT→CGR 结束，存在失败", null);
                     SafeComplete(onComplete, ok > 0 && failed == 0,
-                        ok + " 个资源（JT/外观）已转换并插入 CATIA，" + failed + " 个失败；CGR 保留在 " + workDir);
+                        ok + " 个资源已转换并插入 CATIA，" + failed + " 个失败；CGR 保留在 " + workDir);
                 }
                 catch (Exception ex)
                 {
@@ -752,6 +793,8 @@ namespace TxTools.ExportByColor
                 if (AppearanceGeometrySource.IsAppearance(obj)) return true;
                 string path, trace;
                 if (!JtResourceResolver.TryResolve(obj, out path, out trace)) return false;
+                if (Directory.Exists(path) && string.Equals(Path.GetExtension(path), ".cojt", StringComparison.OrdinalIgnoreCase))
+                    return true;
                 try { return SysFile.Exists(JtDirectBridge.ResolveFile(path)); }
                 catch { return false; }
             }, obj => EnumerateJtKids(obj, onLog), (obj, ex) => SafeLog(onLog, "[JT 子项读取失败] " + ObjKey(obj) + ": " + ex.Message));

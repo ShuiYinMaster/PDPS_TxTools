@@ -4,13 +4,14 @@ using System.Drawing;
 using System.IO;
 using System.Threading;
 using System.Windows.Forms;
+using Registry = Microsoft.Win32.Registry;
+using RegistryValueKind = Microsoft.Win32.RegistryValueKind;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
 using TxTools.Common;
 using Theme = TxTools.Common.FormUiKit.Theme;
 using TextBox = System.Windows.Forms.TextBox;
 using Button = System.Windows.Forms.Button;
-using Label = System.Windows.Forms.Label;
 
 namespace TxTools.ExportByColor
 {
@@ -25,29 +26,30 @@ namespace TxTools.ExportByColor
         private TxFrameEditBoxCtrl _frameOrigin;
         private CheckBox _chkAllVisible;
         private TabControl _exportTabs;
-        private ComboBox _cgrMode;
-        private ComboBox _meshFormat;
+        private ExportMode _cgrMode;
+        private ExportMode _meshFormat;
+        private CheckBox _reconstructCylinders;
         private CheckBox _mergeMeshes;
         private RichTextBox _rtbLog;
         private Button _btnRun;
         private ProgressBar _progress;
-        private Label _progressText;
+        private int _lastProgressBucket;
         private string _lastLogMessage;
         private const int MaxLogCharacters = 60000;
+        private const string PreferencesKey = @"Software\TxTools\ExportByColor";
 
         private sealed class ExportMode
         {
-            internal readonly string Label, Format;
+            internal readonly string Id, Label, Format;
             internal readonly CgrBackend Backend;
-            internal readonly bool ReconstructCylinders;
-            internal ExportMode(string label, string format, CgrBackend backend, bool reconstructCylinders = false)
-            { Label = label; Format = format; Backend = backend; ReconstructCylinders = reconstructCylinders; }
-            public override string ToString() { return Label; }
+            internal bool SupportsCylinders => Format == "CGR" || Format == "JT_CGR";
+            internal ExportMode(string id, string label, string format, CgrBackend backend = CgrBackend.Compact)
+            { Id = id; Label = label; Format = format; Backend = backend; }
         }
 
         private bool _scaled;
-        private readonly Size _designSize = new Size(960, 540);
-        private readonly Size _minSize = new Size(740, 500);
+        private readonly Size _designSize = new Size(740, 535);
+        private readonly Size _minSize = new Size(650, 480);
 
         public ExportByColorForm(SynchronizationContext psCtx)
         {
@@ -57,9 +59,7 @@ namespace TxTools.ExportByColor
             FormUiKit.InitStandardForm(this,
                 "导出 3DXML / CGR / 通用网格",
                 _designSize, _minSize);
-            BuildUi();
-            Log("插件已启动：在 PS 中拾取对象加入列表，或勾选【导出所有可见资源】");
-            Log("默认直出 3DXML：每设备编码为独立 3DRep，并保留 PS 装配层级；无需启动 CATIA。编码器 " + CgrWriter.Version);
+            Controls.Add(BuildBody());
         }
 
         public override void OnInitTxForm()
@@ -71,26 +71,26 @@ namespace TxTools.ExportByColor
         protected override void OnLoad(EventArgs e)
         {
             base.OnLoad(e);
-            FormUiKit.ApplyDpiScaling(this, ref _scaled, _designSize);
+            FormUiKit.ApplyDpiScaling(this, ref _scaled, _designSize, scale =>
+            {
+                int gridHeight = (int)Math.Ceiling(32 * scale + 5 * Math.Max(27 * scale, _objGrid.Font.Height + 10 * scale));
+                _objGrid.Parent.MinimumSize = new Size(0, gridHeight + _objGrid.Parent.Padding.Vertical + 2);
+            });
         }
 
-        private void BuildUi()
-        {
-            var root = FormUiKit.BuildRoot(null, BuildBody(), BuildBottom());
-            Controls.Add(root);
-        }
-
-        // ── 主体：顶部两卡(资源/参数) + 底部日志 ────────────────────────
+        // ── 主体：资源与参数、操作行、日志和进度条 ────────────────────────
         private Control BuildBody()
         {
             var body = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 2
+                RowCount = 4
             };
             body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            body.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             body.RowStyles.Add(new RowStyle(SizeType.Absolute, 90));
+            body.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
 
             var top = new TableLayoutPanel
             {
@@ -98,12 +98,13 @@ namespace TxTools.ExportByColor
                 ColumnCount = 2,
                 RowCount = 1
             };
-            top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+            top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
             top.Controls.Add(BuildResourceCard(), 0, 0);
             top.Controls.Add(BuildParamCard(), 1, 0);
 
             body.Controls.Add(top, 0, 0);
+            body.Controls.Add(BuildActionRow(), 0, 1);
 
             _rtbLog = new RichTextBox
             {
@@ -116,8 +117,11 @@ namespace TxTools.ExportByColor
                 BorderStyle = BorderStyle.FixedSingle,
                 Margin = new Padding(6, 2, 6, 4)
             };
-            body.Controls.Add(_rtbLog, 0, 1);
+            body.Controls.Add(_rtbLog, 0, 2);
             PluginLog.Register(_rtbLog);
+
+            _progress = new ProgressBar { Dock = DockStyle.Fill, Margin = new Padding(6, 2, 6, 4) };
+            body.Controls.Add(_progress, 0, 3);
 
             return body;
         }
@@ -125,40 +129,32 @@ namespace TxTools.ExportByColor
         private Control BuildResourceCard()
         {
             FlowLayoutPanel content;
-            var card = FormUiKit.MkCard("资源（在 PS 中拾取）", 400, 320, out content);
+            var card = FormUiKit.MkCard("资源（在 PS 中拾取）", 280, 280, out content);
             card.Dock = DockStyle.Fill;
             content.AutoScroll = false;
-
-            var hint = FormUiKit.MkLabel("在 PS 场景中点击对象即加入列表（可多选）。勾选【导出所有可见资源】则忽略列表，导出场景全部可见设备。", false);
-            FormUiKit.WrapLabelInFlow(content, hint);
-            content.Controls.Add(hint);
 
             _objGrid = new TxObjGridCtrl
             {
                 Dock = DockStyle.Fill,
+                Font = FormUiKit.BaseFont,
                 ListenToPick = true,
                 EnableMultipleSelection = true,
                 EnableRecurringObjects = false
             };
             // TxObjGridCtrl 拾取焦点统一管理：启动抢焦点 + 点击重获焦点 + ESC 取消焦点
             FormUiKit.GridPickFocus.Wire(_objGrid);
-            _objGrid.ObjectInserted += new TxObjGridCtrl_ObjectInsertedEventHandler(OnGridObjectInserted);
-            _objGrid.RowDeleted += new TxObjGridCtrl_RowDeletedEventHandler(OnGridRowDeleted);
 
             var gridPanel = new Panel
             {
-                Dock = DockStyle.Top,
-                Height = 170,
+                Dock = DockStyle.Fill,
+                MinimumSize = new Size(0, 171),
                 BackColor = SystemColors.Window,
                 Padding = new Padding(1),
                 Margin = new Padding(0, 2, 0, 4),
                 BorderStyle = BorderStyle.FixedSingle
             };
             gridPanel.Controls.Add(_objGrid);
-            content.Controls.Add(gridPanel);
-            FormUiKit.FillWidthInFlow(content, gridPanel);
 
-            var row = FormUiKit.MkRowFlow();
             _chkAllVisible = new CheckBox
             {
                 Text = "导出所有可见资源",
@@ -166,28 +162,13 @@ namespace TxTools.ExportByColor
                 Font = FormUiKit.BaseFont,
                 Checked = false
             };
-            var btnEnum = FormUiKit.MkFuncButton("枚举可见资源", Theme.BtnPrimary);
-            btnEnum.Click += (s, e) => EnumerateVisible();
-            var btnClear = FormUiKit.MkFuncButton("清空列表", Theme.BtnSecondary);
-            btnClear.Click += (s, e) => ClearGrid();
-            row.Controls.Add(_chkAllVisible);
-            row.Controls.Add(btnEnum);
-            row.Controls.Add(btnClear);
-            content.Controls.Add(row);
-
-            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3,
+            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2,
                 Padding = new Padding(8, 6, 8, 6), Margin = Padding.Empty };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            layout.Controls.Add(hint, 0, 0);
-            gridPanel.Dock = DockStyle.Fill;
-            layout.Controls.Add(gridPanel, 0, 1);
-            row.Dock = DockStyle.Top;
-            layout.Controls.Add(row, 0, 2);
-            layout.SizeChanged += (s, e) => hint.MaximumSize = new Size(Math.Max(1,
-                layout.ClientSize.Width - layout.Padding.Horizontal - hint.Margin.Horizontal), 0);
+            layout.Controls.Add(gridPanel, 0, 0);
+            layout.Controls.Add(_chkAllVisible, 0, 1);
             card.Controls.Remove(content);
             card.Controls.Add(layout);
             card.Controls.SetChildIndex(layout, 0);
@@ -199,15 +180,15 @@ namespace TxTools.ExportByColor
         private Control BuildParamCard()
         {
             FlowLayoutPanel content;
-            var card = FormUiKit.MkCard("参数", 400, 320, out content);
-            card.Dock = DockStyle.Top;
+            var card = FormUiKit.MkCard("参数", 320, 280, out content);
+            card.Dock = DockStyle.Fill;
             content.AutoScroll = false;
 
             var rowOrigin = FormUiKit.MkRowFlow();
             rowOrigin.Controls.Add(FormUiKit.MkFieldLabel("参考坐标:"));
             _frameOrigin = new TxFrameEditBoxCtrl
             {
-                Width = 220,
+                Width = 190,
                 Height = 22,
                 Font = FormUiKit.BaseFont,
                 EnableRelativeToWorkingFrameCoordinates = false,
@@ -215,110 +196,143 @@ namespace TxTools.ExportByColor
                 Margin = new Padding(2, 1, 0, 0)
             };
             PickFocus.Wire(_frameOrigin);
-            _frameOrigin.Picked += OnOriginPicked;
             rowOrigin.Controls.Add(_frameOrigin);
             content.Controls.Add(rowOrigin);
 
-            _exportTabs = new TabControl { Width = 340, Height = 190, Font = FormUiKit.BaseFont };
+            _exportTabs = new TabControl { Width = 290, Height = 216, Font = FormUiKit.BaseFont };
             var cgrTab = new TabPage("3DXML / CGR");
-            _cgrMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Left = 12, Top = 12, Width = 285, DropDownWidth = 460 };
-            _cgrMode.Items.AddRange(new object[] {
-                new ExportMode("直出 3DXML（推荐）", "3DXML", CgrBackend.Compact),
-                new ExportMode("直出 3DXML（R38线面几何·试用）", "3DXML", CgrBackend.LineFace),
-                new ExportMode("CGR → CATIA（原方案）", "CGR", CgrBackend.Compact),
-                new ExportMode("PS 三角面 → CGR → CATIA（线面压缩）", "CGR", CgrBackend.LineFace),
-                new ExportMode("PS 三角面 → CGR → CATIA（内外圆柱重建）", "CGR", CgrBackend.LineFace, true),
-                new ExportMode("读取 JT → CGR → CATIA", "JT_CGR", CgrBackend.Compact),
-                new ExportMode("读取 JT → CGR → CATIA（线面压缩·试用）", "JT_CGR", CgrBackend.LineFace),
-                new ExportMode("读取 JT → 内外圆柱重建 CGR → CATIA（试用）", "JT_CGR", CgrBackend.LineFace, true)
-            });
-            _cgrMode.SelectedIndex = 0;
-            cgrTab.Controls.Add(_cgrMode);
-            cgrTab.Controls.Add(new Label
+            var cgrOptions = BuildOptionPanel(cgrTab);
+            _reconstructCylinders = new CheckBox { Text = "内外圆柱重建", AutoSize = true,
+                Checked = ReadPreference("ReconstructCylinders") == "1", Margin = new Padding(3, 6, 3, 2) };
+            _reconstructCylinders.CheckedChanged += (s, e) =>
+                WritePreference("ReconstructCylinders", _reconstructCylinders.Checked ? "1" : "0");
+            AddExclusiveOptions(cgrOptions, "CgrMode", new[]
             {
-                Text = "直出 3DXML 保留装配层级，无需 CATIA。\r\nPS 线面压缩直接处理原网格；内外圆柱重建另行识别圆柱并生成测量属性，未通过检查的区域保留原网格。R38 线面几何桥接的 3DXML 当前不含 CGR 线、面选择记录。",
-                Left = 12,
-                Top = 50,
-                Width = 300,
-                Height = 92,
-                AutoSize = false
+                new ExportMode("3dxml", "直出 3DXML", "3DXML"),
+                new ExportMode("3dxml-line", "直出 3DXML（R38 线面几何）", "3DXML", CgrBackend.LineFace),
+                new ExportMode("ps-cgr", "PS 三角面 → CGR → CATIA", "CGR"),
+                new ExportMode("ps-line", "PS 线面压缩 → CGR → CATIA", "CGR", CgrBackend.LineFace),
+                new ExportMode("jt-cgr", "JT → CGR → CATIA", "JT_CGR"),
+                new ExportMode("jt-line", "JT 线面压缩 → CGR → CATIA", "JT_CGR", CgrBackend.LineFace)
+            }, mode =>
+            {
+                _cgrMode = mode;
+                _reconstructCylinders.Enabled = mode.SupportsCylinders;
             });
+            cgrOptions.Controls.Add(_reconstructCylinders);
             var meshTab = new TabPage("STL / OBJ / PLY / FBX");
-            _meshFormat = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Left = 12, Top = 12, Width = 260 };
-            _meshFormat.Items.AddRange(new object[] { "STL + RGB 清单", "OBJ + MTL 材质", "PLY（面颜色）", "FBX 二进制（Blender）", "FBX ASCII（兼容工具）" });
-            _meshFormat.SelectedIndex = 0;
-            meshTab.Controls.Add(_meshFormat);
-            _mergeMeshes = new CheckBox { Text = "所有设备合并为一个网格文件", AutoSize = true, Left = 12, Top = 45, Font = FormUiKit.BaseFont };
-            meshTab.Controls.Add(_mergeMeshes);
-            meshTab.Controls.Add(new Label { Text = "按设备名称保存到同一目录，同名追加流水号。STL 配套 RGB 清单；Blender 请选择二进制 FBX。", Dock = DockStyle.Bottom, Padding = new Padding(12, 0, 12, 0), Height = 60 });
+            var meshOptions = BuildOptionPanel(meshTab);
+            AddExclusiveOptions(meshOptions, "MeshFormat", new[]
+            {
+                new ExportMode("stl", "STL + RGB 清单", "STL"),
+                new ExportMode("obj", "OBJ + MTL 材质", "OBJ"),
+                new ExportMode("ply", "PLY（面颜色）", "PLY"),
+                new ExportMode("fbx-binary", "FBX 二进制（Blender）", "FBX_BINARY"),
+                new ExportMode("fbx-ascii", "FBX ASCII", "FBX_ASCII")
+            }, mode => _meshFormat = mode);
+            _mergeMeshes = new CheckBox { Text = "所有设备合并为一个网格文件", AutoSize = true,
+                Checked = ReadPreference("MergeMeshes") == "1", Margin = new Padding(3, 6, 3, 2) };
+            _mergeMeshes.CheckedChanged += (s, e) => WritePreference("MergeMeshes", _mergeMeshes.Checked ? "1" : "0");
+            meshOptions.Controls.Add(_mergeMeshes);
             _exportTabs.TabPages.Add(cgrTab);
             _exportTabs.TabPages.Add(meshTab);
-            _exportTabs.SelectedIndex = 0;
+            _exportTabs.SelectedIndex = ReadPreference("ExportTab") == "mesh" ? 1 : 0;
+            _exportTabs.SelectedIndexChanged += (s, e) =>
+                WritePreference("ExportTab", _exportTabs.SelectedIndex == 1 ? "mesh" : "cgr");
             content.Controls.Add(_exportTabs);
             FormUiKit.FillWidthInFlow(content, _exportTabs);
 
             return card;
         }
 
-        private Control BuildBottom()
+        private static FlowLayoutPanel BuildOptionPanel(TabPage page)
         {
-            var bottom = new TableLayoutPanel
+            var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown,
+                WrapContents = false, AutoScroll = true, Padding = new Padding(8, 5, 4, 4) };
+            page.Controls.Add(panel);
+            return panel;
+        }
+
+        private void AddExclusiveOptions(FlowLayoutPanel panel, string key, ExportMode[] modes, Action<ExportMode> select)
+        {
+            var checks = new List<CheckBox>();
+            string savedId = ReadPreference(key);
+            var initial = Array.Find(modes, mode => mode.Id == savedId) ?? modes[0];
+            select(initial);
+            foreach (var mode in modes)
+            {
+                var check = new CheckBox { Text = mode.Label, AutoSize = true, AutoCheck = false,
+                    Checked = mode == initial, Margin = new Padding(3, 2, 3, 2) };
+                check.Click += (s, e) =>
+                {
+                    if (check.Checked) return;
+                    foreach (var item in checks) item.Checked = item == check;
+                    select(mode);
+                    WritePreference(key, mode.Id);
+                };
+                checks.Add(check);
+                panel.Controls.Add(check);
+            }
+        }
+
+        private static string ReadPreference(string name)
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey(PreferencesKey))
+                    return key?.GetValue(name) as string;
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is System.Security.SecurityException)
+            {
+                return null;
+            }
+        }
+
+        private void WritePreference(string name, string value)
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.CreateSubKey(PreferencesKey))
+                    key.SetValue(name, value, RegistryValueKind.String);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is System.Security.SecurityException)
+            {
+                Log("保存导出参数失败：" + ex.Message);
+            }
+        }
+
+        private Control BuildActionRow()
+        {
+            var actions = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
+                AutoSize = true,
                 ColumnCount = 2,
-                RowCount = 1
+                RowCount = 1,
+                Margin = new Padding(6, 0, 6, 2)
             };
-            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-            var activity = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 1,
-                RowCount = 2,
-                Margin = new Padding(0, 3, 8, 3)
-            };
-            activity.RowStyles.Add(new RowStyle(SizeType.Absolute, 16));
-            activity.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            _progressText = new Label
-            {
-                Dock = DockStyle.Fill,
-                Text = "就绪",
-                ForeColor = Theme.TextDim,
-                Font = new Font("Microsoft YaHei UI", 8.25F),
-                TextAlign = ContentAlignment.MiddleLeft
-            };
-            _progress = new ProgressBar
-            {
-                Dock = DockStyle.Fill,
-                Minimum = 0,
-                Maximum = 100,
-                Margin = new Padding(0, 0, 0, 1)
-            };
-            activity.Controls.Add(_progressText, 0, 0);
-            activity.Controls.Add(_progress, 0, 1);
-            bottom.Controls.Add(activity, 0, 0);
+            var resourceActions = FormUiKit.MkRowFlow();
+            resourceActions.Margin = Padding.Empty;
+            var btnEnum = FormUiKit.MkFuncButton("枚举可见资源", Theme.BtnPrimary);
+            btnEnum.Click += (s, e) => EnumerateVisible();
+            var btnClear = FormUiKit.MkFuncButton("清空列表", Theme.BtnSecondary);
+            btnClear.Click += (s, e) => ClearGrid();
+            resourceActions.Controls.Add(btnEnum);
+            resourceActions.Controls.Add(btnClear);
+            actions.Controls.Add(resourceActions, 0, 0);
 
-            _btnRun = FormUiKit.MkButton("开始导出", true, 130, 34);
+            _btnRun = FormUiKit.MkButton("开始导出", true);
+            _btnRun.Anchor = AnchorStyles.Right;
             _btnRun.Click += (s, e) => RunExport();
-            bottom.Controls.Add(_btnRun, 1, 0);
+            actions.Controls.Add(_btnRun, 1, 0);
 
-            return bottom;
+            return actions;
         }
 
         // ── 事件 ───────────────────────────────────────────────────────
-        private void OnGridObjectInserted(object sender, TxObjGridCtrl_ObjectInsertedEventArgs e)
-        {
-        }
-
-        private void OnGridRowDeleted(object sender, TxObjGridCtrl_RowDeletedEventArgs e)
-        {
-        }
-
-        private void OnOriginPicked(object sender, EventArgs e)
-        {
-        }
-
         private void ClearGrid()
         {
             try { if (_objGrid != null) _objGrid.Objects = new TxObjectList(); } catch { }
@@ -390,8 +404,7 @@ namespace TxTools.ExportByColor
                 }
                 if (picked.Count == 0)
                 {
-                    MessageBox.Show(this, "场景中没有可见资源可导出。", "提示",
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Log("[提示] 场景中没有可见资源可导出。");
                     return;
                 }
             }
@@ -400,8 +413,7 @@ namespace TxTools.ExportByColor
                 picked = GetGridObjects();
                 if (picked.Count == 0)
                 {
-                    MessageBox.Show(this, "请先在 PS 中拾取设备/组合。", "提示",
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    Log("[提示] 请先在 PS 中拾取设备/组合。");
                     return;
                 }
             }
@@ -409,15 +421,14 @@ namespace TxTools.ExportByColor
             try { originLocation = GetOriginLocation(); }
             catch (Exception ex)
             {
-                MessageBox.Show(this, ex.Message, "参考坐标", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Log("[参考坐标] " + ex.Message);
                 return;
             }
             string origin = originLocation == null ? "" : _frameOrigin.Text.Trim();
-            var route = (ExportMode)_cgrMode.SelectedItem;
-            string format = _exportTabs.SelectedIndex == 0
-                ? route.Format
-                : new[] { "STL", "OBJ", "PLY", "FBX_BINARY", "FBX_ASCII" }[_meshFormat.SelectedIndex];
-            CgrBackend cgrBackend = route.Backend;
+            var route = _exportTabs.SelectedIndex == 0 ? _cgrMode : _meshFormat;
+            string format = route.Format;
+            bool reconstructCylinders = route.SupportsCylinders && _reconstructCylinders.Checked;
+            CgrBackend cgrBackend = reconstructCylinders ? CgrBackend.LineFace : route.Backend;
             string output = null;
             if (format == "3DXML")
             {
@@ -445,9 +456,11 @@ namespace TxTools.ExportByColor
             }
             _btnRun.Enabled = false;
             _progress.Value = 0;
-            SetProgress(new ExportProgressInfo { Stage = "正在准备导出" });
+            _lastProgressBucket = -1;
             Log("=== 开始导出 " + format + " ===");
             Log("资源: " + picked.Count + " 个, 原点: " + (origin.Length > 0 ? origin : "世界坐标"));
+            if (reconstructCylinders && route.Backend != cgrBackend)
+                Log("[CGR] 内外圆柱重建已启用，使用支持圆柱面和圆边的线面编码。");
             Action<bool, string> complete = (ok, msg) =>
             {
                 try
@@ -457,25 +470,28 @@ namespace TxTools.ExportByColor
                     {
                         _btnRun.Enabled = true;
                         if (ok) _progress.Value = 100;
-                        if (_progressText != null)
-                            _progressText.Text = ok ? "导出完成" : "导出失败：请查看下方摘要";
-                        if (ok) Log("[完成] " + msg);
-                        else Log("[错误] " + msg);
-                        MessageBox.Show(this, msg, ok ? "完成" : "失败",
-                            MessageBoxButtons.OK,
-                            ok ? MessageBoxIcon.Information : MessageBoxIcon.Error);
+                        Log((ok ? "[完成] " : "[错误] ") + msg);
                     }));
                 }
                 catch { }
             };
-            if (format == "JT_CGR")
+            try
             {
-                Log("JT 模式：从资源解析 JT 文件生成 CGR；外观读取关联零件三角面并变换到外观位置，再插入 CATIA。");
-                _svc.RunJtToCgrAsync(picked, Log, SetProgress, complete, route.Backend, route.ReconstructCylinders, originLocation);
+                if (format == "JT_CGR")
+                {
+                    Log("JT 模式：从资源解析 JT 文件生成 CGR；外观读取关联零件三角面并变换到外观位置，再插入 CATIA。");
+                    _svc.RunJtToCgrAsync(picked, Log, SetProgress, complete, cgrBackend, reconstructCylinders, originLocation);
+                }
+                else
+                {
+                    _svc.RunAsync(picked, origin, format, output, _exportTabs.SelectedIndex == 1 && _mergeMeshes.Checked,
+                        Log, SetProgress, complete, cgrBackend, reconstructCylinders, originLocation);
+                }
             }
-            else
+            catch (Exception ex)
             {
-                _svc.RunAsync(picked, origin, format, output, format != "CGR" && format != "3DXML" && _mergeMeshes.Checked, Log, SetProgress, complete, cgrBackend, format == "CGR" && route.ReconstructCylinders, originLocation);
+                _btnRun.Enabled = true;
+                Log("[错误] " + ex.Message);
             }
         }
 
@@ -490,15 +506,13 @@ namespace TxTools.ExportByColor
             int value = info.Percent;
             if (info.Total > 0 && info.Completed >= info.Total) value = 100;
             _progress.Value = Math.Max(_progress.Minimum, Math.Min(_progress.Maximum, value));
-            if (_progressText == null) return;
-            if (info.Total <= 0)
-            {
-                _progressText.Text = string.IsNullOrEmpty(info.Stage) ? "正在准备" : info.Stage;
-                return;
-            }
+            int bucket = value / 10;
+            if (info.Total <= 0 || bucket <= _lastProgressBucket) return;
+            _lastProgressBucket = bucket;
             string device = string.IsNullOrEmpty(info.DeviceName) ? "" : " · " + info.DeviceName;
             string failed = info.Failed > 0 ? "，失败 " + info.Failed : "";
-            _progressText.Text = (info.Stage ?? "处理中") + device + "  |  采集 " + info.Collected + "/" + info.Total + "，完成 " + info.Completed + "/" + info.Total + failed;
+            Log("[进度] " + value + "% · " + (info.Stage ?? "处理中") + device + " · 采集 "
+                + info.Collected + "/" + info.Total + "，完成 " + info.Completed + "/" + info.Total + failed);
         }
 
         private void Log(string msg)
