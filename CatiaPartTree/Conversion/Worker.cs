@@ -300,7 +300,9 @@ namespace TxTools.CatiaPartTree.Conversion
             string extension = Path.GetExtension(source).ToLowerInvariant();
             bool step = extension == ".step" || extension == ".stp";
             bool nativeProduct = extension == ".catproduct";
+            bool threeDXml = extension == ".3dxml";
             var definitions = new Dictionary<string, MeshShape[]>(StringComparer.OrdinalIgnoreCase);
+            var skippedRepresentations = new Dictionary<string, (string Name, int Count, string Reason)>(StringComparer.OrdinalIgnoreCase);
             var shapes = new List<MeshShape>();
             long removed = 0;
             using (var reader = new BinaryReader(File.OpenRead(manifest)))
@@ -318,10 +320,25 @@ namespace TxTools.CatiaPartTree.Conversion
                     {
                         if (nativeProduct)
                             meshes = SourceMeshScene.ReadPart(path).shapes;
+                        else if (step)
+                            meshes = StepMeshReader.Read(path, name, source, digest).shapes;
                         else
-                            meshes = step ? StepMeshReader.Read(path, name, source, digest).shapes
-                                : ReadRepresentation(path, name, source, digest);
+                        {
+                            try { meshes = ReadRepresentation(path, name, source, digest); }
+                            catch (Exception error) when (threeDXml && (error is InvalidDataException ||
+                                error is NotSupportedException || error is InvalidOperationException ||
+                                error is XmlException || error is FormatException || error is OverflowException))
+                            {
+                                meshes = Array.Empty<MeshShape>();
+                                skippedRepresentations.Add(path, (name, 0, error.Message.Replace('\r', ' ').Replace('\n', ' ')));
+                            }
+                        }
                         definitions.Add(path, meshes);
+                    }
+                    if (skippedRepresentations.TryGetValue(path, out var skipped))
+                    {
+                        skippedRepresentations[path] = (skipped.Name, skipped.Count + 1, skipped.Reason);
+                        continue;
                     }
                     if (nativeProduct && meshes[0].sourceSha256 != partDigest)
                         throw new IOException("CATPart 文件与装配索引不一致：" + path);
@@ -343,6 +360,8 @@ namespace TxTools.CatiaPartTree.Conversion
                 }
             }
             if (SourceDigest.Hash(source) != digest) throw new IOException("装配源文件在转换期间发生变化。");
+            foreach (var skipped in skippedRepresentations.Values)
+                Console.WriteLine("3DXML-WARNING 已跳过 " + skipped.Name + "（" + skipped.Count + " 个实例）：" + skipped.Reason);
             if (shapes.Count == 0) throw new InvalidDataException("装配没有可写入 JT 的面几何。");
             if (removed != 0) Console.WriteLine("STEP-WARNING 已清理 " + removed + " 个在装配坐标或 JT 精度下退化的三角面。");
             return new SourceMeshScene { name = Path.GetFileNameWithoutExtension(source), sourceFile = source,

@@ -117,7 +117,7 @@ namespace TxTools.ResourceImporter
                 string worker = Path.Combine(Path.GetDirectoryName(typeof(ResourceConversion).Assembly.Location),
                     "CatiaPartTree", "TxTools.CatiaConverter.exe");
                 if (!File.Exists(worker)) throw new FileNotFoundException("缺少 JT 转换程序，请完整部署插件运行目录。", worker);
-                warnings.AddRange(RunConverter(worker, arguments, workspace, cancel));
+                warnings.AddRange(RunConverter(worker, arguments, workspace, cancel, warnings));
             }
             if (!File.Exists(jt) || new FileInfo(jt).Length < 105)
                 throw new IOException("转换程序未生成有效的 JT。");
@@ -153,16 +153,26 @@ namespace TxTools.ResourceImporter
             var definitions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (threeDXml)
             {
-                string issue = source.Parts.Values.Select(part => part.ConversionIssue).FirstOrDefault(message => message != null);
-                if (issue != null) throw new InvalidDataException(issue);
+                int representationIndex = 0;
                 using (var archive = ZipFile.OpenRead(file))
                 {
-                    foreach (string member in source.Parts.Values.Select(part => part.GeometryEntry).Distinct(StringComparer.OrdinalIgnoreCase))
+                    foreach (var group in source.Parts.GroupBy(pair => pair.Value.GeometryEntry, StringComparer.OrdinalIgnoreCase))
                     {
-                        string extension = ThreeDXmlSource.IsXmlRepresentation(member) ? ".3drep" : ".cgr";
-                        string extracted = Path.Combine(workspace, definitions.Count + extension);
-                        ThreeDXmlSource.ExtractGeometry(archive, member, extracted, cancel);
-                        definitions.Add(member, extracted);
+                        cancel.ThrowIfCancellationRequested();
+                        string issue = group.First().Value.ConversionIssue;
+                        if (issue == null)
+                        {
+                            string extension = ThreeDXmlSource.IsXmlRepresentation(group.Key) ? ".3drep" : ".cgr";
+                            string extracted = Path.Combine(workspace, representationIndex++ + extension);
+                            try
+                            {
+                                ThreeDXmlSource.ExtractGeometry(archive, group.Key, extracted, cancel);
+                                definitions.Add(group.Key, extracted);
+                            }
+                            catch (InvalidDataException error) { issue = error.Message; }
+                        }
+                        if (issue != null)
+                            warnings.Add("已跳过 " + InstanceName(nodes[group.First().Key]) + "（" + group.Count() + " 个实例）：" + issue);
                     }
                 }
             }
@@ -218,7 +228,8 @@ namespace TxTools.ResourceImporter
             foreach (var child in node.Children) IndexNodes(child, nodes);
         }
 
-        private static string[] RunConverter(string executable, IEnumerable<string> arguments, string workspace, CancellationToken cancel)
+        private static string[] RunConverter(string executable, IEnumerable<string> arguments, string workspace, CancellationToken cancel,
+            IReadOnlyCollection<string> preparationWarnings)
         {
             cancel.ThrowIfCancellationRequested();
             var start = new ProcessStartInfo(executable, string.Join(" ", arguments.Select(QuoteArgument)))
@@ -236,17 +247,17 @@ namespace TxTools.ResourceImporter
                     while (!process.WaitForExit(200)) cancel.ThrowIfCancellationRequested();
                     Task.WaitAll(error, output);
                     cancel.ThrowIfCancellationRequested();
-                    const string warningPrefix = "STEP-WARNING ";
                     var warnings = output.Result.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                        .Where(line => line.StartsWith(warningPrefix, StringComparison.Ordinal))
-                        .Select(line => line.Substring(warningPrefix.Length)).ToArray();
+                        .Where(line => line.StartsWith("STEP-WARNING ", StringComparison.Ordinal) ||
+                            line.StartsWith("3DXML-WARNING ", StringComparison.Ordinal))
+                        .Select(line => line.Substring(line.IndexOf(' ') + 1)).ToArray();
                     if (process.ExitCode != 0)
                     {
                         string detail = error.Result.Trim();
                         if (detail.Length == 0) detail = output.Result.Trim();
                         string failure = "JT 转换失败（退出码 " + process.ExitCode + "）";
                         throw new IOException(string.Join(Environment.NewLine,
-                            new[] { detail.Length == 0 ? failure : failure + "：" + detail }.Concat(warnings)));
+                            new[] { detail.Length == 0 ? failure : failure + "：" + detail }.Concat(preparationWarnings).Concat(warnings)));
                     }
                     return warnings;
                 }

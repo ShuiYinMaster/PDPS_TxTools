@@ -20,7 +20,7 @@
 | --- | --- |
 | JT | 原样封装独立 JT 文件 |
 | STEP / STP | 使用随插件部署的 OCCT STEP 读取器生成单个 JT。部分面细分失败时保留可用几何，文件行提示列出缺面数量。零件没有可用网格时跳过其对应实例 |
-| 3DXML | 将包内 CGR 或 XML 细分面合成为一个 JT |
+| 3DXML | 将包内可用的 CGR 或 XML 细分面合成为一个 JT。缺失、无法解析或没有可转换三角面的几何表示按实例跳过，文件行提示列出跳过项。整个装配没有可用面时导入失败 |
 | CGR / CATPart | 使用 CatiaPartTree 转换器读取 CGR 或 CATPart 内嵌几何缓存 |
 | CATProduct | 读取同目录的 `<文件名>.CATProduct.jtcoords.json`，校验源装配、引用文件及变换后合成为一个 JT |
 
