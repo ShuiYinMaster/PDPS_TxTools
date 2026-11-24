@@ -32,6 +32,7 @@ namespace TxTools.ExportByColor
         private CheckBox _mergeMeshes;
         private RichTextBox _rtbLog;
         private Button _btnRun;
+        private Button _btnEndModeling;
         private ProgressBar _progress;
         private int _lastProgressBucket;
         private string _lastLogMessage;
@@ -218,6 +219,7 @@ namespace TxTools.ExportByColor
             {
                 _cgrMode = mode;
                 _reconstructCylinders.Enabled = mode.SupportsCylinders;
+                UpdateEndModelingAction();
             });
             cgrOptions.Controls.Add(_reconstructCylinders);
             var meshTab = new TabPage("STL / OBJ / PLY / FBX");
@@ -238,7 +240,10 @@ namespace TxTools.ExportByColor
             _exportTabs.TabPages.Add(meshTab);
             _exportTabs.SelectedIndex = ReadPreference("ExportTab") == "mesh" ? 1 : 0;
             _exportTabs.SelectedIndexChanged += (s, e) =>
+            {
                 WritePreference("ExportTab", _exportTabs.SelectedIndex == 1 ? "mesh" : "cgr");
+                UpdateEndModelingAction();
+            };
             content.Controls.Add(_exportTabs);
             FormUiKit.FillWidthInFlow(content, _exportTabs);
 
@@ -322,12 +327,16 @@ namespace TxTools.ExportByColor
             btnClear.Click += (s, e) => ClearGrid();
             resourceActions.Controls.Add(btnEnum);
             resourceActions.Controls.Add(btnClear);
+            _btnEndModeling = FormUiKit.MkFuncButton("结束建模", Theme.BtnSecondary);
+            _btnEndModeling.Click += (s, e) => EndSelectedModeling();
+            resourceActions.Controls.Add(_btnEndModeling);
             actions.Controls.Add(resourceActions, 0, 0);
 
             _btnRun = FormUiKit.MkButton("开始导出", true);
             _btnRun.Anchor = AnchorStyles.Right;
             _btnRun.Click += (s, e) => RunExport();
             actions.Controls.Add(_btnRun, 1, 0);
+            UpdateEndModelingAction();
 
             return actions;
         }
@@ -387,9 +396,17 @@ namespace TxTools.ExportByColor
             return list;
         }
 
-        private void RunExport()
+        private void UpdateEndModelingAction()
         {
-            List<ITxObject> picked;
+            if (_btnEndModeling == null) return;
+            bool jt = _exportTabs.SelectedIndex == 0 && _cgrMode?.Format == "JT_CGR";
+            _btnEndModeling.Visible = jt;
+            _btnEndModeling.Enabled = jt && _btnRun.Enabled;
+        }
+
+        private bool TryGetExportResources(out List<ITxObject> picked)
+        {
+            picked = null;
             if (_chkAllVisible != null && _chkAllVisible.Checked)
             {
                 try
@@ -400,12 +417,12 @@ namespace TxTools.ExportByColor
                 catch (Exception ex)
                 {
                     Log("[错误] 枚举可见资源失败: " + ex.Message);
-                    return;
+                    return false;
                 }
                 if (picked.Count == 0)
                 {
                     Log("[提示] 场景中没有可见资源可导出。");
-                    return;
+                    return false;
                 }
             }
             else
@@ -414,6 +431,60 @@ namespace TxTools.ExportByColor
                 if (picked.Count == 0)
                 {
                     Log("[提示] 请先在 PS 中拾取设备/组合。");
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private void EndSelectedModeling()
+        {
+            if (!_btnRun.Enabled || !TryGetExportResources(out var picked)) return;
+            bool listenToPick = _objGrid.ListenToPick;
+            _btnRun.Enabled = false;
+            UpdateEndModelingAction();
+            try
+            {
+                var opened = ExportByColorService.FindOpenJtModelingResources(picked);
+                if (opened.Count == 0)
+                {
+                    Log("[JT] 当前导出范围内没有处于建模状态的资源。");
+                    return;
+                }
+                _objGrid.ListenToPick = false;
+                ExportByColorService.EndJtModeling(opened, Log);
+            }
+            catch (Exception ex)
+            {
+                Log("[JT] 结束建模失败：" + ex.Message);
+            }
+            finally
+            {
+                _objGrid.ListenToPick = listenToPick;
+                _btnRun.Enabled = true;
+                UpdateEndModelingAction();
+            }
+        }
+
+        private void RunExport()
+        {
+            if (!TryGetExportResources(out var picked)) return;
+            var route = _exportTabs.SelectedIndex == 0 ? _cgrMode : _meshFormat;
+            string format = route.Format;
+            if (format == "JT_CGR")
+            {
+                try
+                {
+                    var opened = ExportByColorService.FindOpenJtModelingResources(picked);
+                    if (opened.Count != 0)
+                    {
+                        Log("[JT] " + opened.Count + " 个资源仍处于建模状态。请点击「结束建模」保存，再开始导出。");
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log("[JT] 检查建模状态失败：" + ex.Message);
                     return;
                 }
             }
@@ -425,8 +496,6 @@ namespace TxTools.ExportByColor
                 return;
             }
             string origin = originLocation == null ? "" : _frameOrigin.Text.Trim();
-            var route = _exportTabs.SelectedIndex == 0 ? _cgrMode : _meshFormat;
-            string format = route.Format;
             bool reconstructCylinders = route.SupportsCylinders && _reconstructCylinders.Checked;
             CgrBackend cgrBackend = reconstructCylinders ? CgrBackend.LineFace : route.Backend;
             string output = null;
@@ -455,6 +524,7 @@ namespace TxTools.ExportByColor
                 }
             }
             _btnRun.Enabled = false;
+            UpdateEndModelingAction();
             _progress.Value = 0;
             _lastProgressBucket = -1;
             Log("=== 开始导出 " + format + " ===");
@@ -469,6 +539,7 @@ namespace TxTools.ExportByColor
                     BeginInvoke(new Action(delegate ()
                     {
                         _btnRun.Enabled = true;
+                        UpdateEndModelingAction();
                         if (ok) _progress.Value = 100;
                         Log((ok ? "[完成] " : "[错误] ") + msg);
                     }));
@@ -491,6 +562,7 @@ namespace TxTools.ExportByColor
             catch (Exception ex)
             {
                 _btnRun.Enabled = true;
+                UpdateEndModelingAction();
                 Log("[错误] " + ex.Message);
             }
         }

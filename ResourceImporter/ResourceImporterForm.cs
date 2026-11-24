@@ -29,6 +29,7 @@ namespace TxTools.ResourceImporter
             Dock = DockStyle.Fill, HideSelection = false, ShowNodeToolTips = true, AllowDrop = true
         };
         private readonly Button _add, _prototype, _remove, _assign, _import, _cancel;
+        private readonly CheckBox _skipHidden = FormUiKit.MkCheckBox("跳过隐藏几何体（3DXML / STEP）");
         private readonly Label _status = new Label { AutoSize = true, Anchor = AnchorStyles.Left };
         private readonly ProgressBar _progressBar = new ProgressBar
         {
@@ -40,7 +41,7 @@ namespace TxTools.ResourceImporter
         private ListViewItem[] _prototypeRows = Array.Empty<ListViewItem>();
         private CancellationTokenSource _active;
         private ResourceImportItem[] _dragItems;
-        private bool _scaled;
+        private bool _scaled, _applyingBatch;
 
         internal ResourceImporterForm(ResourceImportSession session)
         {
@@ -55,10 +56,11 @@ namespace TxTools.ResourceImporter
             _files.Columns.Add("文件名称");
             _files.Columns.Add("设备原型");
             _files.SmallImageList = _images;
-            var frame = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3, Padding = new Padding(10) };
+            var frame = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 4, Padding = new Padding(10) };
             frame.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
             frame.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
             frame.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            frame.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             frame.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             frame.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             frame.Controls.Add(Pane("待导入文件", "添加或拖入文件，从列表空白处拖动可框选。", _files,
@@ -70,9 +72,11 @@ namespace TxTools.ResourceImporter
             footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             footer.Controls.Add(_status, 0, 0);
             footer.Controls.Add(ButtonRow(_import, _cancel), 1, 0);
-            frame.Controls.Add(_progressBar, 0, 1);
+            frame.Controls.Add(_skipHidden, 0, 1);
+            frame.SetColumnSpan(_skipHidden, 2);
+            frame.Controls.Add(_progressBar, 0, 2);
             frame.SetColumnSpan(_progressBar, 2);
-            frame.Controls.Add(footer, 0, 2);
+            frame.Controls.Add(footer, 0, 3);
             frame.SetColumnSpan(footer, 2);
             Controls.Add(frame);
             WireEvents();
@@ -172,9 +176,10 @@ namespace TxTools.ResourceImporter
             _import.Click += ImportClick;
             _cancel.Click += (s, e) =>
             {
+                if (_active == null || _applyingBatch) return;
                 _cancel.Enabled = false;
                 _status.Text = "正在取消导入…";
-                _active?.Cancel();
+                _active.Cancel();
             };
             _files.Resize += (s, e) => SizeColumns();
             _files.DrawColumnHeader += (s, e) => e.DrawDefault = true;
@@ -504,11 +509,13 @@ namespace TxTools.ResourceImporter
             bool idle = _active == null;
             var selected = SelectedItems();
             _add.Enabled = idle;
+            _skipHidden.Enabled = idle;
             _remove.Enabled = _prototype.Enabled = idle && selected.Length > 0;
             _assign.Enabled = idle && selected.Length > 0 && _folders.SelectedNode?.Tag is string;
             _import.Enabled = idle && Rows().Any(row => !((ResourceImportItem)row.Tag).SceneWriteAttempted);
-            _cancel.Visible = !idle;
-            _cancel.Enabled = !idle && !_active.IsCancellationRequested;
+            bool converting = !idle && !_applyingBatch;
+            _cancel.Visible = converting;
+            _cancel.Enabled = converting && !_active.IsCancellationRequested;
         }
 
         private async void ImportClick(object sender, EventArgs e)
@@ -526,6 +533,8 @@ namespace TxTools.ResourceImporter
                 SetStatus("请补齐文件的原型和 COJT 目录后再导入");
                 return;
             }
+            var items = rows.Select(row => (ResourceImportItem)row.Tag).ToArray();
+            bool skipHidden = _skipHidden.Checked;
             var active = _active = new CancellationTokenSource();
             _progressBar.Value = 0;
             _progressBar.Maximum = rows.Length;
@@ -533,48 +542,40 @@ namespace TxTools.ResourceImporter
             _progressBar.Style = rows.Length == 1 ? ProgressBarStyle.Marquee : ProgressBarStyle.Continuous;
             _progressBar.Visible = true;
             UpdateControls();
-            int imported = 0, partial = 0, failed = 0, review = 0;
             string stop = null;
             try
             {
-                for (int index = 0; index < rows.Length; index++)
+                _status.Text = "准备批量转换 · " + rows.Length + " 个文件";
+                var conversionProgress = new Progress<int>(completed =>
                 {
-                    active.Token.ThrowIfCancellationRequested();
-                    _session.EnsureDocument();
-                    var row = rows[index];
-                    var item = (ResourceImportItem)row.Tag;
-                    item.Error = null;
-                    item.Warnings = Array.Empty<string>();
-                    string current = (index + 1) + "/" + rows.Length + " · ";
-                    try
-                    {
-                        await _session.ImportAsync(item, active.Token, progress =>
-                        {
-                            _status.Text = current + progress;
-                            _status.Update();
-                        });
-                        imported++;
-                        if (item.Warnings.Length != 0) partial++;
-                    }
-                    catch (OperationCanceledException) { throw; }
-                    catch (Exception error)
-                    {
-                        item.Error = error.GetBaseException().Message;
-                        if (item.SceneWriteAttempted) review++;
-                        else failed++;
-                    }
-                    finally { RefreshRow(row); }
-                    if (rows.Length > 1) _progressBar.Value = index + 1;
-                }
+                    if (_active != active || _applyingBatch || active.IsCancellationRequested) return;
+                    if (rows.Length > 1) _progressBar.Value = completed;
+                    _status.Text = rows.Length == 1 ? "转换 JT · " + items[0].Name :
+                        "转换批次 · 已处理 " + completed + "/" + rows.Length;
+                });
+                await _session.ImportBatchAsync(items, skipHidden, active.Token, conversionProgress, phase =>
+                {
+                    _applyingBatch = true;
+                    _progressBar.Style = ProgressBarStyle.Marquee;
+                    UpdateControls();
+                    _status.Text = phase;
+                    _status.Update();
+                });
             }
-            catch (OperationCanceledException) { stop = "已取消剩余导入"; }
+            catch (OperationCanceledException) { stop = "已取消导入"; }
             catch (Exception error) { stop = error.Message; }
             finally
             {
                 _active = null;
+                _applyingBatch = false;
                 active.Dispose();
                 _progressBar.Visible = false;
                 _progressBar.Style = ProgressBarStyle.Continuous;
+                foreach (var row in rows) RefreshRow(row);
+                int imported = items.Count(item => item.Imported);
+                int partial = items.Count(item => item.Imported && item.Warnings.Length != 0);
+                int failed = items.Count(item => !item.SceneWriteAttempted && item.Error != null);
+                int review = items.Count(item => item.SceneWriteAttempted && !item.Imported);
                 SetStatus((stop == null ? "" : stop + " · ") + "已导入 " + imported + " · 失败 " + failed +
                     " · 待核对 " + review + (partial == 0 ? "" : " · " + partial + " 个文件有转换提示") +
                     (failed + review + partial == 0 ? "" : "（悬停文件查看原因）"));
@@ -585,7 +586,7 @@ namespace TxTools.ResourceImporter
         {
             if (_active != null)
             {
-                _active.Cancel();
+                if (!_applyingBatch) _active.Cancel();
                 e.Cancel = true;
             }
             base.OnFormClosing(e);

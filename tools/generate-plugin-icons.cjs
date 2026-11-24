@@ -21,6 +21,7 @@ const art = {
   MechArena: `<path d="M16 2l12 5v10c0 6 -7 11 -12 13C11 28 4 23 4 17V7z" fill="#bfcad0" stroke="#596b76" stroke-width="1.3"/>${rect(9,9,14,11,'#edf3f4')}${line('M12 14h2m4 0h2','#1caabd',2)}${line('M12 23h8M16 5v4','#596b76',1.5)}`,
   SnakeGame: `${rect(3,3,26,26,'#edf2f3')}${line('M9 22h6v-7h7V9h-7','#79b93e',5)}${dot(15,9,3.2,'#8dc74f')}${dot(15,8,0.6,'#273b42')}${dot(8,9,2,'#d79a62')}`,
   WeldPointMatrix: `${rect(3,3,26,26,'#edf2f3')}${line('M12 4v24M21 4v24M4 12h24M4 21h24','#9eacb4',1)}${dot(8,8)}${dot(17,8,2,'#20a7ba')}${dot(25,17)}${dot(8,25,2,'#20a7ba')}${dot(17,17)}`,
+  WeldPointImporter: `${rect(3,4,19,23,'#edf2f3')}${line('M7 8v15h12M7 23l11 -13','#8b9aa3',1.4)}${dot(12,18,2)}${dot(18,10,2)}${arrow('M20 19h10m-4 -4 4 4 -4 4')}`,
   SyncLibPath: `${folder(2,5,20,17)}${arrow('M13 7c8 -5 16 0 15 8m-3 -4 3 4 2 -4')}${arrow('M27 24c-5 5 -13 3 -14 -3m-2 4 2 -4 4 1','#79b93e')}`,
   SyncToSelectedComponent: `${folder(2,2,15,12)}${cube(16,18,13,'#9dc97d')}${arrow('M10 19v6h5m-3 -3 3 3 -3 3')}`,
   DeviceZAligner: `${line('M3 28h26','#596b76',2)}${cube(5,6,10)}${cube(19,16,10,'#9dc97d')}${arrow('M14 2v14m-3 -3 3 3 3 -3')}`,

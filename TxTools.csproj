@@ -620,6 +620,17 @@
       <SubType>Component</SubType>
     </Compile>
     <Compile Include="WeldSpotGrouper\WeldSpotGrouperCmd.cs" />
+    <Compile Include="WeldPointImporter\CatiaPointReader.cs" />
+    <Compile Include="WeldPointImporter\PointData.cs" />
+    <Compile Include="WeldPointImporter\PointFiles.cs" />
+    <Compile Include="WeldPointImporter\PointInformationBars.cs" />
+    <Compile Include="WeldPointImporter\PointPreview.cs" />
+    <Compile Include="WeldPointImporter\PsPointWriter.cs" />
+    <Compile Include="WeldPointImporter\ThreeDXmlPoints.cs" />
+    <Compile Include="WeldPointImporter\WeldPointImporterCommand.cs" />
+    <Compile Include="WeldPointImporter\WeldPointImporterForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="CatiaPartTree\Core\TreeEditNode.cs" />
     <Compile Include="CatiaPartTree\Core\CatiaImportSource.cs" />
     <Compile Include="CatiaPartTree\Core\ThreeDXmlSource.cs" />
@@ -1626,6 +1637,7 @@
     <EmbeddedResource Include="image\MechArena.png" />
     <EmbeddedResource Include="image\SnakeGame.png" />
     <EmbeddedResource Include="image\WeldPointMatrix.png" />
+    <EmbeddedResource Include="image\WeldPointImporter.png" />
     <EmbeddedResource Include="image\SyncLibPath.png" />
     <EmbeddedResource Include="image\SyncToSelectedComponent.png" />
     <EmbeddedResource Include="image\DeviceZAligner.png" />

@@ -16,7 +16,7 @@ namespace TxTools.CatiaPartTree.Core
 {
     internal static class StepSource
     {
-        internal static CatiaImportSource Read(string path, CancellationToken cancel = default(CancellationToken))
+        internal static CatiaImportSource Read(string path, CancellationToken cancel = default(CancellationToken), bool readVisibility = false)
         {
             path = Path.GetFullPath(path);
             string extension = Path.GetExtension(path);
@@ -30,7 +30,7 @@ namespace TxTools.CatiaPartTree.Core
                 using (var stream = File.OpenRead(path))
                 {
                     string tree = Path.Combine(staging, "tree.xml");
-                    RunReader(cancel, "tree", path, tree);
+                    RunReader(cancel, readVisibility ? "visible-tree" : "tree", path, tree);
                     return ReadTree(tree, path, CatiaImportSource.Hash(stream));
                 }
             }
@@ -48,7 +48,7 @@ namespace TxTools.CatiaPartTree.Core
             if (roots.Length == 0) throw new InvalidDataException("STEP 文件没有可读取的产品。");
             var source = new CatiaImportSource { DocumentPath = path };
             int count = 0;
-            StructureNode ReadNode(XElement element, string key, Frame12 parent, int depth)
+            StructureNode ReadNode(XElement element, string key, Frame12 parent, int depth, bool parentHidden)
             {
                 if (depth > 100 || ++count > 100000) throw new InvalidDataException("STEP 装配层级或实例数超限。");
                 if (element.Name != "assembly" && element.Name != "part")
@@ -58,13 +58,14 @@ namespace TxTools.CatiaPartTree.Core
                 string matrix = (string)element.Attribute("frame") ?? "";
                 var frame = parent.ThenChild(new Frame12(matrix.Split((char[])null, StringSplitOptions.RemoveEmptyEntries)
                     .Select(value => double.Parse(value, CultureInfo.InvariantCulture)).ToArray()));
+                bool hidden = parentHidden || (string)element.Attribute("hidden") == "1";
                 var node = new StructureNode { Key = key, SourceName = string.IsNullOrWhiteSpace(name) ? definitionName : name,
                     PartNumber = definitionName, IsContainer = element.Name == "assembly" };
                 if (node.IsContainer)
                 {
                     int index = 0;
                     foreach (var child in element.Elements())
-                        node.Add(ReadNode(child, key + "/" + ++index, frame, depth + 1));
+                        node.Add(ReadNode(child, key + "/" + ++index, frame, depth + 1, hidden));
                 }
                 else
                 {
@@ -72,17 +73,18 @@ namespace TxTools.CatiaPartTree.Core
                     if (string.IsNullOrEmpty(id) || id.Length > 100 || id.Any(c => (c < '0' || c > '9') && c != '_') || element.HasElements)
                         throw new InvalidDataException("STEP 零件引用无效。");
                     source.Parts.Add(key, new CatiaSourcePart { File = path, ReferenceId = id, StepDefinition = id, InstancePath = key,
-                        Frame = frame.Components, ConversionIssue = (string)element.Attribute("mesh") == "1" ? null : "STEP 零件没有可细分的面。" });
+                        Frame = frame.Components, Hidden = hidden,
+                        ConversionIssue = (string)element.Attribute("mesh") == "1" ? null : "STEP 零件没有可细分的面。" });
                 }
                 return node;
             }
             if (roots.Length == 1)
-                source.Root = ReadNode(roots[0], "step/1", Frame12.Identity, 0);
+                source.Root = ReadNode(roots[0], "step/1", Frame12.Identity, 0, false);
             else
             {
                 source.Root = new StructureNode { Key = "step", SourceName = Path.GetFileNameWithoutExtension(path), IsContainer = true };
                 for (int i = 0; i < roots.Length; i++)
-                    source.Root.Add(ReadNode(roots[i], "step/" + (i + 1), Frame12.Identity, 1));
+                    source.Root.Add(ReadNode(roots[i], "step/" + (i + 1), Frame12.Identity, 1, false));
             }
             source.Files.Add(path, hash);
             return source;
@@ -95,11 +97,12 @@ namespace TxTools.CatiaPartTree.Core
             return path;
         }
 
-        internal static void PrepareMeshes(string source, IEnumerable<string> definitions, string staging, CancellationToken cancel)
+        internal static void PrepareMeshes(string source, IEnumerable<string> definitions, string staging, CancellationToken cancel,
+            bool skipHidden = false)
         {
             string list = Path.Combine(staging, "parts.txt");
             File.WriteAllLines(list, definitions, Encoding.ASCII);
-            RunReader(cancel, "mesh", source, list, staging);
+            RunReader(cancel, skipHidden ? "visible-mesh" : "mesh", source, list, staging);
         }
 
         internal static string MeshIssue(string meshPath)

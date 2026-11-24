@@ -1,12 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Utilities;
 using Tecnomatix.Planning;
 using TxTools.CatiaPartTree.Core;
+using TxTools.CatiaPartTree.Ps;
 using TxTools.Common;
 using TxTools.CrossEnvIO;
 
@@ -25,6 +27,20 @@ namespace TxTools.ResourceImporter
 
     internal sealed class ResourceImportSession
     {
+        private sealed class BatchEntry
+        {
+            internal BatchEntry(ResourceImportItem item, string destination)
+            {
+                Item = item;
+                Destination = destination;
+            }
+
+            internal readonly ResourceImportItem Item;
+            internal readonly string Destination;
+            internal string StagedPackage, PrototypeId;
+        }
+
+        internal static int ConversionParallelism => Environment.ProcessorCount;
         private readonly TxDocument _document;
         private readonly long _generation;
         internal readonly string Library;
@@ -64,52 +80,145 @@ namespace TxTools.ResourceImporter
             }
         }
 
-        internal async Task ImportAsync(ResourceImportItem item, CancellationToken cancel, Action<string> progress)
+        internal async Task ImportBatchAsync(IReadOnlyList<ResourceImportItem> items, bool skipHidden, CancellationToken cancel,
+            IProgress<int> conversionProgress, Action<string> sceneProgress)
         {
+            foreach (var item in items)
+            {
+                item.Error = null;
+                item.Warnings = Array.Empty<string>();
+            }
             EnsureDocument();
-            if (item.SceneWriteAttempted || item.Prototype == null || item.Folder == null)
-                throw new InvalidOperationException("请为每个待导入文件指定原型和 COJT 目录。");
-            CheckFolder(item.Folder);
-            string path = CatiaLibraryDestination.Package(item.Folder, item.File, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
-            string issue = LibraryInsertion.SupportIssue(path);
-            if (issue != null) throw new IOException(issue);
-            string stage = null;
+            var entries = PlanBatch(items, cancel);
+            int completed = items.Count - entries.Count;
+            var progressGate = new object();
+            conversionProgress.Report(completed);
             try
             {
-                progress("准备 JT · " + item.Name);
-                var prepared = await Task.Run(() => ResourceConversion.PreparePackage(item.File, path, cancel), cancel);
-                string package = prepared.Package;
-                stage = Path.GetDirectoryName(package);
-                item.Warnings = prepared.Warnings;
+                await CatiaImportSession.RunConversionBatchAsync(entries, ConversionParallelism, cancel, entry =>
+                {
+                    try
+                    {
+                        var prepared = ResourceConversion.PreparePackage(entry.Item.File, entry.Destination, cancel, skipHidden);
+                        entry.StagedPackage = prepared.Package;
+                        entry.Item.Warnings = prepared.Warnings;
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception error) { entry.Item.Error = error.GetBaseException().Message; }
+                    finally { lock (progressGate) conversionProgress.Report(++completed); }
+                });
                 cancel.ThrowIfCancellationRequested();
                 EnsureDocument();
-                CheckFolder(item.Folder);
-                progress("写入原型并插入根树 · " + item.Name);
-                SavePrototype(item, package);
-                using (var undo = SceneUndoScope.Begin(_document, "导入资源 · " + item.Name))
+                var converted = entries.Where(entry => entry.StagedPackage != null).ToArray();
+                if (converted.Length != 0) ImportConverted(converted, sceneProgress);
+            }
+            catch (Exception error)
+            {
+                foreach (var entry in entries)
                 {
-                    undo.EnsureDocument();
-                    Directory.Move(package, path);
-                    item.Package = path;
-                    item.SceneWriteAttempted = true;
-                    var result = ComponentIO.LoadCojts(new[] { path }, Library, _ => undo.EnsureDocument(), true)[0];
-                    undo.EnsureDocument();
-                    ComponentIO.VerifyLoadedCojt(result, path, Library);
-                    result.Instance.Name = Path.GetFileNameWithoutExtension(item.File);
-                    var planning = (result.Instance as ITxProcessModelObject)?.PlanningRepresentation;
-                    var prototype = (planning as ITxPlanningInstance)?.Prototype ?? planning as ITxPlanningPrototype;
-                    if (prototype != null && !string.Equals(prototype.PlanningType, item.Prototype.Type, StringComparison.OrdinalIgnoreCase))
-                        throw new IOException("场景原型为 " + prototype.PlanningType + "，请选择该实例核对原型。");
+                    if (entry.Item.SceneWriteAttempted && !entry.Item.Imported && entry.Item.Error == null)
+                        entry.Item.Error = error.Message;
                 }
-                item.Imported = true;
+                throw;
             }
             finally
             {
-                ResourceConversion.DeleteWorkDirectory(stage);
+                foreach (var entry in entries) CleanStage(entry);
             }
         }
 
-        private static void SavePrototype(ResourceImportItem item, string package)
+        private List<BatchEntry> PlanBatch(IReadOnlyList<ResourceImportItem> items, CancellationToken cancel)
+        {
+            var entries = new List<BatchEntry>(items.Count);
+            var reserved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var supportIssues = new Dictionary<bool, string>();
+            foreach (var item in items)
+            {
+                cancel.ThrowIfCancellationRequested();
+                try
+                {
+                    if (item.SceneWriteAttempted || item.Prototype == null || item.Folder == null)
+                        throw new InvalidOperationException("请为每个待导入文件指定原型和 COJT 目录。");
+                    CheckFolder(item.Folder);
+                    string path = CatiaLibraryDestination.Package(item.Folder, item.File, reserved);
+                    bool compatibility = LibraryInsertion.NeedsCompatibility(path);
+                    if (!supportIssues.TryGetValue(compatibility, out string issue))
+                    {
+                        issue = LibraryInsertion.SupportIssue(path);
+                        supportIssues.Add(compatibility, issue);
+                    }
+                    if (issue != null) throw new IOException(issue);
+                    entries.Add(new BatchEntry(item, path));
+                }
+                catch (Exception error) { item.Error = error.GetBaseException().Message; }
+            }
+            return entries;
+        }
+
+        private void ImportConverted(BatchEntry[] converted, Action<string> progress)
+        {
+            progress("准备 COJT · " + converted.Length + " 个文件");
+            var ready = new List<BatchEntry>(converted.Length);
+            foreach (var entry in converted)
+            {
+                EnsureDocument();
+                try
+                {
+                    CheckFolder(entry.Item.Folder);
+                    entry.PrototypeId = SavePrototype(entry.Item, entry.StagedPackage);
+                    Directory.Move(entry.StagedPackage, entry.Destination);
+                    entry.Item.Package = entry.Destination;
+                    ready.Add(entry);
+                }
+                catch (Exception error) { entry.Item.Error = error.GetBaseException().Message; }
+            }
+            if (ready.Count == 0) return;
+
+            progress("连续插入根树 · " + ready.Count + " 个资源");
+            using (var undo = SceneUndoScope.Begin(_document, "导入资源 · " + ready.Count + " 个"))
+            {
+                var paths = ready.Select(entry => entry.Destination).ToArray();
+                var loaded = ComponentIO.LoadCojts(paths, Library, index =>
+                {
+                    undo.EnsureDocument();
+                    ready[index].Item.SceneWriteAttempted = true;
+                }, allowRoot: true);
+
+                progress("统一校验 · " + ready.Count + " 个资源");
+                for (int i = 0; i < ready.Count; i++)
+                {
+                    undo.EnsureDocument();
+                    var entry = ready[i];
+                    try
+                    {
+                        ComponentIO.VerifyLoadedCojt(loaded[i], entry.Destination, Library);
+                        VerifyPrototype(entry, loaded[i].Instance);
+                        entry.Item.Imported = true;
+                    }
+                    catch (Exception error) { entry.Item.Error = error.GetBaseException().Message; }
+                }
+            }
+        }
+
+        private static void CleanStage(BatchEntry entry)
+        {
+            // A package may already be referenced once the SDK call has begun.
+            if (entry.Item.Package == entry.Destination && !entry.Item.SceneWriteAttempted)
+            {
+                try
+                {
+                    Directory.Move(entry.Destination, entry.StagedPackage);
+                    entry.Item.Package = null;
+                }
+                catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
+                {
+                    entry.Item.Error = "尚未插入，未能收回 COJT：" + error.Message;
+                }
+            }
+            ResourceConversion.DeleteWorkDirectory(Path.GetDirectoryName(entry.StagedPackage));
+        }
+
+        private static string SavePrototype(ResourceImportItem item, string package)
         {
             var manager = new TxTunePmDocumentManager();
             var data = DevicePrototypes.CreateTargetData(new TransferPackage
@@ -118,9 +227,21 @@ namespace TxTools.ResourceImporter
                 Prototype = new DevicePrototypeData { Type = item.Prototype.Type, Family = ResourcePrototype.Family }
             });
             manager.SavePrototypeDataToDocument(package, data);
-            var persisted = manager.LoadPrototypeDataFromDocument(package);
-            if (persisted == null || persisted.ExternalId != data.ExternalId ||
-                persisted.Type != data.Type || persisted.Family != data.Family)
+            return data.ExternalId;
+        }
+
+        private static void VerifyPrototype(BatchEntry entry, ITxObject instance)
+        {
+            var item = entry.Item;
+            instance.Name = Path.GetFileNameWithoutExtension(item.File);
+            var planning = (instance as ITxProcessModelObject)?.PlanningRepresentation;
+            var prototype = (planning as ITxPlanningInstance)?.Prototype ?? planning as ITxPlanningPrototype;
+            if (prototype != null && !string.Equals(prototype.PlanningType, item.Prototype.Type, StringComparison.OrdinalIgnoreCase))
+                throw new IOException("场景原型为 " + prototype.PlanningType + "，请选择该实例核对原型。");
+
+            var persisted = new TxTunePmDocumentManager().LoadPrototypeDataFromDocument(entry.Destination);
+            if (persisted == null || persisted.ExternalId != entry.PrototypeId ||
+                persisted.Type != item.Prototype.Type || persisted.Family != ResourcePrototype.Family)
                 throw new IOException("COJT 原型回读校验失败：" + item.Prototype.Type);
         }
     }

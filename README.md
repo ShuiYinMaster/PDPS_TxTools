@@ -1,6 +1,6 @@
 # TxTools — Tecnomatix Process Simulate / PDPS 工程插件集
 
-[English](README.en.md) · [功能地图](#一项目概述) · [安装与注册](#三快速安装与注册) · [23 个插件](#四主要插件与功能简介) · [使用流程](#五典型使用流程示例) · [更新日志](#十三更新日志)
+[English](README.en.md) · [功能地图](#一项目概述) · [安装与注册](#三快速安装与注册) · [24 个插件](#四主要插件与功能简介) · [使用流程](#五典型使用流程示例) · [更新日志](#十三更新日志)
 
 ![TxTools：机器人焊接仿真与离线编程工具集，机器人图形为示意](docs/assets/tx-tools-banner.svg)
 
@@ -8,7 +8,7 @@
 
 **C# plugins for Siemens Tecnomatix Process Simulate (PDPS)** — robotic welding, offline programming, weld path planning, reachability checks, CATIA / Excel export, AI recipes and MCP integration.
 
-**23 个模块** · **PS 2402 SDK** · **.NET Framework 4.8 / x64** · **[MIT](LICENSE)**
+**24 个模块** · **PS 2402 SDK** · **.NET Framework 4.8 / x64** · **[MIT](LICENSE)**
 
 ## 常用任务 / Common workflows
 
@@ -17,6 +17,7 @@
 | 为焊接操作生成进出枪点和过渡路径 | [AutoPath](AutoPath/README.md)：准备干涉集，按操作生成 Via，查看失败段与警告 |
 | 检查机器人焊点可达性和轴余量 | [RobotReachabilityChecker](RobotReachabilityChecker/README.md)：可达性、限位、静态干涉检查 |
 | 更新、分配、镜像或分组焊点 | [WeldSpotAllocator](WeldSpotAllocator/README.md) · [WeldSpotGrouper](WeldSpotGrouper/README.md) · [WeldPointMatrix](WeldPointMatrix/README.md) |
+| 从 CATIA 或文件取点并创建焊点 | [WeldPointImporter](WeldPointImporter/README.md) |
 | 从曲线建模，或沿基线生成围栏 | [LineToSolid](LineToSolid/README.md) · [AutoFance](AutoFance/README.md) |
 | 导出焊枪、颜色几何和评审资料 | [ExportGun](ExportGun/README.md) · [ExportByColor](ExportByColor/README.md) · [WeldAnnotator](WeldAnnotator/README.md) |
 | 迁移工程结构、组件和焊点 | [CrossEnvIO](CrossEnvIO/README.md) · [CatiaPartTree](CatiaPartTree/README.md) |
@@ -93,7 +94,7 @@ flowchart LR
 
 详见 [TxAgent 使用与开发说明](Agent/README.md)。
 
-### 全部 23 个模块
+### 全部 24 个模块
 
 | 类别 | 模块 | 工程用途 |
 |---|---|---|
@@ -104,6 +105,7 @@ flowchart LR
 | 焊点与工艺 | [WeldSpotAllocator](WeldSpotAllocator/README.md) | 焊点更新、分配、参数复制与镜像 |
 | 焊点与工艺 | [WeldSpotGrouper](WeldSpotGrouper/README.md) | 快速分序：按零件层级或实例组合预览工序并分配焊点 |
 | 焊点与工艺 | [WeldPointMatrix](WeldPointMatrix/README.md) | 多操作点位矩阵、新增与移动点位 |
+| 焊点与工艺 | [WeldPointImporter](WeldPointImporter/README.md) | CATIA 与文件取点、坐标预览、重复点筛查、按世界坐标批量创建 |
 | 焊点与工艺 | [WeldAnnotator](WeldAnnotator/README.md) | PS 视口截图、焊点标注与 Excel 评审资料 |
 | 几何与布局 | [LineToSolid](LineToSolid/README.md) | 曲线生成矩形或圆形截面实体 |
 | 几何与布局 | [AutoFance](AutoFance/README.md) | 沿基线生成网片、立柱和可选底板 |

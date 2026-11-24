@@ -591,12 +591,17 @@ namespace TxTools.ExportByColor
                     Guid.NewGuid().ToString("N").Substring(0, 8));
                 try
                 {
+                    var devices = OnPsJt(() =>
+                    {
+                        if (FindOpenJtModelingResources(picked).Count != 0)
+                            throw new InvalidOperationException("选中的资源仍处于建模状态。请先点击「结束建模」，再开始 JT 导出。");
+                        return ExpandJtPicked(picked, onLog);
+                    });
+                    if (devices.Count == 0) throw new InvalidOperationException("没有可转换的设备");
                     string error;
                     if (!Connect(out error)) throw new InvalidOperationException(error);
                     EnsureProductDocument(onLog);
                     Directory.CreateDirectory(workDir);
-                    var devices = OnPsJt(() => ExpandJtPicked(picked, onLog));
-                    if (devices.Count == 0) throw new InvalidOperationException("没有可转换的设备");
                     var progress = new ExportProgressState(devices.Count);
                     int workers = JtDirectBridge.ConversionWorkers;
                     string decoder = Path.Combine(Path.GetDirectoryName(typeof(ExportByColorService).Assembly.Location),
@@ -615,11 +620,13 @@ namespace TxTools.ExportByColor
                             if (result.Error != null && item.NativeFallback != null)
                             {
                                 var directError = result.Error;
-                                SafeLog(onLog, "[JT 兼容回退] " + result.ExportName + "："
-                                    + directError.Message + "；尝试使用 PS 原生三角网格。");
-                                progress.Report(onProgress, "读取 PS 原生网格", result.ExportName);
                                 try
                                 {
+                                    if (OnPsJt(() => IsOpenForModeling(item.NativeFallback)))
+                                        throw new InvalidOperationException("资源仍处于建模状态，请先结束建模。");
+                                    SafeLog(onLog, "[JT 兼容回退] " + result.ExportName + "："
+                                        + directError.Message + "；尝试使用 PS 原生三角网格。");
+                                    progress.Report(onProgress, "读取 PS 原生网格", result.ExportName);
                                     var fallback = StartNativeJtConversion(item.NativeFallback, result.ExportName, workDir,
                                         backend, reconstructRoundHoles, selectedOriginInverse, onLog);
                                     var native = fallback.Task.GetAwaiter().GetResult();
@@ -659,7 +666,12 @@ namespace TxTools.ExportByColor
                             // Appearances have no independent JT storage. Reading OriginPart's
                             // file would lose the appearance instance's current pose and colors.
                             // Collect on PS, then send only detached triangles to the encoder.
-                            bool appearance = OnPsJt(() => AppearanceGeometrySource.IsAppearance(device));
+                            bool appearance = OnPsJt(() =>
+                            {
+                                if (IsOpenForModeling(device))
+                                    throw new InvalidOperationException("资源仍处于建模状态。请先结束建模，再导出 JT。");
+                                return AppearanceGeometrySource.IsAppearance(device);
+                            });
                             if (appearance)
                             {
                                 name = names.Next(OnPsJt(() => device.Name));
@@ -681,6 +693,8 @@ namespace TxTools.ExportByColor
                             {
                                 result.Device = OnPsJt(() =>
                                 {
+                                    if (IsOpenForModeling(device))
+                                        throw new InvalidOperationException("资源仍处于建模状态，请先结束建模。");
                                     if (!JtResourceResolver.TryResolve(device, out jtPath, out trace))
                                         throw new FileNotFoundException("未能解析 JT 文件或 COJT 目录：" + trace);
                                     var located = device as ITxLocatableObject;
@@ -785,6 +799,108 @@ namespace TxTools.ExportByColor
             // PS also exposes the prototype as a regular TxComponent.
             try { return string.Equals(obj.Name, "EquipmentPrototype", StringComparison.OrdinalIgnoreCase); }
             catch { return false; }
+        }
+
+        private static bool IsOpenForModeling(ITxObject resource)
+        {
+            return resource is ITxComponent component && component.IsOpenForModeling;
+        }
+
+        internal static List<ITxObject> FindOpenJtModelingResources(IEnumerable<ITxObject> picked)
+        {
+            var opened = new List<ITxObject>();
+            var seenComponents = new HashSet<string>();
+            var seenRoots = new HashSet<string>();
+            var filter = new TxTypeFilter(typeof(ITxComponent));
+            void Check(ITxObject candidate)
+            {
+                if (candidate is ITxComponent && seenComponents.Add(ObjKey(candidate)) && IsOpenForModeling(candidate))
+                    opened.Add(candidate);
+            }
+            foreach (var root in picked)
+            {
+                if (root == null || !seenRoots.Add(ObjKey(root))) continue;
+                Check(root);
+                if (root is ITxObjectCollection collection && !AppearanceGeometrySource.IsAppearance(root))
+                    foreach (ITxObject descendant in collection.GetAllDescendants(filter))
+                        Check(descendant);
+            }
+            return opened;
+        }
+
+        internal static void EndJtModeling(List<ITxObject> opened, Action<string> onLog)
+        {
+            // Use the native multi-selection command: PS owns library paths, save dialogs and reference preservation.
+            const string nativeId = "{4BF568FB-D075-11D2-A454-00104B17FE93}";
+            const string teamcenterId = "DnProcessSimulateCommands.CCoTcEndModelingCmd";
+            var document = TxApplication.ActiveDocument;
+            var selection = TxApplication.ActiveSelection;
+            var previous = selection.GetItems();
+            var targets = new TxObjectList();
+            var targetIds = new List<string>();
+            foreach (var resource in opened)
+            {
+                if (!IsOpenForModeling(resource)) continue;
+                targets.Add(resource);
+                targetIds.Add(resource.Id);
+            }
+            if (targets.Count == 0) return;
+
+            string registeredId;
+            using (var key = Microsoft.Win32.Registry.ClassesRoot.OpenSubKey(@"CLSID\" + nativeId + @"\ProgID"))
+                registeredId = key?.GetValue(null) as string;
+            var commands = TxApplication.CommandsManager;
+            var platform = TxApplication.PlatformType;
+            var commandIds = platform == TxPlatformType.Teamcenter || platform == TxPlatformType.TeamcenterOffline
+                ? new[] { teamcenterId, registeredId, nativeId }
+                : new[] { registeredId, nativeId, teamcenterId };
+            bool restoreSelection = true;
+            try
+            {
+                selection.SetItems(targets);
+                var actualTargets = new HashSet<string>();
+                foreach (ITxObject resource in selection.GetItems())
+                    actualTargets.Add(resource.Id);
+                if (!actualTargets.SetEquals(targetIds))
+                    throw new InvalidOperationException("PS 未接受完整的建模资源选择。请在场景中确认这些资源后重试。");
+                string commandId = Array.Find(commandIds, id => !string.IsNullOrEmpty(id)
+                    && commands.IsCommandConnected(id) && commands.IsCommandEnabled(id, true));
+                if (commandId == null)
+                    throw new InvalidOperationException("当前工程的原生 End Modeling 命令不可用。");
+                SafeLog(onLog, "[JT] 已选中 " + targets.Count + " 个建模资源。请完成 PS 原生保存界面的操作。");
+                if (!commands.ExecuteCommand(commandId))
+                {
+                    SafeLog(onLog, "[JT] 原生 End Modeling 未完成，请检查建模状态后重试。");
+                    return;
+                }
+
+                // Some native commands return as soon as their dialog opens. Keep only the targets selected while it is pending.
+                restoreSelection = false;
+                if (!ReferenceEquals(document, TxApplication.ActiveDocument))
+                    throw new InvalidOperationException("PS 活动工程已切换，无法确认结束建模结果。");
+                int remaining = 0;
+                int unavailable = 0;
+                foreach (string id in targetIds)
+                {
+                    if (!document.DoesObjectExist(id)) unavailable++;
+                    else if (IsOpenForModeling(document.GetObjectById(id))) remaining++;
+                }
+                restoreSelection = remaining == 0;
+                if (remaining > 0)
+                    SafeLog(onLog, "[JT] 仍有 " + remaining + " 个资源处于建模状态。请完成 PS 保存操作后再开始导出。");
+                else if (unavailable > 0)
+                    SafeLog(onLog, "[JT] 有 " + unavailable + " 个资源在结束建模后无法定位。请重新拾取这些资源，再开始导出。");
+                else
+                    SafeLog(onLog, "[JT] 建模已结束。请点击「开始导出」重新检查 JT 路径。");
+            }
+            finally
+            {
+                if (restoreSelection && ReferenceEquals(document, TxApplication.ActiveDocument))
+                {
+                    try { selection.SetItems(previous); }
+                    catch (Exception ex) { SafeLog(onLog, "[PS] 恢复场景选择失败：" + ex.Message); }
+                }
+            }
         }
 
         private static List<ITxObject> ExpandJtPicked(IEnumerable<ITxObject> picked, Action<string> onLog)

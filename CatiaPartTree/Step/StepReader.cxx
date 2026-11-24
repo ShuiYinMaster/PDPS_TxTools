@@ -1,3 +1,4 @@
+#include <BRep_Builder.hxx>
 #include <BRepLib_ToolTriangulatedShape.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRep_Tool.hxx>
@@ -11,10 +12,14 @@
 #include <TDocStd_Document.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Face.hxx>
+#include <TopTools_MapOfShape.hxx>
 #include <UnitsMethods_LengthUnit.hxx>
 #include <XCAFDoc_ColorTool.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
+#include <XCAFDoc_GraphNode.hxx>
+#include <XCAFDoc_LayerTool.hxx>
 #include <XCAFDoc_ShapeTool.hxx>
 
 #include <algorithm>
@@ -75,12 +80,13 @@ std::string Xml(const std::string& value)
     return escaped;
 }
 
-Handle(TDocStd_Document) ReadDocument(const fs::path& path)
+Handle(TDocStd_Document) ReadDocument(const fs::path& path, bool readVisibility)
 {
     std::ifstream input(path, std::ios::binary);
     if (!input) throw std::runtime_error("Cannot open the STEP file.");
     STEPCAFControl_Reader reader;
-    reader.SetLayerMode(false);
+    reader.SetLayerMode(readVisibility);
+    if (readVisibility) reader.SetSHUOMode(true);
     reader.SetPropsMode(false);
     if (reader.ReadStream("source.step", input) != IFSelect_RetDone)
         throw std::runtime_error("Invalid or unsupported STEP file.");
@@ -101,10 +107,53 @@ Handle(TDocStd_Document) ReadDocument(const fs::path& path)
     return document;
 }
 
+class Visibility
+{
+public:
+    Visibility(const Handle(TDocStd_Document)& document, bool enabled)
+    {
+        if (enabled)
+        {
+            colors = XCAFDoc_DocumentTool::ColorTool(document->Main());
+            layers = XCAFDoc_DocumentTool::LayerTool(document->Main());
+        }
+    }
+
+    bool Enabled() const { return !colors.IsNull(); }
+
+    bool Hidden(const TDF_Label& label) const
+    {
+        if (!Enabled()) return false;
+        if (!colors->IsVisible(label)) return true;
+        TDF_LabelSequence assigned;
+        layers->GetLayers(label, assigned);
+        return !assigned.IsEmpty() && std::none_of(assigned.begin(), assigned.end(),
+            [this](const TDF_Label& layer) { return layers->IsVisible(layer); });
+    }
+
+    bool HiddenUsage(const TDF_LabelSequence& path) const
+    {
+        if (path.Length() < 2) return false;
+        TDF_LabelSequence suffix;
+        suffix.Append(path.Last());
+        for (int index = path.Length() - 1; index >= 1; --index)
+        {
+            suffix.Prepend(path.Value(index));
+            Handle(XCAFDoc_GraphNode) usage;
+            if (XCAFDoc_ShapeTool::FindSHUO(suffix, usage) && !colors->IsVisible(usage->Label())) return true;
+        }
+        return false;
+    }
+
+private:
+    Handle(XCAFDoc_ColorTool) colors;
+    Handle(XCAFDoc_LayerTool) layers;
+};
+
 class ProductTree
 {
 public:
-    explicit ProductTree(const Handle(TDocStd_Document)& document)
+    ProductTree(const Handle(TDocStd_Document)& document, const Visibility& visibility) : visibility(visibility)
     {
         XCAFDoc_DocumentTool::ShapeTool(document->Main())->GetFreeShapes(roots);
         if (roots.IsEmpty()) throw std::runtime_error("The STEP file contains no products.");
@@ -121,7 +170,9 @@ public:
     }
 
 private:
+    const Visibility& visibility;
     TDF_LabelSequence roots;
+    TDF_LabelSequence componentPath;
     int occurrences = 0;
 
     void Visit(const TDF_Label& occurrence, std::ostream* xml, Definitions& definitions, int depth)
@@ -133,6 +184,8 @@ private:
         const bool assembly = XCAFDoc_ShapeTool::IsAssembly(definition);
         const auto id = DefinitionId(definition);
         if (!assembly) definitions.emplace(id, definition);
+        const bool trackUsage = xml && visibility.Enabled() && depth > 0;
+        if (trackUsage) componentPath.Append(occurrence);
         if (xml)
         {
             auto definitionName = Name(definition);
@@ -143,6 +196,8 @@ private:
             for (int col = 1; col <= 4; ++col)
                 for (int row = 1; row <= 3; ++row)
                     *xml << transform.Value(row, col) << (col == 4 && row == 3 ? "\"" : " ");
+            if (visibility.Hidden(occurrence) || (occurrence != definition && visibility.Hidden(definition)) ||
+                visibility.HiddenUsage(componentPath)) *xml << " hidden=\"1\"";
             if (!assembly)
             {
                 const auto shape = XCAFDoc_ShapeTool::GetShape(definition);
@@ -158,6 +213,7 @@ private:
             for (const auto& component : components) Visit(component, xml, definitions, depth + 1);
             if (xml) *xml << "</assembly>\n";
         }
+        if (trackUsage) componentPath.Remove(componentPath.Length());
     }
 };
 
@@ -228,9 +284,38 @@ struct MeshCoverage
     int missing = 0;
 };
 
-MeshCoverage WriteMesh(const fs::path& file, const TDF_Label& definition, const Handle(XCAFDoc_ColorTool)& colors)
+TopoDS_Shape VisibleGeometry(const TopoDS_Shape& shape, const TDF_Label& definition, const Visibility& visibility)
 {
-    const auto shape = XCAFDoc_ShapeTool::GetShape(definition).Located(TopLoc_Location());
+    const auto localShape = shape.Located(TopLoc_Location());
+    if (!visibility.Enabled()) return localShape;
+
+    TopTools_MapOfShape hiddenFaces;
+    TDF_LabelSequence labels;
+    XCAFDoc_ShapeTool::GetSubShapes(definition, labels);
+    const auto toLocal = shape.Location().Inverted();
+    for (const auto& label : labels)
+    {
+        if (!visibility.Hidden(label)) continue;
+        const auto subshape = XCAFDoc_ShapeTool::GetShape(label);
+        if (subshape.IsNull()) continue;
+        for (TopExp_Explorer faces(subshape.Moved(toLocal), TopAbs_FACE); faces.More(); faces.Next())
+            hiddenFaces.Add(faces.Current());
+    }
+    if (hiddenFaces.IsEmpty()) return localShape;
+
+    BRep_Builder builder;
+    TopoDS_Compound result;
+    builder.MakeCompound(result);
+    for (TopExp_Explorer faces(localShape, TopAbs_FACE); faces.More(); faces.Next())
+        if (!hiddenFaces.Contains(faces.Current())) builder.Add(result, faces.Current());
+    if (result.NbChildren() == 0) throw std::runtime_error("All faces of the STEP part are hidden.");
+    return result;
+}
+
+MeshCoverage WriteMesh(const fs::path& file, const TDF_Label& definition, const Handle(XCAFDoc_ColorTool)& colors,
+                       const Visibility& visibility)
+{
+    const auto shape = VisibleGeometry(XCAFDoc_ShapeTool::GetShape(definition), definition, visibility);
     // Absolute positional deflection is in millimeters; angular deflection is radians.
     BRepMesh_IncrementalMesh mesher(shape, 0.05, false, 0.20, true);
     Quantity_Color base(0.75, 0.75, 0.75, Quantity_TOC_sRGB);
@@ -256,7 +341,7 @@ MeshCoverage WriteMesh(const fs::path& file, const TDF_Label& definition, const 
 }
 
 void WriteMeshes(const Handle(TDocStd_Document)& document, ProductTree& tree,
-                 const fs::path& selection, const fs::path& folder)
+                 const fs::path& selection, const fs::path& folder, const Visibility& visibility)
 {
     const auto definitions = tree.Write(nullptr);
     const auto colors = XCAFDoc_DocumentTool::ColorTool(document->Main());
@@ -270,7 +355,7 @@ void WriteMeshes(const Handle(TDocStd_Document)& document, ProductTree& tree,
         std::string error;
         try
         {
-            const auto coverage = WriteMesh(pending, item->second, colors);
+            const auto coverage = WriteMesh(pending, item->second, colors, visibility);
             if (coverage.missing != 0)
             {
                 std::ofstream warning(folder / (id + ".warning"), std::ios::binary);
@@ -299,18 +384,22 @@ int wmain(int argc, wchar_t* argv[])
     try
     {
         const std::wstring command = argc > 1 ? argv[1] : L"";
-        if (!(command == L"tree" && argc == 4) && !(command == L"mesh" && argc == 5))
-            throw std::runtime_error("Expected tree <STEP> <XML> or mesh <STEP> <selection> <folder>.");
-        const auto document = ReadDocument(argv[2]);
-        ProductTree tree(document);
-        if (command == L"tree")
+        const bool readTree = command == L"tree" || command == L"visible-tree";
+        const bool readMeshes = command == L"mesh" || command == L"visible-mesh";
+        if (!(readTree && argc == 4) && !(readMeshes && argc == 5))
+            throw std::runtime_error("Expected [visible-]tree <STEP> <XML> or [visible-]mesh <STEP> <selection> <folder>.");
+        const bool readVisibility = command == L"visible-tree" || command == L"visible-mesh";
+        const auto document = ReadDocument(argv[2], readVisibility);
+        const Visibility visibility(document, readVisibility);
+        ProductTree tree(document, visibility);
+        if (readTree)
         {
             std::ofstream output(fs::path(argv[3]), std::ios::binary);
             output.exceptions(std::ios::badbit | std::ios::failbit);
             tree.Write(&output);
             output.close();
         }
-        else WriteMeshes(document, tree, argv[3], argv[4]);
+        else WriteMeshes(document, tree, argv[3], argv[4], visibility);
         return 0;
     }
     catch (const Standard_Failure& error)

@@ -128,8 +128,45 @@ namespace TxTools.CatiaPartTree.Core
         internal static bool IsXmlRepresentation(string member) =>
             member.EndsWith(".3drep", StringComparison.OrdinalIgnoreCase);
 
+        private static HashSet<string> HiddenOccurrences(XElement model, string rootFile, string rootId)
+        {
+            var hidden = new HashSet<string>(StringComparer.Ordinal);
+            var properties = model?.Element(Ns + "DefaultView")?.Elements(Ns + "DefaultViewProperty");
+            if (properties == null) return hidden;
+            foreach (var property in properties)
+            {
+                string visibility = ((string)property.Element(Ns + "GraphicProperties")?.Element(Ns + "GeneralAttributes")
+                    ?.Attribute("visible"))?.Trim();
+                if (visibility != "false" && visibility != "0" && visibility != "true" && visibility != "1") continue;
+                var path = new List<string>();
+                foreach (var link in property.Element(Ns + "OccurenceId")?.Elements(Ns + "id") ?? Enumerable.Empty<XElement>())
+                {
+                    string value = link.Value.Trim();
+                    int fragment = value.LastIndexOf('#');
+                    if (fragment > 0)
+                    {
+                        string file = EntryName(value.Substring(0, fragment));
+                        if (!file.Equals(rootFile, StringComparison.OrdinalIgnoreCase) &&
+                            !file.Equals(Path.GetFileName(rootFile), StringComparison.OrdinalIgnoreCase))
+                        {
+                            path.Clear();
+                            break;
+                        }
+                    }
+                    string id = value.Substring(fragment + 1);
+                    if (id.Length == 0) { path.Clear(); break; }
+                    path.Add(id);
+                }
+                if (path.Count == 0) continue;
+                string occurrence = rootId + "/" + string.Join("/", path);
+                if (visibility == "false" || visibility == "0") hidden.Add(occurrence);
+                else hidden.Remove(occurrence);
+            }
+            return hidden;
+        }
+
         internal static CatiaImportSource Read(string path, CancellationToken cancel = default(CancellationToken),
-            bool allowXmlGeometry = false)
+            bool allowXmlGeometry = false, bool readVisibility = false)
         {
             path = Path.GetFullPath(path);
             using (var file = File.OpenRead(path))
@@ -146,10 +183,11 @@ namespace TxTools.CatiaPartTree.Core
                 ZipArchiveEntry manifest;
                 entries.TryGetValue("Manifest.xml", out manifest);
                 var manifestRoot = ReadXml(manifest).Root;
-                string rootFile = Required(manifestRoot?.Elements().FirstOrDefault(e => e.Name.LocalName == "Root")?.Value, "Manifest/Root");
+                string rootFile = EntryName(Required(manifestRoot?.Elements().FirstOrDefault(e => e.Name.LocalName == "Root")?.Value, "Manifest/Root"));
                 ZipArchiveEntry rootEntry;
-                entries.TryGetValue(EntryName(rootFile), out rootEntry);
-                var structure = ReadXml(rootEntry).Root?.Element(Ns + "ProductStructure");
+                entries.TryGetValue(rootFile, out rootEntry);
+                var model = ReadXml(rootEntry).Root;
+                var structure = model?.Element(Ns + "ProductStructure");
                 if (structure == null) throw new InvalidDataException("3DXML 缺少 ProductStructure。");
                 var references = Index(structure.Elements(Ns + "Reference3D"));
                 var representations = Index(structure.Elements(Ns + "ReferenceRep"));
@@ -171,15 +209,16 @@ namespace TxTools.CatiaPartTree.Core
                 }
                 string rootId = Required((string)structure.Attribute("root"), "根引用 ID");
                 if (!references.ContainsKey(rootId)) throw new InvalidDataException("3DXML 根引用不存在：" + rootId);
+                var hiddenOccurrences = readVisibility ? HiddenOccurrences(model, rootFile, rootId) : null;
                 var source = new CatiaImportSource { DocumentPath = path };
                 var issues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 int count = 0;
-                Func<string, string, string, Frame12, HashSet<string>, StructureNode> expand = null;
-                expand = (id, instanceName, instancePath, frame, ancestors) =>
+                StructureNode Expand(string id, string instanceName, string instancePath, Frame12 frame, HashSet<string> ancestors, bool parentHidden)
                 {
                     cancel.ThrowIfCancellationRequested();
                     if (ancestors.Count >= 100 || !ancestors.Add(id)) throw new InvalidDataException("3DXML 存在循环引用或层级超过 100。");
                     if (++count > 100000) throw new InvalidDataException("3DXML 展开实例超过 100000。");
+                    bool hidden = parentHidden || hiddenOccurrences?.Contains(instancePath) == true;
                     var reference = references[id];
                     string partNumber = (string)reference.Element(Ns + "PLM_ExternalID");
                     if (string.IsNullOrWhiteSpace(partNumber)) partNumber = (string)reference.Attribute("name");
@@ -214,15 +253,17 @@ namespace TxTools.CatiaPartTree.Core
                             node.Add(partNode);
                         }
                         source.Parts.Add(partNode.Key, new CatiaSourcePart { File = path, Frame = frame.ThenChild(LocalFrame(repInstance)).Components,
-                            ReferenceId = id, InstancePath = partPath, GeometryEntries = new[] { entry?.FullName ?? member }, ConversionIssue = issue });
+                            ReferenceId = id, InstancePath = partPath, GeometryEntries = new[] { entry?.FullName ?? member }, ConversionIssue = issue,
+                            Hidden = hidden || hiddenOccurrences?.Contains(instancePath + "/" + Id(repInstance)) == true });
                     }
                     foreach (var child in children[id])
                     {
-                        node.Add(expand(Link(child, "IsInstanceOf"), (string)child.Attribute("name"), instancePath + "/" + Id(child), frame.ThenChild(LocalFrame(child)), ancestors));
+                        node.Add(Expand(Link(child, "IsInstanceOf"), (string)child.Attribute("name"), instancePath + "/" + Id(child),
+                            frame.ThenChild(LocalFrame(child)), ancestors, hidden));
                     }
                     ancestors.Remove(id); return node;
-                };
-                source.Root = expand(rootId, null, rootId, Frame12.Identity, new HashSet<string>());
+                }
+                source.Root = Expand(rootId, null, rootId, Frame12.Identity, new HashSet<string>(), false);
                 source.Files[path] = CatiaImportSource.Hash(path);
                 return source;
             }

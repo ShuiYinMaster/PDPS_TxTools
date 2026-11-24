@@ -198,12 +198,13 @@ namespace TxTools.CatiaPartTree.Conversion
                     return 0;
                 }
                 if (args.Length < 3) throw new ArgumentException("格式转换缺少源文件、目标 JT 或源文件摘要。");
-                int simplify = 0, targetKb = 0; bool quality = false, cgr = false; string meshFile = null, meshHash = null, dumpMesh = null, objFile = null, stepMesh = null, assembly = null;
+                int simplify = 0, targetKb = 0; bool quality = false, cgr = false, skipHidden = false; string meshFile = null, meshHash = null, dumpMesh = null, objFile = null, stepMesh = null, assembly = null;
                 for (int i = 3; i < args.Length; i++)
                 {
                     if (args[i] == "flat") Jt8Writer.FlatStrips = true;
                     else if (args[i] == "quality") quality = true;
                     else if (args[i] == "cgr") cgr = true;
+                    else if (args[i] == "skiphidden") skipHidden = true;
                     else if (args[i].StartsWith("assembly=", StringComparison.Ordinal)) assembly = args[i].Substring("assembly=".Length);
                     else if (args[i].StartsWith("stepmesh=", StringComparison.Ordinal)) stepMesh = args[i].Substring("stepmesh=".Length);
                     else if (args[i].StartsWith("mesh=", StringComparison.Ordinal)) meshFile = args[i].Substring(5);
@@ -222,7 +223,7 @@ namespace TxTools.CatiaPartTree.Conversion
                 {
                     if (cgr || stepMesh != null || objFile != null || meshFile != null || meshHash != null)
                         throw new ArgumentException("装配网格清单不能与其他几何输入模式同时使用。");
-                    scene = ReadAssembly(assembly, Path.GetFullPath(args[0]), args[2]);
+                    scene = ReadAssembly(assembly, Path.GetFullPath(args[0]), args[2], skipHidden);
                 }
                 else if (stepMesh != null)
                 {
@@ -295,7 +296,7 @@ namespace TxTools.CatiaPartTree.Conversion
                 : NativeCadReader.MeshFromGraph(graph, name, "source/1", source, digest);
         }
 
-        private static SourceMeshScene ReadAssembly(string manifest, string source, string digest)
+        private static SourceMeshScene ReadAssembly(string manifest, string source, string digest, bool skipHidden)
         {
             string extension = Path.GetExtension(source).ToLowerInvariant();
             bool step = extension == ".step" || extension == ".stp";
@@ -324,7 +325,7 @@ namespace TxTools.CatiaPartTree.Conversion
                             meshes = StepMeshReader.Read(path, name, source, digest).shapes;
                         else
                         {
-                            try { meshes = ReadRepresentation(path, name, source, digest); }
+                            try { meshes = ReadRepresentation(path, name, source, digest, skipHidden); }
                             catch (Exception error) when (threeDXml && (error is InvalidDataException ||
                                 error is NotSupportedException || error is InvalidOperationException ||
                                 error is XmlException || error is FormatException || error is OverflowException))
@@ -368,14 +369,14 @@ namespace TxTools.CatiaPartTree.Conversion
                 sourceSha256 = digest, shapes = shapes.ToArray() };
         }
 
-        private static MeshShape[] ReadRepresentation(string path, string name, string source, string digest)
+        private static MeshShape[] ReadRepresentation(string path, string name, string source, string digest, bool skipHidden)
         {
             var header = new byte[8];
             using (var file = File.OpenRead(path)) file.Read(header, 0, header.Length);
             string magic = Encoding.ASCII.GetString(header);
             if (magic == "V5_CFV2\0" || magic == "V5_CFV3\0")
                 return new[] { ReadCgr(File.ReadAllBytes(path), name, source, digest) };
-            return ThreeDRepMeshReader.Read(path, name, source, digest);
+            return ThreeDRepMeshReader.Read(path, name, source, digest, skipHidden);
         }
     }
 
@@ -384,7 +385,16 @@ namespace TxTools.CatiaPartTree.Conversion
         private static readonly char[] Separators = { ' ', '\t', '\r', '\n', ',', ';' };
         private static readonly byte[] DefaultColor = { 190, 190, 190 };
 
-        internal static MeshShape[] Read(string path, string name, string source, string digest)
+        private static bool Hidden(XElement element)
+        {
+            var ns = element.Name.Namespace;
+            var attributes = element.Element(ns + "GeneralAttributes") ??
+                element.Element(ns + "GraphicProperties")?.Element(ns + "GeneralAttributes");
+            string value = ((string)attributes?.Attribute("visible"))?.Trim();
+            return value == "false" || value == "0";
+        }
+
+        internal static MeshShape[] Read(string path, string name, string source, string digest, bool skipHidden)
         {
             XDocument document;
             using (var reader = XmlReader.Create(path, new XmlReaderSettings
@@ -397,7 +407,7 @@ namespace TxTools.CatiaPartTree.Conversion
             foreach (var representation in document.Descendants(ns + "Rep"))
             {
                 var faces = representation.Element(ns + "Faces");
-                if (faces == null) continue;
+                if (faces == null || (skipHidden && (Hidden(faces) || representation.AncestorsAndSelf().Any(Hidden)))) continue;
                 var buffer = representation.Element(ns + "VertexBuffer");
                 var points = Vectors((string)buffer?.Element(ns + "Positions"));
                 var normals = Vectors((string)buffer?.Element(ns + "Normals"));
@@ -408,6 +418,7 @@ namespace TxTools.CatiaPartTree.Conversion
                 var repColor = Color(representation) ?? DefaultColor;
                 foreach (var face in faces.Elements(ns + "Face"))
                 {
+                    if (skipHidden && Hidden(face)) continue;
                     var color = Color(face) ?? repColor;
                     int start = triangles.Count;
                     var indices = Indices((string)face.Attribute("triangles"));
@@ -429,7 +440,8 @@ namespace TxTools.CatiaPartTree.Conversion
                 if (mesh.normals == null) mesh.Smooth();
                 result.Add(mesh);
             }
-            if (result.Count == 0) throw new NotSupportedException("3DXML 表示没有可导入的三角面：" + name);
+            if (result.Count == 0) throw new NotSupportedException((skipHidden ? "3DXML 表示没有可导入的可见三角面：" :
+                "3DXML 表示没有可导入的三角面：") + name);
             return result.ToArray();
         }
 

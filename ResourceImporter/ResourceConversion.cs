@@ -26,7 +26,8 @@ namespace TxTools.ResourceImporter
                 Path.GetExtension(path), StringComparison.OrdinalIgnoreCase));
         }
 
-        internal static (string Package, string[] Warnings) PreparePackage(string source, string finalPackage, CancellationToken cancel)
+        internal static (string Package, string[] Warnings) PreparePackage(string source, string finalPackage,
+            CancellationToken cancel, bool skipHidden = false)
         {
             cancel.ThrowIfCancellationRequested();
             source = Path.GetFullPath(source);
@@ -40,7 +41,7 @@ namespace TxTools.ResourceImporter
                 {
                     workspace = TxToolsTemp.SessionDirectory("ResourceImporter", "jt");
                     converted = Path.Combine(workspace, "model.jt");
-                    warnings = Convert(source, converted, workspace, cancel);
+                    warnings = Convert(source, converted, workspace, cancel, skipHidden);
                 }
                 cancel.ThrowIfCancellationRequested();
 
@@ -72,7 +73,7 @@ namespace TxTools.ResourceImporter
             catch (UnauthorizedAccessException) { }
         }
 
-        internal static string[] Convert(string source, string jt, string workspace, CancellationToken cancel)
+        internal static string[] Convert(string source, string jt, string workspace, CancellationToken cancel, bool skipHidden = false)
         {
             cancel.ThrowIfCancellationRequested();
             source = Path.GetFullPath(source);
@@ -93,7 +94,7 @@ namespace TxTools.ResourceImporter
                     case ".step":
                     case ".stp":
                     case ".3dxml":
-                        option = "assembly=" + PrepareAssembly(source, extension == ".3dxml", workspace, cancel, warnings, out digest);
+                        option = "assembly=" + PrepareAssembly(source, extension == ".3dxml", skipHidden, workspace, cancel, warnings, out digest);
                         break;
                     case ".cgr":
                         digest = CatiaImportSource.Hash(input);
@@ -114,6 +115,7 @@ namespace TxTools.ResourceImporter
                 }
                 var arguments = new List<string> { source, jt, digest };
                 if (option != null) arguments.Add(option);
+                if (skipHidden && extension == ".3dxml") arguments.Add("skiphidden");
                 string worker = Path.Combine(Path.GetDirectoryName(typeof(ResourceConversion).Assembly.Location),
                     "CatiaPartTree", "TxTools.CatiaConverter.exe");
                 if (!File.Exists(worker)) throw new FileNotFoundException("缺少 JT 转换程序，请完整部署插件运行目录。", worker);
@@ -143,11 +145,15 @@ namespace TxTools.ResourceImporter
             }
         }
 
-        private static string PrepareAssembly(string file, bool threeDXml, string workspace, CancellationToken cancel,
+        private static string PrepareAssembly(string file, bool threeDXml, bool skipHidden, string workspace, CancellationToken cancel,
             List<string> warnings, out string digest)
         {
-            var source = threeDXml ? ThreeDXmlSource.Read(file, cancel, allowXmlGeometry: true) : StepSource.Read(file, cancel);
+            var source = threeDXml ? ThreeDXmlSource.Read(file, cancel, allowXmlGeometry: true, readVisibility: skipHidden)
+                : StepSource.Read(file, cancel, readVisibility: skipHidden);
             digest = source.Files[file];
+            var candidates = source.Parts.Where(pair => !skipHidden || !pair.Value.Hidden).ToArray();
+            if (candidates.Length == 0 && source.Parts.Count != 0)
+                throw new InvalidDataException("源装配的几何实例均为隐藏，未生成 COJT。");
             var nodes = new Dictionary<string, StructureNode>();
             IndexNodes(source.Root, nodes);
             var definitions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -156,7 +162,7 @@ namespace TxTools.ResourceImporter
                 int representationIndex = 0;
                 using (var archive = ZipFile.OpenRead(file))
                 {
-                    foreach (var group in source.Parts.GroupBy(pair => pair.Value.GeometryEntry, StringComparer.OrdinalIgnoreCase))
+                    foreach (var group in candidates.GroupBy(pair => pair.Value.GeometryEntry, StringComparer.OrdinalIgnoreCase))
                     {
                         cancel.ThrowIfCancellationRequested();
                         string issue = group.First().Value.ConversionIssue;
@@ -178,9 +184,9 @@ namespace TxTools.ResourceImporter
             }
             else
             {
-                var groups = source.Parts.GroupBy(pair => pair.Value.StepDefinition).ToArray();
+                var groups = candidates.GroupBy(pair => pair.Value.StepDefinition).ToArray();
                 var meshable = groups.Where(group => group.First().Value.ConversionIssue == null).Select(group => group.Key).ToArray();
-                if (meshable.Length != 0) StepSource.PrepareMeshes(file, meshable, workspace, cancel);
+                if (meshable.Length != 0) StepSource.PrepareMeshes(file, meshable, workspace, cancel, skipHidden);
                 foreach (var group in groups)
                 {
                     cancel.ThrowIfCancellationRequested();
@@ -200,7 +206,7 @@ namespace TxTools.ResourceImporter
                 }
             }
             string GeometryKey(CatiaSourcePart part) => threeDXml ? part.GeometryEntry : part.StepDefinition;
-            var parts = source.Parts.Where(pair => definitions.ContainsKey(GeometryKey(pair.Value))).ToArray();
+            var parts = candidates.Where(pair => definitions.ContainsKey(GeometryKey(pair.Value))).ToArray();
             if (parts.Length == 0)
                 throw new InvalidDataException(string.Join(Environment.NewLine,
                     new[] { "装配没有可导入的面几何。" }.Concat(warnings)));

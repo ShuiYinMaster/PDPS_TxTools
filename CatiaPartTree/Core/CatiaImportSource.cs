@@ -17,6 +17,7 @@ namespace TxTools.CatiaPartTree.Core
         internal double[] Frame;
         internal string ReferenceId, InstancePath, ConversionIssue, StepDefinition;
         internal string[] GeometryEntries;
+        internal bool Hidden;
         internal string GeometryEntry => GeometryEntries == null ? null : GeometryEntries[0];
         internal string AssetKey => GeometryEntry == null && StepDefinition == null ? File : File + "\0" + (GeometryEntry ?? StepDefinition);
     }

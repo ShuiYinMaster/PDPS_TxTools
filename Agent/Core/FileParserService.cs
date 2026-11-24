@@ -291,7 +291,7 @@ namespace TxTools.Agent.Core
         }
 
         /// <summary>轻量 CSV 解析:支持 quoted "..."、内嵌双引号 ""、字段内换行、CRLF/LF。</summary>
-        private static List<List<string>> ParseCsvText(string text, char delim)
+        internal static List<List<string>> ParseCsvText(string text, char delim)
         {
             var rows = new List<List<string>>();
             if (string.IsNullOrEmpty(text)) return rows;

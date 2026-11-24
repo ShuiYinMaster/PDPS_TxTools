@@ -61,6 +61,7 @@ The linked module guides contain an English summary followed by detailed Chinese
 | [WeldAnnotator](WeldAnnotator/README.md) | Weld-point screenshots and Excel annotation |
 | [WeldGunDefiner](WeldGunDefiner/README.md) | X-type weld-gun kinematics wizard |
 | [WeldPointMatrix](WeldPointMatrix/README.md) | Multi-operation weld-point matrix |
+| [WeldPointImporter](WeldPointImporter/README.md) | CATIA and file extraction, point preview, duplicate screening, and world-coordinate weld creation |
 | [WeldSpotAllocator](WeldSpotAllocator/README.md) | Weld-coordinate updates and allocation |
 | [WeldSpotGrouper](WeldSpotGrouper/README.md) | Weld grouping by assigned parts |
 

@@ -35,7 +35,7 @@ rtk proxy MSBuild.exe TxTools.csproj /p:Configuration=Release /p:TxToolsShowLogs
 
 ## 图标
 
-图标目录和命令映射见 `Image/plugin-icons.json`。保留已有大图标，为缺失/错误的图标新增对应图形；所有 25 个参与构建的正式命令均配置大小图标。
+图标目录和命令映射见 `Image/plugin-icons.json`。保留已有大图标，为缺失/错误的图标新增对应图形；所有 26 个参与构建的正式命令均配置大小图标。
 `DeviceZAligner` 另有配套图标和源代码引用；该模块未列入主项目构建。
 
 根据本地 Process Simulate 2402 SDK XML 文档：

@@ -132,6 +132,12 @@
     "large": "image.WeldPointMatrix.png"
   },
   {
+    "file": "WeldPointImporter/WeldPointImporterCommand.cs",
+    "command": "WeldPointImporterCommand",
+    "small": "image.Small.WeldPointImporter.bmp",
+    "large": "image.WeldPointImporter.png"
+  },
+  {
     "file": "LibPathSync/SyncLibPathCommand.cs",
     "command": "SyncLibPathCommand",
     "small": "image.Small.SyncLibPath.bmp",
