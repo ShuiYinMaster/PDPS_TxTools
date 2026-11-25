@@ -1,5 +1,7 @@
 ﻿# 自动路径规划
 
+命令：`自动路径规划(RRT)`（`TxTools` 类别）。
+
 在选定的焊接操作中准备 home、进枪、出枪和过渡位置，基于 Process Simulate SDK 验证机器人及外部轴运动。规划、SDK 调用及场景写入均在主线程执行。
 
 ## 规划流程
@@ -61,6 +63,11 @@ SDK Overhead 构型、无效关节值及硬限位余量内姿态被拒绝。旋�
 - RrtPlanner.cs：JointRrtPlanner 联合关节空间搜索；保留旧纯几何规划器供兼容调用。
 - GunAxisService.cs：活动焊钳解析、开口换算、外部轴写入与读回。
 - WeldPathPlanner.cs：准备点、分段搜索、修复、写入和结果管理。
+- CycleCost.cs：关节空间节拍代价，用于选解与顺序评估。
+- WeldOrderOptimizer.cs：按节拍收益重排焊点顺序，减少绕行。
+- GunFrameSearch.cs：枪坐标系（X 前后、Y 左右、Z 上下）下的定向过渡搜索。
+- PlannerGeometry.cs：轻量三维向量，纯算法层，不依赖 SDK 类型。
+- PlanningProgress.cs：规划阶段定义与进度上报。
 
 Joint/PTP 分段预检采用关节与外部轴离散插值。非 Joint 段交给整操作回放。规划完整时，通过 TxSimulationPlayer 播放实际操作，在时间步读取 CollisionRoot 的全局碰撞变化，并在到达位置读取当前干涉状态。只有观察到实际位置序列、声明的外部轴状态、时间步及正向结束事件，且未发现干涉或仿真错误，才移除 PreparedOnly 标记。离散碰撞检查不能等同于连续碰撞检测，也不能替代机器人控制器、RCS 插补及实际工作站的验证。其他机器人的碰撞几何按当前场景姿态参与，未实现多机器人时间协同规划。
 
