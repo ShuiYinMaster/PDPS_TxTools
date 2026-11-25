@@ -27,3 +27,18 @@
 | CATProduct | 读取同目录的 `<文件名>.CATProduct.jtcoords.json`，校验源装配、引用文件及变换后合成为一个 JT |
 
 CATProduct 使用 `cad-drop.offline-assembly.v1` 索引。所引用的 CATProduct 和 CATPart 文件须与索引摘要一致，并位于源装配目录内。直接从原生 CATProduct 解码装配引用和实例变换尚未支持。转换在本机离线运行。
+
+## 命令与文件
+
+命令：`.资源导入`（`TxTools` 类别）。
+
+| 文件 | 职责 |
+| --- | --- |
+| `ResourceImporterCommand.cs` | 命令注册与窗体启动 |
+| `ResourceImporterForm.cs` | 文件列表、原型列、拖放分配与导入操作 |
+| `ResourceImportSession.cs` | 单文件导入状态、批次编排与结果核验 |
+| `ResourceConversion.cs` | 各格式到 JT 的转换调度与并行控制 |
+| `CatProductConversion.cs` | CATProduct 离线装配索引读取与单 JT 合成 |
+| `ResourcePrototype.cs`、`ResourcePrototypeImages.cs` | 原型 Family 解析与类型图标 |
+| `ResourceCustomizationInstallation.cs` | Planning 类型读取、`metadata.xml` 与 `defaultCust.ppc` 兜底 |
+| `CojtFolderTree.cs`、`CojtFolderEdits.cs` | 库目录树读取、待用文件夹预建与重命名 |

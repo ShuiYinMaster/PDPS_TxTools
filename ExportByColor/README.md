@@ -1,16 +1,35 @@
-# ExportByColor — CATIA CGR and Mesh Export / 按颜色导出
+# ExportByColor — CATIA 3DXML / CGR 与网格导出
 
-Export Process Simulate resources to CATIA CGR or mesh formats, with color grouping and coordinate-origin options.
+Export Process Simulate resources to CATIA-compatible 3DXML, CGR or mesh formats, with color grouping and coordinate-origin options.
 
-按当前 PS 场景中的可见资源导出 CATIA 可用的 CGR 或网格文件，并提供颜色、合并和坐标选项。
+按当前 PS 场景中的可见资源导出 CATIA 可用的 3DXML 装配、CGR 或网格文件，并提供颜色、合并和坐标选项。
 
 ## 命令
 
 - `.布局/资源导出至CATIA`
 
+## 导出模式
+
+界面分「3DXML / CGR」和「网格」两个页签，同一批次只执行选定的一条路线。
+
+| 页签 | 模式 | 产物与后端 |
+| --- | --- | --- |
+| 3DXML / CGR | 直出 3DXML | 单个 `.3dxml` 装配，内部为编码后的零件表示 |
+| 3DXML / CGR | 直出 3DXML（R38 线面几何） | 同上，使用 R38 线面编码 |
+| 3DXML / CGR | PS 三角面 → CGR → CATIA | PS 原生三角网格编码为 CFV2 CGR |
+| 3DXML / CGR | PS 线面压缩 → CGR → CATIA | PS 网格按线面压缩后写出 CGR |
+| 3DXML / CGR | JT → CGR → CATIA | 直读 JT 三角网格写出 CGR |
+| 3DXML / CGR | JT 线面压缩 → CGR → CATIA | JT 网格按线面压缩写出 CGR |
+| 网格 | STL + RGB 清单 | 二进制 STL 及配套颜色清单 |
+| 网格 | OBJ + MTL 材质 | OBJ 及 MTL 材质文件 |
+| 网格 | PLY（面颜色） | 逐面颜色的 PLY |
+| 网格 | FBX 二进制 / FBX ASCII | 供 Blender 等外部工具读取 |
+
+「内外圆柱重建」勾选后，所选路线改用线面编码，并对可安全识别的圆柱执行重建。
+
 ## 功能
 
-- 将选定/可见资源按显示颜色生成 CGR 并导出到 CATIA。
+- 将选定/可见资源按显示颜色生成 CGR 或 3DXML 并导出到 CATIA。
 - 支持 STL、OBJ、PLY、FBX 等网格格式导出。
 - 可设置导出坐标原点、合并策略、边线显示和输出目录。
 - CGR 导出包含面方向、颜色、字段生成的 CFV2 容器及紧凑写出逻辑，适合大批量布局资源。
@@ -34,6 +53,16 @@ Export Process Simulate resources to CATIA CGR or mesh formats, with color group
 ## 相关文档
 
 - [PS 网格编码与线程边界](../docs/build.md)
+
+## 3DXML 直出装配
+
+「直出 3DXML」不产生中间 CGR 文件，直接把编码后的零件表示写入单个 `.3dxml` 包；装配层级按 PS 场景结构还原，可在 CATIA 中作为装配打开。
+
+- 每个资源对应包内一个零件表示：显示名取导出名，父路径取自 PS 中的结构层级；同名节点按层级归并，零件身份用完整路径区分，避免不同分支下的同名零件互相覆盖。
+- 导出期间只在内存中累积装配节点和零件清单，`Complete` 时统一写出包结构；中途取消不会留下半个包。
+- 输出采用原子替换：先写同目录临时文件，完成后用 `File.Replace`（目标已存在）或 `File.Move`（首次写出）落盘。取消或异常时不会留下半成品 `.3dxml`。
+- 编码链路接受 `CancellationToken`，关闭导出窗口会取消当前批次；已落盘的文件和已插入 CATIA 的组件保留。
+- 「R38 线面几何」走线面编码后端，适合需要圆弧、圆柱面等线面属性的 CATIA 版本；勾选「内外圆柱重建」同样会切换到线面编码。
 
 ## 网格处理
 
@@ -71,6 +100,7 @@ JT 圆柱重建保留源面颜色、透明度及裁剪边界。普通圆柱按�
 
 - `ExportByColorCmd.cs`、`ExportByColorForm.cs`：命令与界面。
 - `ExportByColorService.cs`：资源收集与导出编排。
+- `ThreeDXmlWriter.cs`：3DXML 装配写出（层级归并、零件清单、原子落盘）。
 - `CgrWriter.cs`、`CgrCompact95.cs`：CGR 写出。
 - `RoundHoleCgrRefinement.cs`：相交圆柱的约束细分、材质保留和工作量保护。
 - `MeshExport.cs`、`FbxExport.cs`：网格和 FBX 写出。

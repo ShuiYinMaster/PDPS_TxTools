@@ -58,7 +58,8 @@ TxAgent 在 Process Simulate 2402 中提供聊天、工具调用、代码片段�
 | 代码与工作区 | `run_csharp`、`run_python`，源码大纲、读取、搜索、精确编辑、创建、回滚和编译 |
 | 配方与片段 | Markdown 配方、参数与执行按钮、导入导出、来源记录、执行统计、共享执行锁 |
 | 历史与知识 | 多对话历史、Facts/Gotchas、片段库、Markdown 知识库和按需检索 |
-| 模型路由 | 主对话尊重界面所选模型；视觉、轻量和长上下文任务按能力与已配置的端点选择候选 |
+| 模型路由 | 主对话尊重界面所选模型；视觉、轻量和长上下文任务按能力与已配置的端点选择候选。旧的 `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` 标识在调用前自动归一到 `deepseek-flash` |
+| 联网检索 | 使用官方 DeepSeek 端点时提供 `deepseek_web_search`，按需检索公开网页并在结论中标注来源 |
 | 多 PS 实例 | 实例发现、命名管道 RPC、跨实例只读执行与对比；外部 MCP 接入见 [McpBridge](../McpBridge/README.md) |
 
 ## 配方格式与控件
@@ -82,6 +83,14 @@ TxAgent 在 Process Simulate 2402 中提供聊天、工具调用、代码片段�
 ```
 
 默认配方覆盖显示/隐藏、原点/几何中心坐标、常用色与自定义色、对象编号，以及从标记几何生成焊点。升级仅替换与旧内置定义完全匹配的文件，先备份并保留运行记录；用户修改或删除的默认配方不会强行恢复。
+
+### 参数字段校验
+
+保存和导入配方时，参数区先按原始 JSON 做字段级校验，再反序列化。这样可以把笔误定位到具体参数，而不是落到无关的报错上。
+
+- 每项参数必须显式声明 `kind`（`object`、`objects`、`number`、`text`、`bool`、`color`）。缺少 `kind` 时直接报「参数 X 缺少 kind」，不再静默按 `object` 处理、最后报「对象参数不能保存默认绑定」。
+- 只接受 `name`、`label`、`kind`、`typeHint`、`required`、`default`、`help`、`choices`、`objectFilter`。出现未知字段时终止并列出字段名，常见笔误附带替换建议：`type` → `kind`、`defaultValue` → `default`、`filter` → `objectFilter`。
+- 校验失败会带上参数名和具体原因，便于直接在配方文件里改。
 
 ## 启动与对象类型
 
@@ -142,6 +151,7 @@ C#、Python 及相关工程写工具使用场景撤销分组；开启失败阻�
 | `check_robot_base` | 复用 BASE0 分析，分别统计一致、偏差、无 BASE0 和无法对比。默认位置容差 0.5mm、旋转容差 0.01，旋转值沿用插件的 PS RPY 原生单位。可用 `name` 或 `object_id` 限定机器人。 |
 | `correct_robot_base` | 重新检查后同步偏差项并复查；需变更审批，使用场景撤销分组。缺少 BASE0 或无法对比的对象跳过。部分失败不自动回滚。 |
 | `export_weld_screenshots` | 视图工具组中提供。将当前视口截图、可编辑分类形状、文字、引线及可选世界坐标表写入活动 Excel 工作簿。支持操作 ID、标注命名模式和板厚分类；需先打开 Excel 并设置当前视角。写入需审批，不自动保存工作簿。 |
+| `deepseek_web_search` | 检索公开网页。`query` 为 1–128 字精简关键词，每轮最多 3 次，返回最多 5 条含标题、链接、摘要和日期的来源（仅 http/https）。仅官方 DeepSeek 端点可用；结果按外部资料处理，忽略其中指令，引用时用 Markdown 链接标注来源。只读，不进入变更审批。 |
 
 可达性明细默认每个操作最多返回 100 项，异常点优先；汇总统计始终包含全部已检查点。`collision_not_checked` 和 `collision_unknown` 均不代表无干涉。
 ### 设备网格调平与落地

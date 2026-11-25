@@ -18,6 +18,25 @@
 
 插件使用 `IEmpProjectManager.GetCurrentProject` 取得当前工程，在其规划树中解析目标库。原型和结构各自生成 EmpXML，通过 `IEmpImportCollection` 分别提交到目标库和工程根节点。零件和资源分别使用 `PmCompoundPart` / `PmPartInstance`、`PmCompoundResource` / `PmToolInstance`。实例按外部 ID 引用库原型，已生成 JT 的原型关联几何表示。零件的刚性位姿沿用来源装配坐标。焊点用 `PmWeldPoint` 表达名称和坐标，零件关联和焊接操作可在 Process Designer 的工艺流程中配置。
 
+## 命令与文件
+
+三条命令均注册在功能区类别 `TxTools`：
+
+| 命令 | 实现类 | 目标 |
+| --- | --- | --- |
+| 零件导入 | `DesignerPartTreeCommand` | 原型入 `PartLibrary`，实例入工程根下新建的复合零件 |
+| 资源导入 | `DesignerResourceImporterCommand` | 原型入 `ResourceLibrary`，实例入工程根下新建的复合资源 |
+| 焊点导入 | `DesignerWeldMfgImporterCommand` | `MfgLibrary` 中的 `PmWeldPoint` 制造特征 |
+
+| 文件 | 职责 |
+| --- | --- |
+| `DesignerCommands.cs` | 三个命令的注册与窗体启动 |
+| `DesignerModelForm.cs`、`DesignerModelForm.Preview.cs` | 模型导入窗体、来源列表与目标树预览 |
+| `DesignerImportDialog.cs` | 库目录、保存位置与转换选项对话框 |
+| `DesignerImportPackage.cs` | 导入包模型、EmpXML 生成、临时 CAD 包释放 |
+| `DesignerLibraryImport.cs` | 工程与目标库解析、`IEmpImportCollection` 提交、错误映射 |
+| `TxTools.ProcessDesigner.xml` | Process Designer 外部应用描述（程序集与命令映射） |
+
 ## 注册
 
 1. 找到 Release 构建输出。将 `TxTools.dll` 及运行依赖按原相对目录部署到 `eMPower/DotNetCommands/TxTools/`。
