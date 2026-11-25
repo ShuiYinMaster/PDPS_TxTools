@@ -345,7 +345,7 @@ namespace TxTools.Agent.Harness
                 // 3) 组装并订阅 harness 循环
                 var loopOptions = new AgentLoopOptions
                 {
-                    MaxIterations = Math.Max(1, _options.MaxIterations),
+                    MaxIterations = Math.Max(0, _options.MaxIterations),
                     MaxTokens = OutputBudgetFor(_options.Model),
                     ReadOnlyPhase = false,
                     AutoRestorePoint = true,
@@ -757,7 +757,6 @@ namespace TxTools.Agent.Harness
         {
             private readonly DeepSeekClient _client;
             private readonly CancellationToken _cancellation;
-            private int _calls;
 
             internal DeepSeekSearchTool(DeepSeekClient client, CancellationToken cancellation)
             {
@@ -777,8 +776,7 @@ namespace TxTools.Agent.Harness
                 var query = ((string)JObject.Parse(argumentsJson)["query"])?.Trim();
                 if (string.IsNullOrEmpty(query) || query.Length > 128)
                     return TxAgent.Core.ToolResult.Fail("arg", "请输入 1 至 128 字的检索关键词。");
-                if (Interlocked.Increment(ref _calls) > 3)
-                    return TxAgent.Core.ToolResult.Fail("limit", "本轮已达到 3 次检索上限。");
+                // 不限制单轮检索次数：模型自行决定检索节奏，避免因硬上限中断研究流程。
 
                 var results = _client.SearchWebAsync(query, _cancellation).GetAwaiter().GetResult();
                 var sources = new JArray(results.OfType<JObject>()
@@ -792,7 +790,10 @@ namespace TxTools.Agent.Harness
                         ["summary"] = r["summary"] ?? r["snippet"],
                         ["date"] = r["date"]
                     }));
-                return TxAgent.Core.ToolResult.Ok(sources.ToString(Newtonsoft.Json.Formatting.None));
+                // 用 JsonConvert.SerializeObject 而非 JToken.ToString(Formatting)：
+                // 后者是较新 Json.NET 才有的重载，PS 宿主可能预加载旧版导致 MissingMethodException。
+                return TxAgent.Core.ToolResult.Ok(
+                    Newtonsoft.Json.JsonConvert.SerializeObject(sources, Newtonsoft.Json.Formatting.None));
             }
         }
 
