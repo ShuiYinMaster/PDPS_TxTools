@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -280,8 +280,9 @@ namespace TxTools.AutoPathPlanner
                 positionError <= 1.0 && rotationError <= 0.5;
         }
 
-        public void PrepareConfigurations(IEnumerable<ITxRoboticLocationOperation> locations)
+        public Dictionary<string, TxPoseData> PrepareConfigurations(IEnumerable<ITxRoboticLocationOperation> locations)
         {
+            var selectedByLocation = new Dictionary<string, TxPoseData>();
             var sourceLocations = locations.ToList();
             SelectOperationTool(sourceLocations);
             _requiredConfig = null;
@@ -294,6 +295,22 @@ namespace TxTools.AutoPathPlanner
             var poses = new List<List<double[]>>();
             var originalConfigs = new List<TxRobotConfigurationData>();
             var targets = new List<TxTransformation>();
+            var originalAxes = new Dictionary<TxJoint, double>();
+            foreach (var loc in sourceLocations)
+                foreach (var axis in loc.RobotExternalAxesData ?? new TxRobotExternalAxisData[0])
+                    if (!originalAxes.ContainsKey(axis.Joint)) originalAxes.Add(axis.Joint, axis.Joint.CurrentValue);
+            void ApplyArrival(ITxRoboticLocationOperation location)
+            {
+                foreach (var axis in originalAxes) axis.Key.CurrentValue = axis.Value;
+                foreach (var axis in location.RobotExternalAxesData ?? new TxRobotExternalAxisData[0])
+                {
+                    axis.Joint.CurrentValue = axis.JointValue;
+                    if (!(Math.Abs(axis.Joint.CurrentValue - axis.JointValue) <= 1e-4))
+                        throw new InvalidOperationException("焊点到达外部轴回放失败");
+                }
+                if (_activeGun != null && !SetSearchOpening(_activeGun.ReadOpening(location.RobotExternalAxesData) ?? _searchOpening))
+                    throw new InvalidOperationException("焊点开口回放失败");
+            }
             try
             {
                 foreach (var loc in sourceLocations)
@@ -301,6 +318,7 @@ namespace TxTools.AutoPathPlanner
                     TxRobotConfigurationData existing=null;
                     try { existing=loc.RobotConfigurationData; } catch(TxRobotConfigurationDoesNotExistException) { }
                     originalConfigs.Add(existing); _requiredConfig=existing; _lastIkCandidates=null;
+                    ApplyArrival(loc);
                     var target=((ITxLocatableObject)loc).AbsoluteLocation; targets.Add(target);
                     if(!TryPoseTcpAt(target))throw new InvalidOperationException(
                         "源点 Config/姿态不可用: "+((ITxObject)loc).Name+" / "+LastPoseRejection);
@@ -330,18 +348,21 @@ namespace TxTools.AutoPathPlanner
                 {
                     var pose=new TxPoseData{JointValues=new ArrayList(selected[i])};
                     _robot.CurrentPose=pose;
+                    ApplyArrival(sourceLocations[i]);
                     if(_activeGun!=null&&_activeGun.HasGunAxis&&!_activeGun.ApplyOpeningToDevice(_searchOpening))
                         throw new InvalidOperationException("序列选解时焊钳状态恢复失败");
                     if(!MatchesTarget(pose,targets[i])||!IsHealthyPose(pose))
                         throw new InvalidOperationException("序列选解回放失败: "+LastPoseRejection);
                     changed.Add(new KeyValuePair<ITxRoboticLocationOperation,TxRobotConfigurationData>(sourceLocations[i],originalConfigs[i]));
                     LockLocation(sourceLocations[i],pose);
+                    selectedByLocation[sourceLocations[i].Id] = pose;
                     if(selected[i].Length>=6)
                         _log(string.Format("  Config 序列选解 {0}: J4={1:F2}° / J5={2:F2}° / J6={3:F2}°",
                             ((ITxObject)sourceLocations[i]).Name,selected[i][3]*180/Math.PI,selected[i][4]*180/Math.PI,selected[i][5]*180/Math.PI));
                 }
                 _anchorJoints=selected.Count==0?null:selected[0];
                 _enforceConfiguration=false; InvalidateCache();
+                return selectedByLocation;
             }
             catch
             {
@@ -349,6 +370,7 @@ namespace TxTools.AutoPathPlanner
                 foreach(var entry in changed)entry.Key.RobotConfigurationData=entry.Value;
                 throw;
             }
+            finally { foreach (var axis in originalAxes) axis.Key.CurrentValue = axis.Value; }
         }
 
         public TxRobotConfigurationData LockLocation(ITxRoboticLocationOperation location, TxPoseData validatedPose)
@@ -1552,7 +1574,7 @@ namespace TxTools.AutoPathPlanner
                 {
                     int axis=_robotCount+i;
                     bool gun=_world._activeGun!=null&&_world._activeGun.ActiveGun!=null&&
-                        _axes[i].Device.Id==_world._activeGun.ActiveGun.Id;
+                        _world._activeGun.IsGunAxis(_axes[i]);
                     if(gun)
                     {
                         double start=_world._activeGun.JointValueToOpening(Start[axis]);
@@ -1665,6 +1687,61 @@ namespace TxTools.AutoPathPlanner
                 }
             }
 
+            // Follow the TCP in world coordinates. Joint values come from IK at
+            // each TCP sample; external axes follow the declared endpoint values.
+            public List<PlanPoint> TryTcpTransfer(Vec3 start, Vec3 goal, TxVector fromRotation,
+                TxVector toRotation, string source)
+            {
+                if (fromRotation == null || toRotation == null) return null;
+                double dx = LerpAngle(fromRotation.X, toRotation.X, 1) - fromRotation.X;
+                double dy = LerpAngle(fromRotation.Y, toRotation.Y, 1) - fromRotation.Y;
+                double dz = LerpAngle(fromRotation.Z, toRotation.Z, 1) - fromRotation.Z;
+                int steps = Math.Max(2, (int)Math.Ceiling(Math.Max(Vec3.Distance(start, goal) / 40,
+                    (Math.Abs(dx) + Math.Abs(dy) + Math.Abs(dz)) / (10 * Math.PI / 180))));
+                var previous = Start;
+                var points = new List<PlanPoint>();
+                double savedOpening = _world.SearchOpening;
+                try
+                {
+                    for (int i = 1; i <= steps; i++)
+                    {
+                        if (_world.ShouldAbortMotion != null && _world.ShouldAbortMotion()) return null;
+                        double t = (double)i / steps;
+                        var q = (double[])Goal.Clone();
+                        if (i < steps)
+                        {
+                            for (int k = _robotCount; k < q.Length; k++)
+                                q[k] = Start[k] + t * (Goal[k] - Start[k]);
+                            if (!ApplyExternal(q)) return null;
+                            for (int k = 0; k < _axes.Count; k++)
+                                if (_world._activeGun != null && _world._activeGun.IsGunAxis(_axes[k]) &&
+                                    !_world.SetSearchOpening(_world._activeGun.JointValueToOpening(q[_robotCount+k]))) return null;
+                            var pos = Vec3.Lerp(start, goal, t);
+                            var rot = new TxVector(fromRotation.X + t*dx, fromRotation.Y + t*dy, fromRotation.Z + t*dz);
+                            TxPoseData pose = null;
+                            if (!_world.WithAdjacentConfiguration(RobotPose(previous),
+                                () => _world.TryCaptureJointPose(pos, rot, out pose))) return null;
+                            Array.Copy(_world.ReadJoints(pose), q, _robotCount);
+                        }
+                        // Reject branch changes on a short TCP step, and let the joint
+                        // planner search a separate transition when one is needed.
+                        for (int k = 0; k < _robotCount; k++)
+                            if (Math.Abs(q[k]-previous[k]) > 3*Scale[k]) return null;
+                        if (!IsMotionFree(previous, q)) return null;
+                        if (i < steps)
+                        {
+                            var point = Waypoint(q, source);
+                            point.KeepTcpSample = true;
+                            point.Note = "TCP 平移/旋转连续逆解";
+                            points.Add(point);
+                        }
+                        previous = q;
+                    }
+                    return points;
+                }
+                finally { _world.SetSearchOpening(savedOpening); }
+            }
+
             public PlanPoint Waypoint(double[] state, string source)
             {
                 if (!Apply(state) || !_world.IsHealthyPose(_world._robot.CurrentPose))
@@ -1677,7 +1754,7 @@ namespace TxTools.AutoPathPlanner
                     var axis = _axes[i];
                     data.Add(new TxRobotExternalAxisData { Device = axis.Device, Joint = axis.Joint, JointValue = state[_robotCount+i] });
                     if (_world._activeGun != null && _world._activeGun.ActiveGun != null &&
-                        axis.Device.Id == _world._activeGun.ActiveGun.Id)
+                        _world._activeGun.IsGunAxis(axis))
                         opening = _world._activeGun.JointValueToOpening(state[_robotCount+i]);
                 }
                 return new PlanPoint {
@@ -1843,7 +1920,8 @@ namespace TxTools.AutoPathPlanner
                     if (!av.ContainsKey(joint)) return "离开/到达外部轴不完整(未验证)";
                     saved[joint] = joint.CurrentValue;
                     _externalSteps = Math.Max(_externalSteps,
-                        (int)Math.Ceiling(Math.Abs(bv[joint] - av[joint]) / 1.0));
+                        (int)Math.Ceiling(Math.Abs(bv[joint] - av[joint]) /
+                            (joint.Type == TxJoint.TxJointType.Revolute ? Math.PI / 180 : 1.0)));
                 }
                 _applyExternalAt = t =>
                 {

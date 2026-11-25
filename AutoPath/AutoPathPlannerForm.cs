@@ -1,4 +1,4 @@
-﻿// AutoPathPlannerForm.cs — C# 7.3
+// AutoPathPlannerForm.cs — C# 7.3
 //
 // v5.5 全参数 GUI 可调:
 // - 规划参数区改 TabControl 四组: 常用 / 定向搜索L1 / 动态检查 / RRT&采样
@@ -105,6 +105,7 @@ using TxTools.Common;
 using Theme = TxTools.Common.FormUiKit.Theme;
 
 // 规划前可达性校验: 复用点位检查插件的 IK 求解器与日志接口
+using TxTools.RobotReachabilityChecker.Models;
 using TxTools.RobotReachabilityChecker.Diagnostics;
 using TxTools.RobotReachabilityChecker.Services;
 
@@ -426,8 +427,8 @@ namespace TxTools.AutoPathPlanner
                         "过渡点运动类型设为 Joint —— 各关节以最高效方式移动。\r\n"
                         + "用 Linear 是节拍杀手 (TCP 走直线, 关节被迫绕路)");
 
-                    _nudWeldOpening = AddRow(tp5, "焊点开口(mm):", 10, ref y, 0, 0, 300,
-                        "焊接位置的到达/离开开口，0 表示 CLOSE 位姿；可按工件厚度调整。");
+                    _nudWeldOpening = AddRow(tp5, "缺省焊点开口(mm):", 10, ref y, 0, 0, 300,
+                        "已有焊点到达、离开开口分别保留。到达值缺失使用此值，离开值缺失沿用到达值。0 表示标定 CLOSE。");
 
                     int y2 = 12;
                     _chkGunAxis = AddCheck(tp5, "焊钳开口写入外部轴", 330, ref y2, true,
@@ -435,7 +436,7 @@ namespace TxTools.AutoPathPlanner
                         + "需要焊钳已注册为机器人外部轴 (否则日志会提示)");
                     _nudTargetOpening = AddRow(tp5, "进/出枪开口(mm):", 330, ref y2, 30, 0, 300,
                         "进/出枪点的开口 —— 够越过翻边即可");
-                    _chkAdaptiveGun = AddCheck(tp5, "过渡点按需最小开口", 330, ref y2, true,
+                    _chkAdaptiveGun = AddCheck(tp5, "自适应进出枪和过渡开口", 330, ref y2, true,
                         "从小到大试开口, 第一个不干涉的就用。\r\n"
                         + "开口大=伺服行程长=慢, 且枪臂张开包络更大反而更容易撞");
                     _nudTransitOpening = AddRow(tp5, "过渡开口上限(mm):", 330, ref y2, 60, 0, 300,
@@ -978,6 +979,7 @@ namespace TxTools.AutoPathPlanner
                 report.VerifiedPathGroups, report.FailedPathGroups), report.FailedPathGroups > 0 ? LogLevel.Warn : LogLevel.Info);
             if (report.FailedSegments > 0)
                 Log(string.Format("失败段: {0} (需人工处理)", report.FailedSegments), LogLevel.Warn);
+            Log("PS 整操作回放通过 " + report.PlaybackVerifiedOperations + " / 选中 " + report.OperationCount, LogLevel.Info);
             if (report.ClearanceSegments > 0)
                 Log(string.Format("净空绕行段: {0} (端点干涉已绕行, 需确认工艺位置)", report.ClearanceSegments), LogLevel.Warn);
         }
@@ -1286,67 +1288,34 @@ namespace TxTools.AutoPathPlanner
         /// </summary>
         private bool RunReachabilityGate(List<ITxObject> ops, TxRobot fallbackRobot)
         {
-            int total = 0, unreachable = 0;
             var problems = new List<string>();
             var logger = new FormLogAdapter((m, lv) => Log(m, lv));
-
-            foreach (var op in ops)
+            using (var session = new InterferenceSession())
             {
-                TxRobot robot = ResolveRobotOf(op) ?? fallbackRobot;
-                if (robot == null)
+                foreach (var op in ops)
                 {
-                    problems.Add(string.Format("  操作 {0}: 无法解析关联机器人, 该操作焊点未校验",
-                        SafeName(op)));
-                    continue;
-                }
-
-                var weldLocs = CollectWeldLocationsOf(op);
-                if (weldLocs.Count == 0) continue;
-
-                int djCount = 0;
-                try { djCount = robot.DrivingJoints != null ? robot.DrivingJoints.Count : 0; } catch { }
-
-                // 路径连续性锚点: 首点 null, 每点成功后更新为该点解 (与主检查一致)
-                double[] anchor = null;
-                foreach (var loc in weldLocs)
-                {
-                    total++;
-                    var locOp = loc as ITxRoboticLocationOperation;
-                    string err = "";
-                    try
+                    var expected = new HashSet<string>();
+                    foreach (var weld in CollectWeldLocationsOf(op)) expected.Add(weld.Id);
+                    var options = new CheckOptions {
+                        PlanningRobot = ResolveRobotOf(op) ?? fallbackRobot, ApplyLocationExternalAxes = true,
+                        ShowRecoveryDialog = false, InterferenceEnabled = true, InterferenceSession = session
+                    };
+                    foreach (var result in ReachabilityChecker.Check(op, options, log: logger))
                     {
-                        double[] vals = locOp == null ? null : IkSolver.TryIKWithTcpfSwitch(
-                            robot, (ITxObject)loc, locOp, anchor, djCount, out err, logger);
-                        if (vals != null && vals.Length > 0)
-                        {
-                            anchor = vals;
-                            continue;
-                        }
+                        var loc = result.LocationRef as ITxObject;
+                        if (loc == null || !expected.Remove(loc.Id)) continue;
+                        if (result.Status == ReachabilityStatus.Unreachable || result.Status == ReachabilityStatus.NotChecked)
+                            problems.Add(SafeName(op) + "/" + result.PointName + " " + result.ErrorMessage);
+                        // The checker observes the original scene. The process planner evaluates
+                        // the declared arrival and departure axes before accepting a candidate.
+                        if (result.CollisionState != CollisionCheckState.Clean)
+                            Log(result.PointName + " 原始姿态: " + result.CollisionSummary + " " + result.ErrorMessage, LogLevel.Warn);
                     }
-                    catch (Exception ex) { err = ex.Message; }
-
-                    unreachable++;
-                    problems.Add(string.Format("  [{0}] / [{1}]: {2}",
-                        SafeName(op), SafeName(loc),
-                        string.IsNullOrEmpty(err) ? "IK无解" : err));
+                    if (expected.Count > 0) problems.Add(SafeName(op) + " 未取得全部焊点分析结果");
                 }
             }
-
-            Log(string.Format("== 规划前可达性校验: 共 {0} 个焊点, 不可达 {1} 个 ==",
-                total, unreachable), unreachable > 0 ? LogLevel.Warn : LogLevel.Ok);
-            foreach (var p in problems) Log(p, LogLevel.Warn);
-
-            if (unreachable == 0) return true;
-
-            string listText = string.Join("\n", problems);
-            if (problems.Count > 15)
-                listText = string.Join("\n", problems.GetRange(0, 15)) +
-                           string.Format("\n  ... 共 {0} 条", problems.Count);
-            MessageBox.Show(
-                string.Format("存在 {0} 个不可达焊点，已拒绝规划：\n\n{1}\n\n" +
-                              "请调整焊点姿态/机器人位置或移除不可达焊点后重试。",
-                    unreachable, listText),
-                "可达性校验未通过", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            if (problems.Count == 0) return true;
+            MessageBox.Show(string.Join("\n", problems), "可达性校验未通过", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
         }
 
