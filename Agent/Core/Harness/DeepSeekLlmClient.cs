@@ -179,7 +179,8 @@ namespace TxTools.Agent.Harness
 
             // DeepSeek V4 documents low/high/max and requires reasoning replay with tools.
             // Do not send provider-specific fields to proxies or unrelated models.
-            if (_client.IsOfficialDeepSeek && ModelId.StartsWith("deepseek-v4", StringComparison.OrdinalIgnoreCase))
+            if (_client.IsOfficialDeepSeek && (ModelId == LlmProviders.DeepSeekFlash
+                || ModelId.StartsWith("deepseek-v4", StringComparison.OrdinalIgnoreCase)))
             {
                 req.ReasoningEffort = ReasoningEffort == "high" || ReasoningEffort == "max" ? ReasoningEffort : "low";
                 if (tools != null && tools.Count > 0)
@@ -287,6 +288,11 @@ namespace TxTools.Agent.Harness
                     default: cm.Role = "user"; break;
                 }
                 cm.Content = m.Content;
+                if (m.Role == MessageRole.User && m.ImageParts?.Count > 0)
+                {
+                    cm.ContentParts = new List<ContentPart> { ContentPart.FromText(m.Content ?? "") };
+                    cm.ContentParts.AddRange(m.ImageParts);
+                }
                 cm.ReasoningContent = m.ReasoningContent;
                 cm.ToolCallId = m.ToolCallId;
                 // The wire flag remains off here; BuildRequest enables it only for compatible tool requests.

@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
@@ -197,8 +198,9 @@ namespace TxTools.ExportByColor
             }
         }
 
-        public static Cfv3EncodingStats ConvertFile(string cgrPath, string outputPath, string identity)
+        public static Cfv3EncodingStats ConvertFile(string cgrPath, string outputPath, string identity, CancellationToken cancellation = default)
         {
+            cancellation.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(cgrPath)) throw new ArgumentNullException("cgrPath");
             if (string.IsNullOrWhiteSpace(outputPath)) throw new ArgumentNullException("outputPath");
             byte[] source = File.ReadAllBytes(cgrPath);
@@ -213,12 +215,13 @@ namespace TxTools.ExportByColor
                     CgrFeatureCfv3Adapter.WriteCompactBridge(source, bridgePath);
                     source = File.ReadAllBytes(bridgePath);
                 }
-                byte[] output = Encode(source, identity, out stats);
+                byte[] output = Encode(source, identity, out stats, cancellation);
                 stats.FeatureGeometryBridge = featureBridge;
                 string temporary = outputPath + "." + Guid.NewGuid().ToString("N") + ".partial";
                 try
                 {
                     File.WriteAllBytes(temporary, output);
+                    cancellation.ThrowIfCancellationRequested();
                     if (File.Exists(outputPath)) File.Delete(outputPath);
                     File.Move(temporary, outputPath);
                 }
@@ -234,10 +237,11 @@ namespace TxTools.ExportByColor
             return stats;
         }
 
-        public static byte[] Encode(byte[] source, string identity, out Cfv3EncodingStats stats)
+        public static byte[] Encode(byte[] source, string identity, out Cfv3EncodingStats stats, CancellationToken cancellation = default)
         {
             if (source == null || source.Length == 0) throw new ArgumentException("CGR 数据为空", "source");
-            GeometryStreams streams = EncodeGeometryStreams(source);
+            GeometryStreams streams = EncodeGeometryStreams(source, cancellation);
+            cancellation.ThrowIfCancellationRequested();
             byte[] result = WrapCfv3(streams.Skeleton, streams.Picks, identity);
             stats = new Cfv3EncodingStats
             {
@@ -258,7 +262,7 @@ namespace TxTools.ExportByColor
                      ((uint)digest[18] << 8) | digest[19]) & 0xfffffff0u;
         }
 
-        private static GeometryStreams EncodeGeometryStreams(byte[] source)
+        private static GeometryStreams EncodeGeometryStreams(byte[] source, CancellationToken cancellation)
         {
             List<LeafRecord> records = FindLeaves(source);
             if (records.Count == 0) throw new InvalidDataException("CGR 中没有 compact-95 叶块");
@@ -279,6 +283,7 @@ namespace TxTools.ExportByColor
                 writer.WriteRaw(EncodeCompact(records.Count, true));
                 for (int ordinal = 0; ordinal < records.Count; ordinal++)
                 {
+                    cancellation.ThrowIfCancellationRequested();
                     LeafRecord record = records[ordinal];
                     writer.WriteRaw(new byte[] { 0 });
                     foreach (byte[] header in V2BranchHeaders(source, record.Start))

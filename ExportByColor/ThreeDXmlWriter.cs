@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -54,6 +55,7 @@ namespace TxTools.ExportByColor
         private readonly string _identitySeed = Guid.NewGuid().ToString("N");
         private readonly string _memberPrefix;
         private readonly FileStream _file;
+        private readonly CancellationToken _cancellation;
         private ZipArchive _archive;
         private readonly Dictionary<string, int> _memberCounts =
             new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -63,8 +65,10 @@ namespace TxTools.ExportByColor
         private bool _completed;
         private bool _disposed;
 
-        public ThreeDXmlWriter(string outputPath, string title)
+        public ThreeDXmlWriter(string outputPath, string title, CancellationToken cancellation = default)
         {
+            cancellation.ThrowIfCancellationRequested();
+            _cancellation = cancellation;
             if (string.IsNullOrWhiteSpace(outputPath)) throw new ArgumentNullException("outputPath");
             _outputPath = Path.GetFullPath(outputPath);
             _title = string.IsNullOrWhiteSpace(title) ? "DirectCGRAssembly" : title.Trim();
@@ -131,13 +135,22 @@ namespace TxTools.ExportByColor
             ZipArchiveEntry entry = _archive.CreateEntry(ticket.MemberName, CompressionLevel.Optimal);
             using (Stream target = entry.Open())
             using (var source = new FileStream(representationPath, FileMode.Open, FileAccess.Read, FileShare.Read))
-                source.CopyTo(target, 1024 * 1024);
+            {
+                var buffer = new byte[1024 * 1024];
+                int count;
+                while ((count = source.Read(buffer, 0, buffer.Length)) != 0)
+                {
+                    _cancellation.ThrowIfCancellationRequested();
+                    target.Write(buffer, 0, count);
+                }
+            }
             ticket.Added = true;
             _parts.Add(ticket);
         }
 
         public void Complete()
         {
+            _cancellation.ThrowIfCancellationRequested();
             ThrowIfClosed();
             if (_parts.Count == 0) throw new InvalidOperationException("没有可写入 3DXML 的表示数据");
             WriteEntry("Manifest.xml", BuildManifestXml());
@@ -146,8 +159,9 @@ namespace TxTools.ExportByColor
             _archive = null;
             _file.Flush(true);
             _file.Dispose();
-            if (File.Exists(_outputPath)) File.Delete(_outputPath);
-            File.Move(_partialPath, _outputPath);
+            _cancellation.ThrowIfCancellationRequested();
+            if (File.Exists(_outputPath)) File.Replace(_partialPath, _outputPath, null);
+            else File.Move(_partialPath, _outputPath);
             _completed = true;
         }
 

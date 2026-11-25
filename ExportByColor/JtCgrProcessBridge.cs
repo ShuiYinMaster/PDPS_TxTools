@@ -1,11 +1,37 @@
 using System;
 using System.IO;
+using System.Reflection;
 using System.Text;
+using System.Threading;
 
 namespace TxTools.ExportByColor
 {
     internal static class JtCgrProcessBridge
     {
+        private const string DecoderName = "TxTools.JtDecoder.exe";
+        private const string WorkerName = "TxTools.JtCgrWorker.exe";
+
+        internal static string ResolveDecoder(Assembly assembly)
+        {
+            Uri original;
+            string originalPath = Uri.TryCreate(assembly.CodeBase, UriKind.Absolute, out original) && original.IsFile
+                ? original.LocalPath : null;
+            string requirement = null;
+            foreach (string path in new[] { originalPath, assembly.Location })
+            {
+                if (string.IsNullOrEmpty(path)) continue;
+                string runtime = Path.Combine(Path.GetDirectoryName(path), "JtDirectCs");
+                string decoder = Path.Combine(runtime, DecoderName);
+                string worker = Path.Combine(runtime, WorkerName);
+                bool hasDecoder = File.Exists(decoder);
+                bool hasWorker = File.Exists(worker);
+                if (hasDecoder && hasWorker) return decoder;
+                if (requirement == null)
+                    requirement = !hasDecoder && !hasWorker ? runtime + "（缺少两个工作进程）" : hasDecoder ? worker : decoder;
+            }
+            throw new FileNotFoundException("JT 转换组件缺失。请使用同一构建的 TxTools.dll 和 JtDirectCs 目录。缺项：" + (requirement ?? "找不到插件部署目录"));
+        }
+
         internal static int TimeoutMs
         {
             get
@@ -19,9 +45,17 @@ namespace TxTools.ExportByColor
         internal static int[] Convert(string source, string directory, string decoder, string output,
             double[] placement, CgrBackend backend, bool reconstruct, Action<string> log, int timeoutMs = 0)
         {
+            return ConvertCancelable(source, directory, decoder, output, placement, backend, reconstruct, log, timeoutMs, default);
+        }
+
+        internal static int[] ConvertCancelable(string source, string directory, string decoder, string output,
+            double[] placement, CgrBackend backend, bool reconstruct, Action<string> log, int timeoutMs,
+            CancellationToken cancellation)
+        {
+            cancellation.ThrowIfCancellationRequested();
             Directory.CreateDirectory(directory);
             string request = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".jtjob");
-            string worker = Path.Combine(Path.GetDirectoryName(decoder), "TxTools.JtCgrWorker.exe");
+            string worker = Path.Combine(Path.GetDirectoryName(decoder), WorkerName);
             string stagedOutput = output + ".pending.cgr";
             using (var w = new BinaryWriter(File.Create(request), new UTF8Encoding(false)))
             {
@@ -34,8 +68,12 @@ namespace TxTools.ExportByColor
             try
             {
                 int exit = JtProcessRunner.Run(worker, JtProcessRunner.Quote(request), logPath,
-                    timeoutMs > 0 ? timeoutMs : TimeoutMs, true, () => File.WriteAllText(request + ".go", "go"));
-                if (exit != 0) throw new InvalidDataException("JT→CGR 工作进程失败，退出码=" + exit + "；日志=" + logPath);
+                    timeoutMs > 0 ? timeoutMs : TimeoutMs, true, () => File.WriteAllText(request + ".go", "go"), cancellation);
+                cancellation.ThrowIfCancellationRequested();
+                if (exit == 2)
+                    throw new JtDirectBridge.SourceCompatibilityException(JtProcessRunner.DescribeFailure("JT 源文件无法直读", exit, logPath));
+                if (exit != 0)
+                    throw new InvalidDataException(JtProcessRunner.DescribeFailure("JT→CGR 工作进程失败", exit, logPath));
                 int[] counts;
                 using (var r = new BinaryReader(File.OpenRead(request + ".done")))
                 {
@@ -53,9 +91,14 @@ namespace TxTools.ExportByColor
             }
             finally
             {
+                if (cancellation.IsCancellationRequested)
+                {
+                    foreach (string suffix in new[] { "", ".holes.csv", ".cylinders.csv", ".cylinders.log" })
+                        try { File.Delete(stagedOutput + suffix); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                }
                 try
                 {
-                    if (log != null && File.Exists(logPath))
+                    if (!cancellation.IsCancellationRequested && log != null && File.Exists(logPath))
                         foreach (string line in File.ReadLines(logPath)) { try { log(line); } catch { } }
                 }
                 catch { /* A diagnostic read must not replace the actual conversion failure. */ }

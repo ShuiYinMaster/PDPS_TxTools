@@ -32,7 +32,7 @@ namespace TxTools.WeldPointImporter
             void GetTypeInfo(uint index, uint locale, out ITypeInfo info);
         }
 
-        internal static PointReadResult Read(CatiaPointMode mode, string query)
+        internal static PointReadResult Read(CatiaPointMode mode, string query, bool skipHidden = false)
         {
             var terms = mode == CatiaPointMode.Studs ? Regex.Split(query ?? "", @"[,;，；、|\r\n]+")
                 .Select(term => term.Trim()).Where(term => term.Length != 0).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
@@ -43,10 +43,11 @@ namespace TxTools.WeldPointImporter
             if (document == null) throw new InvalidOperationException("请在 CATIA 中激活源文档。");
             string name = GetText(document, "Name");
             var result = new PointReadResult();
+            using var visibility = skipHidden ? SelectionVisibility.TryCreate(document, result) : null;
 
             if (name.EndsWith(".CATPart", StringComparison.OrdinalIgnoreCase) && mode != CatiaPointMode.BiW && mode != CatiaPointMode.Studs)
             {
-                ReadPart(app, document, name, Frame12.Identity, mode, result);
+                ReadPart(app, document, name, Frame12.Identity, mode, result, visibility);
                 return result;
             }
             if (!name.EndsWith(".CATProduct", StringComparison.OrdinalIgnoreCase))
@@ -54,7 +55,7 @@ namespace TxTools.WeldPointImporter
                     ? " CATProduct 装配文档。" : " CATPart 或 CATProduct 文档。"));
             var root = Catia.InvokeGet(document, "Product");
             var rootFrame = new Lazy<Frame12>(() => Frame12.Identity);
-            var occurrences = Enumerate(root, name, rootFrame, mode == CatiaPointMode.Studs, result, 0);
+            var occurrences = Enumerate(root, name, rootFrame, mode == CatiaPointMode.Studs, result, visibility, 0);
             if (mode == CatiaPointMode.Studs)
             {
                 ReadStuds(occurrences, terms, result);
@@ -77,7 +78,7 @@ namespace TxTools.WeldPointImporter
             foreach (var occurrence in occurrences)
             {
                 if (!GetText(occurrence.Document, "Name").EndsWith(".CATPart", StringComparison.OrdinalIgnoreCase)) continue;
-                try { ReadPart(app, occurrence.Document, occurrence.Path, occurrence.Frame.Value, mode, result); }
+                try { ReadPart(app, occurrence.Document, occurrence.Path, occurrence.Frame.Value, mode, result, visibility); }
                 catch (Exception ex) { result.Warn(occurrence.Path + "：" + Message(ex)); }
             }
             return result;
@@ -122,7 +123,7 @@ namespace TxTools.WeldPointImporter
         }
 
         private static IEnumerable<Occurrence> Enumerate(object parent, string path, Lazy<Frame12> parentFrame,
-            bool skipGenerated, PointReadResult result, int depth)
+            bool skipGenerated, PointReadResult result, SelectionVisibility visibility, int depth)
         {
             if (depth >= 100) throw new InvalidDataException("CATIA 装配层级超过 100。");
             foreach (var product in Items(parent, "Products"))
@@ -130,6 +131,7 @@ namespace TxTools.WeldPointImporter
                 string name = GetText(product, "Name"), partNumber = GetText(product, "PartNumber");
                 if (skipGenerated && partNumber.EndsWith("_OriginPoints", StringComparison.OrdinalIgnoreCase)) continue;
                 string instancePath = path + "/" + (name.Length == 0 ? partNumber : name);
+                if (visibility?.IsHidden(product) == true) continue;
                 var reference = TryGet(product, "ReferenceProduct");
                 var occurrence = new Occurrence
                 {
@@ -139,7 +141,7 @@ namespace TxTools.WeldPointImporter
                 if (occurrence.Document == null && !skipGenerated)
                     result.Warn(instancePath + "：引用文档无法读取，请检查装配是否已加载到设计模式。");
                 yield return occurrence;
-                foreach (var child in Enumerate(occurrence.Product, instancePath, occurrence.Frame, skipGenerated, result, depth + 1))
+                foreach (var child in Enumerate(occurrence.Product, instancePath, occurrence.Frame, skipGenerated, result, visibility, depth + 1))
                     yield return child;
             }
         }
@@ -186,7 +188,8 @@ namespace TxTools.WeldPointImporter
             catch (Exception ex) { result.Warn(instance + "：" + Message(ex)); }
         }
 
-        private static void ReadPart(object app, object document, string path, Frame12 frame, CatiaPointMode mode, PointReadResult result)
+        private static void ReadPart(object app, object document, string path, Frame12 frame, CatiaPointMode mode,
+            PointReadResult result, SelectionVisibility visibility)
         {
             var part = Catia.InvokeGet(document, "Part");
             var spa = Catia.InvokeMethod(document, "GetWorkbench", "SPAWorkbench");
@@ -194,34 +197,104 @@ namespace TxTools.WeldPointImporter
             if (mode == CatiaPointMode.SolidBodies)
             {
                 foreach (var body in Items(part, "Bodies"))
-                    Measure(body, part, spa, service, frame, path, "", mode, result);
+                    if (visibility?.IsHidden(body) != true) Measure(body, part, spa, service, frame, path, "", mode, result);
                 return;
             }
             var seen = new HashSet<object>();
-            ReadGeometrySets(part, part, spa, service, frame, path, mode, result, seen, 0);
+            ReadGeometrySets(part, part, spa, service, frame, path, mode, result, visibility, seen, 0);
             foreach (var body in Items(part, "Bodies"))
-                ReadGeometrySets(body, part, spa, service, frame, path + "/" + GetText(body, "Name"), mode, result, seen, 0);
+                if (visibility?.IsHidden(body) != true)
+                    ReadGeometrySets(body, part, spa, service, frame, path + "/" + GetText(body, "Name"), mode, result, visibility, seen, 0);
         }
 
         private static void ReadGeometrySets(object owner, object part, object spa, Lazy<object> service, Frame12 frame, string path,
-            CatiaPointMode mode, PointReadResult result, HashSet<object> seen, int depth)
+            CatiaPointMode mode, PointReadResult result, SelectionVisibility visibility, HashSet<object> seen, int depth)
         {
             if (depth >= 100) throw new InvalidDataException("CATIA 图形集层级超过 100。");
             string set = GetText(owner, "Name");
             foreach (var shape in Items(owner, "HybridShapes"))
             {
-                if (!seen.Add(shape)) continue;
+                if (seen.Contains(shape)) continue;
                 string type = TypeName(shape);
                 bool relevant = mode == CatiaPointMode.GeometricalSpheres
                     ? type.IndexOf("HybridShapeSphere", StringComparison.OrdinalIgnoreCase) >= 0
                         || (IsGenericShape(type) && TryGet(shape, "Radius") != null && TryGet(shape, "Center") != null)
                     : type.StartsWith("HybridShapePoint", StringComparison.OrdinalIgnoreCase) || IsGenericShape(type)
                         || type.Equals("HybridShapeIntersection", StringComparison.OrdinalIgnoreCase);
-                if (relevant) Measure(shape, part, spa, service, frame, path, set, mode, result, IsGenericShape(type));
+                if (relevant && visibility?.IsHidden(shape) != true && seen.Add(shape))
+                    Measure(shape, part, spa, service, frame, path, set, mode, result, IsGenericShape(type));
             }
             foreach (string collection in new[] { "HybridBodies", "OrderedGeometricalSets" })
             foreach (var child in Items(owner, collection))
-                ReadGeometrySets(child, part, spa, service, frame, path + "/" + GetText(child, "Name"), mode, result, seen, depth + 1);
+                if (visibility?.IsHidden(child) != true)
+                    ReadGeometrySets(child, part, spa, service, frame, path + "/" + GetText(child, "Name"), mode, result, visibility, seen, depth + 1);
+        }
+
+        private sealed class SelectionVisibility : IDisposable
+        {
+            private readonly INFITF.Selection _selection;
+            private readonly INFITF.AnyObject[] _selected;
+            private readonly PointReadResult _result;
+            private bool _used, _warned;
+
+            private SelectionVisibility(INFITF.Selection selection, PointReadResult result)
+            {
+                _selection = selection;
+                _result = result;
+                _selected = Enumerable.Range(1, selection.Count2)
+                    .Select(index => selection.Item2(index).Value as INFITF.AnyObject).ToArray();
+                if (_selected.Any(item => item == null))
+                    throw new InvalidOperationException("当前 CATIA 选区含无法恢复的元素。");
+            }
+
+            internal static SelectionVisibility TryCreate(object document, PointReadResult result)
+            {
+                try { return new SelectionVisibility((INFITF.Selection)Catia.InvokeGet(document, "Selection"), result); }
+                catch (Exception error)
+                {
+                    result.Warn("无法读取 CATIA 可见性，保留来源对象。" + Message(error));
+                    return null;
+                }
+            }
+
+            internal bool IsHidden(object target)
+            {
+                try
+                {
+                    var value = (INFITF.AnyObject)target;
+                    _used = true;
+                    _selection.Clear();
+                    _selection.Add(value);
+                    if (_selection.Count2 == 1 &&
+                        _selection.VisProperties.GetShow(out var state) == INFITF.CatVisPropertyStatus.catVisPropertyDefined)
+                        return state == INFITF.CatVisPropertyShow.catVisPropertyNoShowAttr;
+                }
+                catch (Exception error)
+                {
+                    WarnUnknown(Message(error));
+                    return false;
+                }
+                WarnUnknown("");
+                return false;
+            }
+
+            private void WarnUnknown(string detail)
+            {
+                if (_warned) return;
+                _warned = true;
+                _result.Warn("部分 CATIA 对象未能确认可见性，已保留这些对象。" + detail);
+            }
+
+            public void Dispose()
+            {
+                if (!_used) return;
+                try
+                {
+                    _selection.Clear();
+                    foreach (var item in _selected) _selection.Add(item);
+                }
+                catch (Exception error) { _result.Warn("CATIA 选区未能完整恢复。" + Message(error)); }
+            }
         }
 
         private static void Measure(object shape, object part, object spa, Lazy<object> service, Frame12 frame, string path, string geometrySet,

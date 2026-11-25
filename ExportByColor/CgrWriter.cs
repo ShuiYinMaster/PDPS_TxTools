@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Collections.Generic;
 using System.IO;
 using System.Diagnostics;
@@ -89,14 +90,20 @@ namespace TxTools.ExportByColor
                 throw new ArgumentOutOfRangeException("backend");
             return backend;
         }
-        public static void BuildFile(List<float[]> vertices,List<Face> faces,string outPath,CgrBackend backend,int maxFacesPerBlock=MaxFacesPerChunk,Action<string> progress=null)
+        public static void BuildFile(List<float[]> vertices,List<Face> faces,string outPath,CgrBackend backend,int maxFacesPerBlock=MaxFacesPerChunk,Action<string> progress=null,CancellationToken cancellation=default)
         {
-            BuildFile(vertices,faces,outPath,backend,maxFacesPerBlock,progress,false);
+            BuildFile(vertices,faces,outPath,backend,maxFacesPerBlock,progress,false,cancellation);
         }
         // JT has source topology and normals. Color patches need not form closed solids;
         // solving them as PS sheets introduces reverse faces over neighboring materials.
-        public static void BuildFile(List<float[]> vertices,List<Face> faces,string outPath,CgrBackend backend,int maxFacesPerBlock,Action<string> progress,bool preserveSourceWinding)
+        public static void BuildFile(List<float[]> vertices,List<Face> faces,string outPath,CgrBackend backend,int maxFacesPerBlock,Action<string> progress,bool preserveSourceWinding,CancellationToken cancellation=default)
         {
+            cancellation.ThrowIfCancellationRequested();
+            if (cancellation.CanBeCanceled)
+            {
+                var report = progress;
+                progress = message => { cancellation.ThrowIfCancellationRequested(); report?.Invoke(message); };
+            }
             if(vertices==null||faces==null||faces.Count==0||maxFacesPerBlock<1) throw new ArgumentException("Empty mesh or invalid block size");
             backend=ResolveBackend(backend);
             if(faces.Exists(f => (f.Opacity ?? 255) != 255) && (!preserveSourceWinding || (backend != CgrBackend.Compact && backend != CgrBackend.LineFace && backend != CgrBackend.LineFacePlanar)))
@@ -104,14 +111,15 @@ namespace TxTools.ExportByColor
             bool features=backend==CgrBackend.LineFace||backend==CgrBackend.LineFacePlanar;
             var watch=Stopwatch.StartNew();int inputFaces=faces.Count;
             if(progress!=null) progress("[CGR] 编码器 "+Version+"；方案="+backend+"；DLL="+typeof(CgrWriter).Assembly.Location+"；批量="+(Environment.GetEnvironmentVariable("TXTOOLS_CGR_BATCH_LISTS")!="0")+"；边="+(features||Environment.GetEnvironmentVariable("TXTOOLS_CGR_WRITE_EDGES")=="1")+"；背面="+(!preserveSourceWinding&&Environment.GetEnvironmentVariable("TXTOOLS_CGR_DUPLICATE_BACKFACES")!="0"));
-            faces=FilterZeroArea(vertices,faces,progress);
+            faces=FilterZeroArea(vertices,faces,progress,cancellation);
+            cancellation.ThrowIfCancellationRequested();
             // JT index identities preserve disconnected/coincident sheets and source adjacency.
-            if(features && !preserveSourceWinding) WeldFeatureVertices(ref vertices,ref faces);
+            if(features && !preserveSourceWinding) WeldFeatureVertices(ref vertices,ref faces,cancellation);
             if(preserveSourceWinding)
             {
                 if(progress!=null) progress("[CGR] source winding retained; no synthetic reverse faces; triangles="+faces.Count);
             }
-            else PrepareSurfaces(ref vertices,ref faces,progress,backend!=CgrBackend.Legacy);
+            else PrepareSurfaces(ref vertices,ref faces,progress,backend!=CgrBackend.Legacy,cancellation:cancellation);
             if(features)
             {
                 // Feature leaves can safely use 65,535 vertices. Do not force a
@@ -119,11 +127,11 @@ namespace TxTools.ExportByColor
                 // explicitly supplied non-default limit as an operational override.
                 int featureLimit=backend==CgrBackend.LineFace&&maxFacesPerBlock==MaxFacesPerChunk?int.MaxValue:maxFacesPerBlock;
                 if(progress!=null)progress("[CGR] 已验证分块：每块至多 "+MaxFeatureVertsPerChunk+" 顶点；连续线面按顶点容量切块");
-                BuildLineFace95(vertices,faces,outPath,featureLimit,progress,backend==CgrBackend.LineFace);return;
+                BuildLineFace95(vertices,faces,outPath,featureLimit,progress,backend==CgrBackend.LineFace,cancellation:cancellation);return;
             }
             if(backend==CgrBackend.Compact)
             {
-                BuildCompact95(vertices,faces,outPath,progress);return;
+                BuildCompact95(vertices,faces,outPath,progress,cancellation);return;
             }
             if(Environment.GetEnvironmentVariable("TXTOOLS_CGR_LOCALIZE")=="1")
             {
@@ -139,6 +147,7 @@ namespace TxTools.ExportByColor
             var scenes=new List<byte[]>();var packets=new List<byte[]>();int i=0;uint nextId=FirstId,nextPickOffset=0;
             while(i<faces.Count)
             {
+                cancellation.ThrowIfCancellationRequested();
                 var verts=new List<float[]>();var local=new List<Face>();var map=new Dictionary<int,int>();
                 while(i<faces.Count&&local.Count<maxFacesPerBlock)
                 {
@@ -168,6 +177,7 @@ namespace TxTools.ExportByColor
             }
             // Global root bounds cover all devices, while each child retains its local bounds.
             using(var ms=new MemoryStream()) { foreach(var packet in packets) ms.Write(packet,0,packet.Length);topology=ms.ToArray(); }
+            cancellation.ThrowIfCancellationRequested();
             WriteContainer(combined,topology,outPath,vertices);
             if(progress!=null) progress("[CGR] 编码完成："+scenes.Count+" 个内部块，1 个文件，"+new FileInfo(outPath).Length+" 字节，总耗时 "+watch.ElapsedMilliseconds+" ms");
         }
@@ -189,11 +199,13 @@ namespace TxTools.ExportByColor
             faces=FilterZeroArea(vertices,faces,null);
             BuildStreams(vertices,faces,FirstId,out scene,out packet,out nextId);WriteContainer(scene,packet,outPath,vertices);
         }
-        private static List<Face> FilterZeroArea(List<float[]> vertices,List<Face> faces,Action<string> progress)
+        private static List<Face> FilterZeroArea(List<float[]> vertices,List<Face> faces,Action<string> progress,CancellationToken cancellation=default)
         {
-            var kept=new List<Face>(faces.Count);int removed=0;
+            var kept=new List<Face>(faces.Count);int checkedFaces=0;int removed=0;
             foreach(var f in faces)
             {
+                if ((checkedFaces & 1023) == 0) cancellation.ThrowIfCancellationRequested();
+                checkedFaces++;
                 if(f.Idx==null||f.Idx.Length!=3) throw new ArgumentException("Expected triangle");
                 foreach(int j in f.Idx)
                 {

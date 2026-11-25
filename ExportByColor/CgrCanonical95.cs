@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Collections.Generic;
 using System.IO;
 namespace TxTools.ExportByColor
@@ -6,12 +7,12 @@ namespace TxTools.ExportByColor
     public static partial class CgrWriter
     {
         public static void BuildFileWithCylinders(List<float[]> vertices,List<Face> faces,string output,
-            Dictionary<int,RoundHoleCgrMesh.Cylinder> cylinders,Action<string> log=null)
+            Dictionary<int,RoundHoleCgrMesh.Cylinder> cylinders,Action<string> log=null,CancellationToken cancellation=default)
         {
             if(vertices==null||faces==null||cylinders==null)throw new ArgumentNullException("mesh/cylinders");
-            faces=FilterZeroArea(vertices,faces,log);
+            faces=FilterZeroArea(vertices,faces,log,cancellation);
             // Pure mesh/parameter data stays local to the conversion invocation.
-            BuildLineFace95(vertices,faces,output,int.MaxValue,log,true,cylinders);
+            BuildLineFace95(vertices,faces,output,int.MaxValue,log,true,cylinders,cancellation);
             if(log!=null)log("[CGR canonical] cylindrical source groups="+cylinders.Count+"; direct CGR only; no reference axes or CATPart companions");
         }
         private static void CanonicalFloat95(BinaryWriter w,double value)

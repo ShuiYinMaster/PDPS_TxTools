@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace TxTools.ExportByColor
@@ -10,7 +11,7 @@ namespace TxTools.ExportByColor
         // not backing-file path, distinguishes independently placed instances.
         internal static List<T> Expand<T>(IEnumerable<T> roots, Func<T, string> key,
             Func<T, bool> container, Func<T, bool> hasBacking, Func<T, IEnumerable<T>> children,
-            Action<T, Exception> onError = null) where T : class
+            Action<T, Exception> onError = null, CancellationToken cancellation = default) where T : class
         {
             var result = new List<T>();
             var seen = new HashSet<string>();
@@ -18,6 +19,7 @@ namespace TxTools.ExportByColor
             foreach (var root in roots) if (root != null) todo.Push(root);
             while (todo.Count != 0)
             {
+                cancellation.ThrowIfCancellationRequested();
                 var node = todo.Pop();
                 if (node == null || !seen.Add(key(node))) continue;
                 try
@@ -40,15 +42,14 @@ namespace TxTools.ExportByColor
             return result;
         }
 
-        internal static T TakeCompleted<T>(List<T> pending, Func<T, Task> task)
+        internal static T TakeCompleted<T>(List<T> pending, Func<T, Task> task, CancellationToken cancellation = default)
         {
             if (pending.Count == 0) throw new InvalidOperationException("Empty JT batch");
             var tasks = new Task[pending.Count];
             for (int i = 0; i < tasks.Length; i++) tasks[i] = task(pending[i]);
             // Await only the wrapper, so a faulted/cancelled resource is returned
             // to the per-resource error handler instead of faulting the batch.
-            var completed = Task.WhenAny(tasks).GetAwaiter().GetResult();
-            int index = Array.IndexOf(tasks, completed);
+            int index = Task.WaitAny(tasks, cancellation);
             var item = pending[index]; pending.RemoveAt(index); return item;
         }
     }

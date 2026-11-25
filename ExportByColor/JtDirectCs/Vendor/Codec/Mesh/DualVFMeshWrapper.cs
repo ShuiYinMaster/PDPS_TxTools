@@ -95,8 +95,8 @@ public class DualVFMeshWrapper {
 	 * @param  iVtx
 	 * @return       ---
 	 */
-	public int faceVtxAttr(int iFace, int iVtx){
-		return _dualVFMesh.vtxFaceAttr(iFace, iVtx);
+	public int faceVtxAttr(int iFace, int iVtx, bool explicitOnly = true){
+		return _dualVFMesh.vtxFaceAttr(iFace, iVtx, explicitOnly);
 	}
 
 	/**

@@ -303,7 +303,7 @@ namespace TxTools.CatiaPartTree.Conversion
                 }
                 leaves++;search=end;
             }
-            if(leaves==0)throw new NotSupportedException("该零件的 CATIA 可视化缓存不含可解析的三角网格，请在 CATIA 中打开并保存（更新 CGR 缓存）后重试");
+            if(leaves==0)throw new NotSupportedException("未从该零件的 CATIA 可视化缓存读到可转换的三角面");
             // Discard only unreferenced records superseded by domain binding.
             var used=ts.SelectMany(t=>t).Distinct().OrderBy(i=>i).ToArray();var remap=new int[vs.Count];
             for(int i=0;i<used.Length;i++)remap[used[i]]=i;

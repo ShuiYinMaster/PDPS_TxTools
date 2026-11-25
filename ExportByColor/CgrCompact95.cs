@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Collections.Generic;
 using System.IO;
 
@@ -34,11 +35,13 @@ namespace TxTools.ExportByColor
             if(length==0)throw new InvalidDataException("Zero area in compact backend");
             for(int k=0;k<3;k++)n[k]/=length;return n;
         }
-        private static void BuildCompact95(List<float[]> vertices,List<Face> faces,string path,Action<string> progress)
+        private static void BuildCompact95(List<float[]> vertices,List<Face> faces,string path,Action<string> progress,CancellationToken cancellation=default)
         {
             var groups=new Dictionary<Tuple<int,int>,List<Face>>();var order=new List<List<Face>>();
+            int processed=0;
             foreach(var f in faces)
             {
+                if((processed++&1023)==0)cancellation.ThrowIfCancellationRequested();
                 var key=Tuple.Create(f.Surface,f.R|(f.G<<8)|(f.B<<16)|((f.Opacity??255)<<24));List<Face> group;
                 if(!groups.TryGetValue(key,out group)){group=new List<Face>();groups.Add(key,group);order.Add(group);}group.Add(f);
             }
@@ -47,7 +50,7 @@ namespace TxTools.ExportByColor
             using(var picks=new MemoryStream())
             {
                 foreach(var group in order)
-                    CompactGroup95(vertices,group,leaves,picks,ref changed,ref vertexCount);
+                    CompactGroup95(vertices,group,leaves,picks,ref changed,ref vertexCount,cancellation:cancellation);
                 using(var scene=new MemoryStream())using(var w=new BinaryWriter(scene))
                 {
                     WriteCompactNode(w,global,false);Compact(w,(uint)leaves.Count);
@@ -59,13 +62,14 @@ namespace TxTools.ExportByColor
                         w.Write(leaf);
                     }
                     w.Write((byte)0);
+                    cancellation.ThrowIfCancellationRequested();
                     WriteContainer(scene.ToArray(),picks.ToArray(),path,vertices,true);
                 }
             }
             if(progress!=null)progress("[CGR95] "+groups.Count+" 个源几何/颜色组，"+leaves.Count+" 块，"+vertexCount+" 顶点；平滑角点 "+changed+"；文件 "+new FileInfo(path).Length+" 字节");
         }
         private static void CompactGroup95(List<float[]> source,List<Face> faces,List<byte[]> leaves,MemoryStream picks,ref long changed,ref int vertexCount,
-            Action<List<float[]>,List<float[]>,List<int[]>,List<int[]>,Face> featureWriter=null,int featureFaceLimit=int.MaxValue,int featureVertexLimit=MaxVertsPerChunk,bool fittedCylinder=false)
+            Action<List<float[]>,List<float[]>,List<int[]>,List<int[]>,Face> featureWriter=null,int featureFaceLimit=int.MaxValue,int featureVertexLimit=MaxVertsPerChunk,bool fittedCylinder=false,CancellationToken cancellation=default)
         {
             int count=faces.Count;var positions=new List<float[]>();var map=new Dictionary<Tuple<float,float,float>,int>();
             var ids=new int[count][];var normals=new double[count][];var angles=new double[count][];var areas=new double[count];
@@ -73,6 +77,7 @@ namespace TxTools.ExportByColor
             for(int i=0;i<parent.Length;i++)parent[i]=i;
             for(int i=0;i<count;i++)
             {
+                if((i&1023)==0)cancellation.ThrowIfCancellationRequested();
                 ids[i]=new int[3];angles[i]=new double[3];var f=faces[i];
                 for(int k=0;k<3;k++)
                 {
@@ -107,8 +112,10 @@ namespace TxTools.ExportByColor
                 if(Dot95(normals[fa],normals[fb])>1-1e-8)Join95(patches,fa,fb);
             }
             var neighbors=new Dictionary<int,Dictionary<int,double>>();
+            int scanned=0;
             foreach(var edge in edges.Values)
             {
+                if((scanned++&1023)==0)cancellation.ThrowIfCancellationRequested();
                 if(edge.Count!=2&&edge.Count!=4)continue;
                 for(int a=0;a<edge.Count;a++)for(int b=a+1;b<edge.Count;b++)
                 {

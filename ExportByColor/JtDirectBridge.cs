@@ -10,6 +10,11 @@ namespace TxTools.ExportByColor
     // No PS/COM objects cross the process boundary. No shell or PATH lookup.
     public static class JtDirectBridge
     {
+        public sealed class SourceCompatibilityException : NotSupportedException
+        {
+            internal SourceCompatibilityException(string message, Exception inner = null) : base(message, inner) { }
+        }
+
         public sealed class Triangle
         {
             public int[] Indices;
@@ -94,6 +99,12 @@ namespace TxTools.ExportByColor
             if(File.Exists(source) && string.Equals(Path.GetExtension(source),".jt",StringComparison.OrdinalIgnoreCase))return source;
             if(!Directory.Exists(source))throw new InvalidDataException("直接解码需要 JT 文件或 COJT 目录");
             string[] files=Directory.GetFiles(source,"*.jt",SearchOption.TopDirectoryOnly);
+            if (files.Length > 1 && string.Equals(Path.GetExtension(source.TrimEnd('\\', '/')), ".cojt", StringComparison.OrdinalIgnoreCase))
+            {
+                string expected = Path.GetFileNameWithoutExtension(source.TrimEnd('\\', '/')) + ".jt";
+                string primary = Array.Find(files, file => string.Equals(Path.GetFileName(file), expected, StringComparison.OrdinalIgnoreCase));
+                if (primary != null) return primary;
+            }
             if(files.Length!=1)throw new InvalidDataException("COJT 目录需要唯一的顶层 JT 文件，实际="+files.Length);
             return files[0];
         }
@@ -109,7 +120,8 @@ namespace TxTools.ExportByColor
         }
         public static Mesh Convert(string source,string directory,string worker,int timeoutMs)
         {
-            source=ResolveFile(source);
+            try { source = ResolveFile(source); }
+            catch (InvalidDataException ex) { throw new SourceCompatibilityException(ex.Message, ex); }
             directory=Path.GetFullPath(directory);
             if(!Path.IsPathRooted(worker)||!File.Exists(worker))
                 throw new FileNotFoundException("随插件部署的 C# JT 解码器不存在: "+worker);
@@ -117,8 +129,10 @@ namespace TxTools.ExportByColor
             string output=Path.Combine(directory,Guid.NewGuid().ToString("N")+".jtmesh");
             string log=output+".log";
             int exit=JtProcessRunner.Run(worker,Quote(source)+" "+Quote(output),log,timeoutMs);
-            if(exit==2)throw new NotSupportedException("JT 版本或编码暂不支持直接解码；日志="+log);
-            if(exit!=0)throw new InvalidDataException("JT 解码失败，退出码="+exit+"；日志="+log);
+            if (exit == 2)
+                throw new SourceCompatibilityException(JtProcessRunner.DescribeFailure("JT 版本或编码暂不支持直接解码", exit, log));
+            if (exit != 0)
+                throw new InvalidDataException(JtProcessRunner.DescribeFailure("JT 解码进程失败", exit, log));
             return Read(output,source);
         }
         private static float Finite(float v)

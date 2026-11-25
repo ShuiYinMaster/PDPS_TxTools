@@ -3,7 +3,7 @@
 // 图像识别工具。
 //
 // 为什么单独走一个模型:
-//   按具体模型识别视觉能力；支持 DeepSeek V4 vision-exp。
+//   按具体模型识别视觉能力；支持 DeepSeek Flash。
 //   与其让用户手动切模型(切了之后工具调用等能力又可能受影响),
 //   不如让主模型把图【委托】给视觉模型,拿回一段文字描述继续干活 ——
 //   主对话上下文里留下的是描述文本,不是几十万 token 的图片。
@@ -254,7 +254,7 @@ namespace TxTools.Agent.Core
             {
                 var have = ModelRouter.AvailableProviders();
                 return "Error: 没有可用的视觉模型" + (string.IsNullOrWhiteSpace(provider) ? "" : "（限定 provider=" + provider + "）")
-                     + "。请配置 DeepSeek vision-exp、Kimi 或千问的可用账号；显式 provider 不会跨平台回退。"
+                     + "。请配置 DeepSeek Flash、Kimi 或千问的可用账号；显式 provider 不会跨平台回退。"
                      + (have.Count > 0 ? "已配置的 provider: " + string.Join(", ", have) : "当前未配置任何其它 provider。");
             }
 
@@ -335,7 +335,7 @@ namespace TxTools.Agent.Core
                 ModelRouter.CurrentProviderId, provider, ModelRouter.HasKey);
         }
 
-        private static string MimeOf(string path)
+        internal static string MimeOf(string path)
         {
             switch ((Path.GetExtension(path) ?? "").ToLowerInvariant())
             {

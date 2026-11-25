@@ -91,13 +91,17 @@ namespace TxTools.Agent.UI
         private readonly UnhandledExceptionEventHandler _unhandledException;
         private Func<string, string> _askUserHandler;
         internal Func<bool, int, bool> SidebarLayout;
-        internal event EventHandler CloseRequested;
 
         // ── 加载覆盖 (WebView 初始化期间遮盖空白,防止用户以为界面卡死) ──
         private System.Windows.Forms.Panel _loadingOverlay;
         private System.Windows.Forms.Label _loadingLabel;
+        private Button _retryWebView;
         private System.Windows.Forms.Timer _loadingTimer;
         private int _loadingDotCount;
+        private System.Diagnostics.Stopwatch _webViewStartup;
+        private string _webViewStartupStage;
+        private bool _webViewLoadFailed;
+        private static readonly TimeSpan WebViewStartupTimeout = TimeSpan.FromSeconds(30);
 
         // 配方侧边栏的 study 轮询:前端靠 recipe.studyChanged 推送作废跨 study 绑定,
         // 宿主此前从未发过这个事件,过期检测形同虚设。轮询是唯一可靠的检测点 ——
@@ -149,17 +153,15 @@ namespace TxTools.Agent.UI
                 ForeColor = TxTools.Common.FormUiKit.Theme.TextFaint,
                 BackColor = System.Drawing.Color.Transparent
             };
+            _retryWebView = new Button { Dock = DockStyle.Bottom, Height = 32, Text = "重试加载", Visible = false };
+            _retryWebView.Click += (s, e) => RetryWebView();
             _loadingOverlay.Controls.Add(_loadingLabel);
+            _loadingOverlay.Controls.Add(_retryWebView);
             Controls.Add(_loadingOverlay);
             _loadingOverlay.BringToFront();
 
             _loadingTimer = new System.Windows.Forms.Timer { Interval = 400 };
-            _loadingTimer.Tick += (s, e) =>
-            {
-                _loadingDotCount = (_loadingDotCount + 1) % 4;
-                string dots = new string('.', _loadingDotCount);
-                _loadingLabel.Text = "\u6b63\u5728\u52a0\u8f7d TxAgent UI " + dots;
-            };
+            _loadingTimer.Tick += (s, e) => OnLoadingTick();
             AppDomain.CurrentDomain.UnhandledException += _unhandledException;
         }
 
@@ -179,8 +181,51 @@ namespace TxTools.Agent.UI
             _studyTimer = new System.Windows.Forms.Timer { Interval = 2500 };
             _studyTimer.Tick += (s, ev) => PollStudyChange();
             _studyTimer.Start();
+        }
 
-            InitWebViewAsync();
+        private void OnLoadingTick()
+        {
+            if (_sessionClosed || _webViewReady || _webViewLoadFailed || Disposing || IsDisposed) return;
+
+            if (_webViewStartup == null)
+            {
+                // PS 恢复布局时会在 Viewer 嵌入原生宿主前触发 OnLoad。
+                // 等控件可见且宿主消息循环开始派发消息后，再创建浏览器控制器。
+                if (!Visible || !IsHandleCreated) return;
+                _webViewStartup = System.Diagnostics.Stopwatch.StartNew();
+                var previousContext = SynchronizationContext.Current;
+                try
+                {
+                    if (!(previousContext is WindowsFormsSynchronizationContext))
+                        SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                    InitWebViewAsync(_webView);
+                }
+                finally { SynchronizationContext.SetSynchronizationContext(previousContext); }
+            }
+            else if (_webViewStartup.Elapsed >= WebViewStartupTimeout)
+            {
+                ShowWebViewLoadError("TxAgent 加载超时（" + _webViewStartupStage + "）。");
+                return;
+            }
+
+            if (_webViewReady || _webViewLoadFailed) return;
+            _loadingDotCount = (_loadingDotCount + 1) % 4;
+            _loadingLabel.Text = "正在加载 TxAgent UI " + new string('.', _loadingDotCount);
+        }
+
+        private void RetryWebView()
+        {
+            if (!_webViewLoadFailed || _sessionClosed) return;
+            var oldView = _webView;
+            _webView = new WebView2 { Dock = DockStyle.Fill };
+            oldView.Dispose();
+            Controls.Add(_webView);
+            _loadingOverlay.BringToFront();
+            _retryWebView.Visible = false;
+            _loadingLabel.Text = "正在加载 TxAgent UI";
+            _webViewStartup = null;
+            _webViewLoadFailed = false;
+            _loadingTimer.Start();
         }
 
         protected override void OnResize(EventArgs e)
@@ -215,27 +260,13 @@ namespace TxTools.Agent.UI
         //  WebView2 初始化 + HTML 加载
         // ─────────────────────────────────────────────────────
 
-        /// <summary>
-        /// 建一个进程独占的 WebView2 环境。目录带 PID，多个 PDPS 互不干扰。
-        /// 失败时返回 null —— 调用方退回默认行为，单进程场景仍然可用。
-        /// </summary>
-        private static async System.Threading.Tasks.Task<Microsoft.Web.WebView2.Core.CoreWebView2Environment>
-            CreateWebViewEnvironmentAsync()
+        private static Task<CoreWebView2Environment> CreateWebViewEnvironmentAsync()
         {
-            try
-            {
-                var dir = TxToolsTemp.DirectoryFor(
-                    "Agent", "WebView",
-                    System.Diagnostics.Process.GetCurrentProcess().Id.ToString());
-
-                return await Microsoft.Web.WebView2.Core.CoreWebView2Environment
-                    .CreateAsync(null, dir, null);
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine("[TxAgent] 创建独立 WebView2 环境失败,回退默认: " + ex.Message);
-                return null;
-            }
+            // 保留独立的用户数据目录，避免不同 PS 进程争用默认目录。
+            var dir = TxToolsTemp.DirectoryFor(
+                "Agent", "WebView",
+                System.Diagnostics.Process.GetCurrentProcess().Id.ToString());
+            return CoreWebView2Environment.CreateAsync(null, dir, null);
         }
 
         /// <summary>关窗时清掉本进程的 WebView2 缓存目录，避免 %TEMP% 越堆越多。</summary>
@@ -255,35 +286,44 @@ namespace TxTools.Agent.UI
             catch { }
         }
 
-        private async void InitWebViewAsync()
+        private bool IsCurrentWebViewLoad(WebView2 webView)
+        {
+            return ReferenceEquals(webView, _webView) && !_webViewReady && !_webViewLoadFailed
+                && !_sessionClosed && !IsDisposed && !Disposing;
+        }
+
+        private async void InitWebViewAsync(WebView2 webView)
         {
             try
             {
-                // 【必须给每个进程独立的用户数据目录】
-                // 传 null 时 WebView2 按 exe 名推导默认目录,两个 PDPS 是同一个 exe,
-                // 于是抢同一个目录 —— 而 WebView2 对它是【独占锁】,
-                // 第二个进程会一直卡在 EnsureCoreWebView2Async 不返回,
-                // 界面就停在"正在加载 TxAgent UI …"。
+                _webViewStartupStage = "创建 WebView2 环境";
                 var env = await CreateWebViewEnvironmentAsync();
-                if (_sessionClosed || IsDisposed || Disposing) return;
-                await _webView.EnsureCoreWebView2Async(env);
-                if (_sessionClosed || IsDisposed || Disposing) return;
-                try { _webView.CoreWebView2.Settings.AreDevToolsEnabled = true; } catch { }
-                try { _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true; } catch { }
-                try { _webView.CoreWebView2.Settings.IsWebMessageEnabled = true; } catch { }
+                if (!IsCurrentWebViewLoad(webView)) return;
+                _webViewStartupStage = "初始化 WebView2 控件";
+                await webView.EnsureCoreWebView2Async(env);
+                if (!IsCurrentWebViewLoad(webView)) return;
+                var core = webView.CoreWebView2;
+                try { core.Settings.AreDevToolsEnabled = true; } catch { }
+                try { core.Settings.AreDefaultContextMenusEnabled = true; } catch { }
+                try { core.Settings.IsWebMessageEnabled = true; } catch { }
 
-                _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
+                core.WebMessageReceived += (s, e) =>
+                {
+                    if (ReferenceEquals(webView, _webView) && !_webViewLoadFailed)
+                        OnWebMessageReceived(s, e);
+                };
+                core.NavigationCompleted += (s, e) =>
+                {
+                    if (!e.IsSuccess && IsCurrentWebViewLoad(webView))
+                        ShowWebViewLoadError("TxAgent 界面加载失败（" + e.WebErrorStatus + "）。");
+                };
 
                 // chat.html 作为嵌入资源打包进 dll(Build Action = EmbeddedResource),
                 // 不再依赖 bin\Agent\UI\chat.html 的物理复制。
                 string html = ReadEmbeddedChatHtml();
                 if (string.IsNullOrEmpty(html))
                 {
-                    ShowFatal(
-                        "找不到嵌入资源 chat.html。请检查:" + Environment.NewLine +
-                        "  1) 项目内 Agent\\UI\\chat.html 的\"生成操作(Build Action)\"= \"嵌入的资源(EmbeddedResource)\"" + Environment.NewLine +
-                        "  2) 保存后已 Rebuild。" + Environment.NewLine +
-                        "  3) 排查:所有嵌入资源名清单会打印到调试输出窗口。");
+                    ShowWebViewLoadError("找不到嵌入资源 chat.html。请检查 TxTools.dll 的部署版本。");
                     DumpResourceNames();
                     return;
                 }
@@ -303,9 +343,9 @@ namespace TxTools.Agent.UI
                 // 好处: 页面 URL 保持真实文件名(而非 about:blank),
                 //       F12→源代码 能定位到 chat.html 真实行号,便于排错。
                 var htmlBytes = System.Text.Encoding.UTF8.GetBytes(html);
-                _webView.CoreWebView2.AddWebResourceRequestedFilter(
+                core.AddWebResourceRequestedFilter(
                     "https://chathtml/*", CoreWebView2WebResourceContext.All);
-                _webView.CoreWebView2.WebResourceRequested += (s, ev) =>
+                core.WebResourceRequested += (s, ev) =>
                 {
                     try
                     {
@@ -314,35 +354,35 @@ namespace TxTools.Agent.UI
                             || uri.EndsWith("chathtml/", StringComparison.OrdinalIgnoreCase))
                         {
                             var stream = new MemoryStream(htmlBytes);
-                            ev.Response = _webView.CoreWebView2.Environment.CreateWebResourceResponse(
+                            ev.Response = core.Environment.CreateWebResourceResponse(
                                 stream, 200, "OK", "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
                         }
                         else if (uri.EndsWith("/recipe-sidebar.css", StringComparison.OrdinalIgnoreCase))
                         {
                             var css = ReadEmbeddedWebResource("recipe-sidebar.css");
                             if (css != null)
-                                ev.Response = _webView.CoreWebView2.Environment.CreateWebResourceResponse(
+                                ev.Response = core.Environment.CreateWebResourceResponse(
                                     new MemoryStream(System.Text.Encoding.UTF8.GetBytes(css)),
                                     200, "OK", "Content-Type: text/css; charset=utf-8\r\nCache-Control: no-store");
                             else
-                                ev.Response = _webView.CoreWebView2.Environment.CreateWebResourceResponse(
+                                ev.Response = core.Environment.CreateWebResourceResponse(
                                     null, 404, "Not Found", "");
                         }
                         else if (uri.EndsWith("/recipe-sidebar.js", StringComparison.OrdinalIgnoreCase))
                         {
                             var js = ReadEmbeddedWebResource("recipe-sidebar.js");
                             if (js != null)
-                                ev.Response = _webView.CoreWebView2.Environment.CreateWebResourceResponse(
+                                ev.Response = core.Environment.CreateWebResourceResponse(
                                     new MemoryStream(System.Text.Encoding.UTF8.GetBytes(js)),
                                     200, "OK", "Content-Type: application/javascript; charset=utf-8\r\nCache-Control: no-store");
                             else
-                                ev.Response = _webView.CoreWebView2.Environment.CreateWebResourceResponse(
+                                ev.Response = core.Environment.CreateWebResourceResponse(
                                     null, 404, "Not Found", "");
                         }
                         else
                         {
                             // favicon.ico 等资源 —— 直接 204,消掉 Console 里的 404 噪音
-                            ev.Response = _webView.CoreWebView2.Environment.CreateWebResourceResponse(
+                            ev.Response = core.Environment.CreateWebResourceResponse(
                                 null, 204, "No Content", "");
                         }
                     }
@@ -351,16 +391,13 @@ namespace TxTools.Agent.UI
                         System.Diagnostics.Debug.WriteLine("[TxAgent] WebResourceRequested err: " + rex.Message);
                     }
                 };
-                _webView.CoreWebView2.Navigate("https://chathtml/chat.html");
+                _webViewStartupStage = "等待聊天页面就绪";
+                core.Navigate("https://chathtml/chat.html");
             }
             catch (Exception ex)
             {
-                if (_sessionClosed || IsDisposed || Disposing) return;
-                ShowFatal(
-                    "WebView2 初始化失败: " + ex.Message + Environment.NewLine + Environment.NewLine +
-                    "本插件的 UI 需要 WebView2 Runtime。请到:" + Environment.NewLine +
-                    "https://developer.microsoft.com/microsoft-edge/webview2/" + Environment.NewLine +
-                    "下载 Evergreen Runtime 后重试。");
+                if (!IsCurrentWebViewLoad(webView)) return;
+                ShowWebViewLoadError("TxAgent 加载失败（" + _webViewStartupStage + "）" + Environment.NewLine + ex.Message);
             }
         }
 
@@ -402,10 +439,12 @@ namespace TxTools.Agent.UI
             catch { }
         }
 
-        private void ShowFatal(string msg)
+        private void ShowWebViewLoadError(string message)
         {
-            try { MessageBox.Show(this, msg, "TxTools.Agent", MessageBoxButtons.OK, MessageBoxIcon.Error); } catch { }
-            try { CloseRequested?.Invoke(this, EventArgs.Empty); } catch { }
+            _webViewLoadFailed = true;
+            _loadingTimer.Stop();
+            _loadingLabel.Text = message;
+            _retryWebView.Visible = true;
         }
 
         // ─────────────────────────────────────────────────────
@@ -586,7 +625,8 @@ namespace TxTools.Agent.UI
                         break;
 
                     case "userSend":
-                        _ = HandleUserSendAsync((string)msg["text"], msg["attachments"] as JArray);
+                        _ = HandleUserSendAsync((string)msg["text"], msg["attachments"] as JArray,
+                            (bool?)msg["webSearch"] == true);
                         break;
 
                     case "userSteer":
@@ -1048,11 +1088,17 @@ namespace TxTools.Agent.UI
                     {
                         var p = LlmProviders.ById(kv.Key);
                         if (p != null && kv.Value != null && kv.Value.List != null && kv.Value.List.Length > 0)
-                            p.Models = kv.Value.List;
+                        {
+                            var cached = kv.Value.List.Select(m => LlmProviders.NormalizeModelId(p.Id, m));
+                            if (p.Id == LlmProviders.DefaultProviderId)
+                                cached = new[] { LlmProviders.DeepSeekFlash }.Concat(cached);
+                            p.Models = cached.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                        }
                     }
                 }
 
                 // 若上次记的 model 已不在当前 provider 的 models 里(可能被清理或名字变了),回落到第一个
+                _currentModel = LlmProviders.NormalizeModelId(_currentProviderId, _currentModel);
                 var provCur = LlmProviders.ById(_currentProviderId);
                 if (provCur.Models.Length > 0 && Array.IndexOf(provCur.Models, _currentModel) < 0)
                     _currentModel = provCur.Models[0];
@@ -1073,14 +1119,15 @@ namespace TxTools.Agent.UI
             // 2) 推审批模式让前端 select 恢复选中
             PostJs(new { type = "approvalMode", value = _approvalMode });
 
+            if (_current == null) StartFreshConversation();
+            else RestoreTranscriptToJs(_current.Messages);
+
             // 3) 加载当前 provider 的 API Key
             var saved = KeyStore.Load(_currentProviderId);
             var prov = LlmProviders.ById(_currentProviderId);
             if (!string.IsNullOrWhiteSpace(saved) || prov.IsLocal)
             {
                 ApplyKey(saved ?? "ollama", persist: false);   // Ollama 无需真 key,占位一个
-                LoadMostRecentOrNew();
-                PostJs(new { type = "keyReady" });
                 PostStatus("\u5df2\u52a0\u8f7d " + prov.DisplayName + "\u3002\u5de5\u5177 " + _tools.Count + " \u4e2a\u3002");
             }
             else
@@ -1116,6 +1163,15 @@ namespace TxTools.Agent.UI
                 currentProvider = _currentProviderId,
                 current = _currentModel
             });
+            PostModelCapabilities();
+        }
+
+        private bool SupportsDeepSeekSearch => _currentProviderId == LlmProviders.DefaultProviderId;
+        private bool SupportsDeepSeekImages => SupportsDeepSeekSearch && _currentModel == LlmProviders.DeepSeekFlash;
+
+        private void PostModelCapabilities()
+        {
+            PostJs(new { type = "modelCapabilities", search = SupportsDeepSeekSearch, images = SupportsDeepSeekImages });
         }
 
         /// <summary>发送工具组开关状态(前端设置面板用)。</summary>
@@ -1469,7 +1525,7 @@ namespace TxTools.Agent.UI
             if (ok) PostStatus("补充引导已排队，将在当前步骤结束后应用。");
         }
 
-        private async Task HandleUserSendAsync(string text, JArray attachments)
+        private async Task HandleUserSendAsync(string text, JArray attachments, bool webSearch)
         {
             if (_sessionClosed) return;
             if (_isSending)
@@ -1487,7 +1543,10 @@ namespace TxTools.Agent.UI
             }
 
             var body = text ?? "";
-            var prefix = BuildAttachmentPrefix(attachments);
+            var files = (attachments ?? new JArray()).OfType<JObject>()
+                .Select(a => (string)a["id"]).Where(id => !string.IsNullOrEmpty(id)).Distinct(StringComparer.Ordinal)
+                .Select(UploadStore.Get).Where(f => f != null && f.ConvId == _current?.Id).ToList();
+            var prefix = BuildAttachmentPrefix(files);
             var finalText = string.IsNullOrEmpty(prefix) ? body : (prefix + "\n\n" + body);
             if (string.IsNullOrWhiteSpace(finalText)) return;
 
@@ -1503,10 +1562,17 @@ namespace TxTools.Agent.UI
             TxTools.Agent.TxAgentCommand.SetPetThinking(true);
             _cts = new CancellationTokenSource();
             var sendingLoop = _sendingLoop;
+            var sendImages = SupportsDeepSeekImages && _client != null && _client.IsOfficialDeepSeek;
+            var searchEnabled = webSearch && SupportsDeepSeekSearch;
             try
             {
                 var token = _cts.Token;
-                await Task.Run(() => sendingLoop.SendAsync(finalText, token));
+                await Task.Run(() =>
+                {
+                    if (!(sendingLoop is HarnessAgentLoop harness)) return sendingLoop.SendAsync(finalText, token);
+                    var images = sendImages ? LoadAttachedImages(files, token) : null;
+                    return harness.SendAsync(finalText, searchEnabled, images, token);
+                }, token);
                 PostStatus("\u5c31\u7eea\u3002");
                 if (!_sessionClosed) TxTools.Agent.TxAgentCommand.CelebratePet();
             }
@@ -1543,19 +1609,33 @@ namespace TxTools.Agent.UI
         }
 
         /// <summary>把附件的摘要拼成一段前缀,注入到用户消息前面。让 AI 拿到即可判断能否直接答。</summary>
-        private static string BuildAttachmentPrefix(JArray attachments)
+        private static List<ContentPart> LoadAttachedImages(IEnumerable<UploadedFile> files, CancellationToken token)
         {
-            if (attachments == null || attachments.Count == 0) return "";
+            var images = new List<ContentPart>();
+            var totalChars = 0;
+            foreach (var file in files)
+            {
+                token.ThrowIfCancellationRequested();
+                if (VisionSupport.MimeOf(file.OriginalName) == null) continue;
+                var error = VisionSupport.LoadImage(null, file.LocalPath, out var data, out var mime, out _);
+                if (error != null) throw new InvalidOperationException(file.OriginalName + "：" + error);
+                totalChars += data.Length;
+                if (totalChars > 32 * 1024 * 1024)
+                    throw new InvalidOperationException("本轮图片总量过大，请减少图片数量或压缩后重试。");
+                images.Add(ContentPart.FromImageBase64(data, mime));
+            }
+            return images;
+        }
+
+        private static string BuildAttachmentPrefix(IReadOnlyList<UploadedFile> attachments)
+        {
+            if (attachments.Count == 0) return "";
             var sb = new System.Text.StringBuilder();
             sb.AppendLine("[\u5df2\u9644\u52a0\u6587\u4ef6]");
             int i = 0;
-            foreach (var a in attachments)
+            foreach (var uf in attachments)
             {
                 i++;
-                var id = (string)a["id"];
-                if (string.IsNullOrEmpty(id)) continue;
-                var uf = UploadStore.Get(id);
-                if (uf == null) continue;
 
                 sb.AppendLine();
                 sb.AppendLine(i + ") " + uf.OriginalName + "  (id=" + uf.Id
@@ -1591,7 +1671,12 @@ namespace TxTools.Agent.UI
             {
                 _client = new DeepSeekClient(key, prov.BaseUrl);
                 _loop = BuildLoop(_client);
-                if (_current != null) _loop.LoadHistory(_current.Messages);
+                if (_current == null) StartFreshConversation();
+                else
+                {
+                    _loop.SetConvId(_current.Id);
+                    _loop.LoadHistory(_current.Messages);
+                }
 
                 if (persist && !prov.IsLocal)
                 {
@@ -1606,7 +1691,6 @@ namespace TxTools.Agent.UI
                 // Key 就绪后异步拉取该 provider 真实的模型列表(替换硬编码默认)
                 FetchProviderModelsAsync(prov);
 
-                if (_current == null) LoadMostRecentOrNew();
             }
             catch (Exception ex)
             {
@@ -1644,7 +1728,7 @@ namespace TxTools.Agent.UI
 
                     // 千问展示接口返回的完整目录，仅去掉空值和重复项；
                     // 其他提供商仍按现有规则清洗模型名称。
-                    models = ModelFilter.Clean(pid, models, _currentModel);
+                    models = ModelFilter.Clean(pid, models.Select(m => LlmProviders.NormalizeModelId(pid, m)), _currentModel);
                     if (models.Count == 0) return;
 
                     // 排序:让当前选中的模型排最前,其他按字母序
@@ -1709,7 +1793,7 @@ namespace TxTools.Agent.UI
             if (targetProv == null) { PostStatus("找不到该模型对应的 provider。"); return; }
             bool changedProvider = !string.Equals(targetProv.Id, _currentProviderId, StringComparison.Ordinal);
 
-            _currentModel = model;
+            _currentModel = model = LlmProviders.NormalizeModelId(targetProv.Id, model);
 
             if (changedProvider)
             {
@@ -1730,9 +1814,11 @@ namespace TxTools.Agent.UI
 
             // 让 ModelRouter 知道当前是哪家 —— 上下文窗口、视觉能力等都按 provider+model 双键查
             ModelRouter.CurrentProviderId = _currentProviderId;
+            PostModelCapabilities();
 
             if (_client == null) { PostStatus("\u5df2\u9884\u9009\u6a21\u578b: " + model); return; }
             _loop = BuildLoop(_client);
+            if (_current != null) _loop.SetConvId(_current.Id);
             _loop.LoadHistory(_current != null ? _current.Messages : new List<ChatMessage>());
             if (_current != null) RestoreTranscriptToJs(_current.Messages);
             try { UserPrefsStore.UpdateChoice(_currentProviderId, _currentModel); } catch { }
@@ -1761,16 +1847,6 @@ namespace TxTools.Agent.UI
             FireExtractLessons();
             LoadConversation(id);
             PostStatus("\u5df2\u6253\u5f00\u5386\u53f2\u5bf9\u8bdd\u3002");
-        }
-
-        private void LoadMostRecentOrNew()
-        {
-            var metas = ConversationStore.List();
-            // 【不能直接取最新的】另一个 PDPS 进程可能正开着它 ——
-            // 两边各自往 _fullHistory 追加，SaveCurrent 整份覆盖，后保存的把先保存的抹掉。
-            var pick = ConversationStore.PickAvailable();
-            if (pick != null) LoadConversation(pick.Id);
-            else StartFreshConversation();
         }
 
         // ── 多进程协同 ──
@@ -1834,7 +1910,7 @@ namespace TxTools.Agent.UI
             }
             PostJs(new { type = "clear" });
             PostTokenUsage(0, 0, 0);   // 立即清零,别等第一轮对话才刷新
-            PostJs(new { type = "message", role = "\u7cfb\u7edf", text = "\u5df2\u5c31\u7eea\uff0c\u53ef\u4ee5\u5f00\u59cb\u5bf9\u8bdd\u3002" });
+            PostConvList();
         }
 
         /// <summary>
@@ -1991,7 +2067,6 @@ namespace TxTools.Agent.UI
             try { RecipeUiActions.Changed -= OnRecipesChanged; } catch { }
             AppDomain.CurrentDomain.UnhandledException -= _unhandledException;
             SidebarLayout = null;
-            CloseRequested = null;
         }
 
         /// <summary>把消息数组序列化成 restore payload,交给 chat.html 一次性渲染。</summary>
@@ -2491,7 +2566,7 @@ namespace TxTools.Agent.UI
         //    { type:"setApiKey", key }
         //    { type:"switchModel", model }
         //    { type:"setApprovalMode", mode:"ask"|"auto_safe"|"auto_all" }
-        //    { type:"userSend", text, attachments:[{id,name}] }
+        //    { type:"userSend", text, attachments:[{id,name}], webSearch }
         //    { type:"userStop" }
         //    { type:"newConv" }
         //    { type:"listConvs" }
@@ -2542,7 +2617,6 @@ namespace TxTools.Agent.UI
             _content.SidebarLayout = (open, width) =>
                 _sidebar.Apply(open, width, WindowState == FormWindowState.Normal)
                 || RecipeSidebarWindowLayout.NeedsOverlay(open, ClientSize.Width, DeviceDpi);
-            _content.CloseRequested += (s, e) => Close();
             _content.Dock = DockStyle.Fill;
             Controls.Add(_content);
         }
@@ -2617,11 +2691,6 @@ namespace TxTools.Agent.UI
                 () => DockWindow().Bounds, value => DockWindow().Bounds = value,
                 () => (int)Math.Ceiling(420 * DeviceDpi / 96.0), () => 0);
             content.SidebarLayout = ApplySidebarLayout;
-            content.CloseRequested += (s, e) =>
-            {
-                var viewer = TxApplication.ViewersManager.GetViewerControl(this);
-                if (viewer != null) viewer.Close();
-            };
             content.Dock = DockStyle.Fill;
             Controls.Add(content);
             return true;

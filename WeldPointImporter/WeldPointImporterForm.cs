@@ -10,6 +10,7 @@ using System.Windows.Forms;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Ui;
 using TxTools.Common;
+using TxTools.ProcessDesigner;
 using Theme = TxTools.Common.FormUiKit.Theme;
 
 namespace TxTools.WeldPointImporter
@@ -34,6 +35,7 @@ namespace TxTools.WeldPointImporter
         private readonly NumericUpDown _threshold = FormUiKit.MkNumeric(0.001m, 1000, 5, 0.5m, 3);
         private readonly CheckBox _append = FormUiKit.MkCheckBox("追加到列表", true);
         private readonly CheckBox _skip = FormUiKit.MkCheckBox("创建时跳过重复点", true);
+        private readonly CheckBox _skipHidden = FormUiKit.MkCheckBox("排除隐藏对象");
         private readonly Label _instructions = MessageLabel(), _target = MessageLabel();
         private readonly PointStatisticsBar _statistics;
         private readonly PointStatusBar _status;
@@ -41,6 +43,7 @@ namespace TxTools.WeldPointImporter
         private readonly DataGridView _grid = new DataGridView();
         private readonly PointPreview _preview = new PointPreview { Dock = DockStyle.Fill };
         private readonly Button _create = FormUiKit.MkButton("创建焊点", true), _details = FormUiKit.MkButton("读取详情", false);
+        private readonly bool _designer;
         private PointReadResult _lastRead;
         private TxDocument _document;
         private long _generation;
@@ -48,9 +51,10 @@ namespace TxTools.WeldPointImporter
         private PointNaming _naming = new PointNaming();
         private NamingMode _namingMode;
 
-        internal WeldPointImporterForm()
+        internal WeldPointImporterForm(bool designer = false)
         {
-            FormUiKit.InitStandardForm(this, "焊点提取与创建", Design, Minimum);
+            _designer = designer;
+            FormUiKit.InitStandardForm(this, designer ? "焊点导入" : "焊点提取与创建", Design, Minimum);
             SemiModal = false;
             _statistics = new PointStatisticsBar();
             _status = new PointStatusBar();
@@ -83,7 +87,13 @@ namespace TxTools.WeldPointImporter
             _threshold.ValueChanged += (s, e) => Recheck(false);
             _filter.SelectedIndexChanged += (s, e) => RefreshRows(false);
             _skip.CheckedChanged += (s, e) => UpdateTarget();
-            _targetRow.Controls.AddRange(new Control[] { Label("新操作名称", _operation), _operation, _skip, _create, _target });
+            if (designer)
+            {
+                _skip.Text = "导入时跳过重复点";
+                _targetRow.Controls.AddRange(new Control[] { _skip, _create, _target });
+            }
+            else
+                _targetRow.Controls.AddRange(new Control[] { Label("新操作名称", _operation), _operation, _skip, _create, _target });
             _operation.TextChanged += (s, e) => UpdateTarget();
             _create.Click += (s, e) => CreatePoints();
             _preview.PointSelected += SelectInGrid;
@@ -220,7 +230,8 @@ namespace TxTools.WeldPointImporter
                     text = "在 CATIA 中激活 CATProduct，输入螺柱实例名称或零件号片段。多个关键词可用逗号隔开。";
                     break;
                 case Source.Table:
-                    text = "选择 CSV、TSV 或 XLSX 点表。表头应包含 X、Y、Z，坐标需与 PS 世界坐标对齐。";
+                    text = "选择 CSV、TSV 或 XLSX 点表。表头应包含 X、Y、Z，坐标需与"
+                        + (_designer ? " Process Designer " : " PS ") + "世界坐标对齐。";
                     break;
                 case Source.GeometrySphere:
                     text = "在 CATIA 中激活 CATPart 或 CATProduct，读取图形集球特征的中心。";
@@ -232,6 +243,9 @@ namespace TxTools.WeldPointImporter
                     text = "在 CATIA 中激活 CATPart 或 CATProduct，读取几何点。双击列表名称可单独修改。";
                     break;
             }
+            var source = (Source)_source.SelectedIndex;
+            if (source != Source.Table && (source != Source.BiW || _biwSource.SelectedIndex == 0))
+                _sourceOptions.Controls.Add(_skipHidden);
             _sourceOptions.Visible = _sourceOptions.Controls.Count > 0;
             _sourceOptions.ResumeLayout(true);
             _instructions.Text = text;
@@ -241,6 +255,7 @@ namespace TxTools.WeldPointImporter
         {
             if (_busy || !_grid.EndEdit()) return;
             var source = (Source)_source.SelectedIndex;
+            bool skipHidden = _skipHidden.Checked;
             Func<PointReadResult> reader;
             bool useCatia = false;
             switch (source)
@@ -252,13 +267,13 @@ namespace TxTools.WeldPointImporter
                     if (_xmlSource.SelectedIndex == 1)
                     {
                         useCatia = true;
-                        reader = () => ThreeDXmlPoints.Read(CatiaPointReader.ActiveThreeDXmlPath(), mode, hint, radius);
+                        reader = () => ThreeDXmlPoints.Read(CatiaPointReader.ActiveThreeDXmlPath(), mode, hint, radius, skipHidden);
                     }
                     else
                     {
                         string xml = PickFile("3DXML 文件 (*.3dxml)|*.3dxml");
                         if (xml == null) return;
-                        reader = () => ThreeDXmlPoints.Read(xml, mode, hint, radius);
+                        reader = () => ThreeDXmlPoints.Read(xml, mode, hint, radius, skipHidden);
                     }
                     break;
                 case Source.BiW when _biwSource.SelectedIndex == 1:
@@ -276,7 +291,7 @@ namespace TxTools.WeldPointImporter
                         : source == Source.GeometrySphere ? CatiaPointMode.GeometricalSpheres : source == Source.SolidBody ? CatiaPointMode.SolidBodies
                         : CatiaPointMode.Points;
                     string query = _stud.Text;
-                    reader = () => CatiaPointReader.Read(cadMode, query);
+                    reader = () => CatiaPointReader.Read(cadMode, query, skipHidden);
                     useCatia = true;
                     break;
             }
@@ -424,6 +439,12 @@ namespace TxTools.WeldPointImporter
 
         private void ReadTarget()
         {
+            if (_designer)
+            {
+                _target.Text = "焊点将导入当前工程的 MfgLibrary。";
+                UpdateTarget();
+                return;
+            }
             try
             {
                 _document = TxApplication.ActiveDocument;
@@ -450,8 +471,9 @@ namespace TxTools.WeldPointImporter
         private void UpdateTarget()
         {
             int count = _points.Count - (_skip.Checked ? _duplicates.Count : 0);
-            _create.Enabled = !_busy && _document != null && count > 0 && !string.IsNullOrWhiteSpace(_operation.Text);
-            _create.Text = count == 0 ? "创建焊点" : "创建 " + count + " 个焊点";
+            _create.Enabled = !_busy && count > 0 && (_designer || (_document != null && !string.IsNullOrWhiteSpace(_operation.Text)));
+            _create.Text = _designer ? (count == 0 ? "准备 MFG 导入" : "准备 " + count + " 个 MFG 焊点")
+                : (count == 0 ? "创建焊点" : "创建 " + count + " 个焊点");
         }
 
         private void CreatePoints()
@@ -461,6 +483,13 @@ namespace TxTools.WeldPointImporter
             if (pending.Length == 0) return;
             try
             {
+                if (_designer)
+                {
+                    var package = DesignerXml.BuildMfg(pending);
+                    new DesignerImportDialog(package).Show(this);
+                    SetStatus(PointStatus.Success, "已准备 " + pending.Length + " 个 MFG 焊点。请在导入窗口执行导入。");
+                    return;
+                }
                 var result = PsPointWriter.Create(_document, _generation, _operation.Text.Trim(), pending);
                 if (result.Error == null)
                     SetStatus(PointStatus.Success, "已在 “" + result.OperationName + "” 创建 " + result.Created + " 个焊点。可在 PS 中按 Ctrl+Z 撤销。");

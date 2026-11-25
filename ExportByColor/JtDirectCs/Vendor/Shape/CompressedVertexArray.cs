@@ -227,75 +227,99 @@ namespace DLAT.JTReader {
     }
     public class CompressedVertexColorArray {
         public List<double> colorValues;
+        public int Components { get; }
 
         public CompressedVertexColorArray(StreamReader data) {
-            var colorCount = data.ReadI32();
-            var numberComponents = data.ReadU8();
-            var quantizationBits = data.ReadU8();
+            int count = data.ReadI32();
+            Components = data.ReadU8();
+            int quantizationBits = data.ReadU8();
+            if (count < 0 || (Components != 3 && Components != 4) || quantizationBits > 8)
+                throw new InvalidDataException("Invalid JT vertex colour array header");
 
-            var vertexColorExponentsLists = new List<List<int>>();
-            var vertexColorMantissaeLists = new List<List<int>>();
-            var vertexColorCodeLists = new List<List<int>>();
-            var hueRedCodes = new List<int>();
-            var satGreenCodes = new List<int>();
-            var valueBlueCodes = new List<int>();
-            var alphaCodes = new List<int>();
-            colorValues = new List<double>();
-
+            bool legacy = data.jtFile.majorVersion < 10;
             if (quantizationBits == 0) {
-                for (int i = 0; i < numberComponents; i++) {
-                    if (data.jtFile.majorVersion < 10) {
-                        List<int> exponents = Int32CDP.ReadVecU32(data, PredictorType.PredNull);
-                        List<int> mantissae = Int32CDP.ReadVecU32(data, PredictorType.PredNull);
-                        List<int> codeData = new List<int>();
-                        for (int j = 0; j < exponents.Count; j++)
-                            codeData.Add((exponents[j] << 23) | mantissae[j]);
-                        vertexColorExponentsLists.Add(exponents);
-                        vertexColorMantissaeLists.Add(mantissae);
-                        vertexColorCodeLists.Add(codeData);
-                        //this four bit hasn't defined in document.
-                        //don't what it is.
-                        var unknownField = data.ReadU32();
+                var channels = new List<int>[Components];
+                for (int channel = 0; channel < Components; channel++) {
+                    if (legacy) {
+                        var exponents = Int32CDP.ReadVecU32(data, PredictorType.PredNull);
+                        var mantissae = Int32CDP.ReadVecU32(data, PredictorType.PredNull);
+                        CheckCount(count, exponents, mantissae);
+                        for (int i = 0; i < count; i++) exponents[i] = (exponents[i] << 23) | mantissae[i];
+                        channels[channel] = exponents;
+                        data.ReadU32();
+                    } else {
+                        channels[channel] = Int32CDP.ReadVecU32(data, PredictorType.PredLag1);
+                        CheckCount(count, channels[channel]);
                     }
-                    else {
-                        vertexColorCodeLists.Add(Int32CDP.ReadVecU32(data, PredictorType.PredNull));
-                    }
+                }
+                colorValues = new List<double>(checked(count * Components));
+                for (int i = 0; i < count; i++)
+                    foreach (var channel in channels)
+                        colorValues.Add(BitConverter.ToSingle(BitConverter.GetBytes(channel[i]), 0));
+            } else {
+                var quantizer = new ColorQuantizerData(data);
+                var quantizers = new[] { quantizer.rUniformQuantizerData, quantizer.gUniformQuantizerData,
+                    quantizer.bUniformQuantizerData, quantizer.aUniformQuantizerData };
+                int[] bits = quantizer.HsvBits ?? Array.ConvertAll(quantizers, q => q.numberOfBits);
+                foreach (int width in bits)
+                    if (width > 8) throw new NotSupportedException("Unsupported JT vertex colour channel width: " + width);
 
+                List<int>[] channels = null;
+                List<int> packed = null;
+                if (legacy) {
+                    channels = new List<int>[4];
+                    for (int channel = 0; channel < channels.Length; channel++)
+                        channels[channel] = Int32CDP.ReadVecU32(data, PredictorType.PredLag1);
+                    for (int channel = 0; channel < Components; channel++)
+                        if (bits[channel] != 0) CheckCount(count, channels[channel]);
+                } else {
+                    packed = Int32CDP.ReadVecU32(data, PredictorType.PredNull);
+                    CheckCount(count, packed);
                 }
 
-                List<int> redCodeData = vertexColorCodeLists[0];
-                List<int> greenCodeData = vertexColorCodeLists[1];
-                List<int> blueCodeData = vertexColorCodeLists[2];
-                for (int i = 0; i < redCodeData.Count; i++) {
-                    colorValues.Add(BitConverter.ToSingle(BitConverter.GetBytes(redCodeData[i]), 0));
-                    colorValues.Add(BitConverter.ToSingle(BitConverter.GetBytes(greenCodeData[i]), 0));
-                    colorValues.Add(BitConverter.ToSingle(BitConverter.GetBytes(blueCodeData[i]), 0));
+                colorValues = new List<double>(checked(count * Components));
+                var rgba = new double[4];
+                for (int i = 0; i < count; i++) {
+                    uint code = legacy ? 0 : unchecked((uint)packed[i]);
+                    for (int channel = 3; channel >= 0; channel--) {
+                        int mask = (1 << bits[channel]) - 1;
+                        uint value = legacy
+                            ? (mask == 0 || channel >= Components ? 0 : unchecked((uint)channels[channel][i]))
+                            : code & (uint)mask;
+                        code >>= bits[channel];
+                        if (value > mask) throw new InvalidDataException("Invalid JT vertex colour code");
+                        double min = quantizer.HsvBits == null ? quantizers[channel].min : 0;
+                        double max = quantizer.HsvBits == null ? quantizers[channel].max : channel == 0 ? 6 : 1;
+                        rgba[channel] = mask == 0 ? min : min + (max - min) * value / mask;
+                    }
+                    if (quantizer.HsvBits != null) HsvToRgb(rgba);
+                    for (int channel = 0; channel < Components; channel++) colorValues.Add(rgba[channel]);
                 }
             }
-            else {
-                var colorQuantizerData = new ColorQuantizerData(data);
+            data.ReadU32(); // Colour hash.
+            foreach (double value in colorValues)
+                if (double.IsNaN(value) || value < 0 || value > 1)
+                    throw new InvalidDataException("Invalid JT vertex colour component");
+        }
 
-                if (data.jtFile.majorVersion == 9) {
-                    hueRedCodes    = Int32CDP.ReadVecI32(data, PredictorType.PredLag1);
-                    satGreenCodes  = Int32CDP.ReadVecI32(data, PredictorType.PredLag1);
-                    valueBlueCodes = Int32CDP.ReadVecI32(data, PredictorType.PredLag1);
-                    alphaCodes     = Int32CDP.ReadVecI32(data, PredictorType.PredLag1);
+        private static void CheckCount(int count, params List<int>[] channels) {
+            foreach (var channel in channels)
+                if (channel.Count != count) throw new InvalidDataException("JT vertex colour count mismatch");
+        }
 
-                    List<float> redValues = CODEC.Dequantize(hueRedCodes, colorQuantizerData.rRange, quantizationBits);
-                    List<float> greenValues = CODEC.Dequantize(satGreenCodes, colorQuantizerData.gRange, quantizationBits);
-                    List<float> blueValues = CODEC.Dequantize(valueBlueCodes, colorQuantizerData.bRange, quantizationBits);
-                    for (int i = 0; i < redValues.Count; i++) {
-                        colorValues.Add(redValues[i]);
-                        colorValues.Add(greenValues[i]);
-                        colorValues.Add(blueValues[i]);
-                    }
-                }
-                else {
-                    var colorCodes = Int32CDP.ReadVecU32(data, PredictorType.PredNull);
-                }
+        private static void HsvToRgb(double[] color) {
+            double hue = color[0] % 6;
+            double chroma = color[2] * color[1];
+            double second = chroma * (1 - Math.Abs(hue % 2 - 1));
+            double low = color[2] - chroma;
+            switch ((int)hue) {
+                case 0: color[0] = chroma + low; color[1] = second + low; color[2] = low; break;
+                case 1: color[0] = second + low; color[1] = chroma + low; color[2] = low; break;
+                case 2: color[0] = low; color[1] = chroma + low; color[2] = second + low; break;
+                case 3: color[0] = low; color[1] = second + low; color[2] = chroma + low; break;
+                case 4: color[0] = second + low; color[1] = low; color[2] = chroma + low; break;
+                default: color[0] = chroma + low; color[1] = low; color[2] = second + low; break;
             }
-
-            long readHash = data.ReadU32();
         }
     }
     public class CompressedVertexTextureCoordinateArray {

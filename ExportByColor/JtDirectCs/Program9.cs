@@ -28,8 +28,7 @@ partial class Program
         var rep=topological.repData;var records=rep.vertexRecords;
         if(records==null||records.compressedVertexCoordinateArray==null)
             throw new InvalidDataException("Missing JT9 vertex coordinates at shape "+surface);
-        if(records.compressedVertexColorArray!=null)
-            throw new NotSupportedException("JT9 per-vertex colors require explicit material mapping at shape "+surface);
+        var colors = records.compressedVertexColorArray;
         var xyz=records.compressedVertexCoordinateArray.vertexCoordinates;
         var normals=records.compressedVertexNormalArray==null?new List<float>():records.compressedVertexNormalArray.normalCoordinates;
         if(xyz.Count==0||xyz.Count%3!=0||normals.Count%3!=0)
@@ -67,7 +66,11 @@ partial class Program
                 sum=Normalize(sum);
                 if(Enumerable.Range(0,3).Sum(j=>sum[j]*geo[j])<0){int swap=ids[1];ids[1]=ids[2];ids[2]=swap;corrected++;}
                 if(sum.Sum(v=>v*v)<.5)sum=Normalize(geo);
-                faces.Add(new Face{Ids=ids.Select(id=>id+offset).ToArray(),RGB=rgb,Alpha=(byte)Math.Round(binding.RGBA[3]*255),Surface=surface,Normal=sum});
+                var face = new Face{Ids=ids.Select(id=>id+offset).ToArray(),RGB=rgb,Alpha=(byte)Math.Round(binding.RGBA[3]*255),Surface=surface,Normal=sum};
+                if (colors != null)
+                    ApplyVertexColor(face, colors.colorValues, colors.Components, mesh.faceVtxAttr(f, ids[0], false),
+                        mesh.faceVtxAttr(f, ids[1], false), mesh.faceVtxAttr(f, ids[2], false));
+                faces.Add(face);
             }
         }
         Console.WriteLine("JT9_TOPOLOGY shape="+surface+" vertices="+local.Count+" totalFaces="+faces.Count+" windingCorrections="+corrected+" hidden="+hidden+" degenerate="+degenerate);

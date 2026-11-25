@@ -33,6 +33,16 @@ namespace TxTools.Agent.Core
     {
         /// <summary>默认 provider id。用户没做过任何设置时的初始选择。</summary>
         public const string DefaultProviderId = "deepseek";
+        internal const string DeepSeekFlash = "deepseek-flash";
+
+        internal static string NormalizeModelId(string provider, string model)
+        {
+            if (string.Equals(provider, DefaultProviderId, StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(model, "deepseek-v4-flash", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(model, "deepseek-v4-flash-vision-exp", StringComparison.OrdinalIgnoreCase)))
+                return DeepSeekFlash;
+            return model;
+        }
 
         /// <summary>内置 provider 的固定前缀, 用于给自定义 provider 分配不冲突的 id。</summary>
         private static readonly string[] _builtinIds =
@@ -46,7 +56,7 @@ namespace TxTools.Agent.Core
                 Id = "deepseek",
                 DisplayName = "DeepSeek",
                 BaseUrl = "https://api.deepseek.com",
-                Models = new[] { "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"},
+                Models = new[] { DeepSeekFlash, "deepseek-v4-pro" },
                 KeyPageUrl = "https://platform.deepseek.com"
             },
             new LlmProvider

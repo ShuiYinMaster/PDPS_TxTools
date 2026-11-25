@@ -399,7 +399,7 @@ namespace DLAT.JTReader {
          * @param  iFace
          * @return       Vertex face attribute
          */
-        public int vtxFaceAttr(int iVtx, int iFace) {
+        public int vtxFaceAttr(int iVtx, int iFace, bool explicitOnly = true) {
             FaceEnt rVE = _vFaceEnts[iFace];
             if (rVE.cFaceAttrs <= 0) {
                 return -1;
@@ -430,7 +430,7 @@ namespace DLAT.JTReader {
                     bool explicitCorner = cDeg <= DualVFMesh.cMBits
                         ? (rVE.uAttrMask & ((long)1 << iSlot)) != 0
                         : rVE.pvbAttrMask.test(iSlot);
-                    if (!explicitCorner) return -1;
+                    if (explicitOnly && !explicitCorner) return -1;
                     return _viFaceAttrIndices[rVE.iFAI + (iAttrSlot % rVE.cFaceAttrs)];
                 }
             }

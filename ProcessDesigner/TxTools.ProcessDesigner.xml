@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TecnomatixConfigurationData>
+  <ConfigurationsSection>
+    <Configuration ID="newviewer" Name="newviewer">
+      <DotNetCommands>
+        <Assembly File="DotNetCommands\TxTools\TxTools.dll">
+          <DotNetCommand Namespace="TxTools.ProcessDesigner" ClassName="DesignerPartTreeCommand" />
+          <DotNetCommand Namespace="TxTools.ProcessDesigner" ClassName="DesignerResourceImporterCommand" />
+          <DotNetCommand Namespace="TxTools.ProcessDesigner" ClassName="DesignerWeldMfgImporterCommand" />
+        </Assembly>
+      </DotNetCommands>
+    </Configuration>
+  </ConfigurationsSection>
+</TecnomatixConfigurationData>

@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Collections.Generic;
 
 namespace TxTools.ExportByColor
@@ -27,12 +28,12 @@ namespace TxTools.ExportByColor
         public static void PreparePsReconstructionMesh(ref List<float[]> vertices,ref List<Face> faces,Action<string> progress=null)
         { PreparePsReconstructionMesh(ref vertices,ref faces,progress,false); }
 
-        internal static void PreparePsReconstructionMesh(ref List<float[]> vertices,ref List<Face> faces,Action<string> progress,bool alreadyWelded)
+        internal static void PreparePsReconstructionMesh(ref List<float[]> vertices,ref List<Face> faces,Action<string> progress,bool alreadyWelded,CancellationToken cancellation=default)
         {
             if(vertices==null||faces==null)throw new ArgumentNullException("mesh");
-            faces=FilterZeroArea(vertices,faces,progress);
-            if(!alreadyWelded)WeldFeatureVertices(ref vertices,ref faces);
-            PrepareSurfaces(ref vertices,ref faces,progress,true,false);
+            faces=FilterZeroArea(vertices,faces,progress,cancellation);
+            if(!alreadyWelded)WeldFeatureVertices(ref vertices,ref faces,cancellation);
+            PrepareSurfaces(ref vertices,ref faces,progress,true,false,cancellation:cancellation);
         }
 
         internal static List<Face> PrepareJtLineFaceWinding(List<float[]> vertices, List<Face> faces, Action<string> progress)
@@ -56,7 +57,7 @@ namespace TxTools.ExportByColor
         }
 
         private static void PrepareSurfaces(ref List<float[]> vertices,ref List<Face> faces,Action<string> progress,
-            bool preserveSurfaces=true,bool addBackfaces=true,bool repairJtWinding=false)
+            bool preserveSurfaces=true,bool addBackfaces=true,bool repairJtWinding=false,CancellationToken cancellation=default)
         {
             int[] canonical = null;
             if (!repairJtWinding)
@@ -67,6 +68,7 @@ namespace TxTools.ExportByColor
                 canonical=new int[vertices.Count];
                 for(int i=0;i<vertices.Count;i++)
                 {
+                    if((i&1023)==0)cancellation.ThrowIfCancellationRequested();
                     var v=vertices[i];if(v==null||v.Length!=3) throw new ArgumentException("Expected XYZ");
                     foreach(float x in v) Finite(x);
                     var key=Tuple.Create(v[0],v[1],v[2]);int id;if(!positions.TryGetValue(key,out id)) {id=positions.Count;positions.Add(key,id);}canonical[i]=id;
@@ -76,6 +78,7 @@ namespace TxTools.ExportByColor
             var surfaceVertices=new Dictionary<Tuple<int,int>,int>();
             for(int i=0;i<faces.Count;i++)
             {
+                if((i&1023)==0)cancellation.ThrowIfCancellationRequested();
                 var ids=faces[i].Idx;if(ids==null||ids.Length!=3) throw new ArgumentException("Expected triangle");
                 foreach(int j in ids) if(j<0||j>=vertices.Count) throw new ArgumentException("Invalid index");
                 faceEdges[i]=new long[3];
@@ -114,12 +117,14 @@ namespace TxTools.ExportByColor
             var state=new int[faces.Count];var backFaces=new List<int>();
             var conflicts=new HashSet<long>();var forcedBackFaces=new HashSet<int>();
             int repaired = 0, inconsistentComponents = 0;
+            int visited=0;
             for(int seed=0;seed<faces.Count;seed++)
             {
                 if(state[seed]!=0) continue;
                 var component=new List<int>();var queue=new Queue<int>();queue.Enqueue(seed);state[seed]=1;bool closed=true;bool conflicting=false;
                 while(queue.Count>0)
                 {
+                    if((visited++&1023)==0)cancellation.ThrowIfCancellationRequested();
                     int f=queue.Dequeue();component.Add(f);
                     foreach(long key in faceEdges[f])
                     {

@@ -63,11 +63,45 @@ partial class Program
         indices[1] = indices[2];
         indices[2] = second;
     }
+
+    static void ApplyVertexColor(Face face, IList<double> colors, int components, int a, int b, int c)
+    {
+        int count = colors.Count / components;
+        if ((uint)a >= (uint)count || (uint)b >= (uint)count || (uint)c >= (uint)count)
+            throw new InvalidDataException("Invalid JT triangle corner colour indices " + a + "," + b + "," + c
+                + " (count " + count + ") at shape " + face.Surface);
+
+        // CGR stores one colour per triangle. The centroid interpolant retains
+        // the exact source colour when all three JT corners have the same value.
+        face.RGB = new byte[3];
+        for (int i = 0; i < components; i++)
+        {
+            double value = (colors[a * components + i] + colors[b * components + i] + colors[c * components + i]) / 3;
+            byte channel = (byte)Math.Round(value * 255);
+            if (i == 3) face.Alpha = channel;
+            else face.RGB[i] = channel;
+        }
+    }
     static string Type(Guid g) { return g.ToString().Substring(0, 8); }
+    static readonly Guid WrappedAttributeType = new Guid("96603dd3-5a0f-40f5-97cb-1e9647cbd37e");
     static void ParseElement(BinaryReader r)
     {
+        long offset = r.BaseStream.Position;
         int length = r.ReadInt32(); if (length < 21) throw new InvalidDataException("Invalid element"); long end = r.BaseStream.Position + length; if (end > r.BaseStream.Length) throw new InvalidDataException("Truncated element");
-        string type = Type(GuidAt(r)); byte baseType = r.ReadByte(); int id = r.ReadInt32(); var body = Bytes(r, (int)(end - r.BaseStream.Position)); var n = new Node { Id = id, Type = type }; using (var b = R(body))
+        Guid elementType = GuidAt(r);
+        byte baseType = r.ReadByte();
+        int id = r.ReadInt32();
+        if (baseType == 9 && elementType == WrappedAttributeType)
+        {
+            if (end - r.BaseStream.Position < 21) throw new InvalidDataException("Truncated wrapped JT attribute at LSG offset 0x" + offset.ToString("X"));
+            // The outer field can repeat. Scene nodes reference the ID in the embedded element header.
+            elementType = GuidAt(r);
+            baseType = r.ReadByte();
+            id = r.ReadInt32();
+            if (baseType != 3) throw new NotSupportedException("Unsupported JT wrapped attribute base type " + baseType);
+        }
+        string type = Type(elementType);
+        var body = Bytes(r, (int)(end - r.BaseStream.Position)); var n = new Node { Id = id, Type = type }; using (var b = R(body))
         {
             if (baseType <= 2) { b.ReadByte(); b.ReadUInt32(); int count = Count(b, 4); n.Attributes = Enumerable.Range(0, count).Select(_ => b.ReadInt32()).ToArray(); }
             if (new[] { "10dd103e", "10dd101b", "10dd102c", "10dd104c", "10dd10f3", "ce357245", "ce357244" }.Contains(type)) { b.ReadByte(); int count = Count(b, 4); n.Children = Enumerable.Range(0, count).Select(_ => b.ReadInt32()).ToArray(); }
@@ -84,6 +118,9 @@ partial class Program
             }
             else if (baseType == 8) { b.BaseStream.Position = 6; n.Segment = GuidAt(b); }
         }
+        Node previous;
+        if (nodes.TryGetValue(id, out previous))
+            throw new InvalidDataException("Duplicate JT object ID " + id + " (" + previous.Type + ", " + type + ") at LSG offset 0x" + offset.ToString("X"));
         nodes.Add(id, n);
     }
     static void ParseLSG(byte[] data)
@@ -166,8 +203,8 @@ partial class Program
         reader.ReadU32();
         long vertexPos = reader.Position;
         ulong vertexBindings = reader.ReadU64();
-        // XYZ, with optional normals and vertex flags.
-        if ((vertexBindings & ~0x48UL) != 0x2)
+        // XYZ with optional normals, RGB(A), and vertex flags.
+        if ((vertexBindings & ~0x78UL) != 0x2 || (vertexBindings & 0x30UL) == 0x30)
             throw new NotSupportedException("Unsupported JT vertex bindings 0x" + vertexBindings.ToString("X"));
         if (new QuantizationParameters(reader).bitsPerVertex != 0)
             throw new NotSupportedException("Quantized coordinates unsupported");
@@ -182,6 +219,9 @@ partial class Program
         var records = new TopologicallyCompressedVertexRecords(reader);
         var xyz = records.compressedVertexCoordinateArray?.vertexCoordinates;
         var normals = records.compressedVertexNormalArray?.normalCoordinates;
+        var colors = records.compressedVertexColorArray;
+        if (colors != null && colors.Components != vertexBindings.Color())
+            throw new InvalidDataException("JT colour binding and component count disagree at shape " + surface);
         if (xyz == null || xyz.Count == 0 || xyz.Count % 3 != 0
             || ((vertexBindings & 0x8) != 0 && (normals == null || normals.Count % 3 != 0)))
             throw new InvalidDataException("Invalid JT vertex or normal array");
@@ -230,8 +270,12 @@ partial class Program
                     }
                 }
                 if (sum.Sum(v => v * v) < 0.5) sum = Normalize(geo);
-                faces.Add(new Face { Ids = ids.Select(i => i + offset).ToArray(), RGB = rgb,
-                    Alpha = (byte)Math.Round(binding.RGBA[3] * 255), Surface = surface, Normal = sum });
+                var face = new Face { Ids = ids.Select(i => i + offset).ToArray(), RGB = rgb,
+                    Alpha = (byte)Math.Round(binding.RGBA[3] * 255), Surface = surface, Normal = sum };
+                if (colors != null)
+                    ApplyVertexColor(face, colors.colorValues, colors.Components, mesh.faceVtxAttr(f, ids[0], false),
+                        mesh.faceVtxAttr(f, ids[1], false), mesh.faceVtxAttr(f, ids[2], false));
+                faces.Add(face);
             }
         }
         Console.WriteLine("Shape " + surface + " vertices=" + local.Count + " totalFaces=" + faces.Count + " sourceNormalWindingCorrections=" + correctedWinding + " hiddenTopologyTriangles=" + hiddenTriangles);
@@ -296,9 +340,12 @@ partial class Program
     {
         var lod=(Tri_StripSetShapeLODData)binding.Segment.Legacy.elementData;
         var rep=lod.vertexBasedShapeData;
-        if(rep==null || rep.parameters.bitsPerVertex!=0 || rep.colorBinding!=0 || rep.textureCoordBinding!=0 || rep.normalBinding>1)
+        if(rep==null || rep.parameters.bitsPerVertex!=0 || rep.colorBinding>1 || rep.textureCoordBinding!=0 || rep.normalBinding>1)
             throw new NotSupportedException("Unsupported JT8 strip vertex layout at shape "+surface);
         var xyz=rep.GetVertices();var normals=rep.GetNormals();var strips=rep.indices;
+        var colors = rep.colorBinding == VertexBasedShapeCompressedRepData.BINDING_PER_VERTEX ? rep.GetColors().ConvertAll(value => (double)value) : null;
+        if (colors != null && (colors.Count != xyz.Count || colors.Any(value => double.IsNaN(value) || value < 0 || value > 1)))
+            throw new InvalidDataException("Invalid JT8 vertex colours at shape " + surface);
         if(xyz.Count%3!=0 || (rep.normalBinding==1 && normals.Count!=xyz.Count) || strips.Count<2 || strips[0]!=0 || strips[strips.Count-1]!=xyz.Count/3)
             throw new InvalidDataException("Invalid JT8 strip arrays");
         for(int i=1;i<strips.Count;i++)if(strips[i]<strips[i-1])throw new InvalidDataException("Unordered JT8 strip boundaries");
@@ -323,7 +370,9 @@ partial class Program
             sum=Normalize(sum);
             if(Enumerable.Range(0,3).Sum(k=>sum[k]*geo[k])<0){int temp=ids[1];ids[1]=ids[2];ids[2]=temp;corrected++;}
             if(sum.Sum(v=>v*v)<0.5)sum=Normalize(geo);
-            faces.Add(new Face { Ids=ids.Select(i=>i+offset).ToArray(), RGB=rgb, Alpha=(byte)Math.Round(binding.RGBA[3]*255), Surface=surface, Normal=sum });
+            var face = new Face { Ids=ids.Select(i=>i+offset).ToArray(), RGB=rgb, Alpha=(byte)Math.Round(binding.RGBA[3]*255), Surface=surface, Normal=sum };
+            if (colors != null) ApplyVertexColor(face, colors, 3, ids[0], ids[1], ids[2]);
+            faces.Add(face);
         }
         Console.WriteLine("JT8_STRIPS shape="+surface+" strips="+(strips.Count-1)+" triangles="+triangles+" degenerate="+degenerate+" sourceNormalWindingCorrections="+corrected);
     }

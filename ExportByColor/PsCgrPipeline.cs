@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Diagnostics;
+using System.Threading;
 
 namespace TxTools.ExportByColor
 {
@@ -21,15 +22,16 @@ namespace TxTools.ExportByColor
         }
 
         public static Result BuildFile(List<ColorGroup> groups, string output, CgrBackend backend,
-            bool reconstructCylinders, Action<string> log = null)
+            bool reconstructCylinders, Action<string> log = null, CancellationToken cancellation = default)
         {
+            cancellation.ThrowIfCancellationRequested();
             if (groups == null) throw new ArgumentNullException("groups");
             backend = CgrWriter.ResolveBackend(backend);
             if (reconstructCylinders && backend != CgrBackend.LineFace)
                 throw new ArgumentException("PS cylinder reconstruction requires continuous line/face CGR", "backend");
             var vertices = new List<float[]>();
             var watch = Stopwatch.StartNew();
-            Action<string> stage = message => { if(log!=null)log("[PS stage] " + message + "；累计 " + watch.Elapsed.TotalSeconds.ToString("F1") + " 秒"); };
+            Action<string> stage = message => { cancellation.ThrowIfCancellationRequested(); if(log!=null)log("[PS stage] " + message + "；累计 " + watch.Elapsed.TotalSeconds.ToString("F1") + " 秒"); };
             stage("整理三角网格：" + groups.Count + " 个颜色组");
             var faces = new List<CgrWriter.Face>();
             var surfaces = new Dictionary<int, int>();
@@ -50,6 +52,7 @@ namespace TxTools.ExportByColor
                 if (!maps.TryGetValue(surface, out map)) maps.Add(surface, map = new Dictionary<Tuple<float, float, float>, int>());
                 foreach (var triangle in group.Tris)
                 {
+                    if ((faces.Count & 1023) == 0) cancellation.ThrowIfCancellationRequested();
                     if (triangle == null || triangle.Length != 9) throw new ArgumentException("三角形数据必须为 9 个坐标值");
                     var ids = new int[3];
                     for (int k = 0; k < 3; k++)
@@ -71,22 +74,22 @@ namespace TxTools.ExportByColor
             var result = new Result();
             if (!reconstructCylinders)
             {
-                CgrWriter.BuildFile(vertices, faces, output, backend, progress: log);
+                CgrWriter.BuildFile(vertices, faces, output, backend, progress: log, cancellation: cancellation);
                 return result;
             }
             stage("整理绕序：" + vertices.Count + " 顶点，" + faces.Count + " 三角面");
-            CgrWriter.PreparePsReconstructionMesh(ref vertices, ref faces, log, true);
+            CgrWriter.PreparePsReconstructionMesh(ref vertices, ref faces, log, true, cancellation);
             stage("识别内外圆柱（多核并行）");
             var candidates = RoundHoleReconstruction.Find(vertices, faces, new RoundHoleReconstruction.Options
             {
                 IncludeExternalCylinders = true, IncludeTransitionRims = true,
                 IncludeOpenCylinderEnds = true, IncludeTrimmedCylinderEnds = true
-            }, log);
+            }, log, cancellation);
             result.Candidates = candidates.Count;
             stage("安全重建与细分：" + candidates.Count + " 个圆柱候选");
             var replacement = candidates.Count==0
                 ? new RoundHoleCgrMesh.Result { Vertices=vertices, Faces=faces }
-                : RoundHoleCgrMesh.Replace(vertices, faces, candidates, log);
+                : RoundHoleCgrMesh.Replace(vertices, faces, candidates, log, cancellation: cancellation);
             result.Cylinders = replacement.Cylinders.Count;
             foreach (var cylinder in replacement.Cylinders.Values)
                 if (cylinder.ExternalCylinder) result.OuterCylinders++; else result.InnerCylinders++;
@@ -94,9 +97,9 @@ namespace TxTools.ExportByColor
             // Prepared PS winding is retained. Synthetic reverse-side triangles
             // would corrupt the wall fit and duplicate analytic face records.
             if (result.Cylinders == 0)
-                CgrWriter.BuildFile(vertices, faces, output, CgrBackend.LineFace, 20000, log, true);
+                CgrWriter.BuildFile(vertices, faces, output, CgrBackend.LineFace, 20000, log, true, cancellation);
             else
-                CgrWriter.BuildFileWithCylinders(replacement.Vertices, replacement.Faces, output, replacement.Cylinders, log);
+                CgrWriter.BuildFileWithCylinders(replacement.Vertices, replacement.Faces, output, replacement.Cylinders, log, cancellation);
             File.WriteAllLines(output + ".cylinders.log", replacement.Diagnostics);
             if (log != null) log("[PS cylinders] candidates=" + result.Candidates + "; accepted=" + result.Cylinders
                 + "; inner=" + result.InnerCylinders + "; outer=" + result.OuterCylinders

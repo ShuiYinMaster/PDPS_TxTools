@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Collections.Generic;
 using System.IO;
 
@@ -20,12 +21,13 @@ namespace TxTools.ExportByColor
             internal List<int> Polyline;
         }
 
-        private static void WeldFeatureVertices(ref List<float[]> vertices,ref List<Face> faces)
+        private static void WeldFeatureVertices(ref List<float[]> vertices,ref List<Face> faces,CancellationToken cancellation=default)
         {
             var output=new List<float[]>();var result=new List<Face>(faces.Count);
             var maps=new Dictionary<int,Dictionary<Tuple<float,float,float>,int>>();
             foreach(var source in faces)
             {
+                if((result.Count&1023)==0)cancellation.ThrowIfCancellationRequested();
                 Dictionary<Tuple<float,float,float>,int> map;
                 if(!maps.TryGetValue(source.Surface,out map))
                 {map=new Dictionary<Tuple<float,float,float>,int>();maps.Add(source.Surface,map);}
@@ -41,11 +43,13 @@ namespace TxTools.ExportByColor
             vertices=output;faces=result;
         }
 
-        private static void BuildLineFace95(List<float[]> vertices,List<Face> faces,string path,int faceLimit,Action<string> progress,bool smoothDomains,Dictionary<int,RoundHoleCgrMesh.Cylinder> cylinders=null)
+        private static void BuildLineFace95(List<float[]> vertices,List<Face> faces,string path,int faceLimit,Action<string> progress,bool smoothDomains,Dictionary<int,RoundHoleCgrMesh.Cylinder> cylinders=null,CancellationToken cancellation=default)
         {
             var groups=new Dictionary<Tuple<int,int>,List<Face>>();var order=new List<List<Face>>();
+            int processed=0;
             foreach(var f in faces)
             {
+                if((processed++&1023)==0)cancellation.ThrowIfCancellationRequested();
                 var key=Tuple.Create(f.Surface,f.R|(f.G<<8)|(f.B<<16)|((f.Opacity??255)<<24));List<Face> group;
                 if(!groups.TryGetValue(key,out group)){group=new List<Face>();groups.Add(key,group);order.Add(group);}
                 group.Add(f);
@@ -57,6 +61,7 @@ namespace TxTools.ExportByColor
             {
                 Action<List<float[]>,List<float[]>,List<int[]>,List<int[]>,Face> write=(vs,ns,tris,topology,color)=>
                 {
+                    cancellation.ThrowIfCancellationRequested();
                     CompactFeatureVertices95(ref vs,ref ns,ref tris);
                     encodedVertices+=vs.Count;
                     int nf,ne;byte[] payload,pick;
@@ -70,7 +75,7 @@ namespace TxTools.ExportByColor
                 // carried separately, so a shading split never becomes a missing adjacency.
                 foreach(var group in order)
                     CompactGroup95(vertices,group,children,picks,ref changed,ref vertexCount,write,faceLimit,
-                        smoothDomains?MaxFeatureVertsPerChunk:MaxVertsPerChunk,cylinders!=null&&cylinders.ContainsKey(group[0].Surface));
+                        smoothDomains?MaxFeatureVertsPerChunk:MaxVertsPerChunk,cylinders!=null&&cylinders.ContainsKey(group[0].Surface),cancellation);
                 byte[] scene;
                 float rootRadius;var rootCenter=SceneRootSphere(vertices,out rootRadius);
                 using(var ms=new MemoryStream())using(var w=new BinaryWriter(ms))
@@ -79,6 +84,7 @@ namespace TxTools.ExportByColor
                     foreach(var child in children){w.Write((byte)0);w.Write(child);}
                     scene=ms.ToArray();
                 }
+                cancellation.ThrowIfCancellationRequested();
                 WriteContainer(scene,picks.ToArray(),path,vertices);
             }
             if(progress!=null)progress("[CGR 线面] "+(smoothDomains?"连续面压缩":"逐平面兼容")+"；"+children.Count+" 块，"+domains+" 个面域，"+edgeCount+" 条边，"+encodedVertices+" 顶点；"+new FileInfo(path).Length+" 字节");

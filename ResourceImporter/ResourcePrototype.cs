@@ -15,7 +15,8 @@ namespace TxTools.ResourceImporter
     internal sealed class ResourcePrototype
     {
         internal const string Family = "ToolPrototype";
-        private const string BaseType = "PmToolPrototype";
+        internal const string BaseType = "PmToolPrototype";
+        internal static readonly ResourcePrototype Default = new ResourcePrototype(BaseType, "工具原型");
         internal readonly string Type, Label;
 
         private ResourcePrototype(string type, string label)
@@ -37,6 +38,23 @@ namespace TxTools.ResourceImporter
 
             if (types.Length == 0) throw new InvalidDataException("当前客制化未定义可用于导入的 ToolPrototype 类型。");
             return types;
+        }
+
+        internal static ResourcePrototype[] ReadDesigner(TxDocument document)
+        {
+            var provider = document?.PlatformGlobalServicesProvider;
+            if (provider == null || !provider.IsPlanningTypeMetaDataInitialized()) return new[] { Default };
+            var root = provider.GetTypeMetaData(BaseType);
+            if (root == null) return new[] { Default };
+            try
+            {
+                var derived = root.DerivedTypes?.OfType<TxPlanningTypeMetaData>() ?? Enumerable.Empty<TxPlanningTypeMetaData>();
+                return Sort(new[] { new ResourcePrototype(BaseType, root.DisplayName) }.Concat(derived
+                    .Where(type => ClassName(type.TypeName) != "PmEquipmentPrototype" && !type.IsDerivedFromPlanningType("PmEquipmentPrototype"))
+                    .Select(type => new ResourcePrototype(ClassName(type.TypeName), type.DisplayName))));
+            }
+            catch (TxPlanningObjectDerivedPlanningTypeDoesNotExistException)
+            { return new[] { new ResourcePrototype(BaseType, root.DisplayName) }; }
         }
 
         private static ResourcePrototype[] ReadActiveTypes(ITxPlatformGlobalServicesProvider provider)

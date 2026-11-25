@@ -21,7 +21,7 @@ namespace TxTools.ResourceImporter
         internal ResourcePrototype Prototype;
         internal string Folder, Package, Error;
         internal string[] Warnings = Array.Empty<string>();
-        internal bool SceneWriteAttempted, Imported;
+        internal bool CreateFolder, SceneWriteAttempted, Imported;
         internal string Name => Path.GetFileName(File);
     }
 
@@ -67,9 +67,10 @@ namespace TxTools.ResourceImporter
         internal static bool SamePath(string first, string second) =>
             string.Equals(first.TrimEnd('\\', '/'), second.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
 
-        internal void CheckFolder(string folder)
+        internal void CheckFolder(string folder, bool allowMissing = false)
         {
-            if (!Directory.Exists(folder)) throw new DirectoryNotFoundException("COJT 目标目录不存在：" + folder);
+            if (!Directory.Exists(folder) && (!allowMissing || File.Exists(folder)))
+                throw new DirectoryNotFoundException("COJT 目标目录不存在：" + folder);
             LibraryInsertion.CheckDestination(Path.Combine(folder, "model.cojt"), Library, true);
             var current = new DirectoryInfo(folder);
             while (!SamePath(current.FullName, Library))
@@ -139,7 +140,7 @@ namespace TxTools.ResourceImporter
                 {
                     if (item.SceneWriteAttempted || item.Prototype == null || item.Folder == null)
                         throw new InvalidOperationException("请为每个待导入文件指定原型和 COJT 目录。");
-                    CheckFolder(item.Folder);
+                    CheckFolder(item.Folder, item.CreateFolder);
                     string path = CatiaLibraryDestination.Package(item.Folder, item.File, reserved);
                     bool compatibility = LibraryInsertion.NeedsCompatibility(path);
                     if (!supportIssues.TryGetValue(compatibility, out string issue))
@@ -164,8 +165,9 @@ namespace TxTools.ResourceImporter
                 EnsureDocument();
                 try
                 {
-                    CheckFolder(entry.Item.Folder);
+                    CheckFolder(entry.Item.Folder, entry.Item.CreateFolder);
                     entry.PrototypeId = SavePrototype(entry.Item, entry.StagedPackage);
+                    if (entry.Item.CreateFolder) Directory.CreateDirectory(entry.Item.Folder);
                     Directory.Move(entry.StagedPackage, entry.Destination);
                     entry.Item.Package = entry.Destination;
                     ready.Add(entry);

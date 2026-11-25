@@ -11,6 +11,25 @@ namespace TxTools.ExportByColor
     // no global process-name kill and no parameterless WaitForExit are used.
     internal static class JtProcessRunner
     {
+        internal static string DescribeFailure(string process, int exitCode, string logPath)
+        {
+            string reason = null;
+            try
+            {
+                foreach (string line in File.ReadLines(logPath))
+                    if (line.StartsWith("ERROR ", StringComparison.Ordinal) ||
+                        line.StartsWith("COMPAT_REQUIRED ", StringComparison.Ordinal))
+                    {
+                        reason = line.Substring(line.IndexOf(' ') + 1).Trim();
+                        if (reason.Length != 0) break;
+                    }
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            return process + "，退出码=" + exitCode + (string.IsNullOrEmpty(reason) ? "" : "；原因=" + reason)
+                + "；日志=" + logPath;
+        }
+
         internal static string Quote(string value)
         {
             var b = new StringBuilder("\""); int slashes = 0;
@@ -23,8 +42,9 @@ namespace TxTools.ExportByColor
         }
 
         internal static int Run(string executable, string arguments, string logPath, int timeoutMs,
-            bool ownTree = false, Action afterAssigned = null)
+            bool ownTree = false, Action afterAssigned = null, CancellationToken cancellation = default)
         {
+            cancellation.ThrowIfCancellationRequested();
             if (timeoutMs <= 0) throw new ArgumentOutOfRangeException("timeoutMs");
             if (!Path.IsPathRooted(executable) || !File.Exists(executable))
                 throw new FileNotFoundException("JT worker is not deployed", executable);
@@ -59,11 +79,17 @@ namespace TxTools.ExportByColor
                     started = process.Start();
                     if (!started) throw new InvalidOperationException("JT worker did not start");
                     if (job != null) job.Assign(process);
+                    cancellation.ThrowIfCancellationRequested();
                     process.BeginOutputReadLine(); process.BeginErrorReadLine();
                     if (afterAssigned != null) afterAssigned();
                     int remaining = Math.Max(1, timeoutMs - (int)Math.Min(int.MaxValue, clock.ElapsedMilliseconds));
-                    if (!process.WaitForExit(remaining))
-                        throw new TimeoutException("JT worker timeout; log=" + logPath);
+                    while (!process.WaitForExit(cancellation.CanBeCanceled ? Math.Min(remaining, 50) : remaining))
+                    {
+                        cancellation.ThrowIfCancellationRequested();
+                        remaining = timeoutMs - (int)Math.Min(int.MaxValue, clock.ElapsedMilliseconds);
+                        if (remaining <= 0) throw new TimeoutException("JT worker timeout; log=" + logPath);
+                    }
+                    cancellation.ThrowIfCancellationRequested();
                     // A child that inherited a pipe cannot force an unlimited EOF wait.
                     var drain = Stopwatch.StartNew();
                     if (!stdoutDone.WaitOne(5000) || !stderrDone.WaitOne(Math.Max(0, 5000 - (int)drain.ElapsedMilliseconds)))

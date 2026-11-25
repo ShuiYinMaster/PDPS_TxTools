@@ -128,7 +128,7 @@ namespace TxTools.CatiaPartTree.Core
         internal static bool IsXmlRepresentation(string member) =>
             member.EndsWith(".3drep", StringComparison.OrdinalIgnoreCase);
 
-        private static HashSet<string> HiddenOccurrences(XElement model, string rootFile, string rootId)
+        internal static HashSet<string> HiddenOccurrences(XElement model, string rootFile, string rootId)
         {
             var hidden = new HashSet<string>(StringComparer.Ordinal);
             var properties = model?.Element(Ns + "DefaultView")?.Elements(Ns + "DefaultViewProperty");

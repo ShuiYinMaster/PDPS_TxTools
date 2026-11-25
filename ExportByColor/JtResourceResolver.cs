@@ -82,7 +82,7 @@ namespace TxTools.ExportByColor
                     var library = storage as TxLibraryStorage;
                     if (library != null)
                     {
-                        string candidate = Candidate(library.FullPath);
+                        string candidate = Candidate(library.FullPath, libraryReference: true);
                         if (IsAvailable(candidate))
                         {
                             path = candidate;
@@ -168,7 +168,7 @@ namespace TxTools.ExportByColor
             catch { return null; }
         }
 
-        private static string Candidate(object value)
+        private static string Candidate(object value, bool libraryReference = false)
         {
             string text = value as string;
             if (text == null)
@@ -193,8 +193,15 @@ namespace TxTools.ExportByColor
                 text = uri.LocalPath;
             }
             text = Environment.ExpandEnvironmentVariables(text).TrimEnd('\\', '/');
-            // Do not resolve a library-relative path against the plugin's working directory.
-            if (!Path.IsPathRooted(text)) return null;
+            if (!Path.IsPathRooted(text))
+            {
+                if (!libraryReference) return null;
+                string root = TxApplication.SystemRootDirectory;
+                if (string.IsNullOrWhiteSpace(root) || !Path.IsPathRooted(root)) return null;
+                if (text.StartsWith("#\\", StringComparison.Ordinal) || text.StartsWith("#/", StringComparison.Ordinal))
+                    text = text.Substring(2);
+                text = Path.Combine(root, text);
+            }
             try { text = Path.GetFullPath(text); } catch { return null; }
             return text.EndsWith(".jt", StringComparison.OrdinalIgnoreCase) ||
                 text.EndsWith(".cojt", StringComparison.OrdinalIgnoreCase) ||

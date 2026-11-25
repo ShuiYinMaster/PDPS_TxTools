@@ -646,6 +646,12 @@
     <Compile Include="CatiaPartTree\Conversion\Frame12.cs" />
     <Compile Include="CatiaPartTree\Ps\CatiaPartTreeService.cs" />
     <Compile Include="CatiaPartTree\CatiaPartTreeCmd.cs" />
+    <Compile Include="ProcessDesigner\DesignerCommands.cs" />
+    <Compile Include="ProcessDesigner\DesignerModelForm.cs" />
+    <Compile Include="ProcessDesigner\DesignerModelForm.Preview.cs" />
+    <Compile Include="ProcessDesigner\DesignerImportDialog.cs" />
+    <Compile Include="ProcessDesigner\DesignerLibraryImport.cs" />
+    <Compile Include="ProcessDesigner\DesignerImportPackage.cs" />
     <Compile Include="CatiaPartTree\CatiaPartTreeForm.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -655,6 +661,9 @@
     <Compile Include="ResourceImporter\ResourceCustomizationInstallation.cs" />
     <Compile Include="ResourceImporter\ResourceImportSession.cs" />
     <Compile Include="ResourceImporter\ResourceImporterCommand.cs" />
+    <Compile Include="ResourceImporter\CojtFolderTree.cs" />
+    <Compile Include="ResourceImporter\CojtFolderEdits.cs" />
+    <Compile Include="ResourceImporter\ResourcePrototypeImages.cs" />
     <Compile Include="ResourceImporter\ResourceImporterForm.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -757,6 +766,9 @@
   </ItemGroup>
   <ItemGroup>
     <None Include=".github\copilot-instructions.md" />
+    <None Include="ProcessDesigner\TxTools.ProcessDesigner.xml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="packages.config" />
     <None Include="Properties\Settings.settings">
       <Generator>SettingsSingleFileGenerator</Generator>

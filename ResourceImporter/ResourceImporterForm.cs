@@ -15,8 +15,6 @@ namespace TxTools.ResourceImporter
     {
         private static readonly Size Design = new Size(760, 610);
         private const string QueueDragFormat = "TxTools.ResourceImporter.Queue";
-        private static readonly Color[] PrototypeColors =
-            { Color.SteelBlue, Color.SeaGreen, Color.Firebrick, Color.SlateBlue, Color.DarkCyan };
         private readonly ResourceImportSession _session;
         private readonly ListView _files = new ListView
         {
@@ -36,6 +34,7 @@ namespace TxTools.ResourceImporter
             AccessibleName = "资源导入进度", Dock = DockStyle.Fill, Height = 10, Visible = false
         };
         private readonly Dictionary<ResourceImportItem, TreeNode> _placements = new Dictionary<ResourceImportItem, TreeNode>();
+        private CojtFolderEdits _folderEdits;
         private readonly ContextMenuStrip _prototypeMenu = new ContextMenuStrip();
         private readonly ImageList _images = new ImageList();
         private ListViewItem[] _prototypeRows = Array.Empty<ListViewItem>();
@@ -110,7 +109,10 @@ namespace TxTools.ResourceImporter
             FormUiKit.ApplyDpiScaling(this, ref _scaled, Design);
             _status.MaximumSize = new Size(Math.Max(200, ClientSize.Width - 2 * _import.Width - 64), 0);
             LoadPrototypeImages();
-            var root = MakeFolderNode(_session.Library, "系统库 · " + new DirectoryInfo(_session.Library).Name);
+            CojtFolderTree.AddFolderImage(_images);
+            _folders.ImageList = _images;
+            _folderEdits = new CojtFolderEdits(_folders, () => _active == null, SetStatus, RefreshFolderAssignments);
+            var root = CojtFolderTree.CreateNode(_session.Library, "系统库 · " + new DirectoryInfo(_session.Library).Name);
             _folders.Nodes.Add(root);
             root.Expand();
             SizeColumns();
@@ -126,34 +128,7 @@ namespace TxTools.ResourceImporter
             _prototypeMenu.ImageScalingSize = _images.ImageSize;
             foreach (var type in _session.Prototypes)
             {
-                Image image = null;
-                bool hasPrefix = type.Type.Length > 2 && type.Type.StartsWith("Pm", StringComparison.Ordinal);
-                string alias = hasPrefix ? type.Type.Substring(2) : "Pm" + type.Type;
-                foreach (string key in new[] { type.Type, alias })
-                {
-                    try { image = TxImageProvider.GetImageByPlanningType(key); }
-                    catch (Exception) { /* The standard fallback covers missing SDK icons. */ }
-                    if (image != null) break;
-                }
-                if (image != null) _images.Images.Add(type.Type, image);
-                else
-                {
-                    int index = (StringComparer.OrdinalIgnoreCase.GetHashCode(type.Type) & int.MaxValue) % PrototypeColors.Length;
-                    string name = hasPrefix ? alias : type.Type;
-                    string initials = name.Substring(0, Math.Min(2, name.Length)).ToUpperInvariant();
-                    using (var fallback = new Bitmap(size, size))
-                    using (var graphics = Graphics.FromImage(fallback))
-                    using (var brush = new SolidBrush(PrototypeColors[index]))
-                    using (var font = new Font(Font.FontFamily, size * .53f, FontStyle.Bold, GraphicsUnit.Pixel))
-                    using (var centered = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                    {
-                        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                        graphics.FillEllipse(brush, 1, 1, size - 2, size - 2);
-                        graphics.DrawString(initials, font, Brushes.White,
-                            new RectangleF(0, 0, size, size), centered);
-                        _images.Images.Add(type.Type, fallback);
-                    }
-                }
+                ResourcePrototypeImages.Add(_images, type, Font.FontFamily);
                 var option = new ToolStripMenuItem(type.Label == type.Type ? type.Type : type.Label + "  (" + type.Type + ")",
                     _images.Images[type.Type]);
                 option.Click += (s, e) => ApplyPrototype(type);
@@ -219,21 +194,21 @@ namespace TxTools.ResourceImporter
                     finally { _dragItems = null; }
                 }
             };
-            _folders.BeforeExpand += (s, e) => Populate(e.Node);
+            _folders.BeforeExpand += (s, e) => CojtFolderTree.Populate(e.Node, SetStatus);
             _folders.DragEnter += FolderDragOver;
             _folders.DragOver += FolderDragOver;
             _folders.DragDrop += (s, e) =>
             {
                 if (_active != null) return;
                 if (_dragItems != null && e.Data.GetDataPresent(QueueDragFormat))
-                    Assign(_dragItems, FolderAt(e));
+                    Assign(_dragItems, CojtFolderTree.At(_folders, e));
                 else if (e.Data.GetData(DataFormats.FileDrop) is string[] paths && paths.Length == 1 && Directory.Exists(paths[0]))
                 {
                     try
                     {
                         string folder = Path.GetFullPath(paths[0]);
                         _session.CheckFolder(folder);
-                        var node = FindFolder(folder);
+                        var node = CojtFolderTree.Find(_folders.Nodes[0], folder, SetStatus);
                         if (node == null) throw new IOException("目录未在系统库树中显示：" + folder);
                         Assign(SelectedItems(), node);
                     }
@@ -377,6 +352,8 @@ namespace TxTools.ResourceImporter
         {
             var item = (ResourceImportItem)row.Tag;
             row.ImageKey = item.Prototype?.Type ?? "";
+            if (_placements.TryGetValue(item, out var placementNode))
+                placementNode.ImageKey = placementNode.SelectedImageKey = row.ImageKey;
             string result = item.Imported ? (item.Warnings.Length == 0 ? " · 已导入" : " · 已导入（有转换提示）") :
                 item.SceneWriteAttempted ? " · 核对场景" :
                 item.Error == null ? "" : " · 失败";
@@ -391,57 +368,11 @@ namespace TxTools.ResourceImporter
             }
         }
 
-        private static TreeNode MakeFolderNode(string path, string title)
-        {
-            var node = new TreeNode(title) { Tag = path, ToolTipText = path };
-            node.Nodes.Add(new TreeNode());
-            return node;
-        }
-
-        private static bool IsPlaceholder(TreeNode node) => node.Tag == null;
-
-        private void Populate(TreeNode node)
-        {
-            if (!(node.Tag is string path) || node.Nodes.Count == 0 || !IsPlaceholder(node.Nodes[0])) return;
-            try
-            {
-                var dirs = new DirectoryInfo(path).GetDirectories()
-                    .Where(dir => (dir.Attributes & FileAttributes.ReparsePoint) == 0 &&
-                        !dir.Name.EndsWith(".cojt", StringComparison.OrdinalIgnoreCase) &&
-                        !dir.Name.StartsWith(ResourceConversion.LibraryStagePrefix, StringComparison.OrdinalIgnoreCase) &&
-                        !dir.Name.StartsWith(".tx-resource-import-", StringComparison.OrdinalIgnoreCase))
-                    .OrderBy(dir => dir.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
-                node.Nodes[0].Remove();
-                foreach (var dir in dirs) node.Nodes.Add(MakeFolderNode(dir.FullName, dir.Name));
-            }
-            catch (Exception error) { SetStatus("无法读取目录：" + error.Message); }
-        }
-
-        private TreeNode FindFolder(string path)
-        {
-            var node = _folders.Nodes[0];
-            if (ResourceImportSession.SamePath(path, _session.Library)) return node;
-            foreach (string segment in CojtTransfer.RelativeToRoot(path, _session.Library).Split(Path.DirectorySeparatorChar))
-            {
-                Populate(node);
-                node = node.Nodes.Cast<TreeNode>().FirstOrDefault(child => child.Tag is string &&
-                    string.Equals(child.Text, segment, StringComparison.OrdinalIgnoreCase));
-                if (node == null) return null;
-            }
-            return node;
-        }
-
-        private TreeNode FolderAt(DragEventArgs e)
-        {
-            var node = _folders.GetNodeAt(_folders.PointToClient(new Point(e.X, e.Y)));
-            return node?.Tag is ResourceImportItem ? node.Parent : node;
-        }
-
         private void FolderDragOver(object sender, DragEventArgs e)
         {
             e.Effect = DragDropEffects.None;
             if (_active != null) return;
-            var node = FolderAt(e);
+            var node = CojtFolderTree.At(_folders, e);
             if (_dragItems != null && e.Data.GetDataPresent(QueueDragFormat) && node?.Tag is string)
             {
                 e.Effect = DragDropEffects.Copy;
@@ -466,7 +397,8 @@ namespace TxTools.ResourceImporter
             try
             {
                 _session.EnsureDocument();
-                _session.CheckFolder(folder);
+                bool draft = _folderEdits.IsDraft(node);
+                _session.CheckFolder(folder, draft);
                 _folders.BeginUpdate();
                 try
                 {
@@ -477,6 +409,7 @@ namespace TxTools.ResourceImporter
                         if (!selected.Contains(item) || item.SceneWriteAttempted) continue;
                         RemovePlacement(item);
                         item.Folder = folder;
+                        item.CreateFolder = draft;
                         item.Error = null;
                         _placements.Add(item, node.Nodes.Add(item.Name));
                         _placements[item].Tag = item;
@@ -490,6 +423,18 @@ namespace TxTools.ResourceImporter
                 SetStatus("已指定 " + items.Length + " 个 COJT 的存放目录");
             }
             catch (Exception error) { SetStatus(error.Message); }
+        }
+
+        private void RefreshFolderAssignments()
+        {
+            foreach (var row in Rows())
+            {
+                var item = (ResourceImportItem)row.Tag;
+                if (!_placements.TryGetValue(item, out var placement) || !(placement.Parent?.Tag is string path)) continue;
+                item.Folder = path;
+                item.CreateFolder = _folderEdits.IsDraft(placement.Parent);
+                RefreshRow(row);
+            }
         }
 
         private void SetStatus(string message = null)
@@ -571,6 +516,7 @@ namespace TxTools.ResourceImporter
                 active.Dispose();
                 _progressBar.Visible = false;
                 _progressBar.Style = ProgressBarStyle.Continuous;
+                _folderEdits.RefreshMaterialized();
                 foreach (var row in rows) RefreshRow(row);
                 int imported = items.Count(item => item.Imported);
                 int partial = items.Count(item => item.Imported && item.Warnings.Length != 0);

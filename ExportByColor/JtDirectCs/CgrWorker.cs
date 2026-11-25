@@ -23,6 +23,13 @@ internal static class CgrWorker
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static int Run(string[] args)
     {
+        // Resolve TxTools.dll from the deployment directory before JIT compiles this handler.
+        try { return Convert(args); }
+        catch (JtDirectBridge.SourceCompatibilityException ex) { Console.Error.WriteLine(ex.Message); return 2; }
+    }
+
+    private static int Convert(string[] args)
+    {
         if (args.Length != 1) throw new ArgumentException("Expected a detached JT job file");
         string request = Path.GetFullPath(args[0]);
         // The parent must attach us to its private Windows job before any decoder

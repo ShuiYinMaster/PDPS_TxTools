@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using Tecnomatix.Engineering;
 using Tecnomatix.Engineering.Utilities;
 using TxTools.Agent.Core;
+using TxTools.CatiaPartTree.Conversion;
 using TxTools.CatiaPartTree.Core;
 using TxTools.Common;
 using TxTools.Common.TreeWorkflow;
@@ -24,6 +25,7 @@ namespace TxTools.CatiaPartTree.Ps
         private sealed class Package
         {
             internal string Source, Member, StepDefinition, StepMesh, Hash, Directory, Jt, JtHash, TuneHash, Error, Warning, Log;
+            internal bool XmlRepresentation;
             internal StructureChange[] Instances;
             internal string Label => StepDefinition == null ? Member ?? Path.GetFileName(Source) : Path.GetFileName(Jt);
         }
@@ -59,7 +61,7 @@ namespace TxTools.CatiaPartTree.Ps
         private readonly long _generation;
         private readonly string _library, _parentLocation;
         private readonly ITxObject _parent;
-        private readonly bool _newRoot;
+        private readonly bool _newRoot, _fileOnly;
         // Base destination folder; the CATIA document name is an optional subfolder.
         private readonly string _folder;
         private readonly bool _createDocumentFolder;
@@ -88,6 +90,26 @@ namespace TxTools.CatiaPartTree.Ps
         internal int ConvertedFileCount => _packages.Count(p => p.Error == null);
         internal bool TreeBuilt { get; private set; }
         internal ITxObject Parent { get { return _parent; } }
+        internal string JtForPart(string key)
+        {
+            return _bySource.TryGetValue(_source.Parts[key].AssetKey, out var package) && package.Error == null
+                ? package.Jt : null;
+        }
+
+        internal static CatiaImportSession ForJtExport(CatiaImportSource source, StructureNode draft)
+        {
+            return new CatiaImportSession(source, draft);
+        }
+
+        private CatiaImportSession(CatiaImportSource source, StructureNode draft)
+        {
+            _source = source;
+            _fileOnly = true;
+            var root = new StructureChange { Container = true };
+            Items.Add(root);
+            Add(draft.Copy(), root, true);
+        }
+
         private bool _converted;
         // Containers were already re-created by Paste, so the standalone tree stage
         // must not paste a second time when the user clicks the button again.
@@ -139,7 +161,8 @@ namespace TxTools.CatiaPartTree.Ps
         }
         internal void EnsureDocument()
         {
-            if (!ReferenceEquals(_document, TxApplication.ActiveDocument) || _generation != SceneUndoScope.DocumentGeneration)
+            if (_document == null || !ReferenceEquals(_document, TxApplication.ActiveDocument) ||
+                _generation != SceneUndoScope.DocumentGeneration)
                 throw new InvalidOperationException("PS 工程已切换或重载，请重新读取来源。");
             if (!string.Equals(_library, Path.GetFullPath(TxApplication.SystemRootDirectory), StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("系统库已切换，请重新读取来源。");
@@ -158,7 +181,9 @@ namespace TxTools.CatiaPartTree.Ps
         // One user-visible format stage: JT + COJT + the receiver project's PmPartPrototype.
         internal async Task ConvertAsync(CancellationToken cancel, IProgress<string> progress, bool reduceMesh = true, string jtOutputDirectory = null)
         {
-            EnsureDocument();
+            if (!_fileOnly) EnsureDocument();
+            if (_fileOnly && jtOutputDirectory == null)
+                throw new InvalidOperationException("文件转换需要指定 JT 输出目录。");
             if (Stage != CatiaImportStage.Ready && Stage != CatiaImportStage.TreeCreated)
                 throw new InvalidOperationException("当前状态不能转换，请重新读取来源。");
             string stepStaging = null;
@@ -186,18 +211,23 @@ namespace TxTools.CatiaPartTree.Ps
                     string stepDefinition = part.StepDefinition;
                     if (part.ConversionIssue != null)
                     {
-                        if (member == null && stepDefinition == null) throw new NotSupportedException(part.ConversionIssue);
+                        if (!_fileOnly && member == null && stepDefinition == null) throw new NotSupportedException(part.ConversionIssue);
                         SkipInstances(group.ToArray(), member ?? item.Node.SourceName, part.ConversionIssue);
                         continue;
                     }
                     if (_source.GeometryIssues.TryGetValue(part.File, out string issue))
-                        throw new IOException("所选零件 " + item.Node.SourceName + "：" + issue);
+                    {
+                        if (!_fileOnly) throw new IOException("所选零件 " + item.Node.SourceName + "：" + issue);
+                        SkipInstances(group.ToArray(), item.Node.SourceName, issue);
+                        continue;
+                    }
                     string name = member == null ? Path.GetFileNameWithoutExtension(part.File) :
                         ThreeDXmlSource.GeometryOutputStem(member, item.Node.PartNumber, item.Node.SourceName);
                     if (stepDefinition != null)
                         name = CatiaLibraryDestination.FolderSegment(item.Node.PartNumber ?? item.Node.SourceName);
                     var package = new Package { Source = part.File, Member = member, StepDefinition = stepDefinition,
-                        Hash = _source.Files[part.File], Instances = group.ToArray() };
+                        Hash = _source.Files[part.File], Instances = group.ToArray(),
+                        XmlRepresentation = _fileOnly && member != null && ThreeDXmlSource.IsXmlRepresentation(member) };
                     if (jtOnly)
                         package.Jt = CatiaLibraryDestination.Reserve(OutputDirectory, name, ".jt", reserved);
                     else
@@ -208,11 +238,18 @@ namespace TxTools.CatiaPartTree.Ps
                     }
                     _packages.Add(package); _bySource.Add(group.Key, package);
                 }
-                if (_packages.Count == 0) throw new NotSupportedException("所选实例没有可转换的几何。");
+                if (_packages.Count == 0)
+                {
+                    if (!_fileOnly) throw new NotSupportedException("所选实例没有可转换的几何。");
+                    Stage = CatiaImportStage.Converted;
+                    return;
+                }
                 // Probe once, before starting any concurrent conversion.
-                bool hasCgr = _packages.Any(package => package.Member != null);
+                bool hasCgr = _packages.Any(package => package.Member != null && !package.XmlRepresentation);
+                bool hasXml = _packages.Any(package => package.XmlRepresentation);
                 var stepPackages = _packages.Where(package => package.StepDefinition != null).ToArray();
-                bool modernWorker = await Task.Run(() => SupportsCurrentProtocol(worker, cancel, progress, hasCgr, stepPackages.Length != 0), cancel);
+                bool modernWorker = await Task.Run(() => SupportsCurrentProtocol(worker, cancel, progress,
+                    hasCgr, stepPackages.Length != 0, hasXml), cancel);
                 bool optimize = reduceMesh && modernWorker;
                 string meshMode = optimize ? "自动减面" : "不减面";
                 int parallelism = Math.Min(_packages.Count, Math.Max(1, Environment.ProcessorCount));
@@ -225,7 +262,7 @@ namespace TxTools.CatiaPartTree.Ps
                 });
                 Current = "JT 并行转换（" + _packages.Count + " 个文件，最多 " + parallelism + " 路）";
                 batchProgress.Report("开始批量转换");
-                using (var archive = hasCgr || stepPackages.Length != 0 ? File.OpenRead(_source.DocumentPath) : null)
+                using (var archive = hasCgr || hasXml || stepPackages.Length != 0 ? File.OpenRead(_source.DocumentPath) : null)
                 {
                     if (archive != null)
                     {
@@ -249,8 +286,8 @@ namespace TxTools.CatiaPartTree.Ps
                         {
                             if (package.StepMesh != null && StepSource.MeshIssue(package.StepMesh) is string issue)
                                 throw new IOException(issue);
-                            if (!jtOnly) CatiaLibraryDestination.CreatePackage(package.Directory);
-                            ConvertPart(worker, package, optimize, cancel, batchProgress);
+                            if (jtOnly) ConvertPart(worker, package, optimize, cancel, batchProgress);
+                            else ConvertCojt(worker, package, optimize, cancel, batchProgress);
                             if (package.StepMesh != null && StepSource.MeshCoverageWarning(package.StepMesh) is string coverage)
                                 package.Warning = string.IsNullOrEmpty(package.Warning) ? coverage : package.Warning + Environment.NewLine + coverage;
                             cancel.ThrowIfCancellationRequested();
@@ -265,7 +302,8 @@ namespace TxTools.CatiaPartTree.Ps
                         }
                     });
                 }
-                EnsureDocument(); cancel.ThrowIfCancellationRequested();
+                if (!_fileOnly) EnsureDocument();
+                cancel.ThrowIfCancellationRequested();
                 foreach (var package in _packages)
                 {
                     if (!string.IsNullOrWhiteSpace(package.Warning)) Warnings.Add(package.Label + "：" + package.Warning);
@@ -275,7 +313,7 @@ namespace TxTools.CatiaPartTree.Ps
                 var failed = _packages.Where(p => p.Error != null).ToArray();
                 foreach (var package in failed)
                     SkipInstances(package.Instances, package.Label, package.Error);
-                if (failed.Length == _packages.Count)
+                if (!_fileOnly && failed.Length == _packages.Count)
                     throw new IOException("全部 " + failed.Length + " 个几何文件转换失败：" +
                         string.Join("；", failed.Take(5).Select(p => p.Label + "：" + p.Error)) +
                         (failed.Length > 5 ? "；其余失败见逐项日志。" : ""));
@@ -318,9 +356,10 @@ namespace TxTools.CatiaPartTree.Ps
         {
             foreach (var item in items) item.Error = "转换失败，已跳过";
             SkippedInstances += items.Length;
-            Warnings.Add("已跳过 " + label + "（" + items.Length + " 个实例）：" + reason);
+            Warnings.Add((_fileOnly ? "未生成 JT · " : "已跳过 ") + label + "（" + items.Length + " 个实例）：" + reason);
         }
-        private bool SupportsCurrentProtocol(string worker, CancellationToken cancel, IProgress<string> progress, bool requireCgr, bool requireStep)
+        private bool SupportsCurrentProtocol(string worker, CancellationToken cancel, IProgress<string> progress,
+            bool requireCgr, bool requireStep, bool requireAssembly)
         {
             using (var diagnostics = new CatiaConversionDiagnostics(_source.DocumentPath, message => progress.Report(message)))
             {
@@ -351,11 +390,13 @@ namespace TxTools.CatiaPartTree.Ps
                             if (process.ExitCode == 0 && output.Result.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
                                 .Contains("TxTools.CatiaConverter/2") &&
                                 (!requireCgr || output.Result.Split((char[])null, StringSplitOptions.RemoveEmptyEntries).Contains("cgr")) &&
-                                (!requireStep || output.Result.Split((char[])null, StringSplitOptions.RemoveEmptyEntries).Contains("stepmesh")))
+                                (!requireStep || output.Result.Split((char[])null, StringSplitOptions.RemoveEmptyEntries).Contains("stepmesh")) &&
+                                (!requireAssembly || output.Result.Split((char[])null, StringSplitOptions.RemoveEmptyEntries).Contains("assembly")))
                                 return true;
                         }
                         if (requireCgr) throw new NotSupportedException("部署的转换器缺少 CGR 支持，请同时更新插件和转换器。接口日志：" + diagnostics.LogPath);
                         if (requireStep) throw new NotSupportedException("部署的转换器缺少 STEP 支持，请同时更新插件和转换器。接口日志：" + diagnostics.LogPath);
+                        if (requireAssembly) throw new NotSupportedException("部署的转换器缺少 3DXML 网格支持，请同时更新插件和转换器。接口日志：" + diagnostics.LogPath);
                         diagnostics.Write("Using legacy three-argument conversion.");
                         Warnings.Add("部署的转换器未确认支持当前接口，已使用原有三参数转换；请同时更新 TxTools.dll 与 CatiaPartTree/TxTools.CatiaConverter.exe。接口日志：" + diagnostics.LogPath);
                         return false;
@@ -364,13 +405,42 @@ namespace TxTools.CatiaPartTree.Ps
                 }
             }
         }
+        private static void ConvertCojt(string worker, Package package, bool optimize, CancellationToken cancel, IProgress<string> progress)
+        {
+            if (Directory.Exists(Path.GetDirectoryName(package.Directory)))
+            {
+                CatiaLibraryDestination.CreatePackage(package.Directory);
+                ConvertPart(worker, package, optimize, cancel, progress);
+                return;
+            }
+
+            string staging = Path.Combine(Path.GetTempPath(), "TxTools-COJT-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(staging);
+            string destination = package.Jt;
+            try
+            {
+                package.Jt = Path.Combine(staging, Path.GetFileName(destination));
+                ConvertPart(worker, package, optimize, cancel, progress);
+                cancel.ThrowIfCancellationRequested();
+                CatiaLibraryDestination.CreatePackage(package.Directory);
+                File.Move(package.Jt, destination);
+            }
+            finally
+            {
+                package.Jt = destination;
+                try { Directory.Delete(staging, recursive: true); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+
         private static void ConvertPart(string worker, Package package, bool optimize, CancellationToken cancel, IProgress<string> progress)
         {
             cancel.ThrowIfCancellationRequested();
             using (var diagnostics = new CatiaConversionDiagnostics(package.Source, message => progress.Report(message)))
             {
                 package.Log = diagnostics.LogPath;
-                string staging = null, input = package.Source;
+                string staging = null, manifest = null, input = package.Source;
                 try
                 {
                     string digest = package.Hash;
@@ -378,30 +448,46 @@ namespace TxTools.CatiaPartTree.Ps
                     {
                         staging = Path.Combine(Path.GetTempPath(), "TxTools-CGR-" + Guid.NewGuid().ToString("N"));
                         Directory.CreateDirectory(staging);
-                        input = Path.Combine(staging, Path.GetFileNameWithoutExtension(package.Jt) + ".cgr");
+                        input = Path.Combine(staging, Path.GetFileNameWithoutExtension(package.Jt) +
+                            (package.XmlRepresentation ? ".3drep" : ".cgr"));
                         diagnostics.Write("3DXML member=" + package.Member);
-                        diagnostics.Begin("读取包内 CGR · " + package.Member);
+                        diagnostics.Begin("读取 3DXML 内嵌几何 · " + package.Member);
                         ThreeDXmlSource.ExtractGeometry(package.Source, package.Member, input, cancel);
                         digest = CatiaImportSource.Hash(input);
+                        if (package.XmlRepresentation)
+                        {
+                            // The eBOP instance supplies the placement. Convert the definition in its own coordinates.
+                            manifest = Path.Combine(staging, "representation.bin");
+                            using (var writer = new BinaryWriter(File.Create(manifest)))
+                            {
+                                writer.Write(1);
+                                writer.Write(input);
+                                writer.Write(Path.GetFileNameWithoutExtension(package.Jt));
+                                foreach (double component in Frame12.Identity.Components) writer.Write(component);
+                            }
+                        }
                     }
-                    RunConverter(worker, package, input, digest, optimize, cancel, diagnostics);
+                    RunConverter(worker, package, input, digest, manifest, optimize, cancel, diagnostics);
                 }
                 finally
                 {
                     if (staging != null && Directory.Exists(staging))
                     {
                         if (File.Exists(input) && !string.Equals(input, package.Source, StringComparison.OrdinalIgnoreCase)) File.Delete(input);
+                        if (manifest != null) File.Delete(manifest);
                         Directory.Delete(staging);
                     }
                 }
             }
         }
 
-        private static void RunConverter(string worker, Package package, string input, string digest, bool optimize, CancellationToken cancel, CatiaConversionDiagnostics diagnostics)
+        private static void RunConverter(string worker, Package package, string input, string digest, string manifest,
+            bool optimize, CancellationToken cancel, CatiaConversionDiagnostics diagnostics)
         {
             cancel.ThrowIfCancellationRequested();
             var start = new ProcessStartInfo(worker, Quote(input) + " " + Quote(package.Jt) + " " + Quote(digest) +
-                (package.Member == null ? "" : " cgr") + (package.StepMesh == null ? "" : " " + Quote("stepmesh=" + package.StepMesh)) +
+                (manifest != null ? " " + Quote("assembly=" + manifest) : package.Member == null ? "" : " cgr") +
+                (package.StepMesh == null ? "" : " " + Quote("stepmesh=" + package.StepMesh)) +
                 (optimize ? " quality" : ""))
             { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardErrorEncoding = Encoding.UTF8, StandardOutputEncoding = Encoding.UTF8 };
             diagnostics.Begin("启动 JT 转换程序");

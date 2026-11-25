@@ -46,6 +46,7 @@ The linked module guides contain an English summary followed by detailed Chinese
 | [AutoRecorder](AutoRecorder/README.md) | Simulation video recording |
 | [CatiaPartTree](CatiaPartTree/README.md) | CATIA product-tree inspection |
 | [CrossEnvIO](CrossEnvIO/README.md) | Cross-instance scene-data transfer |
+| [ProcessDesigner](ProcessDesigner/README.md) | Part, resource and weld MFG import into Process Designer on eMServer |
 | [DeviceZAligner](DeviceZAligner/README.md) | Experimental device Z alignment; known issue |
 | [ExportByColor](ExportByColor/README.md) | CGR and mesh export by color |
 | [ExportGun](ExportGun/README.md) | Weld-gun and point-cloud export |

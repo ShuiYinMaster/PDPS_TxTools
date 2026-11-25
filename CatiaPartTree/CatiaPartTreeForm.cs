@@ -13,6 +13,7 @@ using TxTools.CatiaPartTree.Core;
 using TxTools.CatiaPartTree.Ps;
 using TxTools.Common;
 using TxTools.Common.TreeWorkflow;
+using TxTools.ResourceImporter;
 using TxTools.CrossEnvIO;
 
 namespace TxTools.CatiaPartTree
@@ -228,13 +229,9 @@ namespace TxTools.CatiaPartTree
             Run(() =>
             {
                 EnsureDocument();
-                using (var dialog = new FolderBrowserDialog { Description = "选择 COJT 的基准保存文件夹（当前 PS 系统库内）", ShowNewFolderButton = true })
-                {
-                    string path = _modelFolder.Text;
-                    while (!string.IsNullOrWhiteSpace(path) && !Directory.Exists(path)) path = Path.GetDirectoryName(path);
-                    dialog.SelectedPath = string.IsNullOrWhiteSpace(path) ? TxApplication.SystemRootDirectory : path;
-                    if (dialog.ShowDialog(this) == DialogResult.OK) _modelFolder.Text = dialog.SelectedPath;
-                }
+                string library = Path.GetFullPath(TxApplication.SystemRootDirectory);
+                string path = CojtFolderEdits.Pick(this, library, CatiaLibraryDestination.ResolveFolder(library, _modelFolder.Text));
+                if (path != null) _modelFolder.Text = path;
             });
         }
         private void Include(StructureNode node, bool include)

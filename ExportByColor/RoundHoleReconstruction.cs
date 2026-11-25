@@ -76,7 +76,7 @@ namespace TxTools.ExportByColor
         public static List<Hole> Find(List<float[]> vertices, List<CgrWriter.Face> faces, Options options = null)
         { return Find(vertices,faces,options,null); }
 
-        public static List<Hole> Find(List<float[]> vertices, List<CgrWriter.Face> faces, Options options, Action<string> progress)
+        public static List<Hole> Find(List<float[]> vertices, List<CgrWriter.Face> faces, Options options, Action<string> progress, CancellationToken cancellation=default)
         {
             if (vertices == null || faces == null) throw new ArgumentNullException("mesh");
             options = options ?? new Options();
@@ -85,6 +85,7 @@ namespace TxTools.ExportByColor
             var groups = new Dictionary<int, List<int>>();
             for(int faceIndex=0;faceIndex<faces.Count;faceIndex++)
             {
+                if((faceIndex&1023)==0)cancellation.ThrowIfCancellationRequested();
                 var face=faces[faceIndex];List<int> group;
                 if (!groups.TryGetValue(face.Surface, out group)) groups.Add(face.Surface, group = new List<int>());
                 group.Add(faceIndex);
@@ -110,7 +111,7 @@ namespace TxTools.ExportByColor
             Action<int> analyze = index =>
             {
                 var group=shapes[index];
-                var mesh=BuildShape(vertices,faces,group.Value);
+                var mesh=BuildShape(vertices,faces,group.Value,cancellation);
                 var candidates=new List<Hole>();AnalyzeShape(mesh,group.Key,options,candidates);
                 if(options.IncludeTransitionRims)
                 {
@@ -135,7 +136,7 @@ namespace TxTools.ExportByColor
                 }
             };
             if(workers==1)for(int i=0;i<shapes.Count;i++)analyze(i);
-            else Parallel.For(0,shapes.Count,new ParallelOptions{MaxDegreeOfParallelism=workers},analyze);
+            else Parallel.For(0,shapes.Count,new ParallelOptions{MaxDegreeOfParallelism=workers,CancellationToken=cancellation},analyze);
             // Completion order must never affect cylinder numbering or output bytes.
             var result=new List<Hole>();foreach(var list in found)result.AddRange(list);
             return result;
@@ -170,14 +171,16 @@ namespace TxTools.ExportByColor
             internal List<int> OriginalIndices;
             internal Dictionary<long,Edge> Edges;
         }
-        private static ShapeTopology BuildShape(List<float[]> source,List<CgrWriter.Face> faces,List<int> sourceIndices)
+        private static ShapeTopology BuildShape(List<float[]> source,List<CgrWriter.Face> faces,List<int> sourceIndices,CancellationToken cancellation)
         {
             var positions=new Dictionary<Tuple<float,float,float>,int>();var vertices=new List<double[]>();
             var edges=new Dictionary<long,Edge>(CylinderEdgeComparer.Instance);var normals=new List<double[]>();var triangles=new List<int[]>();var areas=new List<double>();
             var originalIndices=new List<int>();
             var sourcePositions=new Dictionary<int,int>();
+            int analyzed=0;
             foreach(int sourceIndex in sourceIndices)
             {
+                if((analyzed++&1023)==0)cancellation.ThrowIfCancellationRequested();
                 var face=faces[sourceIndex];
                 if(face.Idx==null||face.Idx.Length!=3)throw new ArgumentException("Expected triangle");
                 int[] ids=new int[3];

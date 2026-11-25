@@ -32,7 +32,7 @@ namespace TxTools.WeldPointImporter
             internal int Offset;
         }
 
-        internal static PointReadResult Read(string path, ThreeDXmlPointMode mode, string hint, double radius)
+        internal static PointReadResult Read(string path, ThreeDXmlPointMode mode, string hint, double radius, bool skipHidden = false)
         {
             if (!ImportPoint.IsFinite(radius) || radius <= 0) throw new ArgumentOutOfRangeException(nameof(radius));
             bool envelopes = mode == ThreeDXmlPointMode.EnvelopeCenters;
@@ -56,10 +56,13 @@ namespace TxTools.WeldPointImporter
 
                 var manifest = ReadXml(Resolve("Manifest.xml"));
                 var rootLink = manifest.Descendants().FirstOrDefault(e => e.Name.LocalName == "Root");
-                var model = ReadXml(Resolve(rootLink?.Attributes().FirstOrDefault(a => a.Name.LocalName.Equals("name", StringComparison.OrdinalIgnoreCase))?.Value
-                    ?? rootLink?.Value ?? ""));
+                var rootEntry = Resolve(rootLink?.Attributes().FirstOrDefault(a => a.Name.LocalName.Equals("name", StringComparison.OrdinalIgnoreCase))?.Value
+                    ?? rootLink?.Value ?? "");
+                var model = ReadXml(rootEntry);
                 var structure = model.Descendants().FirstOrDefault(e => e.Name.LocalName == "ProductStructure");
                 if (structure == null) throw new InvalidDataException("3DXML 缺少 ProductStructure，无法定位装配坐标。");
+                string rootId = (string)structure.Attribute("root") ?? "";
+                var hidden = skipHidden ? CatiaPartTree.Core.ThreeDXmlSource.HiddenOccurrences(model.Root, rootEntry.FullName, rootId) : null;
                 var references = Index(structure, "Reference3D");
                 var representations = Index(structure, "ReferenceRep");
                 var children = structure.Elements().Where(e => e.Name.LocalName == "Instance3D").ToLookup(e => Child(e, "IsAggregatedBy"));
@@ -68,7 +71,7 @@ namespace TxTools.WeldPointImporter
                 var ancestry = new HashSet<string>(StringComparer.Ordinal);
                 int occurrences = 0;
 
-                void Visit(string id, string instanceName, Frame12 frame, bool inheritedHint)
+                void Visit(string id, string instanceName, Frame12 frame, bool inheritedHint, string occurrencePath)
                 {
                     if (ancestry.Count >= 100 || !ancestry.Add(id)) throw new InvalidDataException("3DXML 存在循环装配引用或层级超过 100。");
                     if (++occurrences > 100000) throw new InvalidDataException("3DXML 展开实例超过 100000。");
@@ -79,6 +82,7 @@ namespace TxTools.WeldPointImporter
                     if (mode != ThreeDXmlPointMode.NameOnly || matchesHint)
                     foreach (var attachment in attachments[id])
                     {
+                        if (hidden?.Contains(occurrencePath + "/" + (string)attachment.Attribute("id")) == true) continue;
                         string repId = Child(attachment, "IsInstanceOf");
                         if (!representations.TryGetValue(repId, out var rep)) throw new InvalidDataException("3DXML 缺少内部 ReferenceRep：" + repId);
                         var entry = Resolve((string)rep.Attribute("associatedFile") ?? "");
@@ -102,11 +106,15 @@ namespace TxTools.WeldPointImporter
                         }
                     }
                     foreach (var child in children[id])
-                        Visit(Child(child, "IsInstanceOf"), (string)child.Attribute("name") ?? "", frame.ThenChild(LocalFrame(child)), matchesHint);
+                    {
+                        string childPath = occurrencePath + "/" + (string)child.Attribute("id");
+                        if (hidden?.Contains(childPath) == true) continue;
+                        Visit(Child(child, "IsInstanceOf"), (string)child.Attribute("name") ?? "", frame.ThenChild(LocalFrame(child)), matchesHint, childPath);
+                    }
                     ancestry.Remove(id);
                 }
 
-                Visit((string)structure.Attribute("root") ?? "", "", Frame12.Identity, false);
+                Visit(rootId, "", Frame12.Identity, false, rootId);
             }
             return result;
         }

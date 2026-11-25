@@ -34,6 +34,8 @@ namespace TxTools.ExportByColor
         private Button _btnRun;
         private Button _btnEndModeling;
         private ProgressBar _progress;
+        private volatile bool _closing;
+        private CancellationTokenSource _exportCancellation;
         private int _lastProgressBucket;
         private string _lastLogMessage;
         private const int MaxLogCharacters = 60000;
@@ -79,6 +81,33 @@ namespace TxTools.ExportByColor
             });
         }
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            base.OnFormClosing(e);
+            if (e.Cancel) return;
+            StopPicking();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) StopPicking();
+            base.Dispose(disposing);
+        }
+
+        private void StopPicking()
+        {
+            if (_closing) return;
+            _closing = true;
+            _exportCancellation?.Cancel();
+            SuspendPicking(true);
+        }
+
+        private void SuspendPicking(bool suspended)
+        {
+            PickFocus.SetSuspended(_objGrid, suspended);
+            PickFocus.SetSuspended(_frameOrigin, suspended);
+        }
+
         // ── 主体：资源与参数、操作行、日志和进度条 ────────────────────────
         private Control BuildBody()
         {
@@ -89,7 +118,7 @@ namespace TxTools.ExportByColor
                 RowCount = 4
             };
             body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            body.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            body.RowStyles.Add(new RowStyle(SizeType.Absolute, PluginUiPolicy.ButtonHeight + 8));
             body.RowStyles.Add(new RowStyle(SizeType.Absolute, 90));
             body.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
 
@@ -311,31 +340,30 @@ namespace TxTools.ExportByColor
             var actions = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                AutoSize = true,
-                ColumnCount = 2,
+                ColumnCount = 5,
                 RowCount = 1,
                 Margin = new Padding(6, 0, 6, 2)
             };
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             actions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-            var resourceActions = FormUiKit.MkRowFlow();
-            resourceActions.Margin = Padding.Empty;
             var btnEnum = FormUiKit.MkFuncButton("枚举可见资源", Theme.BtnPrimary);
             btnEnum.Click += (s, e) => EnumerateVisible();
             var btnClear = FormUiKit.MkFuncButton("清空列表", Theme.BtnSecondary);
             btnClear.Click += (s, e) => ClearGrid();
-            resourceActions.Controls.Add(btnEnum);
-            resourceActions.Controls.Add(btnClear);
+            actions.Controls.Add(btnEnum, 0, 0);
+            actions.Controls.Add(btnClear, 1, 0);
             _btnEndModeling = FormUiKit.MkFuncButton("结束建模", Theme.BtnSecondary);
             _btnEndModeling.Click += (s, e) => EndSelectedModeling();
-            resourceActions.Controls.Add(_btnEndModeling);
-            actions.Controls.Add(resourceActions, 0, 0);
+            actions.Controls.Add(_btnEndModeling, 2, 0);
 
             _btnRun = FormUiKit.MkButton("开始导出", true);
             _btnRun.Anchor = AnchorStyles.Right;
             _btnRun.Click += (s, e) => RunExport();
-            actions.Controls.Add(_btnRun, 1, 0);
+            actions.Controls.Add(_btnRun, 4, 0);
             UpdateEndModelingAction();
 
             return actions;
@@ -460,9 +488,12 @@ namespace TxTools.ExportByColor
             }
             finally
             {
-                _objGrid.ListenToPick = listenToPick;
-                _btnRun.Enabled = true;
-                UpdateEndModelingAction();
+                if (!_closing && !IsDisposed)
+                {
+                    _objGrid.ListenToPick = listenToPick;
+                    _btnRun.Enabled = true;
+                    UpdateEndModelingAction();
+                }
             }
         }
 
@@ -524,6 +555,9 @@ namespace TxTools.ExportByColor
                 }
             }
             _btnRun.Enabled = false;
+            SuspendPicking(true);
+            var cancellation = new CancellationTokenSource();
+            _exportCancellation = cancellation;
             UpdateEndModelingAction();
             _progress.Value = 0;
             _lastProgressBucket = -1;
@@ -535,10 +569,14 @@ namespace TxTools.ExportByColor
             {
                 try
                 {
-                    if (IsDisposed) return;
+                    if (_closing || IsDisposed) return;
                     BeginInvoke(new Action(delegate ()
                     {
+                        if (_closing || IsDisposed) return;
+                        _exportCancellation = null;
+                        cancellation.Dispose();
                         _btnRun.Enabled = true;
+                        SuspendPicking(false);
                         UpdateEndModelingAction();
                         if (ok) _progress.Value = 100;
                         Log((ok ? "[完成] " : "[错误] ") + msg);
@@ -551,17 +589,20 @@ namespace TxTools.ExportByColor
                 if (format == "JT_CGR")
                 {
                     Log("JT 模式：从资源解析 JT 文件生成 CGR；外观读取关联零件三角面并变换到外观位置，再插入 CATIA。");
-                    _svc.RunJtToCgrAsync(picked, Log, SetProgress, complete, cgrBackend, reconstructCylinders, originLocation);
+                    _svc.RunJtToCgrAsync(picked, Log, SetProgress, complete, cgrBackend, reconstructCylinders, originLocation, cancellation.Token);
                 }
                 else
                 {
                     _svc.RunAsync(picked, origin, format, output, _exportTabs.SelectedIndex == 1 && _mergeMeshes.Checked,
-                        Log, SetProgress, complete, cgrBackend, reconstructCylinders, originLocation);
+                        Log, SetProgress, complete, cgrBackend, reconstructCylinders, originLocation, cancellation.Token);
                 }
             }
             catch (Exception ex)
             {
+                _exportCancellation = null;
+                cancellation.Dispose();
                 _btnRun.Enabled = true;
+                SuspendPicking(false);
                 UpdateEndModelingAction();
                 Log("[错误] " + ex.Message);
             }
@@ -569,7 +610,7 @@ namespace TxTools.ExportByColor
 
         private void SetProgress(ExportProgressInfo info)
         {
-            if (info == null || IsDisposed) return;
+            if (info == null || _closing || IsDisposed) return;
             if (InvokeRequired)
             {
                 try { BeginInvoke(new Action<ExportProgressInfo>(SetProgress), info); } catch { }
@@ -589,7 +630,7 @@ namespace TxTools.ExportByColor
 
         private void Log(string msg)
         {
-            if (_rtbLog == null || IsDisposed) return;
+            if (_rtbLog == null || _closing || IsDisposed) return;
             if (InvokeRequired)
             {
                 try { BeginInvoke(new Action<string>(Log), msg); } catch { }

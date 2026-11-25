@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -156,10 +157,11 @@ namespace TxTools.ExportByColor
             if(left.Count!=3||Dot(normal,Normal(vertices,left.ToArray()))<=1e-12)return null;result.Add(left.ToArray());return result;
         }
 
-        public static Result Replace(List<float[]> source,List<CgrWriter.Face> faces,List<RoundHoleReconstruction.Hole> holes,Action<string> log=null)
-        {return Replace(source,faces,holes,log,new DisplayOptions());}
-        public static Result Replace(List<float[]> source,List<CgrWriter.Face> faces,List<RoundHoleReconstruction.Hole> holes,Action<string> log,DisplayOptions display)
+        public static Result Replace(List<float[]> source,List<CgrWriter.Face> faces,List<RoundHoleReconstruction.Hole> holes,Action<string> log=null,CancellationToken cancellation=default)
+        {return Replace(source,faces,holes,log,new DisplayOptions(),cancellation);}
+        public static Result Replace(List<float[]> source,List<CgrWriter.Face> faces,List<RoundHoleReconstruction.Hole> holes,Action<string> log,DisplayOptions display,CancellationToken cancellation=default)
         {
+            cancellation.ThrowIfCancellationRequested();
             if(display==null||double.IsNaN(display.ChordToleranceMm)||double.IsInfinity(display.ChordToleranceMm)||display.ChordToleranceMm<=0||display.ChordToleranceMm>.2||display.MinimumCircleSegments<8||display.MinimumCircleSegments>2048)throw new ArgumentOutOfRangeException("display");
             var density=new DisplayOptions{ChordToleranceMm=display.ChordToleranceMm,MinimumCircleSegments=display.MinimumCircleSegments};
             if(log!=null)log("[CGR display density] regular sag<="+density.ChordToleranceMm+"mm minimumSegments="+density.MinimumCircleSegments+"; original rim samples retained; clipped/intersecting walls keep 0.002mm guards; analytical parameters unchanged");
@@ -169,7 +171,7 @@ namespace TxTools.ExportByColor
             // its proven cylinder still receives native measurement attributes.
             var punctured=holes.Where(h=>h.PairedRims&&h.WallTriangles!=null&&h.RimPointsA!=null&&h.RimPointsB!=null&&h.Depth>.02&&HasAdditionalWallBoundaries(source,faces,h)).ToList();
             var excluded=new HashSet<RoundHoleReconstruction.Hole>(punctured);
-            var result=ReplaceCore(source,faces,holes.Where(h=>!excluded.Contains(h)).ToList(),log,density);
+            var result=ReplaceCore(source,faces,holes.Where(h=>!excluded.Contains(h)).ToList(),log,density,cancellation);
             foreach(var h in holes.Where(h=>h.PairedRims&&!h.ExternalCylinder&&(h.TrimmedRimA||h.TrimmedRimB)))
             {
                 if(result.Cylinders.Values.Any(c=>c.SourceSurface==h.Surface&&Math.Abs(c.Radius-h.Radius)<.01&&Dot(Sub(c.Center,h.Center),Sub(c.Center,h.Center))<.0001))continue;
@@ -180,6 +182,7 @@ namespace TxTools.ExportByColor
             var origins=new Dictionary<int[],int>();if(punctured.Count>0)for(int i=0;i<faces.Count;i++)if(!origins.ContainsKey(faces[i].Idx))origins.Add(faces[i].Idx,i);int preserved=0;
             foreach(var h in punctured)
             {
+                cancellation.ThrowIfCancellationRequested();
                 var material=faces[h.WallTriangles[0]];
                 if((material.Opacity??255)==0||h.WallTriangles.Any(fi=>faces[fi].R!=material.R||faces[fi].G!=material.G||faces[fi].B!=material.B||(faces[fi].Opacity??255)!=(material.Opacity??255)))
                 {result.Diagnostics.Add("shape="+h.Surface+" radius="+h.Radius+" reason=punctured-wall-material; source preserved");continue;}
@@ -209,7 +212,7 @@ namespace TxTools.ExportByColor
             var rims=new HashSet<long>(CylinderEdgeComparer.Instance);foreach(var ring in new[]{h.RimPointsA,h.RimPointsB})for(int i=0;i<ring.Length;i++)rims.Add(Edge(id(ring[i]),id(ring[(i+1)%ring.Length])));
             return counts.Any(e=>e.Value!=2&&!rims.Contains(e.Key));
         }
-        static Result ReplaceCore(List<float[]> source,List<CgrWriter.Face> faces,List<RoundHoleReconstruction.Hole> holes,Action<string> log,DisplayOptions density)
+        static Result ReplaceCore(List<float[]> source,List<CgrWriter.Face> faces,List<RoundHoleReconstruction.Hole> holes,Action<string> log,DisplayOptions density,CancellationToken cancellation)
         {
             var result=new Result{Vertices=new List<float[]>(source),Faces=new List<CgrWriter.Face>()};
             var ids=new Dictionary<Tuple<int,float,float,float>,int>();var points=new List<double[]>();
@@ -217,6 +220,7 @@ namespace TxTools.ExportByColor
             var plans=new List<Plan>();var edges=new Dictionary<long,RimEdge>(CylinderEdgeComparer.Instance);var walls=new Dictionary<int,Plan>();
             foreach(var h in holes)
             {
+                cancellation.ThrowIfCancellationRequested();
                 if(!h.PairedRims||h.WallTriangles==null||h.RimPointsA==null||h.RimPointsB==null||h.Depth<=.02)continue;
                 var color=faces[h.WallTriangles[0]];
                 if((color.Opacity??255)==0){result.Diagnostics.Add("shape="+h.Surface+" radius="+h.Radius+" reason=transparent-wall");continue;}

@@ -58,25 +58,20 @@ namespace DLAT.JTReader {
         public UniformQuantizerData gUniformQuantizerData;
         public UniformQuantizerData bUniformQuantizerData;
         public UniformQuantizerData aUniformQuantizerData;
+        public int[] HsvBits { get; }
 
         public ColorQuantizerData(StreamReader data) {
             int hsvFlag = data.ReadU8();
-            int numberOfHueBits;
-            int numberOfSaturationBits;
-            int numberOfValueBits;
-            int numberOfAlphaBits;
             if (hsvFlag == 1) {
-                numberOfHueBits = data.ReadU8();
-                numberOfSaturationBits = data.ReadU8();
-                numberOfValueBits = data.ReadU8();
-                numberOfAlphaBits = data.ReadU8();
+                HsvBits = new int[] { data.ReadU8(), data.ReadU8(), data.ReadU8(), data.ReadU8() };
             }
-            else {
+            else if (hsvFlag == 0) {
                 rUniformQuantizerData = new UniformQuantizerData(data);
                 gUniformQuantizerData = new UniformQuantizerData(data);
                 bUniformQuantizerData = new UniformQuantizerData(data);
                 aUniformQuantizerData = new UniformQuantizerData(data);
             }
+            else throw new InvalidDataException("Invalid JT colour quantizer mode");
         }
 
         public float[] rRange {

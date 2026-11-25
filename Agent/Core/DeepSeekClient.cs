@@ -56,10 +56,16 @@ namespace TxTools.Agent.Core
         private readonly string _endpoint;
         /// <summary>模型列表 endpoint,如 https://api.deepseek.com/v1/models</summary>
         private readonly string _modelsEndpoint;
+        private const string SearchEndpoint = "https://api.deepseek.com/v1/tools/search";
 
         public bool IsOfficialDeepSeek
         {
-            get { return string.Equals(new Uri(_endpoint).Host, "api.deepseek.com", StringComparison.OrdinalIgnoreCase); }
+            get
+            {
+                var uri = new Uri(_endpoint);
+                return uri.Scheme == Uri.UriSchemeHttps && uri.IsDefaultPort
+                    && string.Equals(uri.Host, "api.deepseek.com", StringComparison.OrdinalIgnoreCase);
+            }
         }
 
         static DeepSeekClient()
@@ -110,6 +116,25 @@ namespace TxTools.Agent.Core
             }
         }
 
+        internal async Task<JArray> SearchWebAsync(string query, CancellationToken ct)
+        {
+            if (!IsOfficialDeepSeek) throw new InvalidOperationException("联网检索需要 DeepSeek 官方 API。");
+            using (var message = new HttpRequestMessage(HttpMethod.Post, SearchEndpoint))
+            {
+                message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+                message.Content = new StringContent(
+                    JsonConvert.SerializeObject(new { query, count = 5 }), Encoding.UTF8, "application/json");
+                using (var response = await Http.SendAsync(message, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false))
+                {
+                    if (!response.IsSuccessStatusCode)
+                        throw new HttpRequestException("DeepSeek Search 请求失败（HTTP " + (int)response.StatusCode + "）。");
+                    var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    return JObject.Parse(json)["results"] as JArray
+                        ?? throw new JsonSerializationException("DeepSeek Search 响应缺少 results。");
+                }
+            }
+        }
+
         public async Task<ChatResponse> SendAsync(ChatRequest request, CancellationToken ct)
         {
             if (request == null) throw new ArgumentNullException(nameof(request));
@@ -146,7 +171,8 @@ namespace TxTools.Agent.Core
         private async Task<ChatResponse> SendOnceAsync(ChatRequest request, CancellationToken ct)
         {
             var json = JsonConvert.SerializeObject(request, JsonSettings);
-            Dump("req", _endpoint + "\n\n" + json);
+            if (DumpRawTraffic && request.Messages?.Exists(m => m?.HasImages == true) != true)
+                Dump("req", _endpoint + "\n\n" + json);
 
             using (var msg = new HttpRequestMessage(HttpMethod.Post, _endpoint))
             {
@@ -224,7 +250,8 @@ namespace TxTools.Agent.Core
         {
             request.Stream = true;
             var json = JsonConvert.SerializeObject(request, JsonSettings);
-            Dump("req_stream", _endpoint + "\n\n" + json);
+            if (DumpRawTraffic && request.Messages?.Exists(m => m?.HasImages == true) != true)
+                Dump("req_stream", _endpoint + "\n\n" + json);
 
             // 流式:把每个 SSE 分片原样攒起来,结束后整段落盘。
             // 分片是判断"模型到底发没发工具调用"的唯一依据 ——

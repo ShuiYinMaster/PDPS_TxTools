@@ -36,6 +36,7 @@ namespace TxAgent.Core
         public MessageRole Role { get; set; }
 
         public string Content { get; set; }
+        internal List<TxTools.Agent.Core.ContentPart> ImageParts { get; set; }
         /// <summary>Provider-returned reasoning, retained for archive and compatible replay.</summary>
         public string ReasoningContent { get; set; }
 

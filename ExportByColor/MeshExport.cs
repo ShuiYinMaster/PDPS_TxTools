@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Threading;
 namespace TxTools.ExportByColor
 {
  public sealed class ExportNames
@@ -22,15 +23,17 @@ namespace TxTools.ExportByColor
   public sealed class Archive:IDisposable
   {
    readonly string spool;readonly string checkpoint;int checkpointWrites;bool keep;readonly List<Part> parts=new List<Part>();public int Devices{get;private set;}
-   public Archive(string directory){spool=Path.Combine(directory,".mesh_"+Guid.NewGuid().ToString("N")+".partial");checkpoint=spool+".jsonl";using(File.Create(spool)){} }
+   readonly CancellationToken cancellation;
+   public Archive(string directory, CancellationToken cancellation = default){this.cancellation=cancellation;cancellation.ThrowIfCancellationRequested();spool=Path.Combine(directory,".mesh_"+Guid.NewGuid().ToString("N")+".partial");checkpoint=spool+".jsonl";using(File.Create(spool)){} }
    public void Add(DeviceData device,string name)
    {
     var added=new List<Part>();
     using(var w=new BinaryWriter(new FileStream(spool,FileMode.Append,FileAccess.Write,FileShare.Read,1024*1024,FileOptions.SequentialScan)))foreach(var g in device.Colors)
     {
      if(g.Tris.Count==0)continue;long offset=w.BaseStream.Position;int count=g.Tris.Count;
-     foreach(var t in g.Tris){Validate(t);foreach(float v in t)w.Write(v);}
-     added.Add(new Part{Device=name,R=g.R,G=g.G,B=g.B,Count=count,Offset=offset,Read=()=>ReadSpool(spool,offset,count),ReadRange=(first,n)=>ReadSpool(spool,offset+36L*first,n)});
+     int index=0;
+     foreach(var t in g.Tris){if((index++ & 1023)==0)cancellation.ThrowIfCancellationRequested();Validate(t);foreach(float v in t)w.Write(v);}
+     added.Add(new Part{Device=name,R=g.R,G=g.G,B=g.B,Count=count,Offset=offset,Read=()=>Cancelable(ReadSpool(spool,offset,count),cancellation),ReadRange=(first,n)=>Cancelable(ReadSpool(spool,offset+36L*first,n),cancellation)});
     }
     parts.AddRange(added);if(added.Count>0){Devices++;AppendCheckpoint(name,added);}
    }
@@ -40,7 +43,7 @@ namespace TxTools.ExportByColor
     using(var w=new StreamWriter(s,new UTF8Encoding(false)))
     { foreach(var p in added) w.WriteLine("{\"device\":"+J(device)+",\"offset\":"+p.Offset+",\"triangles\":"+p.Count+",\"rgb\":["+p.R+","+p.G+","+p.B+"]}"); w.Flush(); checkpointWrites++; if((checkpointWrites&3)==0)s.Flush(true); }
    }
-   public string Finish(string dir,string name,string format,string origin){return WriteParts(parts,name,dir,format,origin);}
+   public string Finish(string dir,string name,string format,string origin){return WriteParts(parts,name,dir,format,origin,cancellation);}
    public string PreserveForRecovery()
    {
     keep=true;
@@ -61,21 +64,41 @@ namespace TxTools.ExportByColor
   internal static string F(double v){return v.ToString("R",CultureInfo.InvariantCulture);}
   internal static IEnumerable<float[]> Checked(Part p){int n=0;foreach(var t in p.Read()){Validate(t);n++;yield return t;}if(n!=p.Count)throw new InvalidDataException("面数与声明不一致");}
   internal static long Total(List<Part> parts){long n=0;foreach(var p in parts)n+=p.Count;return n;}
-  public static string Write(DeviceData device,string name,string directory,string format,string origin)
+  static IEnumerable<float[]> Cancelable(IEnumerable<float[]> triangles, CancellationToken cancellation)
   {
-   var parts=new List<Part>();foreach(var g in device.Colors)if(g.Tris.Count>0)parts.Add(new Part{Device=name,R=g.R,G=g.G,B=g.B,Count=g.Tris.Count,Read=()=>g.Tris,ReadRange=(first,n)=>ReadList(g.Tris,first,n)});return WriteParts(parts,name,directory,format,origin);
+   int index=0;
+   foreach(var triangle in triangles)
+   {
+    if((index++ & 1023)==0)cancellation.ThrowIfCancellationRequested();
+    yield return triangle;
+   }
   }
-  static string WriteParts(List<Part> parts,string name,string directory,string format,string origin)
+  public static string Write(DeviceData device,string name,string directory,string format,string origin,CancellationToken cancellation=default)
   {
+   var parts=new List<Part>();foreach(var g in device.Colors)if(g.Tris.Count>0)parts.Add(new Part{Device=name,R=g.R,G=g.G,B=g.B,Count=g.Tris.Count,Read=()=>Cancelable(g.Tris,cancellation),ReadRange=(first,n)=>Cancelable(ReadList(g.Tris,first,n),cancellation)});return WriteParts(parts,name,directory,format,origin,cancellation);
+  }
+  static string WriteParts(List<Part> parts,string name,string directory,string format,string origin,CancellationToken cancellation)
+  {
+   cancellation.ThrowIfCancellationRequested();
    if(Total(parts)==0)throw new InvalidDataException("无有效三角面");Directory.CreateDirectory(directory);
    string ext=format.StartsWith("FBX",StringComparison.Ordinal)?"fbx":format.ToLowerInvariant(),path=Path.Combine(directory,name+"."+ext),temp=path+".partial";
-   if(File.Exists(path)||File.Exists(temp))throw new IOException("文件已存在: "+path);
+   string sidecar=format=="OBJ"?Path.Combine(directory,name+".mtl"):format=="STL"?path+".rgb.json":null;
+   if(File.Exists(path)||File.Exists(temp)||File.Exists(sidecar))throw new IOException("文件已存在: "+path);
    try
    {
     if(format=="STL")WriteStl(parts,temp);else if(format=="OBJ")WriteObj(parts,name,directory,temp);else if(format=="PLY")WritePly(parts,temp);
     else if(format=="FBX"||format=="FBX_BINARY"||format=="FBX_ASCII")FbxExport.Write(parts,temp,format!="FBX_ASCII");else throw new ArgumentException("不支持的网格格式");
-    if(format=="STL")WriteRanges(parts,path+".rgb.json",origin);File.Move(temp,path);return path;
-   }finally{if(File.Exists(temp))File.Delete(temp);}
+    cancellation.ThrowIfCancellationRequested();
+    if(format=="STL")WriteRanges(parts,sidecar,origin);
+    cancellation.ThrowIfCancellationRequested();
+    File.Move(temp,path);return path;
+   }
+   catch(OperationCanceledException) when(cancellation.IsCancellationRequested)
+   {
+    if(File.Exists(sidecar))File.Delete(sidecar);
+    throw;
+   }
+   finally{if(File.Exists(temp))File.Delete(temp);}
   }
   static string J(string s){var b=new StringBuilder("\"");foreach(char c in s??""){if(c=='"'||c=='\\')b.Append('\\').Append(c);else if(c<32)b.Append("\\u").Append(((int)c).ToString("x4"));else b.Append(c);}return b.Append('"').ToString();}
   static void WriteRanges(List<Part> parts,string path,string origin)

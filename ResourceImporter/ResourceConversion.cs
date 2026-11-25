@@ -15,7 +15,6 @@ namespace TxTools.ResourceImporter
 {
     internal static class ResourceConversion
     {
-        internal const string LibraryStagePrefix = ".tx-ri-";
         private const string Patterns = "*.jt;*.step;*.stp;*.3dxml;*.cgr;*.catpart;*.catproduct";
         internal const string FileFilter = "支持的模型文件|" + Patterns +
             "|JT|*.jt|STEP|*.step;*.stp|3DXML|*.3dxml|CGR|*.cgr|CATPart / CATProduct|*.catpart;*.catproduct";
@@ -45,8 +44,11 @@ namespace TxTools.ResourceImporter
                 }
                 cancel.ThrowIfCancellationRequested();
 
-                // Keep the complete package on the target volume for Directory.Move.
-                string reservation = Path.Combine(Path.GetDirectoryName(finalPackage), LibraryStagePrefix + Path.GetRandomFileName());
+                // Stage on the target volume without materializing a planned folder.
+                string parent = Path.GetDirectoryName(finalPackage);
+                while (!Directory.Exists(parent))
+                    parent = Path.GetDirectoryName(parent) ?? throw new DirectoryNotFoundException("找不到可访问的系统库目录。");
+                string reservation = Path.Combine(parent, CojtFolderTree.StagePrefix + Path.GetRandomFileName());
                 CatiaLibraryDestination.CreatePackage(reservation);
                 stage = reservation;
                 string package = Path.Combine(stage, Path.GetFileName(finalPackage));

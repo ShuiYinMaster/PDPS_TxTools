@@ -685,6 +685,8 @@ button { font-family: inherit; }
     transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
 .cbar-btn:hover { background: var(--border-light); color: var(--text); }
+#web-search[hidden], #attach-vision[hidden] { display: none; }
+#web-search[aria-pressed="true"] { color: var(--primary); border-color: var(--primary); }
 .cbar-btn .caret { font-size: 9px; opacity: 0.5; }
 .cbar-btn.icon-only {
     width: 28px;
@@ -1507,10 +1509,12 @@ button { font-family: inherit; }
         <textarea id="input-box" placeholder="输入消息...  (Enter 发送 · Shift+Enter 换行 · 拖入/粘贴文件上传)" rows="1"></textarea>
         <div id="steer-hint" hidden>执行中可补充引导；当前工具结束后，在下一步前应用。</div>
         <div id="composer-bar">
-            <button class="cbar-btn icon-only" id="attach-btn" title="上传文件 (可拖入或粘贴)">＋</button>
+            <button class="cbar-btn icon-only" id="attach-btn" type="button" title="上传文件 (可拖入或粘贴)">＋<span id="attach-vision" hidden>识图</span></button>
             <button class="cbar-btn mode-ask" id="perm-btn" title="工具执行审批模式">
                 <span id="perm-icon">🛡</span><span id="perm-label">询问</span><span class="caret">▾</span>
             </button>
+            <button class="cbar-btn" id="web-search" type="button" aria-pressed="false" hidden
+                title="允许本轮调用 DeepSeek Search；检索按次计费">联网</button>
             <span class="cbar-spacer"></span>
             <button class="cbar-btn" id="token-btn" title="上下文用量">
                 <svg id="token-ring" viewBox="0 0 20 20" aria-hidden="true" class="idle">
@@ -1689,6 +1693,9 @@ const state = {
     keyReady: false,
     busy: false,
     followLatest: true,
+    webSearch: false,
+    canSearchWeb: false,
+    canReadImages: false,
     activeTurnId: null,
     guidanceRequests: {},
     attachments: [],              // 已上传成功待发送: [{id, name}]
@@ -1732,6 +1739,7 @@ window.dispatchMessage = function (json) {
                 onProviders(msg.providers);
             break;
         case "keyReady":       onKeyReady(); break;
+        case "modelCapabilities": onModelCapabilities(msg); break;
         case "askApiKey":      onAskApiKey(msg.reason); break;
         case "convList":       onConvList(msg.items); break;
         case "clear":          onClear(); break;
@@ -2262,6 +2270,26 @@ function onKeyReady() {
     updateSendState();
 }
 
+function onModelCapabilities(msg) {
+    state.canSearchWeb = msg.search === true;
+    state.canReadImages = msg.images === true;
+    const attach = document.getElementById("attach-btn");
+    document.getElementById("attach-vision").hidden = !state.canReadImages;
+    attach.classList.toggle("icon-only", !state.canReadImages);
+    attach.title = state.canReadImages
+        ? "上传图片或文件（可拖入或粘贴）。本轮图片将发送给 DeepSeek Flash 识别。"
+        : "上传文件（可拖入或粘贴）";
+    attach.setAttribute("aria-label", attach.title);
+    document.getElementById("web-search").hidden = !state.canSearchWeb;
+    if (!state.canSearchWeb) setWebSearch(false);
+    updateSendState();
+}
+
+function setWebSearch(enabled) {
+    state.webSearch = enabled;
+    document.getElementById("web-search").setAttribute("aria-pressed", String(enabled));
+}
+
 function onAskApiKey(msgOrReason) {
     // 兼容两种调用: 直接传 reason 字符串,或传整个 msg 对象
     let reason, providerId, providerName, baseUrl, keyPageUrl, isLocal;
@@ -2290,6 +2318,8 @@ function onClear() {
     state.currentAssistantContent = null;
     state.currentAssistantBuffer = "";
     state.lastAssistantMsg = null;
+    setWebSearch(false);
+    scrollToBottom(true);
 }
 
 function onRestore(messages) {
@@ -2961,8 +2991,12 @@ function appendMessage(uiRole, text) {
         content.classList.add("empty");
     }
     msg.appendChild(content);
+    if (uiRole === "system") {
+        document.getElementById("chat").appendChild(msg);
+        return msg;
+    }
 
-    // 操作按钮:复制(所有消息) + 撤销(仅用户消息)
+    // 操作按钮:复制正文，用户消息另提供撤销。
     const actions = document.createElement("div");
     actions.className = "msg-actions";
     const copyBtn = document.createElement("button");
@@ -3023,7 +3057,7 @@ function addToolCallToMessage(msgEl, name, input) {
         '<span class="tool-name"></span>' +
         '<span class="tool-status"></span>' +
         '<span class="tool-input"></span>';
-    head.querySelector(".tool-name").textContent = name;
+    head.querySelector(".tool-name").textContent = name === "deepseek_web_search" ? "联网检索" : name;
     head.querySelector(".tool-input").textContent = input || "";
 
     const body = document.createElement("div");
@@ -3072,7 +3106,27 @@ function addToolResultToMessage(msgEl, name, result, isErr, toolCallId) {
         '<button class="tool-copy-btn" type="button">复制结果</button>' +
         '<div class="tool-body-text"></div>';
     const bodyText = body.querySelector(".tool-body-text");
-    bodyText.textContent = result || "(无输出)";
+    let sources = null;
+    if (name === "deepseek_web_search" && !isErr) {
+        try { sources = JSON.parse(result); } catch { }
+    }
+    if (Array.isArray(sources)) {
+        if (sources.length === 0) bodyText.textContent = "没有找到匹配的网页。";
+        for (const source of sources) {
+            if (!source || typeof source.url !== "string" || !/^https?:\/\//i.test(source.url)) continue;
+            const row = document.createElement("div");
+            const link = document.createElement("a");
+            link.href = source.url;
+            if (link.protocol !== "http:" && link.protocol !== "https:") continue;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.textContent = source.title || source.url;
+            row.appendChild(link);
+            bodyText.appendChild(row);
+        }
+    } else {
+        bodyText.textContent = result || "(无输出)";
+    }
     if (isErr) {
         body.classList.add("err");
         target.classList.add("err");
@@ -3084,24 +3138,31 @@ function addToolResultToMessage(msgEl, name, result, isErr, toolCallId) {
 }
 
 function scrollToBottom(force) {
-    const c = document.getElementById("chat-container");
     if (force === true) state.followLatest = true;
-    if (state.followLatest) c.scrollTop = c.scrollHeight;
-    document.getElementById('jump-latest').hidden = state.followLatest;
+    if (state.followLatest) chatScroller.scrollTop = chatScroller.scrollHeight;
+    updateJumpLatest();
 }
 
 const chatScroller = document.getElementById('chat-container');
+const jumpLatest = document.getElementById('jump-latest');
+function distanceFromLatest() {
+    return chatScroller.scrollHeight - chatScroller.scrollTop - chatScroller.clientHeight;
+}
+function updateJumpLatest() {
+    jumpLatest.hidden = state.followLatest || distanceFromLatest() <= 36;
+}
 chatScroller.addEventListener('wheel', e => {
-    if (e.deltaY < 0) { state.followLatest = false; document.getElementById('jump-latest').hidden = false; }
+    if (e.deltaY < 0 && chatScroller.scrollTop > 0 && chatScroller.scrollHeight - chatScroller.clientHeight > 36)
+        state.followLatest = false;
 }, { passive: true });
 chatScroller.addEventListener('scroll', () => {
-    state.followLatest = chatScroller.scrollHeight - chatScroller.scrollTop - chatScroller.clientHeight < 36;
-    document.getElementById('jump-latest').hidden = state.followLatest;
+    state.followLatest = distanceFromLatest() <= 36;
+    updateJumpLatest();
 });
-chatScroller.addEventListener('keydown', e => {
-    if (['PageUp', 'Home', 'ArrowUp'].includes(e.key)) state.followLatest = false;
-});
-document.getElementById('jump-latest').addEventListener('click', () => scrollToBottom(true));
+jumpLatest.addEventListener('click', () => scrollToBottom(true));
+const chatResizeObserver = new ResizeObserver(() => scrollToBottom());
+chatResizeObserver.observe(chatScroller);
+chatResizeObserver.observe(document.getElementById("chat"));
 
 // ═════════════════════════════════════════════════════════════════
 //  附件卡片
@@ -3255,6 +3316,7 @@ function clearAllAttachments() {
 document.getElementById("attach-btn").addEventListener("click", () => {
     document.getElementById("file-input").click();
 });
+document.getElementById("web-search").addEventListener("click", () => setWebSearch(!state.webSearch));
 document.getElementById("file-input").addEventListener("change", (ev) => {
     handleFiles(ev.target.files);
     ev.target.value = ""; // 允许再次选同一个文件
@@ -3401,8 +3463,10 @@ function doSend() {
     postToHost({
         type: "userSend",
         text: text,
-        attachments: state.attachments.slice()
+        attachments: state.attachments.slice(),
+        webSearch: state.canSearchWeb && state.webSearch
     });
+    setWebSearch(false);
 
     // 清输入 & 附件
     inputBox.value = "";
@@ -3420,6 +3484,7 @@ function updateSendState() {
     sendBtn.title = state.busy ? '补充引导：当前步骤结束后应用 (Enter)' : '发送 (Enter)';
     sendBtn.setAttribute('aria-label', state.busy ? '提交补充引导' : '发送消息');
     document.getElementById('attach-btn').disabled = state.busy;
+    document.getElementById('web-search').disabled = state.busy || !state.keyReady;
     document.getElementById('steer-hint').hidden = !state.busy;
     document.getElementById('btn-new').disabled = state.busy;
     const modelTrigger = document.getElementById('model-trigger');

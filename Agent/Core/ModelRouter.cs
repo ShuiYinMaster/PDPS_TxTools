@@ -2,7 +2,7 @@
 //
 // 按【任务需要什么能力】而不是【我习惯用哪个模型】来选模型。
 //
-// 视觉能力按具体模型区分，DeepSeek V4 的 vision-exp 与普通文本型号不同。
+// 视觉能力按具体提供商和模型区分。
 // 遇到图片必须换到 Kimi 或千问。但一旦要跨 provider 调度,
 // 就该顺手把"便宜活别用贵模型"这件事也一起做了 —— 萃取、摘要、分类这类任务
 // 用 flash 档就够,没必要走主模型。
@@ -89,20 +89,12 @@ namespace TxTools.Agent.Core
 
         private static readonly List<ModelSpec> Catalog = new List<ModelSpec>
         {
-            // 普通 V4 是文本模型；视觉必须使用明确的 vision-exp 型号。
-            new ModelSpec { Provider = "deepseek", ModelId = "deepseek-v4-flash",
-                            SupportsVision = false, SupportsTools = true,
-                            ContextWindow = 1000000, CostTier = 1 },
-            // DeepSeek 控制台/兼容端点常用的短名称，实际对应 V4.1 Flash。
-            new ModelSpec { Provider = "deepseek", ModelId = "deepseek-flash",
-                            SupportsVision = false, SupportsTools = true,
+            new ModelSpec { Provider = "deepseek", ModelId = LlmProviders.DeepSeekFlash,
+                            SupportsVision = true, SupportsTools = true,
                             ContextWindow = 1000000, CostTier = 1 },
             new ModelSpec { Provider = "deepseek", ModelId = "deepseek-v4-pro",
                             SupportsVision = false, SupportsTools = true,
                             ContextWindow = 1000000, CostTier = 3 },
-            new ModelSpec { Provider = "deepseek", ModelId = "deepseek-v4-flash-vision-exp",
-                            SupportsVision = true, SupportsTools = true,
-                            ContextWindow = 1000000, CostTier = 1 }, // DeepSeek V4 family window
 
             // ── Kimi(Moonshot) 官方 ──
             // k3 原生支持视觉 + 1M 上下文 + Agent 能力,是目前视觉任务的首选:
