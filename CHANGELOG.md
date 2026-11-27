@@ -2,6 +2,27 @@
 
 本文件记录 TxTools 主分支的主要功能、兼容性和文档变化。日期以中国标准时间为准。
 
+## 3.0.8 — 2026-11-27
+
+### 安装部署
+
+- 完整离线包包含最新编译的 31 个命令、659 个部署文件及配套运行依赖。
+- Process Simulate 部署完整 TxTools（含 TxAgent）；Process Designer 部署 TxAgent 与零件、资源、焊点导入。
+- 下载发行包并完整解压，运行 `TxToolsInstaller.exe`，保留同目录 `offline` 文件夹。
+- 提供 SHA-256 校验文件，可在部署前验证下载包完整性。
+
+### TxAgent 联网检索
+
+- 取消单轮网页检索的次数上限，检索节奏交由模型判断；界面联网开关保持到手动关闭，发送消息不再自动重置。
+- 检索结果改用 `JsonConvert.SerializeObject` 序列化，避免宿主预加载旧版 Json.NET 时 `JToken.ToString(Formatting)` 抛出 `MissingMethodException`。
+- 执行日志默认展开，仅在产出结论后折叠，便于实时查看执行过程。
+- 迭代上限允许配置为 0，不再强制至少一轮。
+
+### 构建与文档
+
+- `ProcessSimulateDllDir` 支持由外部属性覆盖；pet 组件缺少 electron `LICENSE` 时不再中断编译。
+- 补齐 Agent、CatiaPartTree、CrossEnvIO、ExportByColor、ProcessDesigner、ResourceImporter、ThemeTuner、WeldPointImporter 的 README 说明。
+
 ## 3.0.7 — 2026-11-27
 
 ### 安装部署
