@@ -49,7 +49,7 @@ namespace TxAgent.Core
 
         public AgentLoopOptions()
         {
-            MaxIterations = 25;
+            MaxIterations = 0;   // 0 = 不限制工具调用轮次
             MaxConsecutiveToolFailures = 6;
             FailureHintThreshold = 3;
             MaxLlmRetries = 2;
@@ -213,7 +213,7 @@ namespace TxAgent.Core
 
             var tools = _registry.ExportSchemas(_options.ReadOnlyPhase);
 
-            for (int iter = 1; iter <= _options.MaxIterations; iter++)
+            for (int iter = 1; _options.MaxIterations <= 0 || iter <= _options.MaxIterations; iter++)
             {
                 ct.ThrowIfCancellationRequested();
                 result.Iterations = iter;

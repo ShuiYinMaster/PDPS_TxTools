@@ -1514,7 +1514,7 @@ button { font-family: inherit; }
                 <span id="perm-icon">🛡</span><span id="perm-label">询问</span><span class="caret">▾</span>
             </button>
             <button class="cbar-btn" id="web-search" type="button" aria-pressed="false" hidden
-                title="允许本轮调用 DeepSeek Search；检索按次计费">联网</button>
+                title="允许调用 DeepSeek Search；检索按次计费，开关保持到手动关闭">联网</button>
             <span class="cbar-spacer"></span>
             <button class="cbar-btn" id="token-btn" title="上下文用量">
                 <svg id="token-ring" viewBox="0 0 20 20" aria-hidden="true" class="idle">
@@ -2379,6 +2379,7 @@ function executionBody(msg) {
     if (!group) {
         group = document.createElement('details');
         group.className = 'execution-process';
+        group.open = true;   // 执行中默认展开，出现结论后才折叠
         const summary = document.createElement('summary');
         const body = document.createElement('div');
         body.className = 'execution-body';
@@ -2414,7 +2415,8 @@ function groupExecution(msg, keepConclusion) {
     if (group) {
         const firstContent = Array.from(msg.children).find(node => node.classList.contains('msg-content'));
         if (firstContent) msg.insertBefore(group, firstContent);
-        if (keepConclusion) group.open = false;
+        // 只有真正产出结论时才折叠；执行途中保持展开，便于实时查看过程。
+        if (keepConclusion && conclusion) group.open = false;
     }
     msg._conclusion = conclusion;
     updateExecutionSummary(msg);
@@ -2747,7 +2749,7 @@ function onSteeringApplied(message) {
     if (state.currentAssistantMsg) {
         groupExecution(state.currentAssistantMsg, false);
         const group = state.currentAssistantMsg.querySelector('.execution-process');
-        if (group) group.open = false;
+        if (group && state.currentAssistantMsg._conclusion) group.open = false;
     }
     state.currentAssistantMsg = null;
     state.currentAssistantContent = null;
@@ -3466,7 +3468,8 @@ function doSend() {
         attachments: state.attachments.slice(),
         webSearch: state.canSearchWeb && state.webSearch
     });
-    setWebSearch(false);
+    // 不要在这里重置联网开关：用户点开"联网"通常是想连续检索，
+    // 每发一条消息就自动关掉，看起来就像按钮自己弹回未选中。
 
     // 清输入 & 附件
     inputBox.value = "";

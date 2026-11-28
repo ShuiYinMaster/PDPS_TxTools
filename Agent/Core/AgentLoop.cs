@@ -48,7 +48,7 @@ namespace TxTools.Agent.Core
             Model = "deepseek-v4-pro";
             MaxTokens = 4096;
             Temperature = 0.3;
-            MaxIterations = 50;
+            MaxIterations = 0;   // 0 = 不限制工具调用轮次
             // 1M 上下文下压缩基本是反效果:重写历史 = 重写前缀 = 缓存全废,
             // 省下的那点 token 远不如缓存折扣值钱。放宽到 40 轮,
             // 真正的边界交给按窗口百分比的裁剪。
