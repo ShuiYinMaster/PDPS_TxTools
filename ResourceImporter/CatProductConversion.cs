@@ -52,6 +52,8 @@ namespace TxTools.ResourceImporter
             var frames = new Dictionary<string, (Frame12 Frame, bool IsPart)>(StringComparer.Ordinal);
             var files = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var parts = new List<(string Path, string Name, string Digest, Frame12 Frame)>();
+            var structure = new AssemblyStructureNode { Name = Path.GetFileNameWithoutExtension(source) };
+            var structureNodes = new Dictionary<string, AssemblyStructureNode>(StringComparer.Ordinal);
             foreach (var node in index.Nodes)
             {
                 cancel.ThrowIfCancellationRequested();
@@ -72,13 +74,25 @@ namespace TxTools.ResourceImporter
                         !ResourceImportSession.SamePath(file, source) || !SameFrame(local, Frame12.Identity))
                         throw new InvalidDataException("CATProduct 装配索引与所选根文件不匹配。");
                     frame = Frame12.Identity;
+                    structureNodes.Add(node.Id, structure);
                 }
                 else
                 {
                     if (string.IsNullOrEmpty(node.Parent) || !node.Id.StartsWith(node.Parent + "/", StringComparison.Ordinal) ||
-                        !frames.TryGetValue(node.Parent, out var parent) || parent.IsPart)
+                        !frames.TryGetValue(node.Parent, out var parent) || parent.IsPart ||
+                        !structureNodes.TryGetValue(node.Parent, out var parentNode))
                         throw new InvalidDataException("CATProduct 装配索引的父实例无效：" + node.Id);
                     frame = parent.Frame.ThenChild(local);
+                    string instanceName = string.IsNullOrWhiteSpace(node.Name)
+                        ? Path.GetFileNameWithoutExtension(file) : node.Name;
+                    if (node.IsPart)
+                    {
+                        var part = new AssemblyStructureNode { Name = instanceName, IsPart = true, PartIndex = parts.Count };
+                        parts.Add((file, instanceName, node.Digest.ToLowerInvariant(), frame));
+                        parentNode.Add(part);
+                    }
+                    else parentNode.Add(new AssemblyStructureNode { Name = instanceName });
+                    structureNodes.Add(node.Id, parentNode.Children[parentNode.Children.Count - 1]);
                 }
                 if (!SameFrame(frame, new Frame12(node.World)) || frames.ContainsKey(node.Id))
                     throw new InvalidDataException("CATProduct 装配索引的实例或变换无效：" + node.Id);
@@ -101,23 +115,17 @@ namespace TxTools.ResourceImporter
                     }
                     files.Add(file, node.Digest);
                 }
-                if (node.IsPart) parts.Add((file, string.IsNullOrWhiteSpace(node.Name) ? Path.GetFileNameWithoutExtension(file) : node.Name,
-                    node.Digest.ToLowerInvariant(), frame));
             }
             if (parts.Count == 0) throw new InvalidDataException("CATProduct 装配索引没有可导入的 CATPart 实例。");
             string manifest = Path.Combine(workspace, "assembly.bin");
-            using (var writer = new BinaryWriter(File.Create(manifest)))
-            {
-                writer.Write(parts.Count);
-                foreach (var part in parts)
+            using (var stream = File.Create(manifest))
+                AssemblyManifest.Write(stream, parts.Select(part => new AssemblyPartRecord
                 {
-                    cancel.ThrowIfCancellationRequested();
-                    writer.Write(part.Path);
-                    writer.Write(part.Name);
-                    foreach (double component in part.Frame.Components) writer.Write(component);
-                    writer.Write(part.Digest);
-                }
-            }
+                    GeometryPath = part.Path,
+                    Name = part.Name,
+                    Frame = part.Frame.Components,
+                    Digest = part.Digest
+                }).ToList(), structure, true);
             return manifest;
         }
 

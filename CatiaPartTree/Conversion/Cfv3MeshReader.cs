@@ -68,6 +68,7 @@ namespace TxTools.CatiaPartTree.Conversion
             private readonly Dictionary<int, SceneNode> _references = new Dictionary<int, SceneNode>();
             private int _position, _end, _bitsLeft, _expanded;
             private uint _word;
+            private int _leafCount, _faceCount, _emptyLeafCount;
 
             internal Reader(byte[] data, bool packed) { _data = data; _packed = packed; _end = data.Length; }
 
@@ -122,9 +123,14 @@ namespace TxTools.CatiaPartTree.Conversion
                     if (depth > 100 || ++_expanded > 100000)
                         throw new InvalidDataException("CFV3 场景引用展开数或层级超限");
                     var frame = node.Local == null ? parent : parent == null ? node.Local : parent.ThenChild(node.Local);
-                    if (node.Mesh != null)
+                    var mesh = node.Mesh;
+                    if (mesh != null && frame != null)
                     {
-                        var mesh = frame == null ? node.Mesh : node.Mesh.Bake(frame);
+                        int collapsed;
+                        mesh = mesh.BakeInstanceForJt(frame, out collapsed);
+                    }
+                    if (mesh != null)
+                    {
                         int first = vertices.Count;
                         vertices.AddRange(mesh.vertices);
                         normals.AddRange(mesh.normals);
@@ -134,7 +140,9 @@ namespace TxTools.CatiaPartTree.Conversion
                     foreach (var child in node.Children) Append(child, frame, depth + 1);
                 }
                 Append(root, null, 0);
-                if (triangles.Count == 0) throw new NotSupportedException("CFV3 表示中没有可转换的三角面");
+                if (triangles.Count == 0)
+                    throw new NotSupportedException("CFV3 表示中没有可转换的三角面（叶=" + _leafCount +
+                        "，面=" + _faceCount + "，空叶=" + _emptyLeafCount + "）");
                 var result = new MeshShape { name = name, instanceId = "source/1", sourceFile = source, sourceSha256 = hash,
                     vertices = vertices.ToArray(), triangles = triangles.ToArray(), rgb = colors.ToArray(), normals = normals.ToArray(),
                     nativeNormalBindings = normals.All(value => value != null) };
@@ -150,29 +158,71 @@ namespace TxTools.CatiaPartTree.Conversion
                 byte tag = Byte();
                 if (tag == 0x95) return new SceneNode { Mesh = Leaf(start) };
                 var node = new SceneNode();
+                int restoreEnd = -1;
                 if (tag == 0xa3)
                 {
+                    // The size field is relative to the tag/prefix. Root A3 scenes
+                    // cover the whole stream; nested A3 scenes cover only their own
+                    // payload and may carry trailing scene data.
                     int size = Count();
-                    if ((long)start + 2 + size != _end) throw new InvalidDataException("CFV3 A3 场景长度不匹配");
-                    Skip(start + 41 - _position);
-                    if (Count() != 259) throw new NotSupportedException("CFV3 A3 场景头变体未适配");
+                    long a3End = (long)start + 2 + size;
+                    if (a3End > _end || a3End < start + 41)
+                        throw new InvalidDataException("CFV3 A3 场景长度超出父场景（offset=" + start +
+                            ", size=" + size + ", end=" + _end + "）");
+                    if (a3End < _end)
+                    {
+                        restoreEnd = _end;
+                        _end = (int)a3End;
+                    }
+                    if (_packed)
+                    {
+                        // This prefix field can occupy one byte or a marker plus Int32.
+                        Skip(start + 6 - _position);
+                        Count();
+                        Skip(34);
+                    }
+                    else Skip(start + 41 - _position);
+                    int header = Count();
+                    if (_packed && (header == 0x00010103 || header == 0x01010103))
+                        ReadSceneMaterial(header == 0x01010103);
+                    else if (header != 0x0103)
+                        throw new NotSupportedException("CFV3 A3 场景头变体未适配（offset=" + start +
+                            ", value=" + header + "）");
                 }
                 else if (tag == 0x62)
                 {
-                    Skip(39);
-                    byte matrixFlag = Byte();
-                    if (matrixFlag == 1)
+                    if (_packed)
                     {
-                        var m = new double[16];
-                        for (int i = 0; i < m.Length; i++) m[i] = Float();
-                        if (m[3] != 0 || m[7] != 0 || m[11] != 0 || m[15] != 1)
-                            throw new NotSupportedException("CFV3 使用非仿射场景变换");
-                        var values = new[] { m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10], m[12], m[13], m[14] };
-                        if (!values.SequenceEqual(Identity)) node.Local = new Frame12(values);
+                        Count();
+                        Skip(34);
                     }
-                    else if (matrixFlag != 0) throw new NotSupportedException("CFV3 场景变换标志未适配");
+                    else Skip(35);
+                    Need(5);
+                    uint header = _packed && _data[_position] == 0xff ? BitConverter.ToUInt32(_data, _position + 1) : 0;
+                    if (header == 0x00010103 || header == 0x01010103)
+                    {
+                        Skip(5);
+                        ReadSceneMaterial(header == 0x01010103);
+                    }
+                    else
+                    {
+                        Skip(4);
+                        byte matrixFlag = Byte();
+                        if (matrixFlag == 1)
+                        {
+                            var m = new double[16];
+                            for (int i = 0; i < m.Length; i++) m[i] = Float();
+                            if (m[3] != 0 || m[7] != 0 || m[11] != 0 || m[15] != 1)
+                                throw new NotSupportedException("CFV3 使用非仿射场景变换（offset=" + start + "）");
+                            var values = new[] { m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10], m[12], m[13], m[14] };
+                            if (!values.SequenceEqual(Identity)) node.Local = new Frame12(values);
+                        }
+                        else if (matrixFlag != 0) throw new NotSupportedException("CFV3 场景变换标志未适配：" + matrixFlag +
+                            "（offset=" + start + "）");
+                    }
                 }
-                else throw new NotSupportedException("CFV3 场景节点未适配：" + tag.ToString("X2"));
+                else throw new NotSupportedException("CFV3 场景节点未适配：" + tag.ToString("X2") +
+                    "（offset=" + start + "）");
                 int count = Count();
                 Need(count);
                 for (int i = 0; i < count; i++)
@@ -189,11 +239,47 @@ namespace TxTools.CatiaPartTree.Conversion
                     }
                     node.Children.Add(child);
                 }
+                if (restoreEnd >= 0)
+                {
+                    if (_position > _end)
+                        throw new InvalidDataException("CFV3 A3 子场景长度溢出（offset=" + start + "）");
+                    _position = _end;
+                    _end = restoreEnd;
+                }
                 return node;
+            }
+
+            private void ReadSceneMaterial(bool hasAppearanceSlot)
+            {
+                // Scene appearance precedes the children. JT currently stores face RGB,
+                // so consume the environment image and its sampling parameters without applying them.
+                if (hasAppearanceSlot) Count();
+                if (Byte() != 1) throw new NotSupportedException("CFV3 场景材质头未适配");
+                Skip(15 * sizeof(float));
+                if (Byte() != 1 || Byte() != 1)
+                    throw new NotSupportedException("CFV3 场景环境贴图标志未适配");
+                Count(); // Environment map reference.
+                Need(1);
+                if (_data[_position] == 0xff)
+                {
+                    // The image is embedded on its first use. Later slots may reference it.
+                    Skip(6);
+                    int width = Count(), height = Count(), bytes = Count();
+                    if (width == 0 || height == 0 || bytes % 4 != 0 || (long)width * height != bytes / 4)
+                        throw new InvalidDataException("CFV3 场景环境贴图长度无效");
+                    if (Byte() != 3 || Byte() != 1) throw new NotSupportedException("CFV3 场景环境贴图布局未适配");
+                    Skip(2 * sizeof(float));
+                    Skip(bytes);
+                    Skip(Count()); // Environment image name.
+                }
+                if (Byte() != 0 || Byte() != 0 || Byte() != 1 || Byte() != 5 || Byte() != 3 || Byte() != 1 || Byte() != 1)
+                    throw new NotSupportedException("CFV3 场景环境贴图参数未适配");
+                Skip(19 * sizeof(float) + 3);
             }
 
             private MeshShape Leaf(int start)
             {
+                _leafCount++;
                 if (Byte() != 0xff) throw new NotSupportedException("CFV3 网格叶头未适配");
                 int end = checked(start + 1 + (int)UInt32());
                 int sceneEnd = _end;
@@ -277,6 +363,7 @@ namespace TxTools.CatiaPartTree.Conversion
                     groups.Add(faces);
                     domainNormals.Add(normal);
                 }
+                _faceCount += groups.Sum(faces => faces.Count);
                 var vertices = new List<double[]>();
                 var normals = new List<double[]>();
                 var triangles = new List<int[]>();
@@ -284,11 +371,17 @@ namespace TxTools.CatiaPartTree.Conversion
                 var byCorner = new Dictionary<(int Point, int NormalDomain), int>();
                 for (int i = 0; i < groups.Count; i++)
                 {
+                    int styleStart = _position;
                     byte style = Byte();
-                    if ((style != 0x20 && style != 0x30 && style != 0xb0) || Byte() != 4 || Byte() != 4 || Byte() != 255)
-                        throw new NotSupportedException("CFV3 面颜色布局未适配：" + style.ToString("X2"));
+                    if ((style != 0x20 && style != 0x30 && style != 0xa0 && style != 0xb0) ||
+                        Byte() != 4 || Byte() != 4 || Byte() != 255)
+                        throw new NotSupportedException("CFV3 面颜色布局未适配：" + style.ToString("X2") +
+                            "（offset=" + styleStart + "）");
                     byte opacity = Byte();
-                    if (style != 0xb0 && opacity != 255) throw new NotSupportedException("CFV3 面颜色的透明度布局未适配");
+                    // 0xA0 repeats the same record layout with a non-opaque value;
+                    // the JT mesh stores RGB only, so opacity is ignored like 0xB0.
+                    if (style != 0xa0 && style != 0xb0 && opacity != 255)
+                        throw new NotSupportedException("CFV3 面颜色的透明度布局未适配");
                     byte b = Byte(), g = Byte(), r = Byte();
                     var color = new[] { r, g, b };
                     var normal = domainNormals[i];
@@ -321,8 +414,12 @@ namespace TxTools.CatiaPartTree.Conversion
                 }
                 _end = sceneEnd;
                 Count(); // SurfacicReps pick offset.
-                return triangles.Count == 0 ? null : new MeshShape { instanceId = "leaf", vertices = vertices.ToArray(),
+                if (triangles.Count == 0) { _emptyLeafCount++; return null; }
+                var leaf = new MeshShape { instanceId = "leaf", vertices = vertices.ToArray(),
                     triangles = triangles.ToArray(), rgb = colors.ToArray(), normals = normals.ToArray() };
+                var filtered = leaf.RemoveDegenerateTriangles();
+                if (filtered == null) _emptyLeafCount++;
+                return filtered;
             }
 
             private void ReadLineDomains(int vertexCount, int indexWidth)
@@ -336,7 +433,16 @@ namespace TxTools.CatiaPartTree.Conversion
                     int lines = Count();
                     for (int i = 0; i < lines; i++)
                     {
-                        if (Byte() != 2) throw new NotSupportedException("CFV3 轮廓线类型未适配");
+                        byte kind = Byte();
+                        if (kind == 3)
+                        {
+                            int points = Count();
+                            if (Byte() != 1) throw new NotSupportedException("CFV3 轮廓线坐标布局未适配（offset=" + (_position - 1) + "）");
+                            Skip(checked(points * 3 * sizeof(float)));
+                            continue;
+                        }
+                        if (kind != 2) throw new NotSupportedException("CFV3 轮廓线类型未适配：" + kind +
+                            "（offset=" + (_position - 1) + "）");
                         int count = Count();
                         if ((long)count * indexWidth > (_end - _position) * 8L + _bitsLeft)
                             throw new InvalidDataException("CFV3 轮廓线索引数据截断");
@@ -346,8 +452,13 @@ namespace TxTools.CatiaPartTree.Conversion
                                 throw new InvalidDataException("CFV3 轮廓线索引超出顶点范围");
                         }
                     }
-                    if (Byte() != 0x10 || Byte() != 0x24 || Byte() != 4)
-                        throw new NotSupportedException("CFV3 轮廓线样式未适配");
+                    int styleStart = _position;
+                    byte styleTag = Byte(), style = Byte(), attributes = Byte();
+                    // These line styles share the same five-byte payload.
+                    bool supported = ((style == 0x24 || style == 0x94) && attributes == 4) ||
+                        (style == 0x74 && attributes == 0x0b) || (style == 0x14 && attributes == 0x10);
+                    if (styleTag != 0x10 || !supported)
+                        throw new NotSupportedException("CFV3 轮廓线样式未适配（offset=" + styleStart + "）");
                     Skip(5); // Line style payload.
                 }
             }

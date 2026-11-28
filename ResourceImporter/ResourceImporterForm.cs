@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 using Tecnomatix.Engineering.Ui;
@@ -13,6 +14,7 @@ namespace TxTools.ResourceImporter
 {
     internal sealed class ResourceImporterForm : TxForm
     {
+        private const int EmSetCueBanner = 0x1501;
         private static readonly Size Design = new Size(760, 610);
         private const string QueueDragFormat = "TxTools.ResourceImporter.Queue";
         private readonly ResourceImportSession _session;
@@ -27,6 +29,19 @@ namespace TxTools.ResourceImporter
             Dock = DockStyle.Fill, HideSelection = false, ShowNodeToolTips = true, AllowDrop = true
         };
         private readonly Button _add, _prototype, _remove, _assign, _import, _cancel;
+        private readonly TextBox _folderSearch;
+        private readonly ListBox _searchResults = new ListBox
+        {
+            BorderStyle = BorderStyle.FixedSingle, IntegralHeight = false, TabStop = true,
+            AccessibleName = "目录检索结果"
+        };
+        private readonly System.Windows.Forms.Timer _searchTimer = new System.Windows.Forms.Timer { Interval = 250 };
+        private readonly ToolStripDropDown _searchPopup = new ToolStripDropDown
+        {
+            AutoSize = false, Padding = Padding.Empty, Margin = Padding.Empty
+        };
+        private readonly ToolStripControlHost _searchHost;
+        private List<ResourceFolderMatch> _folderMatches = new List<ResourceFolderMatch>();
         private readonly CheckBox _skipHidden = FormUiKit.MkCheckBox("跳过隐藏几何体（3DXML / STEP）");
         private readonly Label _status = new Label { AutoSize = true, Anchor = AnchorStyles.Left };
         private readonly ProgressBar _progressBar = new ProgressBar
@@ -52,9 +67,28 @@ namespace TxTools.ResourceImporter
             _assign = FormUiKit.MkFuncButton("分配到所选目录", FormUiKit.Theme.BtnSecondary);
             _import = FormUiKit.MkFuncButton("导入根树", FormUiKit.Theme.BtnPrimary);
             _cancel = FormUiKit.MkFuncButton("取消导入", FormUiKit.Theme.BtnMuted);
+            _folderSearch = FormUiKit.MkTextBox("", 140);
+            _folderSearch.Dock = DockStyle.Fill;
+            _folderSearch.AccessibleName = "检索目录";
+            _folderSearch.Margin = new Padding(6, 2, 0, 2);
+            _folderSearch.HandleCreated += (s, e) => SetCueBanner();
+            _searchHost = new ToolStripControlHost(_searchResults)
+            {
+                AutoSize = false, Margin = Padding.Empty, Padding = Padding.Empty
+            };
+            _searchPopup.Items.Add(_searchHost);
             _files.Columns.Add("文件名称");
             _files.Columns.Add("设备原型");
             _files.SmallImageList = _images;
+            var assignRow = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 2, RowCount = 1, Margin = Padding.Empty
+            };
+            assignRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            assignRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            assignRow.Controls.Add(_assign, 0, 0);
+            assignRow.Controls.Add(_folderSearch, 1, 0);
             var frame = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 4, Padding = new Padding(10) };
             frame.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
             frame.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
@@ -62,10 +96,11 @@ namespace TxTools.ResourceImporter
             frame.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             frame.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             frame.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            frame.Controls.Add(Pane("待导入文件", "添加或拖入文件，从列表空白处拖动可框选。", _files,
-                _add, _prototype, _remove), 0, 0);
-            frame.Controls.Add(Pane("系统库目录", "拖入左侧所选文件，指定 COJT 目录。", _folders,
-                _assign), 1, 0);
+            frame.Controls.Add(Pane("待导入文件", "添加文件或拖入下方列表，从列表空白处拖动可框选。", _files,
+                ButtonRow(_add, _prototype, _remove)), 0, 0);
+            FileDropInput.Wire(() => _active == null, AddFiles, message => SetStatus(message), _add, _files);
+            frame.Controls.Add(Pane("系统库目录", "拖入所选文件指定目录；输入目录名可检索。", _folders,
+                assignRow), 1, 0);
             var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true };
             footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -82,7 +117,7 @@ namespace TxTools.ResourceImporter
             SetStatus();
         }
 
-        private static Control Pane(string title, string hint, Control content, params Button[] buttons)
+        private static Control Pane(string title, string hint, Control content, Control tools)
         {
             var box = new GroupBox { Text = title, Dock = DockStyle.Fill, Padding = new Padding(8) };
             var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1 };
@@ -90,17 +125,175 @@ namespace TxTools.ResourceImporter
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             layout.Controls.Add(new Label { Text = hint, AutoSize = true, Margin = new Padding(3, 4, 3, 3) }, 0, 0);
-            layout.Controls.Add(ButtonRow(buttons), 0, 1);
+            layout.Controls.Add(tools, 0, 1);
             layout.Controls.Add(content, 0, 2);
             box.Controls.Add(layout);
             return box;
         }
 
-        private static FlowLayoutPanel ButtonRow(params Button[] buttons)
+        private static FlowLayoutPanel ButtonRow(params Control[] tools)
         {
             var row = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false };
-            row.Controls.AddRange(buttons);
+            row.Controls.AddRange(tools);
             return row;
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr SendMessage(IntPtr handle, int message, IntPtr parameter, string text);
+
+        private void SetCueBanner()
+        {
+            if (_folderSearch.IsHandleCreated)
+                SendMessage(_folderSearch.Handle, EmSetCueBanner, (IntPtr)0, "检索目录…");
+        }
+
+        private void ScheduleFolderSearch()
+        {
+            if (_active != null) return;
+            _searchTimer.Stop();
+            _searchTimer.Start();
+        }
+
+        private void RunFolderSearch()
+        {
+            _searchTimer.Stop();
+            if (_active != null)
+            {
+                _searchPopup.Close();
+                return;
+            }
+            if (!_folderSearch.Focused && !_searchResults.Focused)
+            {
+                _searchPopup.Close();
+                return;
+            }
+            string query = _folderSearch.Text.Trim();
+            if (query.Length == 0)
+            {
+                _folderMatches.Clear();
+                _searchPopup.Close();
+                return;
+            }
+            int total;
+            _folderMatches = ResourceFolderSearch.Search(_session.Library, query, 40, out total);
+            _searchResults.BeginUpdate();
+            try
+            {
+                _searchResults.Items.Clear();
+                _searchResults.Font = _folderSearch.Font;
+                foreach (var match in _folderMatches) _searchResults.Items.Add(match.Relative);
+            }
+            finally { _searchResults.EndUpdate(); }
+            if (_folderMatches.Count == 0)
+            {
+                _searchPopup.Close();
+                SetStatus("未找到匹配目录：" + query);
+                return;
+            }
+            ShowFolderMatches();
+            SetStatus("匹配 " + total + " 个目录，已显示前 " + _folderMatches.Count + " 个");
+        }
+
+        private void ShowFolderMatches()
+        {
+            int rows = Math.Min(8, Math.Max(5, _folderMatches.Count));
+            int width = Math.Max(220, _folderSearch.Width);
+            int height = Math.Max(1, _searchResults.ItemHeight) * rows + 2;
+            _searchResults.Size = new Size(width, height);
+            _searchHost.Size = new Size(width, height);
+            _searchPopup.Size = new Size(width, height);
+            if (!_searchPopup.Visible)
+                _searchPopup.Show(_folderSearch, new Point(0, _folderSearch.Height));
+        }
+
+        private void SearchKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Down)
+            {
+                if (!_searchPopup.Visible || _searchTimer.Enabled) RunFolderSearch();
+                if (_folderMatches.Count == 0) return;
+                ShowFolderMatches();
+                _searchResults.Focus();
+                if (_searchResults.SelectedIndex < 0) _searchResults.SelectedIndex = 0;
+                e.Handled = e.SuppressKeyPress = true;
+                return;
+            }
+            if (e.KeyCode == Keys.Enter)
+            {
+                RunFolderSearch();
+                if (_folderMatches.Count != 0)
+                    ChooseFolderMatch(_searchResults.SelectedIndex >= 0 ? _searchResults.SelectedIndex : 0);
+                e.Handled = e.SuppressKeyPress = true;
+            }
+            else if (e.KeyCode == Keys.Escape)
+            {
+                if (_searchPopup.Visible) _searchPopup.Close();
+                else _folderSearch.Clear();
+                e.Handled = e.SuppressKeyPress = true;
+            }
+        }
+
+        private void SearchResultsKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter && _searchResults.SelectedIndex >= 0)
+            {
+                ChooseFolderMatch(_searchResults.SelectedIndex);
+                e.Handled = e.SuppressKeyPress = true;
+            }
+            else if (e.KeyCode == Keys.Escape)
+            {
+                _searchPopup.Close();
+                _folderSearch.Focus();
+                e.Handled = e.SuppressKeyPress = true;
+            }
+        }
+
+        private void ChooseFolderMatch(int index)
+        {
+            if (index < 0 || index >= _folderMatches.Count) return;
+            var match = _folderMatches[index];
+            var node = CojtFolderTree.Find(_folders.Nodes[0], match.Path, SetStatus);
+            _searchPopup.Close();
+            if (node == null)
+            {
+                SetStatus("目录未在系统库树中显示：" + match.Relative);
+                return;
+            }
+            SelectFolderNode(node);
+            SetStatus("已定位目录：" + match.Relative);
+        }
+
+        private void SelectFolderNode(TreeNode node)
+        {
+            for (var parent = node.Parent; parent != null; parent = parent.Parent) parent.Expand();
+            _folders.SelectedNode = node;
+            node.EnsureVisible();
+            node.Expand();
+        }
+
+        private void LocateFolderForPrototype(ResourcePrototype prototype)
+        {
+            _searchTimer.Stop();
+            _searchPopup.Close();
+            int total;
+            string query = ResourceFolderSearch.PrototypeQuery((prototype.Label ?? "") + " " + (prototype.Type ?? ""));
+            var matches = ResourceFolderSearch.Search(_session.Library, query, 200, out total);
+            var best = matches.FirstOrDefault();
+            if (best == null || best.Score < ResourceFolderSearch.AutoLocateScore)
+            {
+                SetStatus("已设原型 " + prototype.Label + "，系统库中没有匹配目录");
+                return;
+            }
+            var node = CojtFolderTree.Find(_folders.Nodes[0], best.Path, SetStatus);
+            if (node == null)
+            {
+                SetStatus("已设原型 " + prototype.Label + "，匹配目录未在树中显示：" + best.Relative);
+                return;
+            }
+            SelectFolderNode(node);
+            int same = matches.Count(match => match.Score == best.Score);
+            SetStatus("已按原型 " + prototype.Label + " 定位目录：" + best.Relative +
+                (same > 1 ? "（" + same + " 个匹配，已选第一个）" : ""));
         }
 
         protected override void OnLoad(EventArgs e)
@@ -148,6 +341,16 @@ namespace TxTools.ResourceImporter
             };
             _remove.Click += (s, e) => RemoveSelected();
             _assign.Click += (s, e) => Assign(SelectedItems(), _folders.SelectedNode);
+            _folderSearch.TextChanged += (s, e) => ScheduleFolderSearch();
+            _folderSearch.KeyDown += SearchKeyDown;
+            _searchTimer.Tick += (s, e) => RunFolderSearch();
+            _searchResults.KeyDown += SearchResultsKeyDown;
+            _searchResults.MouseClick += (s, e) =>
+            {
+                int index = _searchResults.IndexFromPoint(e.Location);
+                if (index >= 0) ChooseFolderMatch(index);
+            };
+            _searchPopup.Closed += (s, e) => _searchTimer.Stop();
             _import.Click += ImportClick;
             _cancel.Click += (s, e) =>
             {
@@ -178,12 +381,6 @@ namespace TxTools.ResourceImporter
                 var row = _files.GetItemAt(e.X, e.Y);
                 if (row != null && PrototypeBounds(row.SubItems[1].Bounds).Contains(e.Location)) OpenRowPrototype(row);
             };
-            _files.DragEnter += FileDragOver;
-            _files.DragOver += FileDragOver;
-            _files.DragDrop += (s, e) =>
-            {
-                if (_active == null && e.Data.GetData(DataFormats.FileDrop) is string[] files) AddFiles(files);
-            };
             _files.ItemDrag += (s, e) =>
             {
                 var items = SelectedItems();
@@ -202,19 +399,9 @@ namespace TxTools.ResourceImporter
                 if (_active != null) return;
                 if (_dragItems != null && e.Data.GetDataPresent(QueueDragFormat))
                     Assign(_dragItems, CojtFolderTree.At(_folders, e));
-                else if (e.Data.GetData(DataFormats.FileDrop) is string[] paths && paths.Length == 1 && Directory.Exists(paths[0]))
-                {
-                    try
-                    {
-                        string folder = Path.GetFullPath(paths[0]);
-                        _session.CheckFolder(folder);
-                        var node = CojtFolderTree.Find(_folders.Nodes[0], folder, SetStatus);
-                        if (node == null) throw new IOException("目录未在系统库树中显示：" + folder);
-                        Assign(SelectedItems(), node);
-                    }
-                    catch (Exception error) { SetStatus(error.Message); }
-                }
             };
+            FileDropInput.Wire(() => _active == null && SelectedItems().Length > 0, AssignDroppedFolder,
+                message => SetStatus(message), _folders);
         }
 
         private Rectangle PrototypeBounds(Rectangle cell)
@@ -288,14 +475,7 @@ namespace TxTools.ResourceImporter
                 if (picker.ShowDialog(this) == DialogResult.OK) AddFiles(picker.FileNames);
         }
 
-        private void FileDragOver(object sender, DragEventArgs e)
-        {
-            e.Effect = _active == null && e.Data.GetData(DataFormats.FileDrop) is string[] files &&
-                files.Any(file => File.Exists(file) && ResourceConversion.Supports(file))
-                ? DragDropEffects.Copy : DragDropEffects.None;
-        }
-
-        private void AddFiles(IEnumerable<string> paths)
+        private bool AddFiles(IEnumerable<string> paths)
         {
             var existing = new HashSet<string>(Rows().Select(row => ((ResourceImportItem)row.Tag).File), StringComparer.OrdinalIgnoreCase);
             int added = 0, ignored = 0;
@@ -304,8 +484,13 @@ namespace TxTools.ResourceImporter
             {
                 foreach (string file in paths)
                 {
+                    if (!File.Exists(file) || !ResourceConversion.Supports(file))
+                    {
+                        ignored++;
+                        continue;
+                    }
                     string path = Path.GetFullPath(file);
-                    if (!File.Exists(path) || !ResourceConversion.Supports(path) || !existing.Add(path))
+                    if (!existing.Add(path))
                     {
                         ignored++;
                         continue;
@@ -319,6 +504,7 @@ namespace TxTools.ResourceImporter
             }
             finally { _files.EndUpdate(); }
             SetStatus("已添加 " + added + " 个文件" + (ignored == 0 ? "" : "，跳过 " + ignored + " 个重复或不支持的项目"));
+            return added > 0;
         }
 
         private void ApplyPrototype(ResourcePrototype prototype)
@@ -333,7 +519,8 @@ namespace TxTools.ResourceImporter
                 item.Error = null;
                 RefreshRow(row);
             }
-            SetStatus();
+            if (rows.Length != 0) LocateFolderForPrototype(prototype);
+            else SetStatus();
         }
 
         private void RemoveSelected()
@@ -378,10 +565,21 @@ namespace TxTools.ResourceImporter
                 e.Effect = DragDropEffects.Copy;
                 _folders.SelectedNode = node;
             }
-            else if (e.Data.GetData(DataFormats.FileDrop) is string[] paths && paths.Length == 1 &&
-                Directory.Exists(paths[0]) && SelectedItems().Length > 0 &&
-                (ResourceImportSession.SamePath(paths[0], _session.Library) || CojtTransfer.RelativeToRoot(paths[0], _session.Library) != null))
-                e.Effect = DragDropEffects.Copy;
+        }
+
+        private bool AssignDroppedFolder(string[] paths)
+        {
+            if (paths.Length != 1 || !Directory.Exists(paths[0]))
+            {
+                SetStatus("请拖入系统库中的一个文件夹。模型文件请拖到左侧待导入文件区域。");
+                return false;
+            }
+            string folder = Path.GetFullPath(paths[0]);
+            _session.CheckFolder(folder);
+            var node = CojtFolderTree.Find(_folders.Nodes[0], folder, SetStatus);
+            if (node == null) throw new IOException("目录未在系统库树中显示：" + folder);
+            Assign(SelectedItems(), node);
+            return true;
         }
 
         private void RemovePlacement(ResourceImportItem item)
@@ -457,6 +655,8 @@ namespace TxTools.ResourceImporter
             _skipHidden.Enabled = idle;
             _remove.Enabled = _prototype.Enabled = idle && selected.Length > 0;
             _assign.Enabled = idle && selected.Length > 0 && _folders.SelectedNode?.Tag is string;
+            _folderSearch.Enabled = idle;
+            if (!idle) _searchPopup.Close();
             _import.Enabled = idle && Rows().Any(row => !((ResourceImportItem)row.Tag).SceneWriteAttempted);
             bool converting = !idle && !_applyingBatch;
             _cancel.Visible = converting;
@@ -545,6 +745,9 @@ namespace TxTools.ResourceImporter
                 foreach (ToolStripItem item in _prototypeMenu.Items)
                     item.Image?.Dispose();
                 _prototypeMenu.Dispose();
+                _searchTimer.Dispose();
+                _searchPopup.Dispose();
+                if (!_searchResults.IsDisposed) _searchResults.Dispose();
                 _images.Dispose();
             }
             base.Dispose(disposing);

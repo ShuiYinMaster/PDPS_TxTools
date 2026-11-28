@@ -298,75 +298,167 @@ namespace TxTools.CatiaPartTree.Conversion
 
         private static SourceMeshScene ReadAssembly(string manifest, string source, string digest, bool skipHidden)
         {
+            AssemblyStructure structure;
+            using (var stream = File.OpenRead(manifest)) structure = AssemblyManifest.Read(stream,
+                Path.GetExtension(source).Equals(".catproduct", StringComparison.OrdinalIgnoreCase));
+            // Shared definitions plus placement frames keep repeated geometry from
+            // being copied per occurrence. Non-rigid frames need baked geometry.
+            if (structure.Root != null && structure.Parts.All(record => IsRigid(record.Frame)))
+                return ReadInstancedAssembly(structure, source, digest, skipHidden);
+            return ReadBakedAssembly(structure, source, digest, skipHidden);
+        }
+
+        private static bool IsRigid(double[] frame)
+        {
+            if (frame == null || frame.Length != 12 || frame.Any(value => double.IsNaN(value) || double.IsInfinity(value)))
+                return false;
+            double Dot(int first, int second) => frame[first] * frame[second] + frame[first + 1] * frame[second + 1] +
+                frame[first + 2] * frame[second + 2];
+            double unit = 1e-5;
+            return Math.Abs(Dot(0, 0) - 1) <= unit && Math.Abs(Dot(3, 3) - 1) <= unit &&
+                Math.Abs(Dot(6, 6) - 1) <= unit && Math.Abs(Dot(0, 3)) <= unit &&
+                Math.Abs(Dot(0, 6)) <= unit && Math.Abs(Dot(3, 6)) <= unit;
+        }
+
+        private static SourceMeshScene ReadInstancedAssembly(AssemblyStructure structure, string source, string digest, bool skipHidden)
+        {
             string extension = Path.GetExtension(source).ToLowerInvariant();
             bool step = extension == ".step" || extension == ".stp";
             bool nativeProduct = extension == ".catproduct";
             bool threeDXml = extension == ".3dxml";
-            var definitions = new Dictionary<string, MeshShape[]>(StringComparer.OrdinalIgnoreCase);
+            var records = structure.Parts;
+            var definitions = new List<MeshShape[]>();
+            var definitionIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var skippedRepresentations = new Dictionary<string, (string Name, int Count, string Reason)>(StringComparer.OrdinalIgnoreCase);
+            var instances = new AssemblyInstance[records.Length];
             var shapes = new List<MeshShape>();
+            string warningPrefix = step ? "STEP-WARNING " : threeDXml ? "3DXML-WARNING " : "JT-WARNING ";
             long removed = 0;
-            using (var reader = new BinaryReader(File.OpenRead(manifest)))
+            for (int recordIndex = 0; recordIndex < records.Length; recordIndex++)
             {
-                int count = reader.ReadInt32();
-                if (count < 1 || count > 100000) throw new InvalidDataException("装配几何实例数无效。");
-                for (int i = 0; i < count; i++)
+                var record = records[recordIndex];
+                string path = record.GeometryPath, name = record.Name;
+                if (!definitionIndex.TryGetValue(path, out int definition))
                 {
-                    string path = reader.ReadString();
-                    string name = reader.ReadString();
-                    var frame = new double[12];
-                    for (int k = 0; k < frame.Length; k++) frame[k] = reader.ReadDouble();
-                    string partDigest = nativeProduct ? reader.ReadString() : null;
-                    if (!definitions.TryGetValue(path, out var meshes))
+                    MeshShape[] meshes;
+                    if (nativeProduct)
                     {
-                        if (nativeProduct)
-                            meshes = SourceMeshScene.ReadPart(path).shapes;
-                        else if (step)
-                            meshes = StepMeshReader.Read(path, name, source, digest).shapes;
-                        else
+                        meshes = SourceMeshScene.ReadPart(path).shapes;
+                        if (meshes.Length != 0 && meshes[0].sourceSha256 != record.Digest)
+                            throw new IOException("CATPart 文件与装配索引不一致：" + path);
+                    }
+                    else if (step)
+                        meshes = StepMeshReader.Read(path, name, source, digest).shapes;
+                    else
+                    {
+                        try { meshes = ReadRepresentation(path, name, source, digest, skipHidden); }
+                        catch (Exception error) when (threeDXml && (error is InvalidDataException ||
+                            error is NotSupportedException || error is InvalidOperationException ||
+                            error is XmlException || error is FormatException || error is OverflowException))
                         {
-                            try { meshes = ReadRepresentation(path, name, source, digest, skipHidden); }
-                            catch (Exception error) when (threeDXml && (error is InvalidDataException ||
-                                error is NotSupportedException || error is InvalidOperationException ||
-                                error is XmlException || error is FormatException || error is OverflowException))
-                            {
-                                meshes = Array.Empty<MeshShape>();
-                                skippedRepresentations.Add(path, (name, 0, error.Message.Replace('\r', ' ').Replace('\n', ' ')));
-                            }
+                            meshes = Array.Empty<MeshShape>();
+                            skippedRepresentations.Add(path, (name, 0, error.Message.Replace('\r', ' ').Replace('\n', ' ')));
                         }
-                        definitions.Add(path, meshes);
                     }
-                    if (skippedRepresentations.TryGetValue(path, out var skipped))
-                    {
-                        skippedRepresentations[path] = (skipped.Name, skipped.Count + 1, skipped.Reason);
-                        continue;
-                    }
-                    if (nativeProduct && meshes[0].sourceSha256 != partDigest)
-                        throw new IOException("CATPart 文件与装配索引不一致：" + path);
-                    var transform = new Frame12(frame);
+                    var cleaned = new List<MeshShape>(meshes.Length);
+                    int meshIndex = 0;
                     foreach (var mesh in meshes)
                     {
-                        int collapsed = 0;
-                        var instance = step ? mesh.BakeStepInstanceForJt(transform, out collapsed) : mesh.Bake(transform);
-                        removed += collapsed;
-                        if (instance == null)
-                        {
-                            Console.WriteLine("STEP-WARNING 已跳过 " + name + "（1 个实例）：装配坐标中的三角面全部退化。");
-                            continue;
-                        }
-                        instance.name = name;
-                        instance.instanceId = "source/" + (shapes.Count + 1);
-                        shapes.Add(instance);
+                        var filtered = mesh.RemoveDegenerateTriangles();
+                        removed += mesh.triangles.Length - (filtered == null ? 0 : filtered.triangles.Length);
+                        if (filtered == null) continue;
+                        filtered.instanceId = "definition/" + (definitions.Count + 1) + "/" + (++meshIndex);
+                        cleaned.Add(filtered);
+                        shapes.Add(filtered);
                     }
+                    definition = definitions.Count;
+                    definitions.Add(cleaned.ToArray());
+                    definitionIndex.Add(path, definition);
                 }
+                if (skippedRepresentations.TryGetValue(path, out var skipped))
+                    skippedRepresentations[path] = (skipped.Name, skipped.Count + 1, skipped.Reason);
+                instances[recordIndex] = new AssemblyInstance { Definition = definition, Name = name, Frame = record.Frame };
             }
             if (SourceDigest.Hash(source) != digest) throw new IOException("装配源文件在转换期间发生变化。");
             foreach (var skipped in skippedRepresentations.Values)
                 Console.WriteLine("3DXML-WARNING 已跳过 " + skipped.Name + "（" + skipped.Count + " 个实例）：" + skipped.Reason);
             if (shapes.Count == 0) throw new InvalidDataException("装配没有可写入 JT 的面几何。");
-            if (removed != 0) Console.WriteLine("STEP-WARNING 已清理 " + removed + " 个在装配坐标或 JT 精度下退化的三角面。");
+            if (removed != 0) Console.WriteLine(warningPrefix + "已清理 " + removed + " 个在源网格或 JT 精度下退化的三角面。");
             return new SourceMeshScene { name = Path.GetFileNameWithoutExtension(source), sourceFile = source,
-                sourceSha256 = digest, shapes = shapes.ToArray() };
+                sourceSha256 = digest, shapes = shapes.ToArray(), structure = structure.Root,
+                definitions = definitions.ToArray(), instances = instances };
+        }
+
+        private static SourceMeshScene ReadBakedAssembly(AssemblyStructure structure, string source, string digest, bool skipHidden)
+        {
+            string extension = Path.GetExtension(source).ToLowerInvariant();
+            bool step = extension == ".step" || extension == ".stp";
+            bool nativeProduct = extension == ".catproduct";
+            bool threeDXml = extension == ".3dxml";
+            var records = structure.Parts;
+            var definitions = new Dictionary<string, MeshShape[]>(StringComparer.OrdinalIgnoreCase);
+            var skippedRepresentations = new Dictionary<string, (string Name, int Count, string Reason)>(StringComparer.OrdinalIgnoreCase);
+            var shapes = new List<MeshShape>();
+            var partShapes = new List<MeshShape[]>(records.Length);
+            string warningPrefix = step ? "STEP-WARNING " : threeDXml ? "3DXML-WARNING " : "JT-WARNING ";
+            long removed = 0;
+            foreach (var record in records)
+            {
+                string path = record.GeometryPath, name = record.Name;
+                string partDigest = nativeProduct ? record.Digest : null;
+                if (!definitions.TryGetValue(path, out var meshes))
+                {
+                    if (nativeProduct)
+                        meshes = SourceMeshScene.ReadPart(path).shapes;
+                    else if (step)
+                        meshes = StepMeshReader.Read(path, name, source, digest).shapes;
+                    else
+                    {
+                        try { meshes = ReadRepresentation(path, name, source, digest, skipHidden); }
+                        catch (Exception error) when (threeDXml && (error is InvalidDataException ||
+                            error is NotSupportedException || error is InvalidOperationException ||
+                            error is XmlException || error is FormatException || error is OverflowException))
+                        {
+                            meshes = Array.Empty<MeshShape>();
+                            skippedRepresentations.Add(path, (name, 0, error.Message.Replace('\r', ' ').Replace('\n', ' ')));
+                        }
+                    }
+                    definitions.Add(path, meshes);
+                }
+                var baked = new List<MeshShape>();
+                if (skippedRepresentations.TryGetValue(path, out var skipped))
+                {
+                    skippedRepresentations[path] = (skipped.Name, skipped.Count + 1, skipped.Reason);
+                    partShapes.Add(baked.ToArray());
+                    continue;
+                }
+                if (nativeProduct && meshes[0].sourceSha256 != partDigest)
+                    throw new IOException("CATPart 文件与装配索引不一致：" + path);
+                var transform = new Frame12(record.Frame);
+                foreach (var mesh in meshes)
+                {
+                    int collapsed = 0;
+                    var instance = mesh.BakeInstanceForJt(transform, out collapsed);
+                    removed += collapsed;
+                    if (instance == null)
+                    {
+                        Console.WriteLine(warningPrefix + "已跳过 " + name + "（1 个实例）：装配坐标中的三角面全部退化。");
+                        continue;
+                    }
+                    instance.name = name;
+                    instance.instanceId = "source/" + (shapes.Count + 1);
+                    shapes.Add(instance);
+                    baked.Add(instance);
+                }
+                partShapes.Add(baked.ToArray());
+            }
+            if (SourceDigest.Hash(source) != digest) throw new IOException("装配源文件在转换期间发生变化。");
+            foreach (var skipped in skippedRepresentations.Values)
+                Console.WriteLine("3DXML-WARNING 已跳过 " + skipped.Name + "（" + skipped.Count + " 个实例）：" + skipped.Reason);
+            if (shapes.Count == 0) throw new InvalidDataException("装配没有可写入 JT 的面几何。");
+            if (removed != 0) Console.WriteLine(warningPrefix + "已清理 " + removed + " 个在装配坐标或 JT 精度下退化的三角面。");
+            return new SourceMeshScene { name = Path.GetFileNameWithoutExtension(source), sourceFile = source,
+                sourceSha256 = digest, shapes = shapes.ToArray(), structure = structure.Root, partShapes = partShapes.ToArray() };
         }
 
         private static MeshShape[] ReadRepresentation(string path, string name, string source, string digest, bool skipHidden)

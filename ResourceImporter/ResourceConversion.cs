@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TxTools.Agent.Core;
+using TxTools.CatiaPartTree.Conversion;
 using TxTools.CatiaPartTree.Core;
 using TxTools.Common.TreeWorkflow;
 
@@ -212,20 +213,44 @@ namespace TxTools.ResourceImporter
             if (parts.Length == 0)
                 throw new InvalidDataException(string.Join(Environment.NewLine,
                     new[] { "装配没有可导入的面几何。" }.Concat(warnings)));
-            string manifest = Path.Combine(workspace, "assembly.bin");
-            using (var writer = new BinaryWriter(File.Create(manifest)))
+            var records = new List<AssemblyPartRecord>(parts.Length);
+            var partIndex = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var pair in parts)
             {
-                writer.Write(parts.Length);
-                foreach (var pair in parts)
+                cancel.ThrowIfCancellationRequested();
+                var part = pair.Value;
+                partIndex.Add(pair.Key, records.Count);
+                records.Add(new AssemblyPartRecord
                 {
-                    cancel.ThrowIfCancellationRequested();
-                    var part = pair.Value;
-                    writer.Write(definitions[GeometryKey(part)]);
-                    writer.Write(InstanceName(nodes[pair.Key]));
-                    foreach (double value in part.Frame) writer.Write(value);
-                }
+                    GeometryPath = definitions[GeometryKey(part)],
+                    Name = InstanceName(nodes[pair.Key]),
+                    Frame = part.Frame
+                });
             }
+            var structure = new AssemblyStructureNode { Name = Path.GetFileNameWithoutExtension(file) };
+            structure.Add(MapStructure(source.Root, partIndex));
+            if (structure.Children.Count == 0)
+                throw new InvalidDataException("装配层级没有可导入的几何。");
+            string manifest = Path.Combine(workspace, "assembly.bin");
+            using (var stream = File.Create(manifest))
+                AssemblyManifest.Write(stream, records, structure, false);
             return manifest;
+        }
+
+        // Convert the source product tree to the output tree and drop branches
+        // whose geometry was skipped. Geometry owned by an assembly becomes a
+        // part node beneath it, matching ThreeDXmlSource's classification.
+        private static AssemblyStructureNode MapStructure(StructureNode node, IDictionary<string, int> partIndex)
+        {
+            if (!node.IsContainer)
+                return partIndex.TryGetValue(node.Key, out int index)
+                    ? new AssemblyStructureNode { Name = InstanceName(node), IsPart = true, PartIndex = index }
+                    : null;
+            var container = new AssemblyStructureNode { Name = InstanceName(node) };
+            if (partIndex.TryGetValue(node.Key, out int own))
+                container.Add(new AssemblyStructureNode { Name = InstanceName(node), IsPart = true, PartIndex = own });
+            foreach (var child in node.Children) container.Add(MapStructure(child, partIndex));
+            return container.Children.Count == 0 ? null : container;
         }
 
         private static string InstanceName(StructureNode node) => string.IsNullOrWhiteSpace(node.SourceName) ? node.Key : node.SourceName;
@@ -257,7 +282,8 @@ namespace TxTools.ResourceImporter
                     cancel.ThrowIfCancellationRequested();
                     var warnings = output.Result.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
                         .Where(line => line.StartsWith("STEP-WARNING ", StringComparison.Ordinal) ||
-                            line.StartsWith("3DXML-WARNING ", StringComparison.Ordinal))
+                            line.StartsWith("3DXML-WARNING ", StringComparison.Ordinal) ||
+                            line.StartsWith("JT-WARNING ", StringComparison.Ordinal))
                         .Select(line => line.Substring(line.IndexOf(' ') + 1)).ToArray();
                     if (process.ExitCode != 0)
                     {

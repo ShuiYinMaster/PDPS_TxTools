@@ -81,7 +81,7 @@ namespace TxTools.CatiaPartTree
             inputs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); inputs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             _sourceFrame.Dock = _targetFrame.Dock = DockStyle.Fill; inputs.Controls.Add(_sourceFrame, 0, 0); inputs.Controls.Add(_targetFrame, 1, 0); _input = inputs;
             var origin = WorkflowUi.Bar(); origin.Controls.Add(WorkflowUi.Label("① 来源")); origin.Controls.Add(_sourceKind);
-            _read = WorkflowUi.Button(origin, "读取 / 重新读取", ReadSource);
+            _read = WorkflowUi.Button(origin, "读取 / 重新读取", async () => await ReadSource());
             var target = WorkflowUi.Bar(); target.Controls.Add(_newRoot); target.Controls.Add(_rootName);
             target.Dock = DockStyle.None; target.Margin = Padding.Empty; target.Padding = Padding.Empty;
             _rootName.Width = 125; origin.Controls.Add(target);
@@ -172,6 +172,7 @@ namespace TxTools.CatiaPartTree
             _right.NodeMouseDoubleClick += (s, e) => e.Node.BeginEdit();
             _right.KeyDown += (s, e) => { if (e.KeyCode == Keys.F2 && _right.SelectedNode != null) { e.Handled = true; _right.SelectedNode.BeginEdit(); } };
             WireDragDrop();
+            FileDropInput.Wire(() => !_busy, ReadDroppedSource, message => _issues.Text = message, _left, _sourceLabel, origin, _read);
             _autoPreview.Tick += (s, e) => { _autoPreview.Stop(); if (!_busy && _source != null && !Frozen) Preview(); };
             FormClosing += (s, e) => { if (_busy) { e.Cancel = true; if (_cancel != null) { _cancel.Cancel(); _issues.Text = "正在取消格式转换，待当前转换程序退出后可关闭。"; } else _issues.Text = "当前步骤正在执行，请等待结束后关闭。"; } };
             FormClosed += (s, e) => { _autoPreview.Dispose(); _tips.Dispose(); _sourceFrame.Dispose(); _assignmentFrame.Dispose(); if (_cancel != null) _cancel.Dispose(); _left.ImageList = _right.ImageList = null; if (_treeImages != null) _treeImages.Dispose(); };
@@ -213,7 +214,7 @@ namespace TxTools.CatiaPartTree
                 case SourceKind.ThreeDXml: _sourceLabel.Text = "选择 3DXML 文件。读取产品树后，可将包内 CGR 拆分成独立 JT。"; break;
                 case SourceKind.StepFile: _sourceLabel.Text = "选择 STEP 文件（.stp 或 .step），读取零件与装配结构后转换为 JT。"; break;
                 case SourceKind.PsBranch: _sourceLabel.Text = "在当前 PS 工程的原生选取框中选择来源分支与目标。"; break;
-                default: _sourceLabel.Text = "读取 CATIA 当前打开的 CATPart、CATProduct 或 3DXML。"; break;
+                default: _sourceLabel.Text = "读取 CATIA 当前文档，或将 CATProduct、3DXML、STEP 文件拖到来源树。"; break;
             }
             _issues.Text = IsCatia ? "先读取来源并核对预览，可直接创建复合零件或转换格式并导入。分配已有零件前，请在当前 PS 工程选取其所在复合零件。" : "读取 PS 来源，调整左树，核对预览后执行。";
             UpdateActions();
@@ -264,7 +265,32 @@ namespace TxTools.CatiaPartTree
             });
             thread.SetApartmentState(ApartmentState.STA); thread.IsBackground = true; thread.Start(); return completion.Task;
         }
-        private async void ReadSource()
+        private bool ReadDroppedSource(string[] paths)
+        {
+            if (paths.Length != 1 || !File.Exists(paths[0]))
+            {
+                _issues.Text = "请拖入一个 CATProduct、3DXML 或 STEP 文件。";
+                return false;
+            }
+
+            string path = paths[0];
+            SourceKind kind;
+            switch (Path.GetExtension(path).ToLowerInvariant())
+            {
+                case ".catproduct": kind = SourceKind.CatProductFile; break;
+                case ".3dxml": kind = SourceKind.ThreeDXml; break;
+                case ".step":
+                case ".stp": kind = SourceKind.StepFile; break;
+                default:
+                    _issues.Text = "请拖入一个 CATProduct、3DXML 或 STEP 文件。";
+                    return false;
+            }
+            _sourceKind.SelectedIndex = (int)kind;
+            _ = ReadSource(path);
+            return true;
+        }
+
+        private async Task ReadSource(string path = null)
         {
             if (_busy) return;
             if (!IsCatia) { Run(ReadPs); return; }
@@ -274,9 +300,9 @@ namespace TxTools.CatiaPartTree
             try
             {
                 CatiaImportSource source;
-                if (SelectedKind == SourceKind.ThreeDXml) source = await Read3dXmlFile();
-                else if (SelectedKind == SourceKind.StepFile) source = await ReadStepFile();
-                else if (SelectedKind == SourceKind.CatProductFile) source = await ReadCatProductFile();
+                if (SelectedKind == SourceKind.ThreeDXml) source = await Read3dXmlFile(path);
+                else if (SelectedKind == SourceKind.StepFile) source = await ReadStepFile(path);
+                else if (SelectedKind == SourceKind.CatProductFile) source = await ReadCatProductFile(path);
                 else
                 {
                     try { source = await ReadCatiaAsync(); }
@@ -284,7 +310,7 @@ namespace TxTools.CatiaPartTree
                     {
                         _sourceLabel.Text = "CATIA 当前文档：" + missing.FileName + "（待定位）";
                         _issues.Text = missing.Message;
-                        source = await Read3dXmlFile(missing);
+                        source = await Read3dXmlFile(null, missing);
                     }
                 }
                 if (source == null) return;
@@ -297,40 +323,50 @@ namespace TxTools.CatiaPartTree
             finally { _busy = false; UpdateActions(); }
             if (_source != null) Preview();
         }
-        private async Task<CatiaImportSource> ReadCatProductFile()
+        private async Task<CatiaImportSource> ReadCatProductFile(string path)
         {
-            using (var dialog = new OpenFileDialog { Title = "选择作为坐标基准的 CATProduct", Filter = "CATProduct 文件 (*.CATProduct)|*.CATProduct", CheckFileExists = true })
+            if (path == null)
             {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return null;
-                _issues.Text = "正在通过 CATIA 读取装配引用及各零件实例位姿…";
-                return await ReadCatiaAsync(dialog.FileName);
-            }
-        }
-        private async Task<CatiaImportSource> ReadStepFile()
-        {
-            using (var dialog = new OpenFileDialog { Title = "选择 STEP 文件", Filter = "STEP 文件 (*.stp;*.step)|*.stp;*.step", CheckFileExists = true })
-            {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return null;
-                string path = dialog.FileName;
-                _issues.Text = "正在读取 STEP 装配结构、零件名称及实例位置…";
-                return await Task.Run(() => StepSource.Read(path));
-            }
-        }
-        private async Task<CatiaImportSource> Read3dXmlFile(ThreeDXmlFileRequiredException missing = null)
-        {
-            using (var dialog = new OpenFileDialog { Title = missing == null ? "选择 3DXML 文件" : "定位 CATIA 当前文档的原始 3DXML 文件",
-                Filter = "3DXML 文件 (*.3dxml)|*.3dxml", CheckFileExists = true, Multiselect = false })
-            {
-                if (missing != null)
+                using (var dialog = new OpenFileDialog { Title = "选择作为坐标基准的 CATProduct", Filter = "CATProduct 文件 (*.CATProduct)|*.CATProduct", CheckFileExists = true })
                 {
-                    dialog.FileName = missing.FileName;
-                    if (missing.Directory != null) dialog.InitialDirectory = missing.Directory;
+                    if (dialog.ShowDialog(this) != DialogResult.OK) return null;
+                    path = dialog.FileName;
                 }
-                if (dialog.ShowDialog(this) != DialogResult.OK) return null;
-                string path = dialog.FileName;
-                _issues.Text = "正在读取 3DXML 产品结构、几何引用及实例位置…";
-                return await Task.Run(() => ThreeDXmlSource.Read(path));
             }
+            _issues.Text = "正在通过 CATIA 读取装配引用及各零件实例位姿…";
+            return await ReadCatiaAsync(path);
+        }
+        private async Task<CatiaImportSource> ReadStepFile(string path)
+        {
+            if (path == null)
+            {
+                using (var dialog = new OpenFileDialog { Title = "选择 STEP 文件", Filter = "STEP 文件 (*.stp;*.step)|*.stp;*.step", CheckFileExists = true })
+                {
+                    if (dialog.ShowDialog(this) != DialogResult.OK) return null;
+                    path = dialog.FileName;
+                }
+            }
+            _issues.Text = "正在读取 STEP 装配结构、零件名称及实例位置…";
+            return await Task.Run(() => StepSource.Read(path));
+        }
+        private async Task<CatiaImportSource> Read3dXmlFile(string path, ThreeDXmlFileRequiredException missing = null)
+        {
+            if (path == null)
+            {
+                using (var dialog = new OpenFileDialog { Title = missing == null ? "选择 3DXML 文件" : "定位 CATIA 当前文档的原始 3DXML 文件",
+                    Filter = "3DXML 文件 (*.3dxml)|*.3dxml", CheckFileExists = true, Multiselect = false })
+                {
+                    if (missing != null)
+                    {
+                        dialog.FileName = missing.FileName;
+                        if (missing.Directory != null) dialog.InitialDirectory = missing.Directory;
+                    }
+                    if (dialog.ShowDialog(this) != DialogResult.OK) return null;
+                    path = dialog.FileName;
+                }
+            }
+            _issues.Text = "正在读取 3DXML 产品结构、几何引用及实例位置…";
+            return await Task.Run(() => ThreeDXmlSource.Read(path));
         }
         private void ReadPs()
         {
@@ -392,7 +428,7 @@ namespace TxTools.CatiaPartTree
                 tree.DragOver += (s, e) => e.Effect = !_busy && !Frozen && e.Data.GetDataPresent(typeof(StructureNode)) ? DragDropEffects.Move : DragDropEffects.None;
                 tree.DragDrop += (s, e) => Run(() =>
                 {
-                    if (Frozen) return;
+                    if (Frozen || !e.Data.GetDataPresent(typeof(StructureNode))) return;
                     var point = tree.PointToClient(new Point(e.X, e.Y)); var target = tree.GetNodeAt(point); if (target == null) return;
                     var change = target.Tag as StructureChange; var destination = change == null ? (StructureNode)target.Tag : change.Node;
                     if (destination.Key == "destination") return;

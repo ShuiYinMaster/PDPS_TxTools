@@ -1,9 +1,9 @@
 # 资源导入
 
-在 Process Simulate 离线工程中打开 **TxTools → 资源导入**。通过“添加文件”批量选择来源，也可把文件从资源管理器拖入左侧列表。
+在 Process Simulate 离线工程中打开 **TxTools → 资源导入**。通过“添加文件”批量选择来源，也可把文件拖入左侧列表。拖放在松手后读取 Windows 文件路径，因此支持在落放时才提供本地路径的文件来源。
 
-1. 用 Ctrl 选取不连续的文件，用 Shift 选取连续的文件，或从列表空白处拖动框选。点击原型列的下拉框可修改单行，点击“批量设原型”可修改已选文件。下拉选项和文件名前都显示原型图标。
-2. 把已选中的文件拖到右侧系统库目录，或使用“分配到所选目录”。可以为不同文件指定不同目录。右击目录可新建或重命名待用文件夹，待用文件夹在写入首个有效 COJT 时创建。
+1. 用 Ctrl 选取不连续的文件，用 Shift 选取连续的文件，或从列表空白处拖动框选。点击原型列的下拉框可修改单行，点击“批量设原型”可修改已选文件。下拉选项和文件名前都显示原型图标。选择原型后，目录树会自动定位并展开名称匹配的目录；Gun、Robot、Fixture、Gripper 等类别支持中英文及常见别名模糊匹配。
+2. 把已选中的文件拖到右侧系统库目录，或使用“分配到所选目录”。可以为不同文件指定不同目录。右击目录可新建或重命名待用文件夹，待用文件夹在写入首个有效 COJT 时创建。“分配到所选目录”旁的检索框可输入目录名快速定位；方向键、回车选择结果，Esc 关闭。
 3. 点击“导入根树”。每个文件生成一个 COJT 和一个根树实例。3DXML、STEP 和 CATProduct 的装配位姿保留在模型几何中。同名 COJT 自动编号。悬停文件行可查看存放路径和失败原因。
 
 “跳过隐藏几何体”默认关闭。勾选后，3DXML 按默认视图中的实例可见性和 XML 网格的显示属性过滤。STEP / STP 按文件中的隐藏样式和图层过滤。隐藏装配下的几何一并跳过。源文件未写入可见性信息的几何仍会导入。
@@ -22,8 +22,23 @@
 | --- | --- |
 | JT | 原样封装独立 JT 文件 |
 | STEP / STP | 使用随插件部署的 OCCT STEP 读取器生成单个 JT。部分面细分失败时保留可用几何，文件行提示列出缺面数量。零件没有可用网格时跳过其对应实例 |
-| 3DXML | 将包内可用的 CGR 或 XML 细分面合成为一个 JT。缺失、无法解析或没有可转换三角面的几何表示按实例跳过，文件行提示列出跳过项。整个装配没有可用面时导入失败 |
+| 3DXML | 将包内可用的 CGR 或 XML 细分面合成为一个 JT。装配位姿或 JT float32 精度下退化的三角面按实例清理并提示；缺失、无法解析或没有可转换三角面的几何表示按实例跳过，文件行提示列出跳过项。整个装配没有可用面时导入失败 |
 | CGR / CATPart | 使用 CatiaPartTree 转换器读取 CGR 或 CATPart 内嵌几何缓存 |
 | CATProduct | 读取同目录的 `<文件名>.CATProduct.jtcoords.json`，校验源装配、引用文件及变换后合成为一个 JT |
 
-CATProduct 使用 `cad-drop.offline-assembly.v1` 索引。所引用的 CATProduct 和 CATPart 文件须与索引摘要一致，并位于源装配目录内。直接从原生 CATProduct 解码装配引用和实例变换尚未支持。转换在本机离线运行。
+CATProduct 使用 `cad-drop.offline-assembly.v1` 索引。所引用的 CATProduct 和 CATPart 文件须与索引摘要一致，并位于源装配目录内。直接从原生 CATProduct 解码装配引用和实例变换尚未支持。转换在本机离线运行。装配 JT 中相同来源几何只保留一份定义，各实例通过几何变换复用；非刚性变换回退为逐实例几何。
+
+## 命令与文件
+
+命令：`.资源导入`（`TxTools` 类别）。
+
+| 文件 | 职责 |
+| --- | --- |
+| `ResourceImporterCommand.cs` | 命令注册与窗体启动 |
+| `ResourceImporterForm.cs` | 文件列表、原型列、拖放分配与导入操作 |
+| `ResourceImportSession.cs` | 单文件导入状态、批次编排与结果核验 |
+| `ResourceConversion.cs` | 各格式到 JT 的转换调度与并行控制 |
+| `CatProductConversion.cs` | CATProduct 离线装配索引读取与单 JT 合成 |
+| `ResourcePrototype.cs`、`ResourcePrototypeImages.cs` | 原型 Family 解析与类型图标 |
+| `ResourceCustomizationInstallation.cs` | Planning 类型读取、`metadata.xml` 与 `defaultCust.ppc` 兜底 |
+| `CojtFolderTree.cs`、`CojtFolderEdits.cs` | 库目录树读取、待用文件夹预建与重命名 |

@@ -148,6 +148,28 @@ namespace TxTools.CatiaPartTree.Conversion
             return x * x + y * y + z * z == 0;
         }
 
+        // Source CGR leaves occasionally contain zero-area triangles. They carry
+        // no surface, so drop them before the combined mesh is validated.
+        internal MeshShape RemoveDegenerateTriangles()
+        {
+            var keep = new List<int[]>(triangles.Length);
+            var colors = new List<byte[]>(triangles.Length);
+            for (int i = 0; i < triangles.Length; i++)
+            {
+                if (Degenerate(vertices, triangles[i])) continue;
+                keep.Add(triangles[i]);
+                colors.Add(rgb[i]);
+            }
+            if (keep.Count == triangles.Length) return this;
+            if (keep.Count == 0) return null;
+            return new MeshShape
+            {
+                name = name, instanceId = instanceId, sourceFile = sourceFile, sourceSha256 = sourceSha256,
+                vertices = vertices, triangles = keep.ToArray(), rgb = colors.ToArray(), normals = normals,
+                nativeNormalBindings = nativeNormalBindings
+            };
+        }
+
         public MeshShape Bake(Frame12 vehicleFromPart)
         {
             var result = BakeGeometry(vehicleFromPart);
@@ -155,7 +177,9 @@ namespace TxTools.CatiaPartTree.Conversion
             return result;
         }
 
-        internal MeshShape BakeStepInstanceForJt(Frame12 frame, out int removed)
+        // Assembly transforms and JT float32 storage can collapse small faces.
+        // Drop only those triangles so one bad instance cannot fail the whole file.
+        internal MeshShape BakeInstanceForJt(Frame12 frame, out int removed)
         {
             var result = BakeGeometry(frame);
             // Assembly transforms can collapse small faces at the precision used by JT.
@@ -222,6 +246,15 @@ namespace TxTools.CatiaPartTree.Conversion
         }
     }
 
+    // One placement of a shared source definition. The definition mesh is
+    // written once in source coordinates; the frame places it in the scene.
+    public sealed class AssemblyInstance
+    {
+        public int Definition;
+        public string Name;
+        public double[] Frame;
+    }
+
     // Format-only output explicitly retains source coordinates. Vehicle scene
     // validation remains strict and is not bypassed by a fabricated assembly.
     public sealed class SourceMeshScene
@@ -231,12 +264,87 @@ namespace TxTools.CatiaPartTree.Conversion
         public string sourceSha256;
         public string unit = "mm";
         public MeshShape[] shapes;
+        // Source product structure for assembly imports. Null keeps the flat
+        // single-level output used by part conversion and older manifests.
+        public AssemblyStructureNode structure;
+        // Baked shapes per flat manifest record; assembly part nodes index it.
+        public MeshShape[][] partShapes;
+        // Instanced assembly output: definitions are local meshes written once,
+        // instances carry the placement frame and refer to a definition.
+        public MeshShape[][] definitions;
+        public AssemblyInstance[] instances;
         public void Validate()
         {
             if(string.IsNullOrWhiteSpace(name)||string.IsNullOrWhiteSpace(sourceFile)||string.IsNullOrWhiteSpace(sourceSha256)
                 ||unit!="mm"||shapes==null||shapes.Length==0)throw new InvalidDataException("Incomplete source-coordinate scene");
             if(shapes.Select(s=>s.instanceId).Distinct().Count()!=shapes.Length)throw new InvalidDataException("Duplicate source instance IDs");
             foreach(var shape in shapes)shape.Validate();
+            if(instances!=null)ValidateInstances();
+            else if(structure!=null)ValidateStructure();
+        }
+        private void ValidateInstances()
+        {
+            if(definitions==null||definitions.Length==0)throw new InvalidDataException("Instanced assembly has no definitions");
+            if(structure==null)throw new InvalidDataException("Instanced assembly has no hierarchy");
+            if(instances==null||instances.Length==0)throw new InvalidDataException("Instanced assembly has no placements");
+            var usedInstances=new bool[instances.Length];
+            var usedDefinitions=new bool[definitions.Length];
+            int nodes=0;
+            void Check(AssemblyStructureNode node)
+            {
+                if(++nodes>200000)throw new InvalidDataException("Assembly hierarchy is too large");
+                if(node.IsPart)
+                {
+                    if(node.PartIndex<0||node.PartIndex>=instances.Length)
+                        throw new InvalidDataException("Assembly hierarchy references an unknown placement");
+                    if(usedInstances[node.PartIndex])throw new InvalidDataException("Assembly hierarchy reuses a placement");
+                    usedInstances[node.PartIndex]=true;
+                    var instance=instances[node.PartIndex];
+                    if(instance==null||instance.Definition<0||instance.Definition>=definitions.Length)
+                        throw new InvalidDataException("Assembly placement references an unknown definition");
+                    if(instance.Frame==null||instance.Frame.Length!=12||instance.Frame.Any(v=>double.IsNaN(v)||double.IsInfinity(v)))
+                        throw new InvalidDataException("Assembly placement frame is invalid");
+                    if(node.Children.Count!=0)throw new InvalidDataException("Assembly part cannot have children");
+                    if(definitions[instance.Definition].Length!=0)usedDefinitions[instance.Definition]=true;
+                    return;
+                }
+                foreach(var child in node.Children)Check(child);
+            }
+            Check(structure);
+            for(int i=0;i<definitions.Length;i++)
+            {
+                if(definitions[i]==null)throw new InvalidDataException("Assembly definition is missing");
+                foreach(var shape in definitions[i])shape.Validate();
+                if(definitions[i].Length!=0&&!usedDefinitions[i])
+                    throw new InvalidDataException("Assembly hierarchy omits a geometry definition");
+            }
+            for(int i=0;i<shapes.Length;i++)
+                if(shapes[i]==null)throw new InvalidDataException("Assembly definition shape is missing");
+        }
+        private void ValidateStructure()
+        {
+            if(partShapes==null||partShapes.Length==0)throw new InvalidDataException("Assembly hierarchy has no geometry records");
+            var used=new bool[partShapes.Length];
+            int nodes=0;
+            void Check(AssemblyStructureNode node, bool root)
+            {
+                if(++nodes>200000)throw new InvalidDataException("Assembly hierarchy is too large");
+                if(node==null||node.IsPart)
+                {
+                    if(node==null||node.PartIndex<0||node.PartIndex>=partShapes.Length)
+                        throw new InvalidDataException("Assembly hierarchy references an unknown part");
+                    if(used[node.PartIndex])throw new InvalidDataException("Assembly hierarchy reuses a part record");
+                    used[node.PartIndex]=true;
+                    if(node.Children.Count!=0)throw new InvalidDataException("Assembly part cannot have children");
+                    return;
+                }
+                if(root&&node.Children.Count==0)throw new InvalidDataException("Assembly hierarchy is empty");
+                foreach(var child in node.Children)Check(child,false);
+            }
+            Check(structure,true);
+            for(int i=0;i<partShapes.Length;i++)
+                if(partShapes[i]!=null&&partShapes[i].Length!=0&&!used[i])
+                    throw new InvalidDataException("Assembly hierarchy omits a geometry record");
         }
         public static SourceMeshScene ReadPart(string path)
         {

@@ -27,6 +27,15 @@ namespace TxTools.CatiaPartTree.Conversion
         // Faces[k] = the piece-relative face that introduced Vertices[k]; used only
         // when a corner normal is missing and the face normal is the fallback.
         sealed class Strip { public List<int> Vertices=new List<int>();public List<int> Faces=new List<int>();public int Start,Triangles; }
+        // Assembly tree node. Part nodes own one Part; assembly nodes only group
+        // children so the source product structure reaches the JT scene graph.
+        sealed class SceneNode
+        {
+            public string Name;
+            public Part Part;
+            public readonly List<SceneNode> Children=new List<SceneNode>();
+            public int Id,NameId;
+        }
         static byte[] Build(Action<BinaryWriter> action){using(var s=new MemoryStream()){using(var w=new BinaryWriter(s,Encoding.UTF8,true))action(w);return s.ToArray();}}
         static Guid Type(string prefix){return new Guid(prefix+"-2ac8-11d1-9b6b-0080c7bb5997");}
         static Guid Stable(string key){using(var h=SHA256.Create())return new Guid(h.ComputeHash(Encoding.UTF8.GetBytes(key)).Take(16).ToArray());}
@@ -36,14 +45,36 @@ namespace TxTools.CatiaPartTree.Conversion
         static byte[] Element(Guid type,byte baseType,byte[] body){return Build(w=>{w.Write(17+body.Length);w.Write(type.ToByteArray());w.Write(baseType);w.Write(body);});}
         static void End(BinaryWriter w){w.Write(16);w.Write(Enumerable.Repeat((byte)255,16).ToArray());}
         static void BaseNode(BinaryWriter w,int id,params int[] attributes){w.Write(id);w.Write(0U);w.Write(attributes.Length);foreach(int a in attributes)w.Write(a);}
-        static void Bounds(BinaryWriter w,IEnumerable<double[]> points){var p=points.ToArray();for(int k=0;k<3;k++)w.Write(F(p.Min(v=>v[k])));for(int k=0;k<3;k++)w.Write(F(p.Max(v=>v[k])));}
+        static void Bounds(BinaryWriter w,double[] lo,double[] hi){for(int k=0;k<3;k++)w.Write(F(lo[k]));for(int k=0;k<3;k++)w.Write(F(hi[k]));}
+        static void Extents(Piece p,double[] lo,double[] hi)
+        {
+            foreach(int index in p.Faces)
+            {
+                var ids=p.Mesh.triangles[index];
+                for(int corner=0;corner<3;corner++)
+                {
+                    var point=p.Mesh.vertices[ids[corner]];
+                    for(int k=0;k<3;k++)
+                    {
+                        if(point[k]<lo[k])lo[k]=point[k];
+                        if(point[k]>hi[k])hi[k]=point[k];
+                    }
+                }
+            }
+        }
+        static void Bounds(BinaryWriter w,Piece p)
+        {
+            var lo=new[]{double.MaxValue,double.MaxValue,double.MaxValue};
+            var hi=new[]{double.MinValue,double.MinValue,double.MinValue};
+            Extents(p,lo,hi);
+            Bounds(w,lo,hi);
+        }
         static void Range(BinaryWriter w,int n){w.Write(n);w.Write(n);}
         static double Area(Piece p){double total=0;foreach(int index in p.Faces){var ids=p.Mesh.triangles[index];var a=p.Mesh.vertices[ids[0]];var b=p.Mesh.vertices[ids[1]];var c=p.Mesh.vertices[ids[2]];double x=(b[1]-a[1])*(c[2]-a[2])-(b[2]-a[2])*(c[1]-a[1]);double y=(b[2]-a[2])*(c[0]-a[0])-(b[0]-a[0])*(c[2]-a[2]);double z=(b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]);total+=Math.Sqrt(x*x+y*y+z*z)/2;}return total;}
-        static double[][] Points(Piece p){return p.Faces.SelectMany(f=>p.Mesh.triangles[f].Select(i=>p.Mesh.vertices[i])).ToArray();}
         static byte[] Shape(Piece p,int payloadBytes)
         {
-            var points=Points(p);return Element(Type("10dd1077"),2,Build(w=>{
-                BaseNode(w,p.ShapeId,p.MaterialId);Bounds(w,points);Bounds(w,points);w.Write(F(Area(p)));
+            return Element(Type("10dd1077"),2,Build(w=>{
+                BaseNode(w,p.ShapeId,p.MaterialId);Bounds(w,p);Bounds(w,p);w.Write(F(Area(p)));
                 Range(w,p.VertexRecords);Range(w,1);Range(w,p.Faces.Length);w.Write(payloadBytes);w.Write(0f);
                 w.Write(1);w.Write(0);w.Write(0);w.Write(new byte[4]);}));
         }
@@ -98,8 +129,8 @@ namespace TxTools.CatiaPartTree.Conversion
         static byte[] GroupNode(int id,int[] children){return Element(Type("10dd101b"),1,Build(w=>{
             BaseNode(w,id);w.Write(children.Length);foreach(int c in children)w.Write(c);}));}
         // The document metadata node groups the parts and references file metadata.
-        static byte[] MetaDataNode(int id,int[] children){return Element(new Guid("ce357245-38fb-11d1-a506-006097bdc6e1"),1,Build(w=>{
-            BaseNode(w,id);w.Write(children.Length);foreach(int c in children)w.Write(c);w.Write((short)1);}));}
+        static byte[] MetaDataNode(int id,int[] children,params int[] attributes){return Element(new Guid("ce357245-38fb-11d1-a506-006097bdc6e1"),1,Build(w=>{
+            BaseNode(w,id,attributes);w.Write(children.Length);foreach(int c in children)w.Write(c);w.Write((short)1);}));}
         // Chained strips keep the triangle set, positions and corner normals identical;
         // only the strip boundaries change. Two triangles may share a vertex record only
         // when both of them shade that corner from the same vertex normal.
@@ -309,11 +340,210 @@ namespace TxTools.CatiaPartTree.Conversion
         static byte[] Segment(Guid id,int type,byte[] body){return Build(w=>{w.Write(id.ToByteArray());w.Write(type);w.Write(body.Length+24);w.Write(body);});}
         public static void Write(VehicleMeshScene scene,string output)
         {
-            scene.Validate();WriteCore(scene.vehicleFrameId,"CadDrop.VehicleFrame",scene.shapes,output);
+            scene.Validate();WriteCore(scene.vehicleFrameId,"CadDrop.VehicleFrame",scene.shapes,null,null,output);
         }
         public static void Write(SourceMeshScene scene,string output)
         {
-            scene.Validate();WriteCore(scene.name,"CadDrop.SourceFrame",scene.shapes,output);
+            scene.Validate();
+            if(scene.instances!=null)WriteInstanced(scene,output);
+            else WriteCore(scene.name,"CadDrop.SourceFrame",scene.shapes,scene.structure,scene.partShapes,output);
+        }
+        // Instanced assemblies write each source definition once in local
+        // coordinates. Occurrence nodes carry only the placement transform and
+        // reference the shared RangeLOD child, so repeated parts do not copy
+        // vertex records or shape segments.
+        sealed class Definition
+        {
+            public List<Piece> Pieces;
+            public int GroupId,SharedChild;
+        }
+        sealed class InstancedNode
+        {
+            public string Name;
+            public bool Part;
+            public int Definition=-1;
+            public double[] Frame;
+            public readonly List<InstancedNode> Children=new List<InstancedNode>();
+            public int Id,NameId,EntityId,RootId,NodeId,LodId,TransformId,EntityNameId,RootNameId,PartNameId;
+        }
+        static void WriteInstanced(SourceMeshScene scene,string output)
+        {
+            var pieces=new List<Piece>();
+            var roundedCache=new Dictionary<MeshShape,MeshShape>();
+            var definitions=new Definition[scene.definitions.Length];
+            for(int i=0;i<definitions.Length;i++)
+            {
+                if(scene.definitions[i]==null||scene.definitions[i].Length==0)continue;
+                var part=CreatePart(scene.definitions[i],"",pieces,roundedCache);
+                if(part!=null)definitions[i]=new Definition{Pieces=part.Pieces};
+            }
+            var root=new InstancedNode{Name=scene.name};
+            foreach(var child in scene.structure.Children)AddInstanced(root,child,definitions,scene.instances);
+            if(root.Children.Count==0||pieces.Count==0)throw new InvalidDataException("Assembly has no writable geometry");
+            var assemblies=new List<InstancedNode>();
+            var occurrences=new List<InstancedNode>();
+            CollectInstanced(root,root,assemblies,occurrences);
+            int id=1,metaId=id++;
+            foreach(var assembly in assemblies)
+            {
+                assembly.Id=id++;
+                assembly.NameId=id++;
+            }
+            foreach(var occurrence in occurrences)
+            {
+                occurrence.EntityId=id++;
+                occurrence.RootId=id++;
+                occurrence.NodeId=id++;
+                occurrence.LodId=id++;
+                occurrence.TransformId=id++;
+            }
+            foreach(var definition in definitions)
+                if(definition!=null&&definition.Pieces.Count>1)definition.GroupId=id++;
+            foreach(var piece in pieces)piece.ShapeId=id++;
+            foreach(var piece in pieces)piece.MaterialId=id++;
+            int shapeImplKey=id++,nameKey=id++,assemblyName=id++,frameKey=id++,frameValue=id++,unitKey=id++,unitValue=id++;
+            int metaKey=id++,partTypeKey=id++,partTypeValue=id++,metaLate=id++;
+            int simplifierKey=id++,simplifierValue=id++,simplifyParamsKey=id++,simplifyParamsValue=id++;
+            foreach(var occurrence in occurrences)
+            {
+                occurrence.EntityNameId=id++;
+                occurrence.RootNameId=id++;
+                occurrence.PartNameId=id++;
+            }
+            foreach(var piece in pieces)piece.LateId=id++;
+            foreach(var definition in definitions)
+            {
+                if(definition==null)continue;
+                definition.SharedChild=definition.GroupId==0?definition.Pieces[0].ShapeId:definition.GroupId;
+            }
+            var lods=new byte[pieces.Count][];
+            for(int i=0;i<pieces.Count;i++){int records;lods[i]=Lod(pieces[i],out records);pieces[i].VertexRecords=records;}
+            for(int i=0;i<pieces.Count;i++)pieces[i].Segment=Stable("jt8-normal-v3/"+pieces[i].Mesh.instanceId+"/"+BitConverter.ToString(pieces[i].Color)+"/"+Digest(lods[i]));
+            var allLo=new[]{double.MaxValue,double.MaxValue,double.MaxValue};
+            var allHi=new[]{double.MinValue,double.MinValue,double.MinValue};
+            var localBounds=new double[definitions.Length][];
+            for(int i=0;i<definitions.Length;i++)
+            {
+                if(definitions[i]==null)continue;
+                var lo=new[]{double.MaxValue,double.MaxValue,double.MaxValue};
+                var hi=new[]{double.MinValue,double.MinValue,double.MinValue};
+                foreach(var piece in definitions[i].Pieces)Extents(piece,lo,hi);
+                localBounds[i]=new[]{lo[0],lo[1],lo[2],hi[0],hi[1],hi[2]};
+            }
+            foreach(var occurrence in occurrences)
+            {
+                var bounds=localBounds[occurrence.Definition];
+                if(bounds==null)continue;
+                var frame=new Frame12(occurrence.Frame);
+                for(int corner=0;corner<8;corner++)
+                {
+                    var point=frame.Point(new[]{
+                        (corner&1)==0?bounds[0]:bounds[3],
+                        (corner&2)==0?bounds[1]:bounds[4],
+                        (corner&4)==0?bounds[2]:bounds[5]});
+                    for(int k=0;k<3;k++)
+                    {
+                        if(point[k]<allLo[k])allLo[k]=point[k];
+                        if(point[k]>allHi[k])allHi[k]=point[k];
+                    }
+                }
+            }
+            int totalFaces=pieces.Sum(p=>p.Faces.Length);
+            var metaStream=MetaDataElement(scene.name);var metaSegment=Stable("jt8-metadata-v1/"+Digest(metaStream));
+            int descendantCount=1+assemblies.Count+occurrences.Count*4+definitions.Count(item=>item!=null&&item.GroupId!=0)+pieces.Count;
+            var graph=Build(w=>{
+                w.Write(Element(Type("10dd103e"),1,Build(b=>{BaseNode(b,0);b.Write(1);b.Write(metaId);
+                    b.Write(1);String(b,scene.name+".jt");Bounds(b,allLo,allHi);b.Write(F(pieces.Sum(p=>Area(p))));
+                    Range(b,pieces.Sum(p=>p.VertexRecords));Range(b,descendantCount);
+                    Range(b,totalFaces);Bounds(b,allLo,allHi);})));
+                w.Write(MetaDataNode(metaId,root.Children.Select(EntryId).ToArray()));
+                WriteInstancedNodes(w,root,definitions);
+                foreach(var definition in definitions)
+                    if(definition!=null&&definition.GroupId!=0)
+                        w.Write(GroupNode(definition.GroupId,definition.Pieces.Select(piece=>piece.ShapeId).ToArray()));
+                for(int i=0;i<pieces.Count;i++)w.Write(Shape(pieces[i],lods[i].Length));
+                foreach(var p in pieces)w.Write(Material(p));
+                foreach(var occurrence in occurrences)w.Write(TransformAttribute(occurrence.TransformId,occurrence.Frame));
+                End(w);w.Write(PropertyString(shapeImplKey,"JT_LLPROP_SHAPEIMPL"));w.Write(PropertyString(nameKey,"JT_PROP_NAME"));
+                w.Write(PropertyString(assemblyName,ProductNodeName(scene.name,"asm",0)));
+                w.Write(PropertyString(frameKey,"CadDrop.SourceFrame"));w.Write(PropertyString(frameValue,scene.name));
+                w.Write(PropertyString(unitKey,"JT_PROP_MEASUREMENT_UNITS"));w.Write(PropertyString(unitValue,"millimeters"));
+                w.Write(PropertyString(metaKey,"JT_LLPROP_METADATA"));
+                w.Write(PropertyString(partTypeKey,"PartitionType"));w.Write(PropertyString(partTypeValue,"Assembly"));
+                w.Write(PropertyString(simplifierKey,"JT_PROP_SIMP_NAME"));
+                w.Write(PropertyString(simplifierValue,"TxToolsTriStripper"));
+                w.Write(PropertyString(simplifyParamsKey,"JT_PROP_SIMP_PARAMS"));
+                w.Write(PropertyString(simplifyParamsValue,":LOD selection ratio=1.000000"));
+                w.Write(LateRef(metaLate,metaSegment,4));
+                for(int i=0;i<assemblies.Count;i++)
+                    w.Write(PropertyString(assemblies[i].NameId,ProductNodeName(assemblies[i].Name,"asm",i+1)));
+                for(int i=0;i<occurrences.Count;i++)
+                {
+                    var occurrence=occurrences[i];
+                    w.Write(PropertyString(occurrence.EntityNameId,ProductNodeName(occurrence.Name+"\\\\"+occurrence.Name,"asm",i)));
+                    w.Write(PropertyString(occurrence.RootNameId,ProductNodeName("Root","asm",i)));
+                    w.Write(PropertyString(occurrence.PartNameId,ProductNodeName(occurrence.Name,"part",i)));
+                }
+                foreach(var piece in pieces)w.Write(LateRef(piece.LateId,piece.Segment,7));
+                End(w);
+                w.Write((short)1);
+                w.Write(2+assemblies.Count+occurrences.Count*3+pieces.Count);
+                NodeProperties(w,0,partTypeKey,partTypeValue,nameKey,assemblyName,frameKey,frameValue);
+                NodeProperties(w,metaId,unitKey,unitValue,metaKey,metaLate);
+                foreach(var assembly in assemblies)
+                    NodeProperties(w,assembly.Id,nameKey,assembly.NameId,partTypeKey,partTypeValue,unitKey,unitValue);
+                foreach(var occurrence in occurrences)
+                {
+                    NodeProperties(w,occurrence.EntityId,nameKey,occurrence.EntityNameId,unitKey,unitValue);
+                    NodeProperties(w,occurrence.RootId,nameKey,occurrence.RootNameId,unitKey,unitValue);
+                    NodeProperties(w,occurrence.NodeId,nameKey,occurrence.PartNameId,unitKey,unitValue);
+                }
+                foreach(var piece in pieces)
+                    NodeProperties(w,piece.ShapeId,simplifyParamsKey,simplifyParamsValue,simplifierKey,simplifierValue,shapeImplKey,piece.LateId);
+            });
+            WriteFile(graph,pieces,lods,metaStream,output);
+        }
+        static void AddInstanced(InstancedNode parent,AssemblyStructureNode source,Definition[] definitions,AssemblyInstance[] instances)
+        {
+            if(source.IsPart)
+            {
+                if(source.PartIndex<0||source.PartIndex>=instances.Length)throw new InvalidDataException("Assembly references an unknown placement");
+                var instance=instances[source.PartIndex];
+                if(instance==null||instance.Definition<0||instance.Definition>=definitions.Length||definitions[instance.Definition]==null)return;
+                parent.Children.Add(new InstancedNode{Name=instance.Name,Part=true,Definition=instance.Definition,Frame=instance.Frame});
+                return;
+            }
+            var node=new InstancedNode{Name=source.Name};
+            foreach(var child in source.Children)AddInstanced(node,child,definitions,instances);
+            if(node.Children.Count!=0)parent.Children.Add(node);
+        }
+        static void CollectInstanced(InstancedNode node,InstancedNode root,List<InstancedNode> assemblies,List<InstancedNode> occurrences)
+        {
+            if(node.Part){occurrences.Add(node);return;}
+            if(!ReferenceEquals(node,root))assemblies.Add(node);
+            foreach(var child in node.Children)CollectInstanced(child,root,assemblies,occurrences);
+        }
+        static int EntryId(InstancedNode node){return node.Part?node.EntityId:node.Id;}
+        static void WriteInstancedNodes(BinaryWriter w,InstancedNode node,Definition[] definitions)
+        {
+            if(node.Part)
+            {
+                w.Write(MetaDataNode(node.EntityId,new[]{node.RootId},node.TransformId));
+                w.Write(MetaDataNode(node.RootId,new[]{node.NodeId}));
+                w.Write(PartNode(node.NodeId,node.LodId));
+                w.Write(RangeLodNode(node.LodId,definitions[node.Definition].SharedChild));
+                return;
+            }
+            if(node.Id!=0)w.Write(MetaDataNode(node.Id,node.Children.Select(EntryId).ToArray()));
+            foreach(var child in node.Children)WriteInstancedNodes(w,child,definitions);
+        }
+        static byte[] TransformAttribute(int id,double[] frame)
+        {
+            return Element(Type("10dd1083"),3,Build(w=>{
+                w.Write(id);w.Write((byte)0);w.Write(0U);w.Write((ushort)0xFFFF);
+                foreach(double value in new[]{frame[0],frame[1],frame[2],0d,frame[3],frame[4],frame[5],0d,
+                    frame[6],frame[7],frame[8],0d,frame[9],frame[10],frame[11],1d})w.Write(F(value));
+            }));
         }
         // Share only records that are identical at JT's actual storage precision.
         // CAD patch IDs and sub-float differences must not break otherwise valid
@@ -345,14 +575,12 @@ namespace TxTools.CatiaPartTree.Conversion
                 vertices=vertices.ToArray(),normals=normals.ToArray(),rgb=mesh.rgb,
                 triangles=mesh.triangles.Select(t=>new[]{map[t[0]],map[t[1]],map[t[2]]}).ToArray()};
         }
-        static void WriteCore(string sceneName,string frameProperty,MeshShape[] shapes,string output)
+        // One source occurrence becomes one Part node. Its color groups stay
+        // together under the part's single representation.
+        static Part CreatePart(MeshShape[] meshes,string name,List<Piece> pieces,Dictionary<MeshShape,MeshShape> roundedCache)
         {
-            var pieces=new List<Piece>();
-            var parts=new List<Part>();
-            // float32 取整与校验每个 mesh 只做一次，各颜色分组共享同一份，避免
-            // 多色零件按颜色数重复克隆顶点/重复校验全部三角形。
-            var roundedCache=new Dictionary<MeshShape,MeshShape>();
-            foreach(var mesh in shapes)
+            var part=new Part{Name=name};
+            foreach(var mesh in meshes)
             {
                 MeshShape rounded;
                 if(!roundedCache.TryGetValue(mesh,out rounded))
@@ -363,16 +591,93 @@ namespace TxTools.CatiaPartTree.Conversion
                     rounded.Validate(); // reject triangles that collapse after float32 storage
                     roundedCache.Add(mesh,rounded);
                 }
-                // 每个来源网格（一个 CATPart）成为一个 Part 节点，颜色分组成为它下面的形状。
-                var part=new Part{Name=string.IsNullOrWhiteSpace(mesh.name)?sceneName:mesh.name};
-                parts.Add(part);
                 foreach(var group in Enumerable.Range(0,mesh.triangles.Length).GroupBy(i=>BitConverter.ToString(mesh.rgb[i])))
                 {
                     var p=new Piece{Mesh=rounded,Faces=group.ToArray(),Color=mesh.rgb[group.First()]};
                     pieces.Add(p);part.Pieces.Add(p);
                 }
             }
+            return part.Pieces.Count==0?null:part;
+        }
+        // Prune branches whose geometry was skipped during conversion so an empty
+        // source assembly never becomes an empty JT node.
+        static void BuildScene(AssemblyStructureNode source,MeshShape[][] partShapes,List<Piece> pieces,
+            Dictionary<MeshShape,MeshShape> roundedCache,SceneNode parent,string fallbackName)
+        {
+            string name=string.IsNullOrWhiteSpace(source.Name)?fallbackName:source.Name;
+            if(source.IsPart)
+            {
+                if(source.PartIndex<0||source.PartIndex>=partShapes.Length)throw new InvalidDataException("Assembly references an unknown part");
+                var meshes=partShapes[source.PartIndex];
+                if(meshes==null||meshes.Length==0)return;
+                var part=CreatePart(meshes,name,pieces,roundedCache);
+                if(part!=null)parent.Children.Add(new SceneNode{Name=part.Name,Part=part});
+                return;
+            }
+            var node=new SceneNode{Name=name};
+            foreach(var child in source.Children)BuildScene(child,partShapes,pieces,roundedCache,node,fallbackName);
+            if(node.Children.Count!=0)parent.Children.Add(node);
+        }
+        static void Collect(SceneNode node,SceneNode root,List<Part> parts,List<SceneNode> assemblies)
+        {
+            if(node.Part!=null){parts.Add(node.Part);return;}
+            if(!ReferenceEquals(node,root))assemblies.Add(node);
+            foreach(var child in node.Children)Collect(child,root,parts,assemblies);
+        }
+        static int EntryId(SceneNode node){return node.Part==null?node.Id:node.Part.EntityId;}
+        static void WriteNodes(BinaryWriter w,SceneNode node)
+        {
+            if(node.Part!=null)
+            {
+                var part=node.Part;
+                // Match the entity and Root assembly nodes of the PS library.
+                w.Write(MetaDataNode(part.EntityId, new[] { part.RootId }));
+                w.Write(MetaDataNode(part.RootId, new[] { part.NodeId }));
+                w.Write(PartNode(part.NodeId, part.LodId));
+                int lodChild = part.GroupId == 0 ? part.Pieces[0].ShapeId : part.GroupId;
+                w.Write(RangeLodNode(part.LodId, lodChild));
+                // A RangeLOD's children are alternatives. Keep all colors
+                // together in a single representation when a group is needed.
+                if (part.GroupId != 0)
+                    w.Write(GroupNode(part.GroupId, part.Pieces.Select(piece => piece.ShapeId).ToArray()));
+                return;
+            }
+            if(node.Id!=0)w.Write(MetaDataNode(node.Id, node.Children.Select(EntryId).ToArray()));
+            foreach(var child in node.Children)WriteNodes(w,child);
+        }
+        // Build the output tree. A source assembly manifest keeps its containers;
+        // a single part or a legacy flat manifest becomes one level under the root.
+        static void WriteCore(string sceneName,string frameProperty,MeshShape[] shapes,AssemblyStructureNode structure,
+            MeshShape[][] partShapes,string output)
+        {
+            var pieces=new List<Piece>();
+            // float32 取整与校验每个 mesh 只做一次，各颜色分组共享同一份，避免
+            // 多色零件按颜色数重复克隆顶点/重复校验全部三角形。
+            var roundedCache=new Dictionary<MeshShape,MeshShape>();
+            var root=new SceneNode{Name=sceneName};
+            if(structure==null)
+            {
+                foreach(var mesh in shapes)
+                {
+                    var part=CreatePart(new[]{mesh},string.IsNullOrWhiteSpace(mesh.name)?sceneName:mesh.name,pieces,roundedCache);
+                    if(part!=null)root.Children.Add(new SceneNode{Name=part.Name,Part=part});
+                }
+            }
+            else
+            {
+                if(partShapes==null)throw new InvalidDataException("Missing assembly geometry records");
+                foreach(var child in structure.Children)BuildScene(child,partShapes,pieces,roundedCache,root,sceneName);
+            }
+            var parts=new List<Part>();
+            var assemblies=new List<SceneNode>();
+            Collect(root,root,parts,assemblies);
+            if(parts.Count==0)throw new InvalidDataException("Assembly has no writable geometry");
             int id = 1, metaId = id++;
+            foreach (var assembly in assemblies)
+            {
+                assembly.Id = id++;
+                assembly.NameId = id++;
+            }
             foreach (var part in parts)
             {
                 part.EntityId = id++;
@@ -395,28 +700,19 @@ namespace TxTools.CatiaPartTree.Conversion
             var lods=new byte[pieces.Count][];
             for(int i=0;i<pieces.Count;i++){int records;lods[i]=Lod(pieces[i],out records);pieces[i].VertexRecords=records;}
             for(int i=0;i<pieces.Count;i++)pieces[i].Segment=Stable("jt8-normal-v3/"+pieces[i].Mesh.instanceId+"/"+BitConverter.ToString(pieces[i].Color)+"/"+Digest(lods[i]));
-            var all=pieces.SelectMany(Points).ToArray();int totalFaces=pieces.Sum(p=>p.Faces.Length);
+            int totalFaces=pieces.Sum(p=>p.Faces.Length);
+            var allLo=new[]{double.MaxValue,double.MaxValue,double.MaxValue};
+            var allHi=new[]{double.MinValue,double.MinValue,double.MinValue};
+            foreach(var piece in pieces)Extents(piece,allLo,allHi);
             var metaStream=MetaDataElement(sceneName);var metaSegment=Stable("jt8-metadata-v1/"+Digest(metaStream));
-            int descendantCount = 1 + parts.Count * 4 + parts.Count(part => part.GroupId != 0) + pieces.Count;
+            int descendantCount = 1 + assemblies.Count + parts.Count * 4 + parts.Count(part => part.GroupId != 0) + pieces.Count;
             var graph=Build(w=>{
                 w.Write(Element(Type("10dd103e"),1,Build(b=>{BaseNode(b,0);b.Write(1);b.Write(metaId);
-                    b.Write(1);String(b,sceneName+".jt");Bounds(b,all);b.Write(F(pieces.Sum(p=>Area(p))));
+                    b.Write(1);String(b,sceneName+".jt");Bounds(b,allLo,allHi);b.Write(F(pieces.Sum(p=>Area(p))));
                     Range(b,pieces.Sum(p=>p.VertexRecords));Range(b,descendantCount);
-                    Range(b,totalFaces);Bounds(b,all);})));
-                w.Write(MetaDataNode(metaId, parts.Select(part => part.EntityId).ToArray()));
-                foreach (var part in parts)
-                {
-                    // Match the entity and Root assembly nodes of the PS library.
-                    w.Write(MetaDataNode(part.EntityId, new[] { part.RootId }));
-                    w.Write(MetaDataNode(part.RootId, new[] { part.NodeId }));
-                    w.Write(PartNode(part.NodeId, part.LodId));
-                    int lodChild = part.GroupId == 0 ? part.Pieces[0].ShapeId : part.GroupId;
-                    w.Write(RangeLodNode(part.LodId, lodChild));
-                    // A RangeLOD's children are alternatives. Keep all colors
-                    // together in a single representation when a group is needed.
-                    if (part.GroupId != 0)
-                        w.Write(GroupNode(part.GroupId, part.Pieces.Select(piece => piece.ShapeId).ToArray()));
-                }
+                    Range(b,totalFaces);Bounds(b,allLo,allHi);})));
+                w.Write(MetaDataNode(metaId, root.Children.Select(EntryId).ToArray()));
+                WriteNodes(w,root);
                 for(int i=0;i<pieces.Count;i++)w.Write(Shape(pieces[i],lods[i].Length));
                 foreach(var p in pieces)w.Write(Material(p));
                 End(w);w.Write(PropertyString(shapeImplKey,"JT_LLPROP_SHAPEIMPL"));w.Write(PropertyString(nameKey,"JT_PROP_NAME"));
@@ -430,6 +726,8 @@ namespace TxTools.CatiaPartTree.Conversion
                 w.Write(PropertyString(simplifyParamsKey, "JT_PROP_SIMP_PARAMS"));
                 w.Write(PropertyString(simplifyParamsValue, ":LOD selection ratio=1.000000"));
                 w.Write(LateRef(metaLate,metaSegment,4));
+                for(int i=0;i<assemblies.Count;i++)
+                    w.Write(PropertyString(assemblies[i].NameId, ProductNodeName(assemblies[i].Name, "asm", i + 1)));
                 for(int i=0;i<parts.Count;i++)
                 {
                     var part=parts[i];
@@ -441,9 +739,11 @@ namespace TxTools.CatiaPartTree.Conversion
                 foreach (var piece in pieces) w.Write(LateRef(piece.LateId, piece.Segment, 7));
                 End(w);
                 w.Write((short)1);
-                w.Write(2 + parts.Count * 3 + pieces.Count);
+                w.Write(2 + assemblies.Count + parts.Count * 3 + pieces.Count);
                 NodeProperties(w, 0, partTypeKey, partTypeValue, nameKey, assemblyName, frameKey, frameValue);
                 NodeProperties(w, metaId, unitKey, unitValue, metaKey, metaLate);
+                foreach (var assembly in assemblies)
+                    NodeProperties(w, assembly.Id, nameKey, assembly.NameId, partTypeKey, partTypeValue, unitKey, unitValue);
                 foreach (var part in parts)
                 {
                     NodeProperties(w, part.EntityId, nameKey, part.EntityNameId, unitKey, unitValue);
@@ -453,10 +753,15 @@ namespace TxTools.CatiaPartTree.Conversion
                 foreach (var piece in pieces)
                     NodeProperties(w, piece.ShapeId, simplifyParamsKey, simplifyParamsValue, simplifierKey, simplifierValue, shapeImplKey, piece.LateId);
             });
+            WriteFile(graph,pieces,lods,metaStream,output);
+        }
+        static void WriteFile(byte[] graph,List<Piece> pieces,byte[][] lods,byte[] metaStream,string output)
+        {
             Guid lsg=Stable("jt8-normal-v3/lsg/"+Digest(graph));
             var compressed=Zlib(graph);var lsgBody=Build(w=>{w.Write(2);w.Write(compressed.Length+1);w.Write((byte)2);w.Write(compressed);});
             var metaCompressed=Zlib(metaStream);
             var metaBody=Build(w=>{w.Write(2);w.Write(metaCompressed.Length+1);w.Write((byte)2);w.Write(metaCompressed);});
+            var metaSegment=Stable("jt8-metadata-v1/"+Digest(metaStream));
             var segments=new List<byte[]>{Segment(lsg,1,lsgBody)};segments.AddRange(pieces.Select((p,i)=>Segment(p.Segment,7,lods[i])));
             segments.Add(Segment(metaSegment,4,metaBody));
             var segmentTypes=new List<int>{1};segmentTypes.AddRange(pieces.Select(_=>7));segmentTypes.Add(4);
