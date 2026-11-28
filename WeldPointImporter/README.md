@@ -1,6 +1,6 @@
 # WeldPointImporter · 焊点提取与创建
 
-命令 `TxTools.WeldPointImporter.WeldPointImporterCommand` 可在 Process Simulate 的 `TxTools` 类别中注册。它读取 CATIA V5 或文件中的点坐标，在 PS 操作树根下创建一个复合操作，将焊点位操作和对应制造焊点写入同一批次。
+命令：`焊点提取与创建`（`TxTools` 类别，实现类 `WeldPointImporterCommand`）。读取 CATIA V5 或文件中的点坐标，在 PS 操作树根下创建一个复合操作，把焊点位操作和对应制造焊点写入同一批次。
 
 ## 点位来源
 
@@ -25,3 +25,17 @@
 5. 在目标 PS 工程核对新操作名称并创建。根装配或文件坐标以毫米直接写入 PS 世界坐标，姿态为世界坐标系零旋转。整个批次可以在 PS 中按 `Ctrl+Z` 撤销。
 
 CATIA 几何点按图形集名称中 `&` 分隔的板件数量推断层级。已识别的球体、立方体、圆锥分别对应双层、三层、四层，几何类型优先于点表的 `WeldLayers`、`LayerCount`、`Type` 等层级标记。层级缺失或有冲突时按双层显示。
+
+## 文件
+
+| 文件 | 职责 |
+| --- | --- |
+| `WeldPointImporterCommand.cs` | 命令注册与窗体启动 |
+| `WeldPointImporterForm.cs` | 来源选择、列表、预览与创建流程 |
+| `CatiaPointReader.cs` | CATIA 几何点、球体、重心与螺柱实例读取 |
+| `ThreeDXmlPoints.cs` | 3DXML 焊点符号与 BiW Joint Element 解析 |
+| `PointFiles.cs` | CSV、TSV、XLSX 点表读取与单位换算 |
+| `PointData.cs` | 点位模型、重复点筛查与命名规则 |
+| `PointPreview.cs` | 2D/3D 预览、层级配色 |
+| `PointInformationBars.cs` | 板件层级统计信息栏 |
+| `PsPointWriter.cs` | 复合操作、位操作与 `PmWeldPoint` 写入 |

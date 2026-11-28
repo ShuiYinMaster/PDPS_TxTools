@@ -117,24 +117,11 @@ namespace TxTools.ProcessDesigner
         {
             WorkflowUi.Button(_sourceActions, "读取当前 CATIA 装配", async () =>
                 await ReadParts(() => RunSta(CatiaImportSource.ReadActive)));
-            WorkflowUi.Button(_sourceActions, "打开装配文件…", async () =>
+            var open = WorkflowUi.Button(_sourceActions, "打开装配文件…", () =>
             {
                 using (var picker = new OpenFileDialog { Filter = "装配文件|*.CATProduct;*.3dxml;*.step;*.stp", CheckFileExists = true })
                 {
-                    if (picker.ShowDialog(this) != DialogResult.OK) return;
-                    string path = picker.FileName;
-                    switch (Path.GetExtension(path).ToLowerInvariant())
-                    {
-                        case ".catproduct":
-                            await ReadParts(() => RunSta(() => CatiaImportSource.ReadProductFile(path)));
-                            break;
-                        case ".3dxml":
-                            await ReadParts(() => Task.Run(() => ThreeDXmlSource.Read(path, _work.Token, allowXmlGeometry: true), _work.Token));
-                            break;
-                        default:
-                            await ReadParts(() => Task.Run(() => StepSource.Read(path, _work.Token), _work.Token));
-                            break;
-                    }
+                    if (picker.ShowDialog(this) == DialogResult.OK) ReadPartFile(picker.FileNames);
                 }
             });
             _structure.AfterLabelEdit += SourceLabelEdited;
@@ -156,12 +143,36 @@ namespace TxTools.ProcessDesigner
                 args.Effect = TryMoveBranch(args, apply: false) ? DragDropEffects.Move : DragDropEffects.None;
             };
             _structure.DragDrop += (sender, args) => TryMoveBranch(args, apply: true);
-            _status.Text = "读取装配后，可将零件或分支拖到右侧目录，为其分配 COJT 保存位置。";
+            FileDropInput.Wire(() => _work == null, ReadPartFile, message => _status.Text = message, _structure, _sourceActions, open);
+            _status.Text = "可将一个 CATProduct、3DXML 或 STEP 拖入左侧来源树。读取后可将零件或分支拖到右侧分配目录。";
+        }
+
+        private bool ReadPartFile(string[] paths)
+        {
+            if (paths.Length == 1 && File.Exists(paths[0]))
+            {
+                string path = paths[0];
+                switch (Path.GetExtension(path).ToLowerInvariant())
+                {
+                    case ".catproduct":
+                        _ = ReadParts(() => RunSta(() => CatiaImportSource.ReadProductFile(path)));
+                        return true;
+                    case ".3dxml":
+                        _ = ReadParts(() => Task.Run(() => ThreeDXmlSource.Read(path, _work.Token, allowXmlGeometry: true), _work.Token));
+                        return true;
+                    case ".step":
+                    case ".stp":
+                        _ = ReadParts(() => Task.Run(() => StepSource.Read(path, _work.Token), _work.Token));
+                        return true;
+                }
+            }
+            _status.Text = "请拖入一个 CATProduct、3DXML 或 STEP 文件。";
+            return false;
         }
 
         private bool TryMoveBranch(DragEventArgs args, bool apply)
         {
-            if (_work != null) return false;
+            if (_work != null || !args.Data.GetDataPresent(typeof(TreeNode))) return false;
             var dragged = args.Data.GetData(typeof(TreeNode)) as TreeNode;
             var point = _structure.PointToClient(new Point(args.X, args.Y));
             var target = _structure.GetNodeAt(point);
@@ -187,7 +198,7 @@ namespace TxTools.ProcessDesigner
         private void ConfigureResources()
         {
             _name.Text = "导入资源";
-            WorkflowUi.Button(_sourceActions, "添加模型…", () =>
+            var add = WorkflowUi.Button(_sourceActions, "添加模型…", () =>
             {
                 using (var picker = new OpenFileDialog { Filter = ResourceConversion.FileFilter, CheckFileExists = true, Multiselect = true })
                 {
@@ -224,12 +235,7 @@ namespace TxTools.ProcessDesigner
             _files.SelectedIndexChanged += (sender, args) => prototype.Enabled = _files.SelectedItems.Count != 0;
             prototype.Enabled = false;
             _files.KeyDown += RenameOnF2;
-            _files.DragEnter += ResourceFileDragOver;
-            _files.DragOver += ResourceFileDragOver;
-            _files.DragDrop += (sender, args) =>
-            {
-                if (_work == null && args.Data.GetData(DataFormats.FileDrop) is string[] files) AddResourceFiles(files);
-            };
+            FileDropInput.Wire(() => _work == null, AddResourceFiles, message => _status.Text = message, _files, _sourceActions, add);
             _files.ItemDrag += (sender, args) =>
             {
                 if (args.Button != MouseButtons.Left) return;
@@ -237,23 +243,21 @@ namespace TxTools.ProcessDesigner
                 if (files.Length != 0)
                     _files.DoDragDrop(new DataObject(ResourceDragFormat, files), DragDropEffects.Copy);
             };
-            _status.Text = "可多选模型并拖到右侧目录，为所选模型分配 COJT 保存位置。";
+            _status.Text = "可将模型文件拖入左侧列表，再多选模型拖到右侧分配目录。";
         }
 
-        private void AddResourceFiles(IEnumerable<string> paths)
+        private bool AddResourceFiles(IEnumerable<string> paths)
         {
             var existing = new HashSet<string>(_files.Items.Cast<ListViewItem>().Select(item => (string)item.Tag),
                 StringComparer.OrdinalIgnoreCase);
-            foreach (string file in paths.Where(File.Exists).Where(ResourceConversion.Supports).Where(existing.Add))
+            var added = paths.Where(File.Exists).Where(ResourceConversion.Supports).Where(existing.Add).ToArray();
+            foreach (string file in added)
                 _files.Items.Add(new ListViewItem(new[] { Path.GetFileNameWithoutExtension(file), "" }) { Tag = file });
             UpdateFolderDisplays();
             UpdateActions();
-        }
-
-        private void ResourceFileDragOver(object sender, DragEventArgs args)
-        {
-            args.Effect = _work == null && args.Data.GetData(DataFormats.FileDrop) is string[] paths &&
-                paths.Any(path => File.Exists(path) && ResourceConversion.Supports(path)) ? DragDropEffects.Copy : DragDropEffects.None;
+            _status.Text = added.Length == 0 ? "没有可添加的模型文件，请检查格式或列表中是否已有该文件。"
+                : "已添加 " + added.Length + " 个模型文件。";
+            return added.Length > 0;
         }
 
         private void ConfigureStorage(Control source)

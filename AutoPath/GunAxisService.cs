@@ -809,8 +809,25 @@ namespace TxTools.AutoPathPlanner
         ///
         /// inheritFrom: 通常传相邻的焊点位置, 从它身上读导轨/变位机的工艺值。
         /// </summary>
+        internal bool IsGunAxis(TxRobotExternalAxisData axis)
+        {
+            return axis != null && HasGunAxis && SameObject(axis.Device, _axes[_gunAxisIndex].Device)
+                && SameObject(axis.Joint, _axes[_gunAxisIndex].Joint);
+        }
+
+        internal double? ReadOpening(TxRobotExternalAxisData[] axes)
+        {
+            var axis = (axes ?? new TxRobotExternalAxisData[0]).SingleOrDefault(IsGunAxis);
+            if (axis == null) return null;
+            double opening = JointValueToOpening(axis.JointValue);
+            if (double.IsNaN(opening) || double.IsInfinity(opening) ||
+                Math.Abs(OpeningToJointValue(opening) - axis.JointValue) > 1e-4)
+                throw new InvalidOperationException("源点焊钳轴值超出标定范围");
+            return opening;
+        }
+
         public bool WriteOpening(ITxObject location, double opening,
-            ITxObject inheritFrom, bool alsoDeparture = true)
+            ITxObject inheritFrom, bool alsoDeparture = true, double? departureOpening = null)
         {
             if (location == null || _gunAxisIndex < 0 || _axes.Count == 0) return false;
 
@@ -889,6 +906,12 @@ namespace TxTools.AutoPathPlanner
                 if (sourceDeparture == null || sourceDeparture.Length == 0) sourceDeparture = sourceArrival;
                 var arrival = MergeAxes(list, sourceArrival, _axes[_gunAxisIndex].Device, _axes[_gunAxisIndex].Joint);
                 var departure = MergeAxes(list, sourceDeparture, _axes[_gunAxisIndex].Device, _axes[_gunAxisIndex].Joint);
+                if (departureOpening.HasValue)
+                {
+                    int index = Array.FindIndex(departure, IsGunAxis);
+                    departure[index] = new TxRobotExternalAxisData { Device = departure[index].Device,
+                        Joint = departure[index].Joint, JointValue = OpeningToJointValue(departureOpening.Value) };
+                }
                 loc.RobotExternalAxesData = arrival;
                 if (alsoDeparture)
                 {
