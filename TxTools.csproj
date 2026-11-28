@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
@@ -13,7 +13,7 @@
     <LangVersion>8.0</LangVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
-    <ProcessSimulateDllDir>$(MSBuildProjectDirectory)\..\2402dll</ProcessSimulateDllDir>
+    <ProcessSimulateDllDir Condition="'$(ProcessSimulateDllDir)' == ''">$(MSBuildProjectDirectory)\..\2402dll</ProcessSimulateDllDir>
     <NuGetPackageImportStamp>
     </NuGetPackageImportStamp>
   </PropertyGroup>
@@ -385,6 +385,7 @@
     <Compile Include="AutoFance\FenceBuilderForm.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="AutoFance\FenceDxfReader.cs" />
     <Compile Include="AutoFance\FenceGeometryBuilder.cs" />
     <Compile Include="AutoFance\FenceLayoutPlanner.cs" />
     <Compile Include="AutoFance\FenceParameters.cs" />
@@ -612,6 +613,7 @@
     </Compile>
     <Compile Include="SRC\TreeWorkflow.cs" />
     <Compile Include="SRC\TreeWorkflowUi.cs" />
+    <Compile Include="SRC\FileDropInput.cs" />
     <Compile Include="WeldSpotGrouper\Core\SequencePlan.cs" />
     <Compile Include="WeldSpotGrouper\Core\GroupModels.cs" />
     <Compile Include="WeldSpotGrouper\Ps\GroupWriter.cs" />
@@ -623,7 +625,9 @@
     <Compile Include="WeldPointImporter\CatiaPointReader.cs" />
     <Compile Include="WeldPointImporter\PointData.cs" />
     <Compile Include="WeldPointImporter\PointFiles.cs" />
-    <Compile Include="WeldPointImporter\PointInformationBars.cs" />
+    <Compile Include="WeldPointImporter\PointInformationBars.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="WeldPointImporter\PointPreview.cs" />
     <Compile Include="WeldPointImporter\PsPointWriter.cs" />
     <Compile Include="WeldPointImporter\ThreeDXmlPoints.cs" />
@@ -644,12 +648,19 @@
     <Compile Include="CatiaPartTree\Ps\CatiaImportSession.cs" />
     <Compile Include="CatiaPartTree\Ps\CatiaExistingAssignment.cs" />
     <Compile Include="CatiaPartTree\Conversion\Frame12.cs" />
+    <Compile Include="CatiaPartTree\Conversion\AssemblyManifest.cs" />
     <Compile Include="CatiaPartTree\Ps\CatiaPartTreeService.cs" />
     <Compile Include="CatiaPartTree\CatiaPartTreeCmd.cs" />
     <Compile Include="ProcessDesigner\DesignerCommands.cs" />
-    <Compile Include="ProcessDesigner\DesignerModelForm.cs" />
-    <Compile Include="ProcessDesigner\DesignerModelForm.Preview.cs" />
-    <Compile Include="ProcessDesigner\DesignerImportDialog.cs" />
+    <Compile Include="ProcessDesigner\DesignerModelForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="ProcessDesigner\DesignerModelForm.Preview.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="ProcessDesigner\DesignerImportDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="ProcessDesigner\DesignerLibraryImport.cs" />
     <Compile Include="ProcessDesigner\DesignerImportPackage.cs" />
     <Compile Include="CatiaPartTree\CatiaPartTreeForm.cs">
@@ -657,6 +668,7 @@
     </Compile>
     <Compile Include="ResourceImporter\CatProductConversion.cs" />
     <Compile Include="ResourceImporter\ResourceConversion.cs" />
+    <Compile Include="ResourceImporter\ResourceFolderSearch.cs" />
     <Compile Include="ResourceImporter\ResourcePrototype.cs" />
     <Compile Include="ResourceImporter\ResourceCustomizationInstallation.cs" />
     <Compile Include="ResourceImporter\ResourceImportSession.cs" />
@@ -748,7 +760,7 @@
     <EmbeddedResource Include="$(TxToolsNuGetDir)**\LICENSE.*">
       <LogicalName>TxTools.Licenses.NuGet.%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
-    <EmbeddedResource Include="$(TxToolsPetComponentsDir)electron\LICENSE">
+    <EmbeddedResource Include="$(TxToolsPetComponentsDir)electron\LICENSE" Condition="Exists('$(TxToolsPetComponentsDir)electron\LICENSE')">
       <LogicalName>TxTools.Licenses.Electron</LogicalName>
     </EmbeddedResource>
     <Compile Include="ThemeTuner\ThemeTunerForm.cs">

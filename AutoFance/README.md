@@ -2,7 +2,31 @@
 
 Generate fence panels and posts along line or polyline baselines in Process Simulate.
 
-根据场景中已有的直线/多段线特征(`TxLineFeature` / `TxPolylineFeature`),按用户指定的网片与立柱参数,沿线段生成围栏(网片 + 立柱 + 可选底板)。
+根据场景中已有的直线/多段线特征(`TxLineFeature` / `TxPolylineFeature`)，或直接读取 DXF 图纸中的线，按用户指定的网片与立柱参数，沿线段生成围栏(网片 + 立柱 + 可选底板)。
+
+## 基线来源
+
+两种来源可单独使用，也可在同一次生成中叠加：
+
+1. **场景特征**：在 PS 里选中直线/多段线，点【从选择添加】。
+2. **DXF 图纸**：点【导入 DXF…】，直接读图纸里的线作为基线，不必先在场景里画线。
+
+DXF 读取实现见 `FenceDxfReader.cs`，行为约定：
+
+| 项 | 约定 |
+|---|---|
+| 支持实体 | `LINE`、`LWPOLYLINE`、`POLYLINE`(+`VERTEX`)、`ARC` |
+| 忽略实体 | `CIRCLE`、`ELLIPSE`、`SPLINE`、`HATCH`、`INSERT` 记录提示后跳过；`TEXT`/`DIMENSION` 等静默忽略 |
+| 圆弧 | `ARC` 与多段线 bulge 都离散成折线，按最大弦高 5 mm 自适应决定段数 |
+| 编码 | 读 `$DWGCODEPAGE`（如 `ANSI_936`），回退 UTF-8 严格解码，再退 GBK |
+| 成链 | 端点按 0.5 mm 容差连通，开放链优先，闭环单独成链；拐角顺序保持 |
+| 去重 | 正反向端点完全重合的线段视为同一条 |
+| 孤立短线 | 单独成链且长度小于阈值（默认 1100 mm）的线段视为柱位/符号线丢弃，阈值填 0 表示保留 |
+| 图层过滤 | 只读指定图层，逗号/分号分隔；留空读全部图层 |
+| 坐标 | 默认沿用图纸坐标；勾选【生成时平移到原点】后按最小角平移到 (0,0) |
+| 大图纸 | 解析出 200 条以上链时先弹确认，避免把设备轮廓当围栏 |
+
+解析结果以纯几何（`FenceDxfPolyline`）返回，`FenceDxfReader.ToBaseChains` 再转成布局算法需要的 `BaseSegmentChain`。因此解析核心可以脱离 PS SDK 单测，测试位于 `TxTools.Local/tests/Tests/FenceDxf`。
 
 ## 设计取舍
 
@@ -40,6 +64,7 @@ FenceBuilder/
 ├── FenceBuilderCommand.cs      入口命令(ITxButtonCommand)
 ├── FenceBuilderForm.cs         主窗体(TxForm + GroupBox 卡片 + 日志)
 ├── FenceBaselineReader.cs      基线读取(顶点反射探测 + 水平投影)
+├── FenceDxfReader.cs           DXF 基线读取(纯几何解析 + 成链去重)
 ├── FenceLayoutPlanner.cs       布局算法(纯几何,无 SDK 依赖)
 ├── FenceGeometryBuilder.cs     几何创建(CreateSolidBox)
 ├── FenceParameters.cs          参数容器
@@ -75,16 +100,18 @@ FenceBuilder/
 
 ## 使用流程
 
-1. 在 PS 场景里画好基线特征(直线或多段线),特征本身的 Z 高度就是地面高
-2. 菜单 → TxTools → 围栏生成器
-3. 选中基线特征,点【从选择添加】
-4. 调整参数:
+1. 准备基线，二选一或同时用：
+   - 在 PS 场景里画好直线/多段线特征（特征本身的 Z 就是地面高），选中后点【从选择添加】
+   - 菜单 → TxTools → 围栏生成器 → 左侧【DXF 基线】卡片 →【导入 DXF…】，按需填图层过滤和孤立短线阈值
+2. 调整参数：
    - 网片宽度、高度、外框方管尺寸、离地间隙
    - 立柱截面、立柱-网片间隙
    - 是否启用底板
-   - 是否贴网格纹理(失败自动降级为半透明纯色)
-5. 【生成围栏】
-6. 不满意可在 PS 中按 Ctrl+Z 撤销场景批次，或点【清理上次生成】清理本批次对象；复用的建模组件及原有内容会保留
+   - 是否贴网格纹理（失败自动降级为半透明纯色）
+3. 【生成围栏】
+4. 不满意可在 PS 中按 Ctrl+Z 撤销场景批次，或点【清理上次生成】清理本批次对象；复用的建模组件及原有内容会保留
+
+DXF 导入后基线区域会显示文件名、链数、线段数、总长和范围；改过图层过滤或短线阈值后，下次生成会先自动重读再建模。
 
 ## 性能与扩展
 
